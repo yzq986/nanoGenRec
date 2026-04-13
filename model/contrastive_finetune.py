@@ -37,52 +37,126 @@ sys.path.insert(0, str(REPO_ROOT.parent))
 # ============================================================
 
 class I2IPairDataset(Dataset):
-    """Item-Item pairs from user co-interaction.
+    """Item-Item pairs from collaborative signals.
 
-    For each user with >= 2 positive items, sample pairs of
-    co-interacted items as positive pairs for contrastive learning.
+    Two pair construction methods (combined):
+
+    方式 1 — Adjacent Positive Pairs:
+        Per user, sort positive interactions by first_ts.
+        Pair each item with the immediately preceding positive item.
+        Captures temporal co-interest within a session.
+
+    方式 2 — Swing I2I High-Score Pairs:
+        Swing(i,j) = Σ_{u∈U(i)∩U(j)} 1 / (α + |I(u)|)
+        Select top-scoring pairs as high-quality collaborative signals.
     """
 
-    def __init__(self, content_id_to_text: dict, behavior_data: dict, max_pairs: int = 5_000_000):
+    def __init__(
+        self,
+        content_id_to_text: dict,
+        behavior_data: dict,
+        max_pairs: int = 5_000_000,
+        swing_top_k: int = 10,
+        swing_alpha: float = 5.0,
+        swing_max_items: int = 500_000,
+    ):
         """
         Args:
             content_id_to_text: {content_id: text_string}
-            behavior_data: {'uid': [...], 'iid': [...], 'action_bitmap': [...]}
-            max_pairs: cap total pairs to limit memory
+            behavior_data: {'uid': [...], 'iid': [...], 'action_bitmap': [...], 'first_ts': [...]}
+            max_pairs: cap total pairs
+            swing_top_k: per-item top-K swing neighbors to keep
+            swing_alpha: swing smoothing factor
+            swing_max_items: max items for swing computation (memory bound)
         """
         t0 = time.time()
-
-        # Build user -> positive items
-        user_items = defaultdict(set)
         valid_cids = set(content_id_to_text.keys())
 
-        for uid, iid, action in zip(
-            behavior_data['uid'], behavior_data['iid'], behavior_data['action_bitmap']
-        ):
-            if action > 0 and iid in valid_cids:
-                user_items[uid].add(iid)
+        uids = behavior_data['uid']
+        iids = behavior_data['iid']
+        actions = behavior_data['action_bitmap']
+        timestamps = behavior_data.get('first_ts')
 
-        # Generate pairs: for each user, all combinations of positive items
-        pairs = []
-        for uid, items in user_items.items():
-            items = list(items)
-            if len(items) < 2:
+        # ── Build user -> sorted positive items ──
+        user_items_ts = defaultdict(list)  # uid -> [(ts, iid), ...]
+        item_users = defaultdict(set)      # iid -> {uid, ...}
+
+        for i in range(len(uids)):
+            uid, iid, action = uids[i], iids[i], actions[i]
+            if action > 0 and iid in valid_cids:
+                ts = timestamps[i] if timestamps is not None else 0
+                user_items_ts[uid].append((ts, iid))
+                item_users[iid].add(uid)
+
+        # ── 方式 1: Adjacent Positive Pairs ──
+        adjacent_pairs = set()
+        for uid, ts_items in user_items_ts.items():
+            if len(ts_items) < 2:
                 continue
-            # Sample up to 10 pairs per user to avoid mega-user domination
-            n = min(len(items), 10)
-            for i in range(n):
-                for j in range(i + 1, n):
-                    pairs.append((items[i], items[j]))
-                    if len(pairs) >= max_pairs:
-                        break
-                if len(pairs) >= max_pairs:
-                    break
-            if len(pairs) >= max_pairs:
+            # Sort by timestamp
+            sorted_items = sorted(ts_items, key=lambda x: x[0])
+            # Deduplicate consecutive items
+            prev_iid = sorted_items[0][1]
+            for _, iid in sorted_items[1:]:
+                if iid != prev_iid:
+                    pair = (prev_iid, iid) if prev_iid < iid else (iid, prev_iid)
+                    adjacent_pairs.add(pair)
+                prev_iid = iid
+
+        print(f"  方式 1 (adjacent): {len(adjacent_pairs):,} unique pairs "
+              f"from {len(user_items_ts):,} users")
+
+        # ── 方式 2: Swing I2I ──
+        # Filter to items with enough co-occurrence potential
+        active_items = [iid for iid, users in item_users.items() if len(users) >= 2]
+        if len(active_items) > swing_max_items:
+            import random
+            random.seed(42)
+            active_items = random.sample(active_items, swing_max_items)
+        active_set = set(active_items)
+
+        # Build inverted index: user -> items (filtered)
+        user_active_items = defaultdict(set)
+        for iid in active_items:
+            for uid in item_users[iid]:
+                user_active_items[uid].add(iid)
+
+        # Compute swing scores via co-occurrence users
+        swing_pairs = defaultdict(float)  # (i,j) -> score
+        for uid, items in user_active_items.items():
+            items = list(items)
+            user_weight = 1.0 / (swing_alpha + len(items))
+            # Only compute for users with manageable item count
+            if len(items) > 200:
+                continue
+            for a in range(len(items)):
+                for b in range(a + 1, len(items)):
+                    pair = (items[a], items[b]) if items[a] < items[b] else (items[b], items[a])
+                    swing_pairs[pair] += user_weight
+
+        # Select top pairs globally
+        swing_pair_list = sorted(swing_pairs.items(), key=lambda x: -x[1])
+        swing_top_pairs = set()
+        for (i, j), score in swing_pair_list:
+            swing_top_pairs.add((i, j))
+            if len(swing_top_pairs) >= max_pairs // 2:
                 break
 
-        self.pairs = pairs
+        print(f"  方式 2 (swing): {len(swing_top_pairs):,} pairs "
+              f"(from {len(swing_pairs):,} total co-occurrence pairs)")
+
+        # ── Merge ──
+        all_pairs = list(adjacent_pairs | swing_top_pairs)
+        import random
+        random.seed(42)
+        random.shuffle(all_pairs)
+        if len(all_pairs) > max_pairs:
+            all_pairs = all_pairs[:max_pairs]
+
+        self.pairs = all_pairs
         self.content_id_to_text = content_id_to_text
-        print(f"I2IPairDataset: {len(pairs):,} pairs from {len(user_items):,} users "
+        print(f"I2IPairDataset: {len(self.pairs):,} total pairs "
+              f"(adjacent={len(adjacent_pairs):,}, swing={len(swing_top_pairs):,}) "
               f"({time.time() - t0:.1f}s)")
 
     def __len__(self):
@@ -188,6 +262,7 @@ def train(args):
         'uid': behavior_data['uid'],
         'iid': np.array([str(x) for x in behavior_data['iid']]),
         'action_bitmap': behavior_data['action_bitmap'],
+        'first_ts': behavior_data.get('first_ts', np.zeros(len(behavior_data['uid']), dtype=np.int64)),
     }
 
     dataset = I2IPairDataset(content_id_to_text, behavior_data_str, max_pairs=args.max_pairs)
