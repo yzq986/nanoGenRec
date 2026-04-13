@@ -433,7 +433,73 @@ METRIC_SHORT = {
 def generate_report(all_results: List[dict], output_path: str):
     """生成 Markdown 报告"""
 
+    # Split OPQ results from RKMeans/FSQ results
+    opq_results = [r for r in all_results if r.get('quantizer_type') == 'opq']
+    rk_results = [r for r in all_results if r.get('quantizer_type') != 'opq']
+
     lines = []
+
+    # OPQ report
+    if opq_results:
+        _generate_opq_report(lines, opq_results)
+
+    # RKMeans/FSQ report
+    if rk_results:
+        if opq_results:
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+        _generate_rkmeans_report(lines, rk_results)
+
+    # 写入文件
+    report = "\n".join(lines)
+    with open(output_path, 'w') as f:
+        f.write(report)
+    print(f"\nReport saved to: {output_path}")
+
+    return report
+
+
+def _generate_opq_report(lines: List[str], all_results: List[dict]):
+    """Generate report section for OPQ results."""
+    import math
+
+    lines.append("# OPQ 超参数搜索结果")
+    lines.append("")
+    lines.append(f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    lines.append(f"**模型**: qwen3-0.6b (1024d)")
+    lines.append(f"**量化器**: OPQ (Optimized Product Quantization)")
+    lines.append(f"**实验数量**: {len(all_results)}")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("## 完整结果")
+    lines.append("")
+
+    header = "| # | m (tokens) | M (vocab) | bits | collision | entropy | Gini | recon_loss | time(s) |"
+    sep    = "|---|-----------|-----------|------|-----------|---------|------|------------|---------|"
+    lines.append(header)
+    lines.append(sep)
+
+    sorted_results = sorted(all_results, key=lambda r: r.get('n_subvectors', 0))
+
+    for i, r in enumerate(sorted_results, 1):
+        met = r['metrics']
+        n_sub = r.get('n_subvectors', '?')
+        n_cpersub = r.get('n_clusters_per_sub', 256)
+        bits = int(n_sub * math.log2(n_cpersub)) if isinstance(n_sub, int) else '?'
+        col = f"{met.get('semantic_id_collision', 0):.4f}"
+        ent = f"{met.get('entropy', 0):.4f}"
+        gini = f"{met.get('cluster_balance', 0):.4f}"
+        rec = f"{met.get('reconstruction_loss', 0):.4f}"
+        row = f"| {i} | {n_sub} | {n_cpersub} | {bits} | {col} | {ent} | {gini} | {rec} | {r['train_time']:.0f} |"
+        lines.append(row)
+
+    lines.append("")
+
+
+def _generate_rkmeans_report(lines: List[str], all_results: List[dict]):
+    """Generate report section for RKMeans/FSQ results (original logic)."""
     has_fsq = any(r.get('quantizer_type') == 'rkmeans_fsq' for r in all_results)
     title = "RKMeans + FSQ 超参数网格搜索结果" if has_fsq else "RKMeans 超参数网格搜索结果"
     lines.append(f"# {title}")
@@ -580,14 +646,6 @@ def generate_report(all_results: List[dict], output_path: str):
         parts.append(f"time={r['train_time']:.0f}s")
         lines.append(f"**#{i}**: " + ", ".join(parts))
         lines.append("")
-
-    # 写入文件
-    report = "\n".join(lines)
-    with open(output_path, 'w') as f:
-        f.write(report)
-    print(f"\nReport saved to: {output_path}")
-
-    return report
 
 
 def _add_subset_table(lines, all_results, fix: dict, vary: str):
