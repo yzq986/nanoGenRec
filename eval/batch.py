@@ -2,7 +2,7 @@
 
 import argparse
 import os
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -25,7 +25,7 @@ S3_BASE = S3_RKMEANS_BASE
 BEHAVIOR_PATH = f"{S3_USER_BEHAVIOR}/{DEFAULT_DATE}"
 DATE = DEFAULT_DATE
 
-OUTPUT_BASE = "eval_results"
+OUTPUT_BASE = "experiments/eval"
 COMPARISON_OUTPUT = "comparison_report"
 
 ALL_MODELS = {
@@ -61,7 +61,7 @@ def run_model_eval(
     emb_type = ALL_MODELS[model_name][0]
     results_path = f"{S3_BASE}/{model_name}/{DATE}/results_{emb_type}.parquet"
     model_path = f"{S3_BASE}/{model_name}/{DATE}/rkmeans_{emb_type}.pt"
-    output_dir = f"{OUTPUT_BASE}/{model_name}"
+    output_dir = f"{OUTPUT_BASE}/{date.today().isoformat()}_{model_name}"
 
     # Load results
     try:

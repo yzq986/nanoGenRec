@@ -144,10 +144,10 @@ Random baseline PPL = 256 (n_clusters)
 
 ```bash
 # 只运行 SID Prediction
-python demo_eval_all.py --only-sid --models qwen3-0.6b
+python run.py eval-all --only-sid --models qwen3-0.6b
 
 # 调整参数
-python demo_eval_all.py --only-sid \
+python run.py eval-all --only-sid \
     --models qwen3-0.6b \
     --sid_sample_users 50000  # 采样用户数
 ```

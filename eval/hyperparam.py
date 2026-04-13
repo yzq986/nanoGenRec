@@ -5,7 +5,7 @@ import json
 import os
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -433,8 +433,10 @@ def parse_args():
                         help='Must use cached embeddings')
     parser.add_argument('--behavior_path', type=str, default=None,
                         help='S3 path to behavior data for exposed IID filtering')
-    parser.add_argument('--output', type=str, default='HYPERPARAM_SEARCH_RESULTS.md',
-                        help='Output markdown file path')
+    parser.add_argument('--name', type=str, default=None,
+                        help='Experiment name (default: auto-generated from cluster list)')
+    parser.add_argument('--output', type=str, default=None,
+                        help='Output markdown file path (default: experiments/hyperparam/{date}_{name}/report.md)')
     parser.add_argument('--append', action='store_true',
                         help='Append to existing JSON results (skip already-run configs)')
 
@@ -474,9 +476,16 @@ def main():
     print(f"  niter:    {niter_list}")
     print(f"  nredo:    {nredo_list}")
 
+    # 构造输出目录: experiments/hyperparam/{date}_{name}/
+    exp_name = args.name or f"clusters-{'_'.join(str(c) for c in clusters_list)}"
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    exp_dir = os.path.join(repo_root, "experiments", "hyperparam", f"{date.today().isoformat()}_{exp_name}")
+    os.makedirs(exp_dir, exist_ok=True)
+    json_path = os.path.join(exp_dir, "results.json")
+    output_path = args.output or os.path.join(exp_dir, "report.md")
+    print(f"Output dir: {exp_dir}")
+
     # 加载已有结果 (--append 模式)
-    json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             args.output.replace('.md', '.json'))
     existing_results = []
     existing_keys = set()
     if args.append and os.path.exists(json_path):
@@ -575,7 +584,6 @@ def main():
                     json.dump(all_results, f, indent=2)
 
     # 生成 Markdown 报告
-    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.output)
     report = generate_report(all_results, output_path)
     print(report)
 
