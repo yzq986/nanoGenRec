@@ -2,8 +2,9 @@
 """Regenerate EXP-004 reports from existing JSON results."""
 import glob
 import json
+import os
 import sys
-sys.path.insert(0, '.')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from gr_demo.eval.hyperparam import generate_report
 
 dirs = sorted(glob.glob("experiments/hyperparam/*exp004*"))
