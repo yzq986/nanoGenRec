@@ -6,7 +6,7 @@
 
 ---
 
-## IDEA-001: OPQ 并行语义 ID
+## IDEA-sid-0: OPQ 并行语义 ID
 
 **优先级**: P0
 **来源**: 3.1.2.2 (Meta RPG, KDD'25), Kaiming OPQ
@@ -91,7 +91,7 @@
 
 ---
 
-## IDEA-002: 协同信号增强 Embedding
+## IDEA-sid-1: 协同信号增强 Embedding
 
 **优先级**: P1
 **来源**: 3.1.1 (OneRec-V1 技术报告)
@@ -106,7 +106,7 @@
 - 已有 `data/export_behavior.py` 导出行为数据
 - 已有 `eval/behavior.py` 行为指标评估框架
 - 对 embedding 本身的改进，不管后续用什么量化方案都受益
-- 与量化方法实验 (EXP-003, IDEA-001) 正交，可并行推进
+- 与量化方法实验 (EXP-003, IDEA-sid-0) 正交，可并行推进
 
 ### 实验设计草案
 
@@ -128,7 +128,7 @@
 
 ---
 
-## IDEA-003: Balanced KMeans
+## IDEA-sid-2: Balanced KMeans
 
 **优先级**: P1
 **来源**: 3.1.2.1 (OneRec Paper 提到)
@@ -159,7 +159,7 @@
 
 ---
 
-## IDEA-004: 多模态语义 ID (ESANS 粗细粒度)
+## IDEA-sid-3: 多模态语义 ID (ESANS 粗细粒度)
 
 **优先级**: P2
 **来源**: 3.1.3 (阿里 WWW'25 ESANS)

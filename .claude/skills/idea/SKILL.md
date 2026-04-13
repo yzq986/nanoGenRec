@@ -12,16 +12,17 @@ Extract actionable experiment ideas from papers or technical articles discussed 
 
 ## Instructions
 
-1. **Read existing ideas**: Use Glob to find all `ideas/*.md` files, then Read `ideas/README.md` to find existing entries. Scan existing idea files to find the highest `IDEA-NNN` number across all files.
+1. **Read existing ideas**: Use Glob to find all `ideas/*.md` files, then Read `ideas/README.md` to find existing entries.
 
-2. **Determine filename**:
+2. **Determine filename and hash prefix**:
    - Use the argument as the topic if provided, otherwise infer from discussion
    - Convert to kebab-case for filename: `ideas/{topic}.md`
-   - If the file already exists, append new ideas to it (increment IDEA numbers)
+   - Derive a short hash prefix for IDEA IDs from the source (e.g., arxiv ID `2601.21770` → `onemall`, paper name → short mnemonic). The hash must be unique across all idea files.
+   - If the file already exists, append new ideas (increment the per-file sequence number)
    - If the file is new, create it and add an entry to `ideas/README.md`
 
 3. **Extract ideas from conversation context**. For each distinct idea, create an entry with:
-   - **IDEA-NNN**: Incrementing ID (global across all files)
+   - **IDEA-{hash}-{N}**: where `{hash}` is the file's unique prefix and `{N}` is a 0-based sequence number within that file (e.g., `IDEA-onemall-0`, `IDEA-onemall-1`). This avoids ID collisions across files.
    - **优先级**: P0 (critical/strategic) / P1 (high value) / P2 (nice to have)
    - **来源**: Which section/paper the idea comes from
    - **状态**: 待讨论 (initial) / 已采纳 → EXP-NNN (when promoted to experiment) / 已否决 (rejected)
@@ -29,7 +30,7 @@ Extract actionable experiment ideas from papers or technical articles discussed 
 4. **Each idea entry must include these sections**:
 
    ```markdown
-   ## IDEA-NNN: {Title}
+   ## IDEA-{hash}-{N}: {Title}
 
    **优先级**: P0/P1/P2
    **来源**: {paper/section reference}
@@ -55,7 +56,7 @@ Extract actionable experiment ideas from papers or technical articles discussed 
 
    | 优先级 | ID | 实验 | 原因 |
    |--------|-----|------|------|
-   | P0 | IDEA-001 | ... | ... |
+   | P0 | IDEA-{hash}-0 | ... | ... |
    ```
 
    If appending to an existing file, update the existing summary table.
@@ -70,12 +71,12 @@ Extract actionable experiment ideas from papers or technical articles discussed 
 
 ---
 
-## IDEA-NNN: {Title}
+## IDEA-{hash}-{N}: {Title}
 ...
 
 ---
 
-## IDEA-NNN+1: {Title}
+## IDEA-{hash}-{N}+1: {Title}
 ...
 
 ---

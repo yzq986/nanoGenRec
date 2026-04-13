@@ -43,7 +43,7 @@
 
 **Date**: 2026-04-13
 **Status**: planned
-**IDEA**: IDEA-001 (Phase 1)
+**IDEA**: IDEA-sid-0 (Phase 1)
 **Reference**: Meta RPG (KDD'25, arxiv 2506.05781)
 
 ### Background
@@ -79,7 +79,7 @@ TBD
 TBD
 
 ### Next Steps
-若 OPQ 量化质量可接受 → IDEA-001 Phase 2: 并行预测 NTP 模型 + Graph-Constrained Decoding
+若 OPQ 量化质量可接受 → IDEA-sid-0 Phase 2: 并行预测 NTP 模型 + Graph-Constrained Decoding
 
 ---
 

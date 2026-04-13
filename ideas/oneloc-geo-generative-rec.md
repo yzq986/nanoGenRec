@@ -5,7 +5,7 @@
 
 ---
 
-## IDEA-005: Geo-aware Self-attention (位置上下文注入注意力)
+## IDEA-oneloc-0: Geo-aware Self-attention (位置上下文注入注意力)
 
 **优先级**: P2
 **来源**: OneLoc §2.3.3 Geo-aware Self-attention
@@ -39,7 +39,7 @@
 
 ---
 
-## IDEA-006: Neighbor-aware Prompt (邻域交叉注意力提示)
+## IDEA-oneloc-1: Neighbor-aware Prompt (邻域交叉注意力提示)
 
 **优先级**: P2
 **来源**: OneLoc §2.4.1 Neighbor-aware Prompt
@@ -68,13 +68,13 @@
 
 ### 关键问题
 
-1. 同 IDEA-005: 当前无 encoder-decoder 架构，无法直接落地
+1. 同 IDEA-oneloc-0: 当前无 encoder-decoder 架构，无法直接落地
 2. 需要先完成 "Context Processor" 或 encoder-decoder 重构
 3. 类目信息的获取: 当前 item metadata 是否包含类目? 需要检查数据 pipeline
 
 ---
 
-## IDEA-007: DPO 对齐 + 双目标奖励函数
+## IDEA-oneloc-2: DPO 对齐 + 双目标奖励函数
 
 **优先级**: P1
 **来源**: OneLoc §2.5 Reinforcement Learning
@@ -127,7 +127,7 @@
 
 ---
 
-## IDEA-008: Geo-aware Semantic ID (地理信号注入残差量化)
+## IDEA-oneloc-3: Geo-aware Semantic ID (地理信号注入残差量化)
 
 **优先级**: P1
 **来源**: OneLoc §2.2 Geo-aware Semantic IDs
@@ -140,9 +140,9 @@ OneLoc 在残差量化的初始 embedding 中融合地理上下文: `r_0 = conca
 ### 与当前项目的关联
 
 - 当前 `model/rkmeans.py` 的输入是纯 Qwen3 文本 embedding
-- 这与 **IDEA-002 (协同信号增强 Embedding)** 思路一致: 在量化之前将额外信号注入 embedding
+- 这与 **IDEA-sid-1 (协同信号增强 Embedding)** 思路一致: 在量化之前将额外信号注入 embedding
 - 泛化形式: **任何 side information 都可以在量化前 concat/fuse 到 embedding 中**
-- 具体对我们的启发: 除了协同信号 (IDEA-002)，还可以注入:
+- 具体对我们的启发: 除了协同信号 (IDEA-sid-1)，还可以注入:
   - 类目层级 embedding
   - 价格区间 embedding
   - 热度/新鲜度 signal
@@ -161,14 +161,14 @@ OneLoc 在残差量化的初始 embedding 中融合地理上下文: `r_0 = conca
 
 ### 关键问题
 
-1. **与 IDEA-002 重叠**: 协同信号增强也是改 embedding 输入。应统一为 "embedding enrichment" 框架，避免重复实验
+1. **与 IDEA-sid-1 重叠**: 协同信号增强也是改 embedding 输入。应统一为 "embedding enrichment" 框架，避免重复实验
 2. 当前有什么 side information 可以用? 需要检查 item metadata 中除文本外还有什么字段
 3. Concat 后维度增加对量化质量的影响 — 高维可能让 KMeans 更难收敛
-4. 如果走 IDEA-001 (OPQ) 路线，side info 可以分配到独立子向量，天然适合并行量化
+4. 如果走 IDEA-sid-0 (OPQ) 路线，side info 可以分配到独立子向量，天然适合并行量化
 
 ---
 
-## IDEA-009: Scaling Law — 序列长度 >> 模型大小
+## IDEA-oneloc-4: Scaling Law — 序列长度 >> 模型大小
 
 **优先级**: P0
 **来源**: OneLoc §4.4 Hyperparameter Experiments
@@ -216,7 +216,7 @@ OneLoc 的 scaling 实验揭示了一个关键发现: **序列长度的收益远
 
 ---
 
-## IDEA-010: Multi-behavior Sequence 融合
+## IDEA-oneloc-5: Multi-behavior Sequence 融合
 
 **优先级**: P1
 **来源**: OneLoc §2.3.1 Multi-behavior Sequence
@@ -231,7 +231,7 @@ OneLoc 区分三种行为序列: watch (浏览), click (点击), pay (购买)，
 - 当前 `data/export_behavior.py` 导出行为数据，但处理方式需要确认
 - 当前 NTP 模型 (`metrics/sid_prediction.py`) 输入是单一序列
 - 如果我们有多种行为信号 (展现/点击/购买/收藏)，分离不同行为的序列可能比混合在一起更有效
-- **与 IDEA-002 (协同信号增强) 有交集**: 行为序列本身就是协同信号的来源
+- **与 IDEA-sid-1 (协同信号增强) 有交集**: 行为序列本身就是协同信号的来源
 
 ### 实验设计草案
 
@@ -256,9 +256,9 @@ OneLoc 区分三种行为序列: watch (浏览), click (点击), pay (购买)，
 
 | 优先级 | ID | 实验 | 原因 |
 |--------|-----|------|------|
-| P0 | IDEA-009 | Scaling Law: 序列长度 vs 模型大小 | 直接决定资源分配策略；OneLoc 显示序列长度收益 7x > 模型大小收益；验证后可指导所有后续实验的 compute budget |
-| P1 | IDEA-007 | DPO 对齐 + 双目标奖励 | RL alignment 是 OneRec 系列的核心范式，当前项目零 RL 代码；但需要 NTP 模型先稳定 |
-| P1 | IDEA-008 | 多信号融合量化输入 | 与 IDEA-002 统一为 "embedding enrichment"，扩展量化输入的信息密度 |
-| P1 | IDEA-010 | Multi-behavior 序列融合 | 低成本区分不同行为强度；但需要行为数据包含类型标注 |
-| P2 | IDEA-005 | Context-augmented Attention | 需要先有 encoder-decoder 架构；当前场景无地理需求 |
-| P2 | IDEA-006 | Category-aware Prompt | 需要先有 encoder-decoder 架构；泛化形式有价值但前置依赖多 |
+| P0 | IDEA-oneloc-4 | Scaling Law: 序列长度 vs 模型大小 | 直接决定资源分配策略；OneLoc 显示序列长度收益 7x > 模型大小收益；验证后可指导所有后续实验的 compute budget |
+| P1 | IDEA-oneloc-2 | DPO 对齐 + 双目标奖励 | RL alignment 是 OneRec 系列的核心范式，当前项目零 RL 代码；但需要 NTP 模型先稳定 |
+| P1 | IDEA-oneloc-3 | 多信号融合量化输入 | 与 IDEA-sid-1 统一为 "embedding enrichment"，扩展量化输入的信息密度 |
+| P1 | IDEA-oneloc-5 | Multi-behavior 序列融合 | 低成本区分不同行为强度；但需要行为数据包含类型标注 |
+| P2 | IDEA-oneloc-0 | Context-augmented Attention | 需要先有 encoder-decoder 架构；当前场景无地理需求 |
+| P2 | IDEA-oneloc-1 | Category-aware Prompt | 需要先有 encoder-decoder 架构；泛化形式有价值但前置依赖多 |
