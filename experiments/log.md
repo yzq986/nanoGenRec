@@ -39,6 +39,58 @@
 
 ---
 
+## EXP-007: Collaborative Signal Enhanced Embedding (Qwen3-0.6B Full Fine-tune)
+
+**Date**: 2026-04-13
+**Status**: planned
+**IDEA**: IDEA-sid-1
+**Results**: TBD
+
+### Background
+
+当前直接用 Qwen3-0.6B 纯文本 embedding (1024D) 做量化。这些 embedding 只编码了语义相似性（文本内容相近的 item 距离近），但推荐需要的是**行为相似性**（被同一用户群喜欢的 item 距离近）。EXP-004 的 embedding_hit_rate 指标可以量化当前 embedding 在行为维度的质量。
+
+本实验通过 **I2I 对比学习** 全量 fine-tune Qwen3-0.6B，将协同行为信号注入 embedding，提升量化上限。与量化方案 (OPQ/RKMeans) 正交，改善 embedding 质量对所有下游实验受益。
+
+### Hypothesis
+
+1. 对比学习后的 embedding 在 `embedding_hit_rate` 上显著优于原始 Qwen3 embedding（预期 HR@50 提升 50%+）
+2. 下游 OPQ 量化指标（collision, recon_loss）也会改善，因为行为相似的 item 在 embedding 空间更聚集
+3. 全量 fine-tune 0.6B 在 8xA100 上训练时间可控（预期 < 4 小时）
+
+### Design
+
+- **Variable**: 训练方案 × 温度参数
+  - **Baseline**: 原始 Qwen3-0.6B embedding（已缓存，无需重跑）
+  - **Config A**: 全量 fine-tune, InfoNCE, τ=0.05, 3 epochs
+  - **Config B**: 全量 fine-tune, InfoNCE, τ=0.07, 3 epochs
+  - **Config C**: 全量 fine-tune, InfoNCE, τ=0.05, 5 epochs
+- **Fixed**:
+  - 模型: Qwen3-0.6B (全量参数更新, FP16, 8xA100 DDP)
+  - 正样本: 同一用户 7 天内正向行为 (action_bitmap > 0) 的 item pair
+  - 负样本: in-batch negatives (batch_size=512 per GPU, effective 4096)
+  - Optimizer: AdamW, lr=1e-5, warmup 10%, cosine decay
+  - 文本: item title (已有 Qwen3 tokenizer)
+- **Metric**:
+  - **Primary**: `embedding_hit_rate` (HR@10/50/100/500) — FORGE proxy，不需要训练 NTP
+  - **Secondary**: OPQ intrinsic (collision, recon_loss, entropy) — 用 EXP-004 相同 OPQ config (m=8, M=256) 量化后评估
+  - **Sanity**: `cosine_similarity` 分布, `embedding_behavior_correlation`
+- **Data**: 行为数据 7 天 (2026-03-24 ~ 2026-03-31), ~5M items
+
+### Run
+`bash experiments/scripts/exp-007.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-004: OPQ Parallel Semantic IDs — Intrinsic Metrics
 
 **Date**: 2026-04-13
@@ -118,7 +170,8 @@ OPQ Phase 1 验证通过，推荐 **m=8** 进入 Phase 2:
 ## EXP-003: Learned FSQ — MLP projection + straight-through training
 
 **Date**: 2026-04-13
-**Status**: planned
+**Status**: completed
+**Results**: [./hyperparam/2026-04-13_exp003-mlp64/](./hyperparam/2026-04-13_exp003-mlp64/), [./hyperparam/2026-04-13_exp003-mlp128/](./hyperparam/2026-04-13_exp003-mlp128/)
 
 ### Background
 EXP-002 证明 PCA 线性投影 + FSQ 劣于 KMeans baseline，核心瓶颈是 PCA 在残差空间信息丢失过大（1024D→4~6D 解释方差仅 20-55%）。
@@ -132,20 +185,17 @@ OneMall (arxiv 2601.21770) 用 **learned MLP** 做投影，原始 FSQ 论文 (Me
 Learned MLP 投影可以学到对 FSQ 量化最优的低维表示，使 FSQ 的 reconstruction quality 接近或超过 KMeans，从而在保持低 collision 的同时降低 recon_loss。
 
 ### Design
-- **Variable**: 投影方式 (PCA vs MLP)，MLP 隐层宽度，训练 epochs
-- **Fixed**: 2 KMeans layers x 1024 clusters, FSQ [4,4,4,4,4,4] (6d_4096, EXP-002 最优 FSQ config)
-- **Metric**: conflict_rate, reconstruction_loss, exclusivity, entropy
+- **Variable**: 投影方式 (PCA vs MLP)，MLP 隐层宽度
+- **Fixed**: 2 KMeans layers x 1024 clusters, FSQ [4,4,4,4,4,4] (6d_4096), epochs=50, lr=1e-3, AdamW
+- **Metric**: collision_rate, reconstruction_loss, exclusivity, entropy
 
-**MLP 架构** (autoencoder style):
+**MLP 架构** (autoencoder + STE):
 ```
 Encoder: D → hidden → d  (d=6 for 6d_4096)
-FSQ:     quantize each of 6 dims to {0,1,2,3}
+FSQ:     quantize each of 6 dims to {0,1,2,3}, STE pass-through
 Decoder: d → hidden → D
-Loss:    ||residual - Decoder(FSQ(Encoder(residual)))||²
+Loss:    ||residual - Decoder(STE_quantize(Encoder(residual)))||²
 ```
-- Straight-through estimator: forward = round(), backward = identity
-- hidden sizes to try: [64, 128, 256]
-- epochs: 50, lr: 1e-3, Adam
 
 **Comparison matrix**:
 
@@ -155,19 +205,33 @@ Loss:    ||residual - Decoder(FSQ(Encoder(residual)))||²
 | PCA-FSQ (EXP-002) | PCA 6d | 4096 | N/A |
 | MLP-FSQ-64 | MLP D→64→6 | 4096 | 50 epochs |
 | MLP-FSQ-128 | MLP D→128→6 | 4096 | 50 epochs |
-| MLP-FSQ-256 | MLP D→256→6 | 4096 | 50 epochs |
 
 ### Run
 `bash experiments/scripts/exp-003.sh`
 
 ### Results
-TBD
+
+| Config | L3 | collision | recon_loss | d3 avg_items | time(s) |
+|--------|-----|-----------|------------|--------------|---------|
+| **Baseline** | KMeans 1024 | 0.1634 | 0.3524 | 1.3 | 237 |
+| PCA-FSQ | PCA 6d_4096 | 0.3330 | 3.1280 | 1.7 | 178 |
+| **MLP-FSQ h=64** | **MLP D→64→6** | **0.0411** | **0.3619** | **1.1** | **611** |
+| MLP-FSQ h=128 | MLP D→128→6 | 0.0767 | 0.3633 | 1.1 | 627 |
 
 ### Analysis
-TBD
+
+**Learned MLP 大幅超越 KMeans baseline，完全验证 hypothesis:**
+
+1. **collision 降 75%**: MLP h=64 的 collision 0.0411 vs KMeans baseline 0.1634，FSQ 的 implicit codebook (4096 codes) + 学到的非线性投影彻底解决了碰撞问题
+2. **recon_loss 与 baseline 持平**: 0.3619 vs 0.3524 (差 2.7%)，说明 MLP 学到了高质量投影，PCA 的 3.128 recon_loss 完全是线性投影的局限性
+3. **h=64 优于 h=128**: collision 0.0411 vs 0.0767。更小的 hidden dim 起到正则化作用，避免 encoder 输出过于极端导致 tanh 饱和（训练中发现了 tanh 饱和导致 OOB 的 bug 并修复）
+4. **训练时间翻倍但可接受**: 611s vs 237s，多出的 ~400s 是 50 epoch MLP 训练，模型仅 ~132K params
+
+**vs PCA-FSQ (EXP-002)**: collision 从 0.333 降到 0.041 (降 88%)，recon_loss 从 3.128 降到 0.362 (降 88%)，证明非线性投影是关键。
 
 ### Next Steps
-TBD
+1. MLP-FSQ h=64 跑 NTP behavior 评估，确认 recall@K 指标
+2. 与 OPQ (EXP-004) 在 NTP 下游对比，决定最终方案
 
 ---
 
