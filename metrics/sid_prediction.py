@@ -953,6 +953,7 @@ class SemanticIDPredictionMetric(BaseMetric):
         eval_sample_size: int = 50000,
         device: str = 'cuda',
         verbose: bool = True,
+        force_autoregressive: bool = False,
         **kwargs
     ) -> MetricResult:
         self.validate_inputs(embeddings, model, semantic_ids)
@@ -1046,7 +1047,8 @@ class SemanticIDPredictionMetric(BaseMetric):
             print(f"  n_layers: {n_layers}, n_clusters: {n_clusters}")
 
         # Decide model type: parallel for OPQ (n_layers >= 5), AR otherwise
-        use_parallel = (n_layers >= 5)
+        # force_autoregressive=True forces AR even for OPQ (EXP-005 baseline)
+        use_parallel = (n_layers >= 5) and not force_autoregressive
 
         n_gpus = torch.cuda.device_count() if device == 'cuda' else 0
 

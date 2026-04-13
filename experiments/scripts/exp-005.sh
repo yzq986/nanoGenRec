@@ -15,7 +15,7 @@ LOCK=/tmp/exp005-git.lock
 
 python run.py hyperparam --skip_embedding --quantizer opq \
     --n_subvectors 8 --n_clusters_per_sub 256 \
-    --run_ntp --name exp005-opq-ar-baseline
+    --run_ntp --force_ar --name exp005-opq-ar-baseline
 
 echo ""
 echo ">>> Committing results..."

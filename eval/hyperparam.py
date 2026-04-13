@@ -290,6 +290,7 @@ def run_single_experiment_opq(
     eval_sample_size: int = 50000,
     only_sid: bool = False,
     run_ntp: bool = False,
+    force_autoregressive: bool = False,
 ) -> Tuple[Dict[str, float], float]:
     """Run single OPQ train + eval, return (metrics_dict, train_seconds)"""
 
@@ -346,6 +347,7 @@ def run_single_experiment_opq(
                 'device': device,
                 'recall_beam_size': recall_beam_size,
                 'eval_sample_size': eval_sample_size,
+                'force_autoregressive': force_autoregressive,
             }
         metric_results = evaluator.evaluate(metric_kwargs=sid_kwargs)
     else:
@@ -355,7 +357,7 @@ def run_single_experiment_opq(
             semantic_ids=semantic_ids,
             device=device,
         )
-        evaluator.layer_assignments = layer_assignments
+        evaluator.layer_assignments = layer_assignments  # OPQ: skip residual subtraction
         evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
         metric_results = evaluator.evaluate()
 
@@ -836,6 +838,8 @@ def parse_args():
                         help='(deprecated, NTP is now off by default)')
     parser.add_argument('--run_ntp', action='store_true',
                         help='Run SID prediction NTP (off by default, slow)')
+    parser.add_argument('--force_ar', action='store_true',
+                        help='Force autoregressive model even for OPQ (EXP-005 baseline)')
     parser.add_argument('--only-sid', action='store_true',
                         help='Only run SID prediction (skip intrinsic metrics)')
     parser.add_argument('--recall_beam_size', type=int, default=50,
@@ -1013,6 +1017,7 @@ def main():
                 eval_sample_size=args.eval_sample_size,
                 only_sid=args.only_sid,
                 run_ntp=run_ntp,
+                force_autoregressive=args.force_ar,
             )
         elif is_fsq:
             fsq_levels = FSQ_LEVEL_CONFIGS[fsq_key]
