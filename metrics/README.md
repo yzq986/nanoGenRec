@@ -30,7 +30,8 @@ from gr_demo.metrics import INTRINSIC_METRICS, BEHAVIOR_METRICS, AVAILABLE_METRI
 | `semantic_neighbor_hit_rate` | `behavior.py` | 语义邻居命中率 — 同 SID 前缀的 item 是否被同一用户群喜欢 |
 | `embedding_behavior_correlation` | `behavior.py` | Embedding-行为相关性 — 余弦相似度 vs 用户重叠 Jaccard |
 | `positive_negative_separation` | `behavior.py` | 正负样本分离度 — 喜欢 vs 不喜欢内容的 embedding 距离 |
-| `semantic_id_prediction` | `sid_prediction.py` | SID 序列预测 (NTP) — Transformer+MoE beam search 评估 |
+| `embedding_hit_rate` | `embedding_hitrate.py` | Embedding 命中率 (FORGE proxy) — I2I 检索邻居与行为共现率，**默认开启** |
+| `semantic_id_prediction` | `sid_prediction.py` | SID 序列预测 (NTP) — Transformer+MoE beam search 评估，需 `--run_ntp` 开启 |
 
 ## 报告生成
 

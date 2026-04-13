@@ -34,8 +34,11 @@ python -m gr_demo eval-all --models qwen3-0.6b qwen3-4b --quick
 # 仅对比已有结果
 python -m gr_demo compare --eval_dir eval_results
 
-# 超参搜索
+# 超参搜索 (默认跑 intrinsic + embedding_hit_rate)
 python -m gr_demo hyperparam --model qwen3-0.6b --skip_embedding
+
+# 超参搜索 + NTP (慢，需要显式开启)
+python -m gr_demo hyperparam --model qwen3-0.6b --skip_embedding --run_ntp
 ```
 
 ## evaluator.py
@@ -52,7 +55,8 @@ python -m gr_demo hyperparam --model qwen3-0.6b --skip_embedding
 
 - 加载用户行为数据 (uid, iid, action_bitmap, first_ts)
 - 行为指标: 语义一致性、邻居命中率、embedding-行为相关性、正负样本分离度
-- Semantic ID 预测 (NTP): 训练 Transformer + MoE，beam search 评估
+- Embedding 命中率 (FORGE proxy): FAISS I2I 检索邻居与行为共现率，**默认开启**
+- Semantic ID 预测 (NTP): 训练 Transformer + MoE，beam search 评估。**默认关闭**，需 `--run_ntp` 开启
 
 ## hyperparam.py
 
