@@ -106,8 +106,14 @@ class _OPQSubspaceLayer:
         self._sub_codes = sub_codes
 
     def predict(self, data: torch.Tensor) -> torch.Tensor:
-        """Return pre-computed codes (OPQ assignment requires rotation + PQ, not distance)."""
-        return self._sub_codes.to(data.device)
+        """Not used — OPQ layer_assignments are pre-computed and set directly on evaluator.
+
+        This exists only to satisfy the interface. Should not be called in chunked loops.
+        """
+        raise RuntimeError(
+            "OPQ predict() should not be called. "
+            "Set evaluator.layer_assignments directly from OPQ codes."
+        )
 
 
 class OPQModelWrapper:

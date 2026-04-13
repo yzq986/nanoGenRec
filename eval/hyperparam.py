@@ -315,6 +315,10 @@ def run_single_experiment_opq(
     }
     model_wrapper = OPQModelWrapper(model_data, codes=codes, device=device)
 
+    # Pre-compute layer_assignments from OPQ codes to skip evaluator's
+    # _precompute_assignments() which does residual subtraction (wrong for OPQ)
+    layer_assignments = [torch.tensor(codes[:, j], dtype=torch.long) for j in range(n_subvectors)]
+
     # Evaluate (intrinsic metrics only — NTP not supported for OPQ yet)
     evaluator = MetricsEvaluator(
         embeddings=eval_embeddings,
@@ -322,6 +326,7 @@ def run_single_experiment_opq(
         semantic_ids=semantic_ids,
         device=device,
     )
+    evaluator.layer_assignments = layer_assignments  # skip _precompute_assignments
     evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
     metric_results = evaluator.evaluate()
 
