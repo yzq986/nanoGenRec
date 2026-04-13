@@ -1,45 +1,93 @@
 # 语义 ID 构造方法
 
-**来源**: 知乎综述文章 3.1 节（语义ID的构造）
+**来源**: 知乎综述文章 3.1 节 + Meta RPG (KDD'25, arxiv 2506.05781)
 **日期**: 2026-04-13
+**更新**: 2026-04-13 (RPG 论文细节补充)
 
 ---
 
 ## IDEA-001: OPQ 并行语义 ID
 
 **优先级**: P0
-**来源**: 3.1.2.2 (Meta RPG, Kaiming OPQ)
-**状态**: 待讨论
+**来源**: 3.1.2.2 (Meta RPG, KDD'25), Kaiming OPQ
+**状态**: 待讨论 → 推进实验
+**参考代码**: github.com/facebookresearch/RPG_KDD2025
 
 ### 核心思想
 
 用 Optimized Product Quantization 替代残差编码，实现并行语义 ID。先学正交旋转矩阵 R，再将旋转后向量切分子向量独立量化。
 
+### RPG 论文关键细节
+
+**量化**: OPQ > RQ（消融实验 Table 3 证实）。每个 digit 的 codebook 是独立词表（C⁽¹⁾={1,...,M}, C⁽²⁾={M+1,...,2M}），不共享。
+
+**模型架构**:
+- Transformer encoder 对用户行为序列编码 → s ∈ ℝᵈ
+- **每个 digit 一个独立 MLP projection head** g_j(s) → M 维 logits
+- MTP loss = Σ CE_j（各 digit 条件独立）
+- 单次 forward 出所有 token logits，非自回归
+- 独立 head >> shared head（消融证实）
+
+**推理 — Graph-Constrained Decoding（不是 beam search 也不是笛卡尔积）**:
+- **beam search 在 OPQ 上完全失败**（Table 3 recall 全是 0.0000）
+- **纯笛卡尔积组合也不行** — 256^32 空间太稀疏，大部分组合是无效 SID
+- 构造 SID 相似度图: 节点=有效 SID, 边=embedding 相似度 top-k neighbors
+- 推理: 随机采样 b=10 种子 → 沿图边扩展 → 打分 top-b → 迭代 q 轮
+- 复杂度 O(Mmd + bqkm)，与 item 总数 N 无关
+- 最终只访问 ~10-25% 的 item pool
+
+**最优配置** (RPG 论文):
+- m=16~64 (数据集越大越长), M=256, b=10, k=50~500, q=2~5
+- τ=0.03 (温度), 2-layer Transformer, d=448, ~13M params
+- 训练: <2 GPU hours (RTX 3090)
+
+**关键消融结论**:
+- OPQ > RQ (NDCG +2~8%)
+- 长 ID (16~64) >> 短 ID (4)，且 TIGER (自回归+RQ) 在长 ID 下 OOM
+- 独立 projection head >> shared head >> no head
+- Graph decoding 比无图约束好 3x
+
 ### 与当前项目的关联
 
 - `ARCHITECTURE.md` 已明确: "必须用平行 tokenizer，不能用残差编码"
 - 直接解决 "残差编码永远不可能思考" 问题
-- FAISS 有现成 `faiss.OPQMatrix` 实现
+- FAISS 有现成 `faiss.OPQMatrix` + `faiss.ProductQuantizer` 实现
+- RPG 开源代码可直接参考
 
 ### 实验设计草案
 
-**配置候选** (1024D embedding):
+**分两阶段实验**:
 
-| 方案 | 子向量维度 | token 数 | 词表大小 | 编码空间 |
-|------|-----------|----------|----------|----------|
-| A | 128D | 8 | 1024 | 1024^8 |
+#### 阶段 1: OPQ 量化质量 (intrinsic metrics only)
+
+验证 OPQ 在我们 5M item / 1024D embedding 上的量化质量。
+
+**配置** (1024D embedding, 对标 RPG 论文主配置):
+
+| 方案 | 子向量维度 | token 数 m | 词表大小 M | 编码空间 |
+|------|-----------|-----------|-----------|----------|
+| A | 128D | 8 | 256 | 256^8 |
 | B | 64D | 16 | 256 | 256^16 |
 | C | 32D | 32 | 256 | 256^32 |
 
-**对比基线**: RKMeans 3 层 x 1024 clusters (EXP-001 final config)
+**对比基线**: RKMeans 3 层 x 1024 clusters (EXP-001 final config, collision=1.75%)
 
-**评估指标**: recon_loss, collision_rate, exclusivity, NTP beam search recall
+**评估指标**: recon_loss, collision_rate, exclusivity, entropy, cluster_balance
+
+**注意**: collision_rate 在 OPQ 下可能意义不同 — 8~32 个 token 的 ID 空间远大于 3 token，collision 应该极低。重点看 recon_loss 是否优于 RKMeans。
+
+#### 阶段 2: 并行预测模型 + Graph Decoding
+
+需要新实现:
+1. 并行预测模型: 替换当前 AutoregressiveNTPModel，每 digit 独立 MLP head
+2. Graph 构造: SID 相似度图 (top-k neighbors per node)
+3. Graph decoding: 种子采样 → 图传播 → 打分 → 迭代
 
 ### 关键问题
 
-1. token 数量 vs 词表大小的 tradeoff — OneRec 用 3 token x 8192, OPQ 倾向多 token x 小词表
-2. **推理方式需要重新设计**: 并行 ID 各 token 无依赖，不应再用自回归 beam search (tree search)，而应每个 position 独立预测 top-k → 笛卡尔积组合 → rerank (grid search)。这是并行 ID 的核心优势 — 搜索空间从树形变为网格，远大于残差编码。成本在于组合后的 rerank 策略。
-3. 需要验证: 并行 ID 的独立预测 + grid search 是否确实比残差 ID 的自回归 beam search 召回更好
+1. **词表大小 M 的选择**: RPG 固定 M=256。我们的 RKMeans 用 1024 per layer。需要验证 M=256 vs M=1024 在 OPQ 下的差异。
+2. **Graph 构造成本**: 5M items 的 SID 相似度图构造需要 O(N²) 或近似 ANN，需要评估内存和时间。
+3. **与 OneRec 的关系**: OneRec 用 3 token x 8192 parallel tokenizer，RPG 用 16~64 token x 256。两种 parallel 方案的 tradeoff 需要理清 — OneRec 适合自回归 (短序列)，RPG 适合并行预测 (长序列+图解码)。
 
 ---
 
