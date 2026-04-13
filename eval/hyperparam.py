@@ -494,7 +494,8 @@ def main():
 
     # 加载 behavior 数据 (用于 SID prediction)
     behavior_data = None
-    if args.behavior_path and not args.skip_ntp:
+    need_behavior = (args.behavior_path or args.only_sid) and not args.skip_ntp
+    if need_behavior:
         from gr_demo.eval.batch import load_all_behavior_data
         try:
             behavior_data = load_all_behavior_data()
