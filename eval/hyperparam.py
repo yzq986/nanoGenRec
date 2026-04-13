@@ -165,6 +165,9 @@ def run_single_experiment_fsq(
     recall_beam_size: int = 50,
     eval_sample_size: int = 50000,
     only_sid: bool = False,
+    fsq_projection: str = 'pca',
+    fsq_mlp_hidden: int = 128,
+    fsq_epochs: int = 50,
 ) -> Tuple[Dict[str, float], float]:
     """Run single ResKmeansFSQ train + eval, return (metrics_dict, train_seconds)"""
     from gr_demo.eval.behavior import BehaviorMetricsEvaluator
@@ -177,6 +180,9 @@ def run_single_experiment_fsq(
         n_features=n_features,
         normalize_residuals=NORMALIZE_RESIDUALS,
         num_gpus=num_gpus,
+        fsq_projection=fsq_projection,
+        fsq_mlp_hidden=fsq_mlp_hidden,
+        fsq_epochs=fsq_epochs,
     )
     model.train(train_embeddings, niter=niter, nredo=nredo)
 
@@ -258,6 +264,9 @@ def run_single_experiment_fsq(
     results['fsq_levels_key'] = fsq_levels_key
     from gr_demo.model.fsq import _codebook_size
     results['fsq_codebook_size'] = _codebook_size(fsq_levels)
+    results['fsq_projection'] = fsq_projection
+    results['fsq_mlp_hidden'] = fsq_mlp_hidden
+    results['fsq_epochs'] = fsq_epochs
 
     return results, train_time
 
@@ -592,6 +601,13 @@ def parse_args():
                         help='Quantizer type: rkmeans (pure 3-layer KMeans) or rkmeans_fsq (2 KMeans + 1 FSQ)')
     parser.add_argument('--fsq_levels', type=str, nargs='+', default=None,
                         help=f'FSQ level config keys to sweep (available: {list(FSQ_LEVEL_CONFIGS.keys())})')
+    parser.add_argument('--fsq_projection', type=str, default='pca',
+                        choices=['pca', 'mlp'],
+                        help='FSQ projection type: pca (linear) or mlp (learned)')
+    parser.add_argument('--fsq_mlp_hidden', type=int, default=128,
+                        help='Hidden dim for MLP projection (default: 128)')
+    parser.add_argument('--fsq_epochs', type=int, default=50,
+                        help='Training epochs for MLP projection (default: 50)')
 
     # SID prediction (NTP) 相关
     parser.add_argument('--skip_ntp', action='store_true',
@@ -751,6 +767,9 @@ def main():
                 recall_beam_size=args.recall_beam_size,
                 eval_sample_size=args.eval_sample_size,
                 only_sid=args.only_sid,
+                fsq_projection=args.fsq_projection,
+                fsq_mlp_hidden=args.fsq_mlp_hidden,
+                fsq_epochs=args.fsq_epochs,
             )
         else:
             metrics, train_time = run_single_experiment(

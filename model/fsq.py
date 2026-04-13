@@ -1,8 +1,11 @@
-"""Finite Scalar Quantization (FSQ) layer with PCA projection.
+"""Finite Scalar Quantization (FSQ) layers.
 
-Non-learned FSQ: projects residuals to low-dim via PCA, then quantizes each
-dimension to a fixed set of discrete levels. Codebook = Cartesian product of
-per-dimension levels (no codebook collapse by construction).
+Two implementations:
+  - FSQLayer: PCA projection (non-learned, fast)
+  - LearnedFSQLayer: MLP projection trained with STE (learned, better quality)
+
+Both share the same public API: train(), predict(), get_centroids_for_codes(),
+save_state(), from_state().
 
 Reference: Mentzer et al., "Finite Scalar Quantization" (arxiv 2309.15505)
 """
@@ -10,6 +13,8 @@ Reference: Mentzer et al., "Finite Scalar Quantization" (arxiv 2309.15505)
 from typing import List, Optional
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 # Pre-defined level configs from FSQ paper Table 3.
 # Keys are "{d}d_{codebook_size}" for easy CLI reference.
@@ -199,3 +204,231 @@ class FSQLayer:
         layer.pca_components = state['pca_components']
         layer.pca_mean = state['pca_mean']
         return layer
+
+
+class LearnedFSQLayer:
+    """Learned FSQ quantizer with MLP projection trained via STE.
+
+    Pipeline:
+        D-dim residuals -> Encoder MLP -> d-dim -> STE quantize -> mixed-radix code
+    Inverse:
+        code -> decode to d-dim quantized floats -> Decoder MLP -> D-dim reconstruction
+    """
+
+    def __init__(
+        self,
+        levels: List[int],
+        n_features: int,
+        hidden_dim: int = 128,
+        epochs: int = 50,
+        batch_size: int = 8192,
+        lr: float = 1e-3,
+        device: str = 'cuda',
+    ):
+        self.levels = levels
+        self.d = len(levels)
+        self.n_features = n_features
+        self.codebook_size = _codebook_size(levels)
+        self.hidden_dim = hidden_dim
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.lr = lr
+        self.device = device if torch.cuda.is_available() else 'cpu'
+
+        # Mixed-radix basis
+        self.basis = []
+        b = 1
+        for l in levels:
+            self.basis.append(b)
+            b *= l
+        self.basis = torch.tensor(self.basis, dtype=torch.long)
+
+        # MLP encoder/decoder
+        self.encoder = nn.Sequential(
+            nn.Linear(n_features, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, self.d),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(self.d, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, n_features),
+        )
+
+    # ------------------------------------------------------------------
+    # Quantization helpers (same logic as FSQLayer)
+    # ------------------------------------------------------------------
+
+    def _quantize(self, z: torch.Tensor) -> torch.Tensor:
+        """Hard quantize d-dim vectors to integer codes per dimension."""
+        N = z.shape[0]
+        codes = torch.zeros(N, self.d, dtype=torch.long, device=z.device)
+        for i, L in enumerate(self.levels):
+            half = L // 2
+            zi = half * torch.tanh(z[:, i])
+            if L % 2 == 1:
+                qi = torch.round(zi).long()
+                codes[:, i] = qi + half
+            else:
+                qi = torch.round(zi - 0.5).long() + 1
+                codes[:, i] = qi + half - 1
+        return codes
+
+    def _quantize_ste(self, z: torch.Tensor) -> torch.Tensor:
+        """Differentiable quantize using straight-through estimator.
+
+        Returns float tensor of quantized values (gradients pass through).
+        """
+        z_q = torch.zeros_like(z)
+        for i, L in enumerate(self.levels):
+            half = L // 2
+            zi_cont = half * torch.tanh(z[:, i])
+            if L % 2 == 1:
+                zi_hard = torch.round(zi_cont)
+            else:
+                zi_hard = torch.round(zi_cont - 0.5) + 1
+            # STE: forward uses hard values, backward uses continuous gradients
+            z_q[:, i] = zi_cont + (zi_hard - zi_cont).detach()
+        return z_q
+
+    def _encode(self, per_dim_codes: torch.Tensor) -> torch.Tensor:
+        """Mixed-radix encode d-dim codes to single integer."""
+        basis = self.basis.to(per_dim_codes.device)
+        return (per_dim_codes * basis).sum(dim=1)
+
+    def _decode_index(self, indices: torch.Tensor) -> torch.Tensor:
+        """Decode single integer to d-dim per-dimension codes."""
+        N = indices.shape[0]
+        per_dim = torch.zeros(N, self.d, dtype=torch.long, device=indices.device)
+        remaining = indices.clone()
+        for i in range(self.d - 1, -1, -1):
+            per_dim[:, i] = remaining // self.basis[i].item()
+            remaining = remaining % self.basis[i].item()
+        return per_dim
+
+    def _per_dim_to_float(self, per_dim_codes: torch.Tensor) -> torch.Tensor:
+        """Convert integer per-dim codes [0, L-1] back to quantized float values."""
+        z_q = torch.zeros(per_dim_codes.shape[0], self.d,
+                          dtype=torch.float32, device=per_dim_codes.device)
+        for i, L in enumerate(self.levels):
+            half = L // 2
+            if L % 2 == 1:
+                z_q[:, i] = per_dim_codes[:, i].float() - half
+            else:
+                z_q[:, i] = per_dim_codes[:, i].float() - half + 1
+        return z_q
+
+    # ------------------------------------------------------------------
+    # Training
+    # ------------------------------------------------------------------
+
+    def train(self, residuals: torch.Tensor):
+        """Train encoder/decoder MLP with STE quantization on residuals (N, D)."""
+        N, D = residuals.shape
+        assert D == self.n_features, f"Expected {self.n_features} features, got {D}"
+
+        device = self.device
+        self.encoder.to(device)
+        self.decoder.to(device)
+
+        optimizer = torch.optim.AdamW(
+            list(self.encoder.parameters()) + list(self.decoder.parameters()),
+            lr=self.lr,
+            weight_decay=1e-5,
+        )
+
+        n_params = sum(p.numel() for p in self.encoder.parameters()) + \
+                   sum(p.numel() for p in self.decoder.parameters())
+        print(f"  FSQ MLP: {D}D -> {self.hidden_dim}h -> {self.d}D, {n_params:,} params")
+        print(f"  FSQ codebook: {self.levels} = {self.codebook_size} codes")
+        print(f"  Training: {self.epochs} epochs, batch_size={self.batch_size}, lr={self.lr}")
+
+        self.encoder.train()
+        self.decoder.train()
+
+        for epoch in range(self.epochs):
+            perm = torch.randperm(N)
+            epoch_loss = 0.0
+            n_batches = 0
+
+            for i in range(0, N, self.batch_size):
+                batch_idx = perm[i:i + self.batch_size]
+                batch = residuals[batch_idx].to(device)
+
+                z = self.encoder(batch)           # (B, d)
+                z_q = self._quantize_ste(z)       # (B, d) with STE
+                recon = self.decoder(z_q)         # (B, D)
+                loss = F.mse_loss(recon, batch)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                epoch_loss += loss.item()
+                n_batches += 1
+
+            if (epoch + 1) % 10 == 0 or epoch == 0:
+                avg_loss = epoch_loss / n_batches
+                print(f"    Epoch {epoch + 1}/{self.epochs}: loss={avg_loss:.6f}")
+
+        self.encoder.eval()
+        self.decoder.eval()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def predict(self, residuals: torch.Tensor) -> torch.Tensor:
+        """Quantize residuals and return single integer code indices."""
+        device = self.device
+        self.encoder.to(device)
+        with torch.no_grad():
+            z = self.encoder(residuals.to(device))
+            per_dim = self._quantize(z)
+            return self._encode(per_dim).cpu()
+
+    def get_centroids_for_codes(self, codes: torch.Tensor) -> torch.Tensor:
+        """Inverse map: code indices -> D-dim reconstructed vectors."""
+        device = self.device
+        self.decoder.to(device)
+        with torch.no_grad():
+            per_dim = self._decode_index(codes.to(device))
+            z_q = self._per_dim_to_float(per_dim)
+            return self.decoder(z_q).cpu()
+
+    # ------------------------------------------------------------------
+    # Serialization
+    # ------------------------------------------------------------------
+
+    def save_state(self) -> dict:
+        return {
+            'projection_type': 'mlp',
+            'levels': self.levels,
+            'n_features': self.n_features,
+            'hidden_dim': self.hidden_dim,
+            'encoder_state_dict': {k: v.cpu() for k, v in self.encoder.state_dict().items()},
+            'decoder_state_dict': {k: v.cpu() for k, v in self.decoder.state_dict().items()},
+        }
+
+    @classmethod
+    def from_state(cls, state: dict) -> 'LearnedFSQLayer':
+        layer = cls(
+            levels=state['levels'],
+            n_features=state['n_features'],
+            hidden_dim=state['hidden_dim'],
+        )
+        layer.encoder.load_state_dict(state['encoder_state_dict'])
+        layer.decoder.load_state_dict(state['decoder_state_dict'])
+        layer.encoder.eval()
+        layer.decoder.eval()
+        return layer
+
+
+def fsq_layer_from_state(state: dict):
+    """Factory: reconstruct FSQLayer or LearnedFSQLayer from saved state.
+
+    Backward-compatible: old PCA states lack 'projection_type' key.
+    """
+    if state.get('projection_type') == 'mlp':
+        return LearnedFSQLayer.from_state(state)
+    return FSQLayer.from_state(state)

@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 
 from gr_demo.model.rkmeans import FaissKMeansLayer
-from gr_demo.model.fsq import FSQLayer
+from gr_demo.model.fsq import FSQLayer, LearnedFSQLayer
 
 
 class ResKmeansFSQ:
@@ -26,6 +26,9 @@ class ResKmeansFSQ:
         n_features: int,
         normalize_residuals: bool = True,
         num_gpus: int = 1,
+        fsq_projection: str = 'pca',
+        fsq_mlp_hidden: int = 128,
+        fsq_epochs: int = 50,
     ):
         self.n_kmeans_clusters = n_kmeans_clusters
         self.fsq_levels = fsq_levels
@@ -40,7 +43,15 @@ class ResKmeansFSQ:
             FaissKMeansLayer(n_kmeans_clusters, n_features, gpu=self.gpu)
             for _ in range(2)
         ]
-        self.fsq_layer = FSQLayer(fsq_levels, n_features)
+        if fsq_projection == 'mlp':
+            self.fsq_layer = LearnedFSQLayer(
+                fsq_levels, n_features,
+                hidden_dim=fsq_mlp_hidden,
+                epochs=fsq_epochs,
+                device=self.primary_device,
+            )
+        else:
+            self.fsq_layer = FSQLayer(fsq_levels, n_features)
 
     def train(
         self,

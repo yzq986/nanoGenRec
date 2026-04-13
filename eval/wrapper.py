@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 import torch
 
-from gr_demo.model.fsq import FSQLayer
+from gr_demo.model.fsq import FSQLayer, fsq_layer_from_state
 
 
 class RKMeansModelWrapper:
@@ -79,7 +79,7 @@ class ResKmeansFSQModelWrapper:
         # 2 KMeans layers + 1 FSQ layer, all behind same interface
         centroids_list = model_data['centroids_list']
         fsq_state = model_data['fsq_state']
-        fsq_layer = FSQLayer.from_state(fsq_state)
+        fsq_layer = fsq_layer_from_state(fsq_state)
 
         self.kmeans_layers = [
             _KMeansLayer(centroids_list[0].to(self.device)),
