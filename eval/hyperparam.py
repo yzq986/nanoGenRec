@@ -1012,6 +1012,7 @@ def main():
                 recall_beam_size=args.recall_beam_size,
                 eval_sample_size=args.eval_sample_size,
                 only_sid=args.only_sid,
+                run_ntp=run_ntp,
             )
         elif is_fsq:
             fsq_levels = FSQ_LEVEL_CONFIGS[fsq_key]
@@ -1031,6 +1032,7 @@ def main():
                 recall_beam_size=args.recall_beam_size,
                 eval_sample_size=args.eval_sample_size,
                 only_sid=args.only_sid,
+                run_ntp=run_ntp,
                 fsq_projection=args.fsq_projection,
                 fsq_mlp_hidden=args.fsq_mlp_hidden,
                 fsq_epochs=args.fsq_epochs,
@@ -1050,6 +1052,7 @@ def main():
                 recall_beam_size=args.recall_beam_size,
                 eval_sample_size=args.eval_sample_size,
                 only_sid=args.only_sid,
+                run_ntp=run_ntp,
             )
 
         result = {
