@@ -89,10 +89,12 @@ class TokenEntropyMetric(BaseMetric):
             parts = [sid.split('_') for sid in semantic_ids]
             n_layers = len(parts[0])
 
-            # Determine N
+            # Determine per-layer codebook size
+            n_per_layer = []
             for layer_idx in range(n_layers):
                 layer_ids = [int(p[layer_idx]) for p in parts]
                 max_id = max(layer_ids) + 1
+                n_per_layer.append(max_id)
                 n_clusters_per_layer = max(n_clusters_per_layer, max_id)
 
             for depth in range(1, n_layers + 1):
@@ -100,8 +102,8 @@ class TokenEntropyMetric(BaseMetric):
                 prefix_counts = Counter(prefixes)
                 n_unique_prefix = len(prefix_counts)
 
-                # Max entropy for this depth = log2(N^depth)
-                depth_max_entropy = depth * math.log2(n_clusters_per_layer) if n_clusters_per_layer > 1 else 1.0
+                # Max entropy = log2(product of per-layer sizes up to depth)
+                depth_max_entropy = sum(math.log2(n_per_layer[i]) for i in range(depth) if n_per_layer[i] > 1) or 1.0
 
                 depth_h = 0.0
                 for count in prefix_counts.values():

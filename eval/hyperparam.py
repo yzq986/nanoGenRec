@@ -14,8 +14,10 @@ import torch
 from gr_demo.config import MODEL_CONFIGS, EFS_EMBEDDING_CACHE
 from gr_demo.model.rkmeans import ResidualQuantizationMultiGPU
 from gr_demo.model.semantic_ids import generate_semantic_ids
+from gr_demo.model.fsq import FSQ_LEVEL_CONFIGS
+from gr_demo.model.rkmeans_fsq import ResKmeansFSQ, generate_semantic_ids_fsq
 from gr_demo.data.loaders import load_exposed_iids
-from gr_demo.eval.wrapper import RKMeansModelWrapper
+from gr_demo.eval.wrapper import RKMeansModelWrapper, ResKmeansFSQModelWrapper
 from gr_demo.eval.evaluator import MetricsEvaluator
 
 from gr_demo.metrics import INTRINSIC_METRICS, BEHAVIOR_METRICS, MetricResult
@@ -147,6 +149,119 @@ def run_single_experiment(
     return results, train_time
 
 
+def run_single_experiment_fsq(
+    train_embeddings: torch.Tensor,
+    eval_embeddings: torch.Tensor,
+    content_ids: np.ndarray,
+    n_features: int,
+    num_clusters: int,
+    fsq_levels: list,
+    fsq_levels_key: str,
+    niter: int,
+    nredo: int,
+    num_gpus: int,
+    behavior_data: Dict = None,
+    device: str = 'cuda',
+    recall_beam_size: int = 50,
+    eval_sample_size: int = 50000,
+    only_sid: bool = False,
+) -> Tuple[Dict[str, float], float]:
+    """Run single ResKmeansFSQ train + eval, return (metrics_dict, train_seconds)"""
+    from gr_demo.eval.behavior import BehaviorMetricsEvaluator
+
+    t0 = time.time()
+
+    model = ResKmeansFSQ(
+        n_kmeans_clusters=num_clusters,
+        fsq_levels=fsq_levels,
+        n_features=n_features,
+        normalize_residuals=NORMALIZE_RESIDUALS,
+        num_gpus=num_gpus,
+    )
+    model.train(train_embeddings, niter=niter, nredo=nredo)
+
+    train_time = time.time() - t0
+
+    semantic_ids = generate_semantic_ids_fsq(model, eval_embeddings, NORMALIZE_RESIDUALS)
+
+    # Build model wrapper
+    model_data = {
+        'model_type': 'rkmeans_fsq',
+        'centroids_list': [km.get_centroids().cpu() for km in model.kmeans_layers],
+        'fsq_state': model.fsq_layer.save_state(),
+        'normalize_residuals': NORMALIZE_RESIDUALS,
+        'n_layers': model.n_layers,
+        'n_kmeans_clusters': num_clusters,
+        'n_features': n_features,
+        'fsq_levels': fsq_levels,
+    }
+    model_wrapper = ResKmeansFSQModelWrapper(model_data, device=device)
+
+    # Evaluate
+    if behavior_data is not None:
+        evaluator = BehaviorMetricsEvaluator(
+            embeddings=eval_embeddings,
+            content_ids=content_ids,
+            semantic_ids=semantic_ids,
+            model=model_wrapper,
+            behavior_data=behavior_data,
+            device=device,
+        )
+        if not only_sid:
+            evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
+        evaluator.register_metrics(['semantic_id_prediction'])
+        sid_kwargs = {
+            'semantic_id_prediction': {
+                'device': device,
+                'recall_beam_size': recall_beam_size,
+                'eval_sample_size': eval_sample_size,
+            }
+        }
+        metric_results = evaluator.evaluate(metric_kwargs=sid_kwargs)
+    else:
+        evaluator = MetricsEvaluator(
+            embeddings=eval_embeddings,
+            model=model_wrapper,
+            semantic_ids=semantic_ids,
+            device=device,
+        )
+        evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
+        metric_results = evaluator.evaluate()
+
+    # Flatten results (same as run_single_experiment)
+    results = {}
+    for mr in metric_results.values():
+        results.update(mr.to_flat_dict())
+
+    if 'codebook_utilization' in metric_results:
+        cb = metric_results['codebook_utilization']
+        results['space_utilization'] = cb.details.get('space_utilization', 0)
+        results['depth_codebook_util'] = cb.layer_values
+        depth_stats = cb.details.get('depth_stats', [])
+        results['depth_unique_prefixes'] = [d.get('n_unique', 0) for d in depth_stats]
+
+    if 'semantic_id_collision' in metric_results:
+        col = metric_results['semantic_id_collision']
+        prefix_stats = col.details.get('prefix_stats', [])
+        results['prefix_avg_items'] = [s.get('avg_items', 0) for s in prefix_stats]
+
+    if 'semantic_id_prediction' in metric_results:
+        sid = metric_results['semantic_id_prediction']
+        results['ntp_perplexity'] = round(sid.value, 4)
+        results['ntp_depth_acc'] = sid.layer_values
+        results['ntp_depth_hit@10'] = sid.details.get('depth_hit@10')
+        for k in (10, 50, 100, 500):
+            results[f'item_recall@{k}'] = sid.details.get(f'item_recall@{k}')
+
+    # Add FSQ-specific fields
+    results['quantizer_type'] = 'rkmeans_fsq'
+    results['fsq_levels_key'] = fsq_levels_key
+    from gr_demo.model.fsq import _codebook_size
+    results['fsq_codebook_size'] = _codebook_size(fsq_levels)
+
+    return results, train_time
+
+
 # ============================================================
 # 加载数据 (复用 main 的逻辑)
 # ============================================================
@@ -226,11 +341,17 @@ def generate_report(all_results: List[dict], output_path: str):
     """生成 Markdown 报告"""
 
     lines = []
-    lines.append("# RKMeans 超参数网格搜索结果")
+    has_fsq = any(r.get('quantizer_type') == 'rkmeans_fsq' for r in all_results)
+    title = "RKMeans + FSQ 超参数网格搜索结果" if has_fsq else "RKMeans 超参数网格搜索结果"
+    lines.append(f"# {title}")
     lines.append("")
     lines.append(f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     lines.append(f"**模型**: qwen3-0.6b (1024d)")
     lines.append(f"**固定参数**: {NUM_LAYERS} layers, normalize_residuals=True")
+    if has_fsq:
+        fsq_keys = sorted(set(r.get('fsq_levels_key', '') for r in all_results if r.get('quantizer_type') == 'rkmeans_fsq'))
+        lines.append(f"**量化器**: rkmeans_fsq (2 KMeans + 1 FSQ)")
+        lines.append(f"**FSQ configs**: {', '.join(fsq_keys)}")
     lines.append(f"**实验数量**: {len(all_results)}")
     lines.append("")
 
@@ -244,11 +365,19 @@ def generate_report(all_results: List[dict], output_path: str):
     has_ntp = any('ntp_perplexity' in r['metrics'] for r in all_results)
 
     if has_ntp:
-        header = "| # | clusters | niter | nredo | collision | recon_loss | ntp_ppl | **recall@50** | recall@100 | recall@500 | d1_h@10 | d2_h@10 | d3_h@10 | time(s) |"
-        sep    = "|---|----------|-------|-------|-----------|------------|---------|---------------|------------|------------|---------|---------|---------|---------|"
+        if has_fsq:
+            header = "| # | clusters | L3 | niter | nredo | collision | recon_loss | ntp_ppl | **recall@50** | recall@100 | recall@500 | d1_h@10 | d2_h@10 | d3_h@10 | time(s) |"
+            sep    = "|---|----------|----|-------|-------|-----------|------------|---------|---------------|------------|------------|---------|---------|---------|---------|"
+        else:
+            header = "| # | clusters | niter | nredo | collision | recon_loss | ntp_ppl | **recall@50** | recall@100 | recall@500 | d1_h@10 | d2_h@10 | d3_h@10 | time(s) |"
+            sep    = "|---|----------|-------|-------|-----------|------------|---------|---------------|------------|------------|---------|---------|---------|---------|"
     else:
-        header = "| # | clusters | niter | nredo | collision | N^L util | recon_loss | d1 avg | d2 avg | d3 avg | time(s) |"
-        sep    = "|---|----------|-------|-------|-----------|----------|------------|--------|----------|----------|---------|"
+        if has_fsq:
+            header = "| # | clusters | L3 | niter | nredo | collision | N^L util | recon_loss | d1 avg | d2 avg | d3 avg | time(s) |"
+            sep    = "|---|----------|----|-------|-------|-----------|----------|------------|--------|----------|----------|---------|"
+        else:
+            header = "| # | clusters | niter | nredo | collision | N^L util | recon_loss | d1 avg | d2 avg | d3 avg | time(s) |"
+            sep    = "|---|----------|-------|-------|-----------|----------|------------|--------|----------|----------|---------|"
     lines.append(header)
     lines.append(sep)
 
@@ -262,6 +391,7 @@ def generate_report(all_results: List[dict], output_path: str):
         m = r['metrics']
         col = f"{m.get('semantic_id_collision', 0):.4f}"
         rec = f"{m.get('reconstruction_loss', 0):.4f}"
+        l3_label = r.get('fsq_levels_key', 'KM') if has_fsq else None
 
         if has_ntp:
             ntp_ppl = m.get('ntp_perplexity')
@@ -279,7 +409,10 @@ def generate_report(all_results: List[dict], output_path: str):
             while len(h10_str) < 3:
                 h10_str.append("N/A")
 
-            row = f"| {i} | {r['num_clusters']} | {r['niter']} | {r['nredo']} | {col} | {rec} | {ntp_str} | **{r50_str}** | {r100_str} | {r500_str} | {h10_str[0]} | {h10_str[1]} | {h10_str[2]} | {r['train_time']:.0f} |"
+            if has_fsq:
+                row = f"| {i} | {r['num_clusters']} | {l3_label} | {r['niter']} | {r['nredo']} | {col} | {rec} | {ntp_str} | **{r50_str}** | {r100_str} | {r500_str} | {h10_str[0]} | {h10_str[1]} | {h10_str[2]} | {r['train_time']:.0f} |"
+            else:
+                row = f"| {i} | {r['num_clusters']} | {r['niter']} | {r['nredo']} | {col} | {rec} | {ntp_str} | **{r50_str}** | {r100_str} | {r500_str} | {h10_str[0]} | {h10_str[1]} | {h10_str[2]} | {r['train_time']:.0f} |"
         else:
             sp_util = m.get('space_utilization')
             sp_str = f"{sp_util:.2e}" if sp_util is not None else "N/A"
@@ -288,7 +421,10 @@ def generate_report(all_results: List[dict], output_path: str):
                 pf_str = [f"{v:.1f}" for v in pf[:3]]
             else:
                 pf_str = ["N/A", "N/A", "N/A"]
-            row = f"| {i} | {r['num_clusters']} | {r['niter']} | {r['nredo']} | {col} | {sp_str} | {rec} | {pf_str[0]} | {pf_str[1]} | {pf_str[2]} | {r['train_time']:.0f} |"
+            if has_fsq:
+                row = f"| {i} | {r['num_clusters']} | {l3_label} | {r['niter']} | {r['nredo']} | {col} | {sp_str} | {rec} | {pf_str[0]} | {pf_str[1]} | {pf_str[2]} | {r['train_time']:.0f} |"
+            else:
+                row = f"| {i} | {r['num_clusters']} | {r['niter']} | {r['nredo']} | {col} | {sp_str} | {rec} | {pf_str[0]} | {pf_str[1]} | {pf_str[2]} | {r['train_time']:.0f} |"
 
         lines.append(row)
 
@@ -340,6 +476,8 @@ def generate_report(all_results: List[dict], output_path: str):
     for i, r in enumerate(sorted_results[:5], 1):
         m = r['metrics']
         parts = [f"clusters={r['num_clusters']}, niter={r['niter']}, nredo={r['nredo']}"]
+        if r.get('quantizer_type') == 'rkmeans_fsq':
+            parts.append(f"L3=FSQ({r.get('fsq_levels_key', '?')})")
         if has_ntp:
             r50 = m.get('item_recall@50')
             r50_str = f"{r50:.4f}" if r50 is not None else "N/A"
@@ -448,6 +586,13 @@ def parse_args():
     parser.add_argument('--nredos', type=int, nargs='+', default=None,
                         help='Override nredo grid (e.g. --nredos 1 3 5)')
 
+    # Quantizer type
+    parser.add_argument('--quantizer', type=str, default='rkmeans',
+                        choices=['rkmeans', 'rkmeans_fsq'],
+                        help='Quantizer type: rkmeans (pure 3-layer KMeans) or rkmeans_fsq (2 KMeans + 1 FSQ)')
+    parser.add_argument('--fsq_levels', type=str, nargs='+', default=None,
+                        help=f'FSQ level config keys to sweep (available: {list(FSQ_LEVEL_CONFIGS.keys())})')
+
     # SID prediction (NTP) 相关
     parser.add_argument('--skip_ntp', action='store_true',
                         help='Skip SID prediction NTP (only run intrinsic metrics)')
@@ -469,12 +614,30 @@ def main():
     clusters_list = args.clusters or GRID['num_clusters']
     niter_list = args.niters or GRID['niter']
     nredo_list = args.nredos or GRID['nredo']
+    quantizer_type = args.quantizer
 
-    total = len(clusters_list) * len(niter_list) * len(nredo_list)
-    print(f"Grid search: {len(clusters_list)} clusters x {len(niter_list)} niters x {len(nredo_list)} nredos = {total} experiments")
-    print(f"  clusters: {clusters_list}")
-    print(f"  niter:    {niter_list}")
-    print(f"  nredo:    {nredo_list}")
+    # FSQ levels sweep
+    fsq_levels_keys = []
+    if quantizer_type == 'rkmeans_fsq':
+        fsq_levels_keys = args.fsq_levels or list(FSQ_LEVEL_CONFIGS.keys())
+        # Validate keys
+        for key in fsq_levels_keys:
+            if key not in FSQ_LEVEL_CONFIGS:
+                raise ValueError(f"Unknown FSQ level config: {key}. Available: {list(FSQ_LEVEL_CONFIGS.keys())}")
+
+    if quantizer_type == 'rkmeans_fsq':
+        total = len(clusters_list) * len(niter_list) * len(nredo_list) * len(fsq_levels_keys)
+        print(f"Grid search (rkmeans_fsq): {len(clusters_list)} clusters x {len(niter_list)} niters x {len(nredo_list)} nredos x {len(fsq_levels_keys)} fsq_levels = {total} experiments")
+        print(f"  clusters:   {clusters_list}")
+        print(f"  niter:      {niter_list}")
+        print(f"  nredo:      {nredo_list}")
+        print(f"  fsq_levels: {fsq_levels_keys}")
+    else:
+        total = len(clusters_list) * len(niter_list) * len(nredo_list)
+        print(f"Grid search: {len(clusters_list)} clusters x {len(niter_list)} niters x {len(nredo_list)} nredos = {total} experiments")
+        print(f"  clusters: {clusters_list}")
+        print(f"  niter:    {niter_list}")
+        print(f"  nredo:    {nredo_list}")
 
     # 构造输出目录: experiments/hyperparam/{date}_{name}/
     exp_name = args.name or f"clusters-{'_'.join(str(c) for c in clusters_list)}"
@@ -492,7 +655,10 @@ def main():
         with open(json_path, 'r') as f:
             existing_results = json.load(f)
         for r in existing_results:
-            key = (r['num_clusters'], r['niter'], r['nredo'])
+            if r.get('quantizer_type') == 'rkmeans_fsq':
+                key = (r['num_clusters'], r['niter'], r['nredo'], 'fsq', r.get('fsq_levels_key', ''))
+            else:
+                key = (r['num_clusters'], r['niter'], r['nredo'])
             existing_keys.add(key)
         print(f"Loaded {len(existing_results)} existing results from {json_path}")
 
@@ -517,71 +683,135 @@ def main():
     all_results = list(existing_results)
     exp_idx = 0
 
-    for num_clusters in clusters_list:
-        for niter in niter_list:
-            for nredo in nredo_list:
-                exp_idx += 1
+    # Build experiment configs
+    experiment_configs = []
+    if quantizer_type == 'rkmeans_fsq':
+        for num_clusters in clusters_list:
+            for niter in niter_list:
+                for nredo in nredo_list:
+                    for fsq_key in fsq_levels_keys:
+                        experiment_configs.append({
+                            'num_clusters': num_clusters,
+                            'niter': niter,
+                            'nredo': nredo,
+                            'quantizer_type': 'rkmeans_fsq',
+                            'fsq_levels_key': fsq_key,
+                        })
+    else:
+        for num_clusters in clusters_list:
+            for niter in niter_list:
+                for nredo in nredo_list:
+                    experiment_configs.append({
+                        'num_clusters': num_clusters,
+                        'niter': niter,
+                        'nredo': nredo,
+                        'quantizer_type': 'rkmeans',
+                    })
 
-                # Skip already-run configs in append mode
-                if (num_clusters, niter, nredo) in existing_keys:
-                    print(f"\n[{exp_idx}/{total}] clusters={num_clusters}, niter={niter}, nredo={nredo} — SKIPPED (already exists)")
-                    continue
+    for cfg in experiment_configs:
+        exp_idx += 1
+        num_clusters = cfg['num_clusters']
+        niter = cfg['niter']
+        nredo = cfg['nredo']
+        is_fsq = cfg['quantizer_type'] == 'rkmeans_fsq'
+        fsq_key = cfg.get('fsq_levels_key', '')
 
-                print(f"\n{'#'*60}")
-                print(f"# Experiment {exp_idx}/{total}: clusters={num_clusters}, niter={niter}, nredo={nredo}")
-                print(f"{'#'*60}")
+        # Build unique key for dedup
+        if is_fsq:
+            config_key = (num_clusters, niter, nredo, 'fsq', fsq_key)
+            label = f"clusters={num_clusters}, niter={niter}, nredo={nredo}, fsq={fsq_key}"
+        else:
+            config_key = (num_clusters, niter, nredo)
+            label = f"clusters={num_clusters}, niter={niter}, nredo={nredo}"
 
-                metrics, train_time = run_single_experiment(
-                    train_embeddings=train_tensor,
-                    eval_embeddings=eval_tensor,
-                    content_ids=content_ids,
-                    n_features=n_features,
-                    num_clusters=num_clusters,
-                    niter=niter,
-                    nredo=nredo,
-                    num_gpus=num_gpus,
-                    behavior_data=behavior_data,
-                    device=args.device,
-                    recall_beam_size=args.recall_beam_size,
-                    eval_sample_size=args.eval_sample_size,
-                    only_sid=args.only_sid,
-                )
+        # Skip already-run configs in append mode
+        if config_key in existing_keys:
+            print(f"\n[{exp_idx}/{total}] {label} — SKIPPED (already exists)")
+            continue
 
-                result = {
-                    'num_clusters': num_clusters,
-                    'niter': niter,
-                    'nredo': nredo,
-                    'metrics': metrics,
-                    'train_time': train_time,
-                }
-                all_results.append(result)
+        print(f"\n{'#'*60}")
+        print(f"# Experiment {exp_idx}/{total}: {label}")
+        print(f"{'#'*60}")
 
-                # 实时打印关键指标
-                col_val = metrics.get('semantic_id_collision', 'N/A')
-                ent = metrics.get('entropy', 'N/A')
-                bal = metrics.get('cluster_balance', 'N/A')
-                rec = metrics.get('reconstruction_loss', 'N/A')
-                print(f"\n>>> [{exp_idx}/{total}] clusters={num_clusters} niter={niter} nredo={nredo}  time={train_time:.0f}s")
-                print(f"    collision={col_val}  entropy={ent}  balance={bal}  recon={rec}")
-                if 'ntp_perplexity' in metrics:
-                    ppl = metrics['ntp_perplexity']
-                    print(f"    ★ ntp_ppl={ppl}")
-                    recall_parts = []
-                    for k in (10, 50, 100, 500):
-                        rk = metrics.get(f'item_recall@{k}')
-                        if rk is not None:
-                            recall_parts.append(f"@{k}={rk:.4f}")
-                    if recall_parts:
-                        print(f"    ★ item_recall: {', '.join(recall_parts)}")
-                for key in ('semantic_id_collision_depth', 'entropy_depth', 'cluster_balance_depth', 'codebook_utilization_depth'):
-                    if key in metrics:
-                        short = key.replace('_depth', '')
-                        vals = metrics[key]
-                        print(f"    {short}: {['d%d=%.4f' % (i+1, v) for i, v in enumerate(vals)]}")
+        if is_fsq:
+            fsq_levels = FSQ_LEVEL_CONFIGS[fsq_key]
+            metrics, train_time = run_single_experiment_fsq(
+                train_embeddings=train_tensor,
+                eval_embeddings=eval_tensor,
+                content_ids=content_ids,
+                n_features=n_features,
+                num_clusters=num_clusters,
+                fsq_levels=fsq_levels,
+                fsq_levels_key=fsq_key,
+                niter=niter,
+                nredo=nredo,
+                num_gpus=num_gpus,
+                behavior_data=behavior_data,
+                device=args.device,
+                recall_beam_size=args.recall_beam_size,
+                eval_sample_size=args.eval_sample_size,
+                only_sid=args.only_sid,
+            )
+        else:
+            metrics, train_time = run_single_experiment(
+                train_embeddings=train_tensor,
+                eval_embeddings=eval_tensor,
+                content_ids=content_ids,
+                n_features=n_features,
+                num_clusters=num_clusters,
+                niter=niter,
+                nredo=nredo,
+                num_gpus=num_gpus,
+                behavior_data=behavior_data,
+                device=args.device,
+                recall_beam_size=args.recall_beam_size,
+                eval_sample_size=args.eval_sample_size,
+                only_sid=args.only_sid,
+            )
 
-                # 每次实验后保存中间结果 (JSON)
-                with open(json_path, 'w') as f:
-                    json.dump(all_results, f, indent=2)
+        result = {
+            'num_clusters': num_clusters,
+            'niter': niter,
+            'nredo': nredo,
+            'quantizer_type': cfg['quantizer_type'],
+            'metrics': metrics,
+            'train_time': train_time,
+        }
+        if is_fsq:
+            result['fsq_levels_key'] = fsq_key
+            result['fsq_levels'] = FSQ_LEVEL_CONFIGS[fsq_key]
+            result['fsq_codebook_size'] = metrics.get('fsq_codebook_size', 0)
+
+        all_results.append(result)
+
+        # 实时打印关键指标
+        col_val = metrics.get('semantic_id_collision', 'N/A')
+        ent = metrics.get('entropy', 'N/A')
+        bal = metrics.get('cluster_balance', 'N/A')
+        rec = metrics.get('reconstruction_loss', 'N/A')
+        print(f"\n>>> [{exp_idx}/{total}] {label}  time={train_time:.0f}s")
+        print(f"    collision={col_val}  entropy={ent}  balance={bal}  recon={rec}")
+        if is_fsq:
+            print(f"    fsq_codebook_size={metrics.get('fsq_codebook_size', 'N/A')}")
+        if 'ntp_perplexity' in metrics:
+            ppl = metrics['ntp_perplexity']
+            print(f"    ★ ntp_ppl={ppl}")
+            recall_parts = []
+            for k in (10, 50, 100, 500):
+                rk = metrics.get(f'item_recall@{k}')
+                if rk is not None:
+                    recall_parts.append(f"@{k}={rk:.4f}")
+            if recall_parts:
+                print(f"    ★ item_recall: {', '.join(recall_parts)}")
+        for key in ('semantic_id_collision_depth', 'entropy_depth', 'cluster_balance_depth', 'codebook_utilization_depth'):
+            if key in metrics:
+                short = key.replace('_depth', '')
+                vals = metrics[key]
+                print(f"    {short}: {['d%d=%.4f' % (i+1, v) for i, v in enumerate(vals)]}")
+
+        # 每次实验后保存中间结果 (JSON)
+        with open(json_path, 'w') as f:
+            json.dump(all_results, f, indent=2)
 
     # 生成 Markdown 报告
     report = generate_report(all_results, output_path)

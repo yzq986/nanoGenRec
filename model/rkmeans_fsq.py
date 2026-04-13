@@ -1,0 +1,171 @@
+"""ResKmeansFSQ — 2 layers RKMeans + 1 layer FSQ.
+
+Hybrid quantizer: first two layers use FAISS KMeans (residual quantization),
+third layer uses Finite Scalar Quantization (PCA + per-dim rounding).
+
+Reference: OneMall (arxiv 2601.21770) — FSQ on residuals reduces collision.
+"""
+
+from typing import List
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+from gr_demo.model.rkmeans import FaissKMeansLayer
+from gr_demo.model.fsq import FSQLayer
+
+
+class ResKmeansFSQ:
+    """2-layer RKMeans + 1-layer FSQ hybrid quantizer."""
+
+    def __init__(
+        self,
+        n_kmeans_clusters: int,
+        fsq_levels: List[int],
+        n_features: int,
+        normalize_residuals: bool = True,
+        num_gpus: int = 1,
+    ):
+        self.n_kmeans_clusters = n_kmeans_clusters
+        self.fsq_levels = fsq_levels
+        self.n_features = n_features
+        self.normalize_residuals = normalize_residuals
+        self.num_gpus = num_gpus
+        self.n_layers = 3  # always: 2 KMeans + 1 FSQ
+        self.primary_device = "cuda:0" if num_gpus > 0 else "cpu"
+        self.gpu = num_gpus > 0
+
+        self.kmeans_layers: List[FaissKMeansLayer] = [
+            FaissKMeansLayer(n_kmeans_clusters, n_features, gpu=self.gpu)
+            for _ in range(2)
+        ]
+        self.fsq_layer = FSQLayer(fsq_levels, n_features)
+
+    def train(
+        self,
+        embeddings: torch.Tensor,
+        niter: int = 25,
+        nredo: int = 1,
+    ):
+        n_samples = embeddings.shape[0]
+        print(f"Training ResKmeansFSQ on {n_samples:,} samples")
+        print(f"Config: 2 KMeans ({self.n_kmeans_clusters} clusters) + 1 FSQ ({self.fsq_levels})")
+
+        current_residuals = embeddings.clone()
+
+        # Normalize input once (layer 0 only)
+        if self.normalize_residuals:
+            print("  Normalizing input embeddings (layer 0 only)...")
+            normalized = []
+            chunk_size = 100000
+            for i in range(0, n_samples, chunk_size):
+                chunk = current_residuals[i:i+chunk_size].to(self.primary_device)
+                chunk = F.normalize(chunk, p=2, dim=1).cpu()
+                normalized.append(chunk)
+            current_residuals = torch.cat(normalized, dim=0)
+
+        # Layer 1 & 2: KMeans
+        for layer_idx, kmeans in enumerate(self.kmeans_layers):
+            print(f"\n{'='*60}")
+            print(f"Training KMeans Layer {layer_idx + 1}/2")
+            print(f"{'='*60}")
+
+            kmeans.train(current_residuals, niter=niter, nredo=nredo)
+
+            # Compute residuals for next layer
+            print("  Computing residuals for next layer...")
+            new_residuals = []
+            chunk_size = 50000
+            for i in range(0, n_samples, chunk_size):
+                chunk = current_residuals[i:i+chunk_size]
+                assignments = kmeans.predict(chunk)
+                assigned_centroids = kmeans.centroids[assignments].cpu()
+                residual = chunk - assigned_centroids
+                new_residuals.append(residual)
+            current_residuals = torch.cat(new_residuals, dim=0)
+
+            residual_norm = torch.norm(current_residuals, dim=1).mean().item()
+            print(f"  Residual norm (mean): {residual_norm:.6f}")
+
+        # Layer 3: FSQ
+        print(f"\n{'='*60}")
+        print(f"Training FSQ Layer 3/3")
+        print(f"{'='*60}")
+
+        self.fsq_layer.train(current_residuals)
+
+        # Final GPU cleanup
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        print(f"\n{'='*60}")
+        print("Training completed!")
+        print(f"{'='*60}")
+
+    def save(self, path: str):
+        model_data = {
+            'model_type': 'rkmeans_fsq',
+            'centroids_list': [km.get_centroids().cpu() for km in self.kmeans_layers],
+            'fsq_state': self.fsq_layer.save_state(),
+            'normalize_residuals': self.normalize_residuals,
+            'n_layers': self.n_layers,
+            'n_kmeans_clusters': self.n_kmeans_clusters,
+            'fsq_levels': self.fsq_levels,
+            'n_features': self.n_features,
+            'embedding_dim': self.n_features,
+        }
+        torch.save(model_data, path)
+        print(f"Model saved to {path}")
+
+
+def generate_semantic_ids_fsq(
+    model: ResKmeansFSQ,
+    embeddings: torch.Tensor,
+    normalize_residuals: bool = True,
+) -> List[str]:
+    """Generate semantic IDs: 2 KMeans layers + 1 FSQ layer -> "c1_c2_c3" strings."""
+    n_samples = embeddings.shape[0]
+    device = model.primary_device
+
+    layer_assignments = []
+    current_residuals = embeddings.clone()
+
+    # Normalize input once (layer 0 only)
+    if normalize_residuals:
+        normalized = []
+        chunk_size = 100000
+        for i in range(0, n_samples, chunk_size):
+            chunk = current_residuals[i:i+chunk_size].to(device)
+            chunk = F.normalize(chunk, p=2, dim=1).cpu()
+            normalized.append(chunk)
+        current_residuals = torch.cat(normalized, dim=0)
+
+    # Layers 1 & 2: KMeans
+    for layer_idx, kmeans in enumerate(model.kmeans_layers):
+        print(f"  Predicting KMeans layer {layer_idx + 1}/2...")
+        assignments = kmeans.predict(current_residuals).cpu().numpy()
+        layer_assignments.append(assignments)
+
+        new_residuals = []
+        chunk_size = 50000
+        for i in range(0, n_samples, chunk_size):
+            chunk = current_residuals[i:i+chunk_size]
+            chunk_assignments = torch.tensor(assignments[i:i+chunk_size])
+            assigned_centroids = kmeans.centroids[chunk_assignments].cpu()
+            residual = chunk - assigned_centroids
+            new_residuals.append(residual)
+        current_residuals = torch.cat(new_residuals, dim=0)
+
+    # Layer 3: FSQ
+    print(f"  Predicting FSQ layer 3/3...")
+    fsq_codes = model.fsq_layer.predict(current_residuals).cpu().numpy()
+    layer_assignments.append(fsq_codes)
+
+    # Build SID strings
+    semantic_ids = []
+    for i in range(n_samples):
+        sid = "_".join(str(layer_assignments[layer][i]) for layer in range(3))
+        semantic_ids.append(sid)
+
+    return semantic_ids

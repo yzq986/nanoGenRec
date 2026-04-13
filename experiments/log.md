@@ -39,6 +39,50 @@
 
 ---
 
+## EXP-002: ResKmeansFSQ — 2 layers RKMeans + 1 layer FSQ
+
+**Date**: 2026-04-13
+**Status**: planned
+
+### Background
+RKMeans 的第3层对残差做 KMeans 效果递减（残差越来越小且分布不规则）。OneMall 论文 (arxiv 2601.21770) 提出用 FSQ 替换第3层，将 collision rate 从 36% 降到 11%。FSQ (Mentzer 2023) 将 embedding 投影到低维空间，每个维度量化到固定离散值，codebook = 各维度 levels 的笛卡尔积，天然无 codebook collapse。
+
+### Hypothesis
+ResKmeansFSQ 在第3层使用 FSQ 替代 KMeans，因为 FSQ 的 implicit codebook 天然无 cluster collapse，可降低 collision rate。
+
+### Design
+- **Variable**: Layer 3 quantizer (KMeans vs FSQ configs)
+- **Fixed**: 2 KMeans layers x 1024 clusters, niter=25, nredo=3, normalize_residuals=True
+- **Metric**: collision_rate, reconstruction_loss, entropy, codebook_utilization, cluster_balance
+
+| Config | L1, L2 (KMeans) | L3 | L3 codebook |
+|--------|------------------|----|-------------|
+| Baseline | 1024 x 3 layers KMeans | KMeans 1024 | 1024 |
+| Hybrid A | 1024 x 2 layers | FSQ [8,8,8,8] | 4096 |
+| Hybrid B | 1024 x 2 layers | FSQ [7,5,5,5,5] | 4375 |
+| Hybrid C | 1024 x 2 layers | FSQ [4,4,4,4,4,4] | 4096 |
+
+### Run Commands
+```bash
+# Baseline
+python -m gr_demo hyperparam --skip_embedding --clusters 1024 --name exp002-baseline
+
+# FSQ experiments
+python -m gr_demo hyperparam --skip_embedding --quantizer rkmeans_fsq \
+    --clusters 1024 --fsq_levels 4d_4096 5d_4375 6d_4096 --name exp002-fsq
+```
+
+### Results
+_(pending)_
+
+### Analysis
+_(pending)_
+
+### Next Steps
+_(pending)_
+
+---
+
 ## EXP-001: RKMeans 训练优化 (v0→v7)
 
 **Date**: 2026-03 ~ 2026-04

@@ -94,8 +94,7 @@ class ReconstructionLossMetric(BaseMetric):
                 all_assignments = []
                 for i in range(0, n_samples, chunk_size):
                     chunk = current_residuals[i:i+chunk_size].to(device)
-                    distances = torch.cdist(chunk, kmeans.centroids, p=2) ** 2
-                    batch_assignments = distances.argmin(dim=1).cpu()
+                    batch_assignments = kmeans.predict(chunk).cpu()
                     all_assignments.append(batch_assignments)
                 assignments = torch.cat(all_assignments, dim=0)
 

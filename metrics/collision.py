@@ -45,14 +45,20 @@ class SemanticIDCollisionMetric(BaseMetric):
 
         n_total = len(semantic_ids)
         n_unique = len(set(semantic_ids))
-        collision_rate = 1.0 - (n_unique / n_total)
 
         # Full collision stats
         id_counts = Counter(semantic_ids)
         count_values = list(id_counts.values())
         n_collided_ids = sum(1 for c in count_values if c > 1)
         n_items_in_collision = sum(c for c in count_values if c > 1)
+        n_exclusive_items = n_total - n_items_in_collision
         top_collisions = id_counts.most_common(10)
+
+        # OneMall-aligned metrics (arxiv 2601.21770 Table 5)
+        # conflict_rate: SID→Item direction, fraction of SIDs shared by multiple items
+        conflict_rate = n_collided_ids / n_unique if n_unique > 0 else 0.0
+        # exclusivity: Item→SID direction, fraction of items with a unique SID
+        exclusivity = n_exclusive_items / n_total if n_total > 0 else 0.0
 
         # Per-prefix-depth analysis with bucket size distribution
         depth_collision_rates = []
@@ -69,8 +75,15 @@ class SemanticIDCollisionMetric(BaseMetric):
                 depth_col = 1.0 - (n_unique_prefix / n_total)
                 depth_collision_rates.append(round(depth_col, 4))
 
+                # Per-depth conflict_rate & exclusivity
+                depth_prefix_counts = sorted(prefix_counts.values())
+                n_collided_prefixes = sum(1 for c in depth_prefix_counts if c > 1)
+                n_exclusive_at_depth = sum(1 for c in depth_prefix_counts if c == 1)
+                depth_conflict = n_collided_prefixes / n_unique_prefix if n_unique_prefix > 0 else 0.0
+                depth_exclusivity = n_exclusive_at_depth / n_total if n_total > 0 else 0.0
+
                 # Bucket size distribution
-                counts = sorted(prefix_counts.values())
+                counts = depth_prefix_counts
                 counts_t = torch.tensor(counts, dtype=torch.float32)
                 n_buckets = len(counts)
 
@@ -78,6 +91,8 @@ class SemanticIDCollisionMetric(BaseMetric):
                     'depth': depth,
                     'n_unique_prefix': n_unique_prefix,
                     'collision_rate': round(depth_col, 4),
+                    'conflict_rate': round(depth_conflict, 4),
+                    'exclusivity': round(depth_exclusivity, 4),
                     'avg_items': round(n_total / n_unique_prefix, 2),
                     'min': counts[0],
                     'max': counts[-1],
@@ -94,17 +109,19 @@ class SemanticIDCollisionMetric(BaseMetric):
 
                 prefix_stats.append(stat)
 
-        status = self.assess_quality(collision_rate)
+        status = self.assess_quality(conflict_rate)
 
         return MetricResult(
             name=self.name,
-            value=collision_rate,
+            value=conflict_rate,
             layer_values=depth_collision_rates,
             details={
                 'n_total': n_total,
                 'n_unique': n_unique,
-                'collision_rate': collision_rate,
+                'conflict_rate': conflict_rate,
+                'exclusivity': exclusivity,
                 'n_collided_ids': n_collided_ids,
+                'n_exclusive_items': n_exclusive_items,
                 'n_items_in_collision': n_items_in_collision,
                 'top_collisions': [(sid, count) for sid, count in top_collisions],
                 'prefix_stats': prefix_stats,

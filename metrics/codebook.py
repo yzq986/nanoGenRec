@@ -57,17 +57,21 @@ class CodebookUtilizationMetric(BaseMetric):
             parts = [sid.split('_') for sid in semantic_ids]
             n_layers = len(parts[0])
 
-            # Determine N (max cluster id + 1)
+            # Determine per-layer codebook size (max id + 1 per layer)
+            n_per_layer = []
             for layer_idx in range(n_layers):
                 layer_ids = [int(p[layer_idx]) for p in parts]
                 max_id = max(layer_ids) + 1
+                n_per_layer.append(max_id)
                 n_clusters_per_layer = max(n_clusters_per_layer, max_id)
 
-            # Per-depth utilization
+            # Per-depth utilization (theoretical = product of per-layer sizes)
             for depth in range(1, n_layers + 1):
                 prefixes = set('_'.join(p[:depth]) for p in parts)
                 n_unique_at_depth = len(prefixes)
-                theoretical = n_clusters_per_layer ** depth
+                theoretical = 1
+                for i in range(depth):
+                    theoretical *= n_per_layer[i]
                 util = n_unique_at_depth / theoretical if theoretical > 0 else 0
                 layer_utilizations.append(util)
                 depth_stats.append({
@@ -79,7 +83,9 @@ class CodebookUtilizationMetric(BaseMetric):
 
         # Primary: full-depth utilization
         if n_clusters_per_layer > 0 and n_layers > 0:
-            theoretical_space = n_clusters_per_layer ** n_layers
+            theoretical_space = 1
+            for n in n_per_layer:
+                theoretical_space *= n
             space_utilization = n_unique / theoretical_space
         else:
             theoretical_space = 0

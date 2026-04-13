@@ -20,7 +20,7 @@ from gr_demo.data.loaders import (
     load_results_from_s3, load_model_from_s3,
     load_local_results, load_local_model,
 )
-from gr_demo.eval.wrapper import RKMeansModelWrapper
+from gr_demo.eval.wrapper import RKMeansModelWrapper, load_model_wrapper
 
 
 # ============================================================
@@ -123,12 +123,11 @@ class MetricsEvaluator:
 
             # No per-layer normalization — residuals keep raw scale
 
-            # Get assignments
+            # Get assignments (via predict — works for both KMeans and FSQ layers)
             all_assignments = []
             for i in range(0, n_samples, chunk_size):
                 chunk = current_residuals[i:i+chunk_size].to(self.device)
-                distances = torch.cdist(chunk, kmeans.centroids, p=2) ** 2
-                batch_assignments = distances.argmin(dim=1).cpu()
+                batch_assignments = kmeans.predict(chunk).cpu()
                 all_assignments.append(batch_assignments)
             assignments = torch.cat(all_assignments, dim=0)
             self.layer_assignments.append(assignments)
@@ -307,7 +306,7 @@ def main():
             model_data = load_model_from_s3(args.model_path)
         else:
             model_data = load_local_model(args.model_path)
-        model = RKMeansModelWrapper(model_data, device=args.device)
+        model = load_model_wrapper(model_data, device=args.device)
 
     # Determine which metrics to run
     if args.metrics:
