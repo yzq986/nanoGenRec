@@ -30,9 +30,9 @@ run_and_push() {
 echo ""
 echo ">>> Launching 4 configs on GPU 0-3..."
 run_and_push 0 4  &
-run_and_push 1 8  &
-run_and_push 2 16 &
-run_and_push 3 32 &
+# run_and_push 1 8  &
+# run_and_push 2 16 &
+# run_and_push 3 32 &
 
 wait
 echo ""
