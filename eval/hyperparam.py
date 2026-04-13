@@ -20,6 +20,7 @@ from gr_demo.model.opq import OPQQuantizer
 from gr_demo.data.loaders import load_exposed_iids
 from gr_demo.eval.wrapper import RKMeansModelWrapper, ResKmeansFSQModelWrapper, OPQModelWrapper
 from gr_demo.eval.evaluator import MetricsEvaluator
+from gr_demo.eval.behavior import BehaviorMetricsEvaluator
 
 from gr_demo.metrics import INTRINSIC_METRICS, BEHAVIOR_METRICS, MetricResult
 
@@ -57,6 +58,7 @@ def run_single_experiment(
     recall_beam_size: int = 50,
     eval_sample_size: int = 50000,
     only_sid: bool = False,
+    run_ntp: bool = False,
 ) -> Tuple[Dict[str, float], float]:
     """运行单次 RKMeans 训练 + eval，返回 (metrics_dict, train_seconds)"""
     from gr_demo.eval.behavior import BehaviorMetricsEvaluator
@@ -100,14 +102,15 @@ def run_single_experiment(
         )
         if not only_sid:
             evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
-        evaluator.register_metrics(['semantic_id_prediction'])
-        sid_kwargs = {
-            'semantic_id_prediction': {
+        evaluator.register_metrics(['embedding_hit_rate'])
+        sid_kwargs = {}
+        if run_ntp:
+            evaluator.register_metrics(['semantic_id_prediction'])
+            sid_kwargs['semantic_id_prediction'] = {
                 'device': device,
                 'recall_beam_size': recall_beam_size,
                 'eval_sample_size': eval_sample_size,
             }
-        }
         metric_results = evaluator.evaluate(metric_kwargs=sid_kwargs)
     else:
         evaluator = MetricsEvaluator(
@@ -166,6 +169,7 @@ def run_single_experiment_fsq(
     recall_beam_size: int = 50,
     eval_sample_size: int = 50000,
     only_sid: bool = False,
+    run_ntp: bool = False,
     fsq_projection: str = 'pca',
     fsq_mlp_hidden: int = 128,
     fsq_epochs: int = 50,
@@ -216,14 +220,15 @@ def run_single_experiment_fsq(
         )
         if not only_sid:
             evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
-        evaluator.register_metrics(['semantic_id_prediction'])
-        sid_kwargs = {
-            'semantic_id_prediction': {
+        evaluator.register_metrics(['embedding_hit_rate'])
+        sid_kwargs = {}
+        if run_ntp:
+            evaluator.register_metrics(['semantic_id_prediction'])
+            sid_kwargs['semantic_id_prediction'] = {
                 'device': device,
                 'recall_beam_size': recall_beam_size,
                 'eval_sample_size': eval_sample_size,
             }
-        }
         metric_results = evaluator.evaluate(metric_kwargs=sid_kwargs)
     else:
         evaluator = MetricsEvaluator(
@@ -284,6 +289,7 @@ def run_single_experiment_opq(
     recall_beam_size: int = 50,
     eval_sample_size: int = 50000,
     only_sid: bool = False,
+    run_ntp: bool = False,
 ) -> Tuple[Dict[str, float], float]:
     """Run single OPQ train + eval, return (metrics_dict, train_seconds)"""
 
@@ -319,16 +325,39 @@ def run_single_experiment_opq(
     # _precompute_assignments() which does residual subtraction (wrong for OPQ)
     layer_assignments = [torch.tensor(codes[:, j], dtype=torch.long) for j in range(n_subvectors)]
 
-    # Evaluate (intrinsic metrics only — NTP not supported for OPQ yet)
-    evaluator = MetricsEvaluator(
-        embeddings=eval_embeddings,
-        model=model_wrapper,
-        semantic_ids=semantic_ids,
-        device=device,
-    )
-    evaluator.layer_assignments = layer_assignments  # skip _precompute_assignments
-    evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
-    metric_results = evaluator.evaluate()
+    # Evaluate
+    if behavior_data is not None:
+        evaluator = BehaviorMetricsEvaluator(
+            embeddings=eval_embeddings,
+            content_ids=content_ids,
+            semantic_ids=semantic_ids,
+            model=model_wrapper,
+            behavior_data=behavior_data,
+            device=device,
+        )
+        evaluator.layer_assignments = layer_assignments
+        if not only_sid:
+            evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
+        evaluator.register_metrics(['embedding_hit_rate'])
+        sid_kwargs = {}
+        if run_ntp:
+            evaluator.register_metrics(['semantic_id_prediction'])
+            sid_kwargs['semantic_id_prediction'] = {
+                'device': device,
+                'recall_beam_size': recall_beam_size,
+                'eval_sample_size': eval_sample_size,
+            }
+        metric_results = evaluator.evaluate(metric_kwargs=sid_kwargs)
+    else:
+        evaluator = MetricsEvaluator(
+            embeddings=eval_embeddings,
+            model=model_wrapper,
+            semantic_ids=semantic_ids,
+            device=device,
+        )
+        evaluator.layer_assignments = layer_assignments
+        evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
+        metric_results = evaluator.evaluate()
 
     # Flatten results
     results = {}
@@ -346,6 +375,14 @@ def run_single_experiment_opq(
         col = metric_results['semantic_id_collision']
         prefix_stats = col.details.get('prefix_stats', [])
         results['prefix_avg_items'] = [s.get('avg_items', 0) for s in prefix_stats]
+
+    if 'semantic_id_prediction' in metric_results:
+        sid = metric_results['semantic_id_prediction']
+        results['ntp_perplexity'] = round(sid.value, 4)
+        results['ntp_depth_acc'] = sid.layer_values
+        results['ntp_depth_hit@10'] = sid.details.get('depth_hit@10')
+        for k in (10, 50, 100, 500):
+            results[f'item_recall@{k}'] = sid.details.get(f'item_recall@{k}')
 
     # OPQ-specific fields
     results['quantizer_type'] = 'opq'
@@ -464,6 +501,8 @@ def _generate_opq_report(lines: List[str], all_results: List[dict]):
     """Generate report section for OPQ results."""
     import math
 
+    has_ntp = any('ntp_perplexity' in r['metrics'] for r in all_results)
+
     lines.append("# OPQ 超参数搜索结果")
     lines.append("")
     lines.append(f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -476,12 +515,19 @@ def _generate_opq_report(lines: List[str], all_results: List[dict]):
     lines.append("## 完整结果")
     lines.append("")
 
-    header = "| # | m (tokens) | M (vocab) | bits | collision | entropy | Gini | recon_loss | time(s) |"
-    sep    = "|---|-----------|-----------|------|-----------|---------|------|------------|---------|"
+    if has_ntp:
+        header = "| # | m (tokens) | M (vocab) | bits | collision | recon_loss | ntp_ppl | **recall@50** | recall@100 | recall@500 | time(s) |"
+        sep    = "|---|-----------|-----------|------|-----------|------------|---------|---------------|------------|------------|---------|"
+    else:
+        header = "| # | m (tokens) | M (vocab) | bits | collision | entropy | Gini | recon_loss | time(s) |"
+        sep    = "|---|-----------|-----------|------|-----------|---------|------|------------|---------|"
     lines.append(header)
     lines.append(sep)
 
-    sorted_results = sorted(all_results, key=lambda r: r.get('n_subvectors', 0))
+    if has_ntp:
+        sorted_results = sorted(all_results, key=lambda r: r['metrics'].get('item_recall@50') or 0, reverse=True)
+    else:
+        sorted_results = sorted(all_results, key=lambda r: r.get('n_subvectors', 0))
 
     for i, r in enumerate(sorted_results, 1):
         met = r['metrics']
@@ -489,13 +535,41 @@ def _generate_opq_report(lines: List[str], all_results: List[dict]):
         n_cpersub = r.get('n_clusters_per_sub', 256)
         bits = int(n_sub * math.log2(n_cpersub)) if isinstance(n_sub, int) else '?'
         col = f"{met.get('semantic_id_collision', 0):.4f}"
-        ent = f"{met.get('entropy', 0):.4f}"
-        gini = f"{met.get('cluster_balance', 0):.4f}"
         rec = f"{met.get('reconstruction_loss', 0):.4f}"
-        row = f"| {i} | {n_sub} | {n_cpersub} | {bits} | {col} | {ent} | {gini} | {rec} | {r['train_time']:.0f} |"
+
+        if has_ntp:
+            ntp_ppl = met.get('ntp_perplexity')
+            ntp_str = f"{ntp_ppl:.2f}" if ntp_ppl is not None else "N/A"
+            r50 = met.get('item_recall@50')
+            r100 = met.get('item_recall@100')
+            r500 = met.get('item_recall@500')
+            r50_str = f"{r50:.4f}" if r50 is not None else "N/A"
+            r100_str = f"{r100:.4f}" if r100 is not None else "N/A"
+            r500_str = f"{r500:.4f}" if r500 is not None else "N/A"
+            row = f"| {i} | {n_sub} | {n_cpersub} | {bits} | {col} | {rec} | {ntp_str} | **{r50_str}** | {r100_str} | {r500_str} | {r['train_time']:.0f} |"
+        else:
+            ent = f"{met.get('entropy', 0):.4f}"
+            gini = f"{met.get('cluster_balance', 0):.4f}"
+            row = f"| {i} | {n_sub} | {n_cpersub} | {bits} | {col} | {ent} | {gini} | {rec} | {r['train_time']:.0f} |"
         lines.append(row)
 
     lines.append("")
+
+    # NTP detail section
+    if has_ntp:
+        lines.append("## Per-Digit Accuracy")
+        lines.append("")
+        for i, r in enumerate(sorted_results, 1):
+            met = r['metrics']
+            n_sub = r.get('n_subvectors', '?')
+            h10 = met.get('ntp_depth_hit@10', [])
+            if h10:
+                h10_str = ', '.join(f'd{j+1}={v:.4f}' for j, v in enumerate(h10[:8]))
+                avg_h10 = sum(h10) / len(h10) if h10 else 0
+                lines.append(f"**m={n_sub}**: avg={avg_h10:.4f} ({h10_str})")
+            else:
+                lines.append(f"**m={n_sub}**: N/A")
+        lines.append("")
 
 
 def _generate_rkmeans_report(lines: List[str], all_results: List[dict]):
@@ -759,7 +833,9 @@ def parse_args():
 
     # SID prediction (NTP) 相关
     parser.add_argument('--skip_ntp', action='store_true',
-                        help='Skip SID prediction NTP (only run intrinsic metrics)')
+                        help='(deprecated, NTP is now off by default)')
+    parser.add_argument('--run_ntp', action='store_true',
+                        help='Run SID prediction NTP (off by default, slow)')
     parser.add_argument('--only-sid', action='store_true',
                         help='Only run SID prediction (skip intrinsic metrics)')
     parser.add_argument('--recall_beam_size', type=int, default=50,
@@ -842,9 +918,10 @@ def main():
     n_features = train_tensor.shape[1]
     num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
-    # 加载 behavior 数据 (用于 SID prediction)
+    # 加载 behavior 数据 (用于 embedding_hit_rate 和可选的 SID prediction)
     behavior_data = None
-    need_behavior = (args.behavior_path or args.only_sid) and not args.skip_ntp
+    run_ntp = args.run_ntp and not args.skip_ntp
+    need_behavior = args.behavior_path or args.only_sid or run_ntp
     if need_behavior:
         from gr_demo.eval.batch import load_all_behavior_data
         try:
@@ -852,7 +929,7 @@ def main():
             print(f"Behavior data loaded: {len(behavior_data['uid']):,} interactions")
         except Exception as e:
             print(f"Warning: Could not load behavior data: {e}")
-            print("SID prediction will be skipped")
+            print("Behavior metrics will be skipped")
 
     # 运行网格搜索
     all_results = list(existing_results)

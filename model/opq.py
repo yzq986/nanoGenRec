@@ -6,11 +6,88 @@ Reference: Meta RPG (KDD'25, arxiv 2506.05781)
 - FAISS OPQMatrix learns rotation R, ProductQuantizer does per-subspace KMeans
 """
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+
+def build_sid_graph(
+    quantizer: 'OPQQuantizer',
+    valid_sids: np.ndarray,
+    top_k: int = 100,
+    nprobe: int = 32,
+    verbose: bool = True,
+) -> np.ndarray:
+    """Build SID similarity graph via reconstructed embeddings.
+
+    1. Decode all valid SIDs → reconstructed vectors
+    2. Build FAISS IVF index for fast ANN search
+    3. Return neighbor adjacency list
+
+    Args:
+        quantizer: Trained OPQQuantizer
+        valid_sids: (N, m) int array — codes for all valid SIDs
+        top_k: Number of neighbors per SID
+        nprobe: IVF nprobe for search quality
+        verbose: Print progress
+
+    Returns:
+        neighbors: (N, top_k) int32 array — neighbor indices
+    """
+    import faiss
+    import time
+
+    t0 = time.time()
+    N = valid_sids.shape[0]
+
+    if verbose:
+        print(f"  Building SID graph: {N:,} SIDs, top_k={top_k}")
+
+    # 1. Reconstruct embeddings from codes
+    recon = quantizer.decode_numpy(valid_sids).astype(np.float32)
+
+    # 2. Build FAISS index (IVF for speed)
+    d = recon.shape[1]
+    nlist = min(int(np.sqrt(N)), 4096)
+
+    # Use GPU if available
+    try:
+        res = faiss.StandardGpuResources()
+        index_flat = faiss.IndexFlatIP(d)
+        index_ivf = faiss.IndexIVFFlat(index_flat, d, nlist, faiss.METRIC_INNER_PRODUCT)
+        gpu_index = faiss.index_cpu_to_gpu(res, 0, index_ivf)
+        # Normalize for cosine similarity
+        faiss.normalize_L2(recon)
+        gpu_index.train(recon)
+        gpu_index.add(recon)
+        gpu_index.nprobe = nprobe
+        _, neighbors = gpu_index.search(recon, top_k + 1)  # +1 because self is included
+    except Exception:
+        if verbose:
+            print("    GPU FAISS not available, using CPU")
+        faiss.normalize_L2(recon)
+        index = faiss.IndexFlatIP(d)
+        index.add(recon)
+        _, neighbors = index.search(recon, top_k + 1)
+
+    # Remove self-neighbor (first column is usually self)
+    # For each row, remove the index that matches its own position
+    clean_neighbors = np.zeros((N, top_k), dtype=np.int32)
+    for i in range(N):
+        row = neighbors[i]
+        mask = row != i
+        filtered = row[mask][:top_k]
+        clean_neighbors[i, :len(filtered)] = filtered
+        if len(filtered) < top_k:
+            clean_neighbors[i, len(filtered):] = filtered[-1] if len(filtered) > 0 else 0
+
+    elapsed = time.time() - t0
+    if verbose:
+        print(f"  SID graph built in {elapsed:.1f}s")
+
+    return clean_neighbors
 
 
 class OPQQuantizer:

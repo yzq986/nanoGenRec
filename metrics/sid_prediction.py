@@ -148,7 +148,7 @@ class SparseMoEBlock(nn.Module):
 # ============================================================
 
 class CausalTransformerLayer(nn.Module):
-    """单层 causal self-attention + FFN/MoE，支持 KV cache"""
+    """单层 self-attention + FFN/MoE，支持 causal/bidirectional + KV cache"""
 
     def __init__(
         self,
@@ -159,9 +159,11 @@ class CausalTransformerLayer(nn.Module):
         n_experts: int = 8,
         top_k: int = 2,
         expert_dim: int = 1024,
+        causal: bool = True,
     ):
         super().__init__()
         self.use_moe = use_moe
+        self.causal = causal
         self.attn = nn.MultiheadAttention(embed_dim, n_heads, dropout=dropout, batch_first=True)
 
         if use_moe:
@@ -202,17 +204,20 @@ class CausalTransformerLayer(nn.Module):
         else:
             kv = x_norm
 
-        total_len = kv.size(1)
-        query_len = x_norm.size(1)
+        if self.causal:
+            total_len = kv.size(1)
+            query_len = x_norm.size(1)
 
-        # Causal mask: query positions can only attend to positions <= themselves
-        # Shape: (query_len, total_len)
-        attn_mask = torch.ones(query_len, total_len, device=x.device, dtype=torch.bool)
-        for i in range(query_len):
-            # query position i (global pos = total_len - query_len + i) attends to 0..global_pos
-            global_pos = total_len - query_len + i
-            attn_mask[i, :global_pos + 1] = False
-        # True = masked out in PyTorch convention
+            # Causal mask: query positions can only attend to positions <= themselves
+            # Shape: (query_len, total_len)
+            attn_mask = torch.ones(query_len, total_len, device=x.device, dtype=torch.bool)
+            for i in range(query_len):
+                # query position i (global pos = total_len - query_len + i) attends to 0..global_pos
+                global_pos = total_len - query_len + i
+                attn_mask[i, :global_pos + 1] = False
+            # True = masked out in PyTorch convention
+        else:
+            attn_mask = None  # Bidirectional attention
 
         attn_out, _ = self.attn(x_norm, kv, kv, attn_mask=attn_mask)
         x = residual + attn_out
@@ -416,6 +421,103 @@ class BeamSearchModule(nn.Module):
         return self.model.generate_with_beam_search(input_tokens, beam_size=self.beam_size)
 
 
+class ParallelNTPModel(nn.Module):
+    """并行 Next Token Prediction 模型（用于 OPQ parallel SIDs）。
+
+    与 AutoregressiveNTPModel 不同：
+    - 双向 attention（causal=False）
+    - 8 个独立 MLP head 并行预测 m 组 logits
+    - 无 KV cache / beam search — 一次 forward 出所有 logits
+    """
+
+    def __init__(
+        self,
+        n_clusters: int = 256,
+        n_layers: int = 8,
+        n_items: int = 10,
+        embed_dim: int = 256,
+        n_heads: int = 8,
+        n_transformer_layers: int = 6,
+        dropout: float = 0.1,
+        # MoE config
+        use_moe: bool = True,
+        n_experts: int = 8,
+        top_k: int = 2,
+        expert_dim: int = 1024,
+        aux_loss_coef: float = 0.01,
+    ):
+        super().__init__()
+        self.n_clusters = n_clusters
+        self.n_layers = n_layers
+        self.n_items = n_items
+        self.embed_dim = embed_dim
+        self.n_transformer_layers = n_transformer_layers
+        self.use_moe = use_moe
+        self.aux_loss_coef = aux_loss_coef
+        self.seq_len = n_items * n_layers  # 历史 token 数量
+
+        # Token embedding
+        self.token_embedding = nn.Embedding(n_clusters, embed_dim)
+
+        # Position embedding (历史 tokens only, no generation)
+        self.pos_embedding = nn.Embedding(self.seq_len, embed_dim)
+
+        # Transformer layers (bidirectional, causal=False)
+        self.layers = nn.ModuleList([
+            CausalTransformerLayer(
+                embed_dim, n_heads, dropout,
+                use_moe=use_moe, n_experts=n_experts,
+                top_k=top_k, expert_dim=expert_dim,
+                causal=False,
+            )
+            for _ in range(n_transformer_layers)
+        ])
+
+        # m independent MLP prediction heads
+        self.heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(embed_dim, 512),
+                nn.GELU(),
+                nn.Linear(512, n_clusters),
+            )
+            for _ in range(n_layers)
+        ])
+
+    def forward(
+        self,
+        input_tokens: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            input_tokens: (batch, seq_len) — 历史 n_items * n_layers tokens
+
+        Returns:
+            logits: (batch, n_layers, n_clusters) — m 组独立 logits
+            aux_loss: scalar MoE load balancing loss
+        """
+        device = input_tokens.device
+        curr_len = input_tokens.size(1)
+
+        token_emb = self.token_embedding(input_tokens)
+        positions = torch.arange(curr_len, device=device).unsqueeze(0)
+        pos_emb = self.pos_embedding(positions)
+        x = token_emb + pos_emb  # (batch, seq_len, embed_dim)
+
+        # Bidirectional transformer layers
+        total_aux_loss = torch.tensor(0.0, device=device)
+        for layer in self.layers:
+            x, _, aux_loss = layer(x, kv_cache=None)
+            total_aux_loss = total_aux_loss + aux_loss
+
+        # Take last position hidden state → (batch, embed_dim)
+        last_hidden = x[:, -1, :]
+
+        # m independent heads → (batch, n_layers, n_clusters)
+        logits = torch.stack([head(last_hidden) for head in self.heads], dim=1)
+
+        return logits, total_aux_loss
+
+
 # ============================================================
 # Training & Evaluation
 # ============================================================
@@ -519,6 +621,153 @@ def evaluate_model(model, dataloader, device, beam_size: int = 5):
 
 
 # ============================================================
+# Graph-Constrained Decoding (for parallel OPQ predictions)
+# ============================================================
+
+def _score_sids(
+    log_probs: torch.Tensor,
+    valid_sids: torch.Tensor,
+    sid_indices: torch.Tensor,
+) -> torch.Tensor:
+    """Score a subset of SIDs for each batch element.
+
+    Args:
+        log_probs: (batch, m, M) per-digit log probabilities
+        valid_sids: (N, m) all SID codes
+        sid_indices: (batch, C) indices into valid_sids to score
+
+    Returns:
+        scores: (batch, C) = sum of log_probs[b, j, sid[j]] over j
+    """
+    batch_size, C = sid_indices.shape
+    m = log_probs.shape[1]
+    device = log_probs.device
+
+    # Gather SID codes: (batch, C, m)
+    codes = valid_sids[sid_indices.cpu()].to(device)  # (batch, C, m)
+
+    # Score each digit: log_probs[b, j, codes[b,c,j]]
+    scores = torch.zeros(batch_size, C, device=device)
+    for j in range(m):
+        # log_probs[:, j, :] is (batch, M)
+        # codes[:, :, j] is (batch, C)
+        digit_scores = torch.gather(
+            log_probs[:, j, :],  # (batch, M)
+            1,
+            codes[:, :, j],  # (batch, C)
+        )  # (batch, C)
+        scores += digit_scores
+
+    return scores
+
+
+def graph_constrained_decode(
+    log_probs: torch.Tensor,
+    valid_sids: torch.Tensor,
+    graph_neighbors: torch.Tensor,
+    b: int = 10,
+    q: int = 3,
+    k: int = 100,
+    top_n: int = 500,
+    prefilter_per_digit: int = 30,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Graph-constrained decoding for parallel OPQ predictions.
+
+    Memory-efficient: never materializes (batch, N) score matrix.
+    Instead uses per-digit prefiltering for seeds then graph expansion.
+
+    Args:
+        log_probs: (batch, m, M) — per-digit log probabilities
+        valid_sids: (N, m) int tensor — all valid SID codes
+        graph_neighbors: (N, k) int tensor — neighbor adjacency list
+        b: beam width (seeds per iteration)
+        q: number of graph expansion iterations
+        k: neighbors per seed (from graph)
+        top_n: final number of candidates to return
+        prefilter_per_digit: top-K per digit for initial seed selection
+
+    Returns:
+        top_sids: (batch, top_n, m) — top candidate SID codes
+        top_scores: (batch, top_n) — scores
+    """
+    batch_size, m, M = log_probs.shape
+    N = valid_sids.shape[0]
+    device = log_probs.device
+
+    valid_sids_dev = valid_sids.to(device)
+
+    # 1. Initial seed selection via per-digit prefiltering
+    #    For digit 0, take top-K values → find all SIDs with that digit value → score them
+    #    This avoids scoring all N SIDs
+    _, top_digit0 = log_probs[:, 0, :].topk(prefilter_per_digit, dim=-1)  # (batch, K)
+
+    # Build candidate set: SIDs whose digit 0 matches any of top-K values
+    # For efficiency, build a mask per batch element
+    seed_candidates_list = []
+    for bi in range(batch_size):
+        top_vals = set(top_digit0[bi].cpu().tolist())
+        # Find SID indices where digit 0 is in top_vals
+        digit0_codes = valid_sids[:, 0].numpy()
+        mask = np.isin(digit0_codes, list(top_vals))
+        cand_idx = np.where(mask)[0]
+        # Limit candidates
+        if len(cand_idx) > 10000:
+            # Sample if too many
+            cand_idx = cand_idx[np.random.choice(len(cand_idx), 10000, replace=False)]
+        seed_candidates_list.append(torch.tensor(cand_idx, dtype=torch.long, device=device))
+
+    # Pad to same length for batched scoring
+    max_cand = max(c.size(0) for c in seed_candidates_list)
+    seed_candidates = torch.zeros(batch_size, max_cand, dtype=torch.long, device=device)
+    cand_mask = torch.zeros(batch_size, max_cand, dtype=torch.bool, device=device)
+    for bi in range(batch_size):
+        n_c = seed_candidates_list[bi].size(0)
+        seed_candidates[bi, :n_c] = seed_candidates_list[bi]
+        cand_mask[bi, :n_c] = True
+
+    # Score seed candidates
+    seed_scores = _score_sids(log_probs, valid_sids, seed_candidates)  # (batch, max_cand)
+    seed_scores[~cand_mask] = -1e9  # mask invalid
+
+    # Select top-b seeds
+    seed_b = min(b, max_cand)
+    _, top_idx = seed_scores.topk(seed_b, dim=-1)  # (batch, b)
+    current_indices = torch.gather(seed_candidates, 1, top_idx)  # (batch, b)
+
+    # 2. Iterative graph expansion
+    for _ in range(q):
+        # Get neighbors: (batch, b) → (batch, b, k)
+        neighbors = graph_neighbors[current_indices.cpu()].to(device)
+        neighbor_flat = neighbors.reshape(batch_size, -1)  # (batch, b*k)
+
+        # Combine seeds + neighbors
+        combined = torch.cat([current_indices, neighbor_flat], dim=-1)  # (batch, b + b*k)
+
+        # Score all candidates
+        combined_scores = _score_sids(log_probs, valid_sids, combined)
+
+        # Select top-b
+        top_b = min(b, combined.size(1))
+        _, top_idx = combined_scores.topk(top_b, dim=-1)
+        current_indices = torch.gather(combined, 1, top_idx)
+
+    # 3. Final expansion to get top_n candidates
+    neighbors = graph_neighbors[current_indices.cpu()].to(device)
+    neighbor_flat = neighbors.reshape(batch_size, -1)
+    final_combined = torch.cat([current_indices, neighbor_flat], dim=-1)
+    final_scores = _score_sids(log_probs, valid_sids, final_combined)
+
+    actual_top_n = min(top_n, final_combined.size(1))
+    top_scores, top_idx = final_scores.topk(actual_top_n, dim=-1)
+    top_sid_indices = torch.gather(final_combined, 1, top_idx)
+
+    # Retrieve actual SID codes
+    top_sids = valid_sids_dev[top_sid_indices.cpu()].to(device)
+
+    return top_sids, top_scores
+
+
+# ============================================================
 # Metric Class
 # ============================================================
 
@@ -526,7 +775,9 @@ class SemanticIDPredictionMetric(BaseMetric):
     """Semantic ID Next Token Prediction (参考 OneRec)
 
     输入前 k 个 item 的 tokens，自回归预测下一个 item 的 tokens。
-    使用 Beam Search 推理。
+    支持:
+    - 自回归模型 + Beam Search (RKMeans/FSQ, n_layers <= 4)
+    - 并行模型 + Graph-Constrained Decoding (OPQ, n_layers >= 5)
     """
 
     name = 'semantic_id_prediction'
@@ -793,8 +1044,41 @@ class SemanticIDPredictionMetric(BaseMetric):
             print(f"  Train: {len(train_samples_with_uid)}, Eval: {len(eval_samples)}{sampled_str} (by time split)")
             print(f"  n_layers: {n_layers}, n_clusters: {n_clusters}")
 
-        # Model (S-tier MoE: ~27M params, ~7M active)
+        # Decide model type: parallel for OPQ (n_layers >= 5), AR otherwise
+        use_parallel = (n_layers >= 5)
+
         n_gpus = torch.cuda.device_count() if device == 'cuda' else 0
+
+        if use_parallel:
+            return self._compute_parallel(
+                n_clusters=n_clusters, n_layers=n_layers, n_items=n_items,
+                sid_to_items=sid_to_items,
+                train_samples_with_uid=train_samples_with_uid,
+                eval_samples=eval_samples, eval_target_cids=eval_target_cids,
+                batch_size=batch_size, recall_beam_size=recall_beam_size,
+                device=device, n_gpus=n_gpus, verbose=verbose,
+            )
+        else:
+            return self._compute_autoregressive(
+                n_clusters=n_clusters, n_layers=n_layers, n_items=n_items,
+                sid_to_items=sid_to_items,
+                train_samples_with_uid=train_samples_with_uid,
+                eval_samples=eval_samples, eval_target_cids=eval_target_cids,
+                batch_size=batch_size, beam_size=beam_size,
+                recall_beam_size=recall_beam_size,
+                device=device, n_gpus=n_gpus, verbose=verbose,
+            )
+
+    def _compute_autoregressive(
+        self,
+        n_clusters, n_layers, n_items,
+        sid_to_items, train_samples_with_uid, eval_samples, eval_target_cids,
+        batch_size, beam_size, recall_beam_size, device, n_gpus, verbose,
+    ) -> MetricResult:
+        """Original autoregressive NTP pipeline (for RKMeans/FSQ, n_layers <= 4)."""
+        import random
+
+        # Model (S-tier MoE: ~27M params, ~7M active)
         ntp_model = AutoregressiveNTPModel(
             n_clusters=n_clusters,
             n_layers=n_layers,
@@ -982,3 +1266,377 @@ class SemanticIDPredictionMetric(BaseMetric):
             details=details,
             status=self.assess_quality(ppl),
         )
+
+    def _compute_parallel(
+        self,
+        n_clusters, n_layers, n_items,
+        sid_to_items, train_samples_with_uid, eval_samples, eval_target_cids,
+        batch_size, recall_beam_size, device, n_gpus, verbose,
+    ) -> MetricResult:
+        """Parallel NTP pipeline for OPQ (n_layers >= 5).
+
+        Uses ParallelNTPModel (bidirectional) + Graph-Constrained Decoding.
+        """
+        import random
+        from gr_demo.model.opq import build_sid_graph
+
+        if verbose:
+            print(f"  [Parallel mode] OPQ m={n_layers}, M={n_clusters}")
+
+        # Model
+        ntp_model = ParallelNTPModel(
+            n_clusters=n_clusters,
+            n_layers=n_layers,
+            n_items=n_items,
+            embed_dim=256,
+            n_heads=8,
+            n_transformer_layers=6,
+            use_moe=True,
+            n_experts=8,
+            top_k=2,
+            expert_dim=1024,
+            aux_loss_coef=0.01,
+        ).to(device)
+        ntp_model_aux_coef = ntp_model.aux_loss_coef
+
+        raw_model = ntp_model
+        if n_gpus > 1:
+            ntp_model = nn.DataParallel(ntp_model)
+            if verbose:
+                print(f"  Using {n_gpus} GPUs (DataParallel)")
+
+        optimizer = torch.optim.AdamW(ntp_model.parameters(), lr=1e-3, weight_decay=1e-5)
+        scaler = torch.amp.GradScaler('cuda') if device == 'cuda' else None
+
+        total_params = sum(p.numel() for p in ntp_model.parameters())
+        if verbose:
+            arch_parts = [f"d={raw_model.embed_dim}", f"L={raw_model.n_transformer_layers}"]
+            if raw_model.use_moe:
+                arch_parts.append("MoE")
+            arch_parts.append("parallel")
+            print(f"  Model: {total_params:,} params ({', '.join(arch_parts)})")
+            print(f"  Batch size: {batch_size}, AMP: BF16, Device: {device}")
+
+        dl_kwargs = {'pin_memory': True, 'num_workers': 4} if device == 'cuda' else {}
+
+        eval_dataset = ListDataset(eval_samples, n_layers)
+        eval_loader = DataLoader(eval_dataset, batch_size=batch_size, **dl_kwargs)
+
+        # ============================================================
+        # Phase 1: Parallel Training (MTP loss)
+        # ============================================================
+        random.seed(42)
+
+        uid_to_samples = defaultdict(list)
+        for uid, inp, tgt, ts, _cid in train_samples_with_uid:
+            uid_to_samples[uid].append((inp, tgt))
+
+        uid_list = list(uid_to_samples.keys())
+        random.shuffle(uid_list)
+
+        train_samples = []
+        for uid in uid_list:
+            train_samples.extend(uid_to_samples[uid])
+
+        train_dataset = ListDataset(train_samples, n_layers)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, **dl_kwargs)
+
+        if verbose:
+            print(f"  Training ({len(train_samples):,} samples, {len(train_loader)} batches)...")
+
+        ntp_model.train()
+        n_train_batches = len(train_loader)
+        train_t0 = time.time()
+        for batch_idx, (input_batch, target_batch) in enumerate(train_loader):
+            input_batch = input_batch.to(device, non_blocking=True)
+            target_batch = target_batch.to(device, non_blocking=True)
+
+            optimizer.zero_grad(set_to_none=True)
+
+            # Single forward → (batch, m, M) logits
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=(device == 'cuda')):
+                logits, aux_loss = ntp_model(input_batch)  # (batch, m, M)
+                # DataParallel: aux_loss may be a vector
+                aux_loss = aux_loss.mean()
+
+                # MTP loss = sum of per-digit CE
+                ce_loss = sum(
+                    F.cross_entropy(logits[:, j], target_batch[:, j])
+                    for j in range(n_layers)
+                )
+                loss = ce_loss + ntp_model_aux_coef * aux_loss
+
+            if scaler is not None:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+
+            if verbose and (batch_idx + 1) % 100 == 0:
+                elapsed = time.time() - train_t0
+                progress = (batch_idx + 1) / n_train_batches
+                eta = elapsed / progress * (1 - progress)
+                print(f"    Train: {progress*100:.1f}% | MTP-CE: {ce_loss.item():.4f} | Aux: {aux_loss.item():.4f} | {elapsed:.0f}s elapsed, ETA {eta:.0f}s")
+
+        train_elapsed = time.time() - train_t0
+        if verbose:
+            print(f"  Training done in {train_elapsed:.1f}s ({len(train_samples)/train_elapsed:.0f} samples/s)")
+
+        # ============================================================
+        # Phase 2: Build SID graph
+        # ============================================================
+        if verbose:
+            print(f"  Building SID graph for {len(sid_to_items):,} unique SIDs...")
+
+        graph_t0 = time.time()
+        # Build valid_sids array: (N, m)
+        sid_strings = list(sid_to_items.keys())
+        valid_sids_np = np.array(
+            [[int(t) for t in s.split('_')] for s in sid_strings],
+            dtype=np.int64,
+        )
+        valid_sids_tensor = torch.tensor(valid_sids_np, dtype=torch.long)
+
+        # Build sid_str -> index mapping for recall lookup
+        sid_str_to_idx = {s: i for i, s in enumerate(sid_strings)}
+
+        # Build graph using OPQ decode (need quantizer from kwargs or reconstruct)
+        # Since we don't have the quantizer here, build graph from embedding similarity
+        # Use the codes directly: decode via codebook lookup
+        # We build a simple L2 graph on the SID code space instead
+        graph_neighbors = build_sid_graph(
+            quantizer=None,  # will use code-based fallback below
+            valid_sids=valid_sids_np,
+            top_k=100,
+            verbose=verbose,
+        ) if False else self._build_code_graph(valid_sids_np, top_k=100, verbose=verbose)
+
+        graph_neighbors_tensor = torch.tensor(graph_neighbors, dtype=torch.long)
+        graph_elapsed = time.time() - graph_t0
+
+        if verbose:
+            print(f"  SID graph built in {graph_elapsed:.1f}s")
+
+        # ============================================================
+        # Phase 3: Parallel Eval with Graph-Constrained Decoding
+        # ============================================================
+        if verbose:
+            print(f"  Evaluating on {len(eval_samples)} samples (graph-constrained decoding)...")
+
+        eval_t0 = time.time()
+        raw_model.eval()
+
+        eval_losses = []
+        # Per-digit accuracy (independent, not prefix)
+        digit_hit_1 = [0] * n_layers
+        digit_hit_5 = [0] * n_layers
+        digit_hit_10 = [0] * n_layers
+        total_eval = 0
+
+        # Item recall
+        recall_ks = [10, 50, 100, 500]
+        item_recall = {k: 0 for k in recall_ks}
+        eval_offset = 0
+        n_batches = len(eval_loader)
+
+        use_amp = (device != 'cpu' and torch.cuda.is_available())
+
+        with torch.no_grad():
+            for batch_idx, (input_batch, target_batch) in enumerate(eval_loader):
+                input_batch = input_batch.to(device, non_blocking=True)
+                target_batch = target_batch.to(device, non_blocking=True)
+                curr_batch_size = input_batch.size(0)
+
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp):
+                    logits, _ = raw_model(input_batch)  # (batch, m, M)
+
+                # MTP loss
+                loss = sum(
+                    F.cross_entropy(logits[:, j], target_batch[:, j])
+                    for j in range(n_layers)
+                )
+                eval_losses.append(loss.item() * curr_batch_size)
+
+                # Per-digit Hit@K (independent, NOT prefix)
+                for j in range(n_layers):
+                    digit_logits = logits[:, j]  # (batch, M)
+                    top1 = digit_logits.topk(1, dim=-1).indices
+                    top5 = digit_logits.topk(5, dim=-1).indices
+                    top10 = digit_logits.topk(10, dim=-1).indices
+                    target_j = target_batch[:, j:j+1]
+                    digit_hit_1[j] += (top1 == target_j).any(dim=-1).sum().item()
+                    digit_hit_5[j] += (top5 == target_j).any(dim=-1).sum().item()
+                    digit_hit_10[j] += (top10 == target_j).any(dim=-1).sum().item()
+
+                # Graph-Constrained Decoding for item recall
+                log_probs = F.log_softmax(logits.float(), dim=-1)  # (batch, m, M)
+                top_sids, top_scores = graph_constrained_decode(
+                    log_probs, valid_sids_tensor, graph_neighbors_tensor,
+                    b=10, q=3, k=100, top_n=500,
+                )
+                # top_sids: (batch, top_n, m)
+
+                # Item recall
+                top_sids_cpu = top_sids.cpu()
+                for sample_idx in range(curr_batch_size):
+                    target_cid = eval_target_cids[eval_offset + sample_idx]
+                    candidate_items = []
+                    seen = set()
+                    for rank in range(top_sids_cpu.size(1)):
+                        sid_str = '_'.join(
+                            str(t.item()) for t in top_sids_cpu[sample_idx, rank]
+                        )
+                        for item in sid_to_items.get(sid_str, set()):
+                            if item not in seen:
+                                candidate_items.append(item)
+                                seen.add(item)
+                    for k in recall_ks:
+                        if target_cid in set(candidate_items[:k]):
+                            item_recall[k] += 1
+
+                eval_offset += curr_batch_size
+                total_eval += curr_batch_size
+
+                if verbose and (batch_idx + 1) % 20 == 0:
+                    pct = (batch_idx + 1) / n_batches * 100
+                    print(f"    Eval: {pct:.0f}% ({total_eval:,})")
+
+        eval_elapsed = time.time() - eval_t0
+
+        if total_eval == 0:
+            return MetricResult(name=self.name, value=0.0, details={'error': 'No eval samples'}, status='unknown')
+
+        avg_loss = sum(eval_losses) / total_eval
+        ppl = np.exp(avg_loss / n_layers)
+
+        # Per-digit accuracy lists
+        hit1_rates = [digit_hit_1[j] / total_eval for j in range(n_layers)]
+        hit5_rates = [digit_hit_5[j] / total_eval for j in range(n_layers)]
+        hit10_rates = [digit_hit_10[j] / total_eval for j in range(n_layers)]
+
+        if verbose:
+            print(f"  Eval done in {eval_elapsed:.1f}s")
+            print(f"  [Parallel] Results:")
+            print(f"    Perplexity: {ppl:.2f} (random: {n_clusters})")
+            print(f"    Digit Hit@1:  {[f'{h:.4f}' for h in hit1_rates]}")
+            print(f"    Digit Hit@5:  {[f'{h:.4f}' for h in hit5_rates]}")
+            print(f"    Digit Hit@10: {[f'{h:.4f}' for h in hit10_rates]}")
+            for k in recall_ks:
+                print(f"    item_recall@{k}: {item_recall[k] / total_eval:.4f}")
+
+        sid_counts = [len(items) for items in sid_to_items.values()]
+        avg_collision = np.mean(sid_counts) if sid_counts else 0
+
+        details = {
+            'perplexity': ppl,
+            'random_perplexity': n_clusters,
+            'ntp_loss': avg_loss,
+            'depth_acc_beam': hit1_rates,  # for compat: use digit hit@1 as "depth_acc"
+            'depth_hit@5': hit5_rates,
+            'depth_hit@10': hit10_rates,
+            'beam_size': 0,  # no beam search
+            'recall_beam_size': recall_beam_size,
+            'n_items': n_items,
+            'n_layers': n_layers,
+            'n_clusters': n_clusters,
+            'n_train': len(train_samples),
+            'n_eval': len(eval_samples),
+            'n_unique_sids': len(sid_to_items),
+            'avg_items_per_sid': round(avg_collision, 2),
+            # Model architecture
+            'model_type': 'parallel',
+            'model_params': total_params,
+            'model_embed_dim': 256,
+            'model_n_transformer_layers': 6,
+            'model_n_heads': 8,
+            'model_use_moe': True,
+            'model_n_experts': 8,
+            'model_top_k': 2,
+            'model_expert_dim': 1024,
+            # Graph decoding
+            'graph_n_sids': len(sid_strings),
+            'graph_top_k': 100,
+            'gcd_b': 10,
+            'gcd_q': 3,
+            # Timing
+            'train_time_s': round(train_elapsed, 1),
+            'train_samples_per_s': round(len(train_samples) / train_elapsed),
+            'graph_build_time_s': round(graph_elapsed, 1),
+            'trained_eval_time_s': round(eval_elapsed, 1),
+            'total_time_s': round(train_elapsed + graph_elapsed + eval_elapsed, 1),
+        }
+
+        for k in recall_ks:
+            details[f'item_recall@{k}'] = item_recall[k] / total_eval
+
+        return MetricResult(
+            name=self.name,
+            value=ppl,
+            layer_values=hit10_rates,
+            details=details,
+            status=self.assess_quality(ppl),
+        )
+
+    @staticmethod
+    def _build_code_graph(
+        valid_sids: np.ndarray,
+        top_k: int = 100,
+        verbose: bool = True,
+    ) -> np.ndarray:
+        """Build SID graph based on code-space Hamming-like distance.
+
+        For each SID, find top_k nearest neighbors by number of matching digits.
+        Uses vectorized scoring with random tie-breaking for diversity.
+
+        Args:
+            valid_sids: (N, m) int array
+            top_k: neighbors per SID
+            verbose: print progress
+
+        Returns:
+            neighbors: (N, top_k) int32 array
+        """
+        N, m = valid_sids.shape
+
+        if verbose:
+            print(f"  Building code-space SID graph: {N:,} SIDs, m={m}, top_k={top_k}")
+
+        # For large N, process in chunks to avoid OOM
+        chunk_size = min(2048, N)
+        neighbors = np.zeros((N, top_k), dtype=np.int32)
+
+        sids_tensor = torch.tensor(valid_sids, dtype=torch.long)
+
+        for start in range(0, N, chunk_size):
+            end = min(start + chunk_size, N)
+            chunk = sids_tensor[start:end]  # (chunk, m)
+
+            # Count matching digits: (chunk, N)
+            matches = (chunk.unsqueeze(1) == sids_tensor.unsqueeze(0)).sum(dim=-1).float()
+
+            # Mask self
+            for i in range(end - start):
+                matches[i, start + i] = -1
+
+            # Top-k
+            _, topk_idx = matches.topk(top_k, dim=-1)
+            neighbors[start:end] = topk_idx.numpy()
+
+            if verbose and (end - start) > 0 and (end % (chunk_size * 10) == 0 or end == N):
+                print(f"    Graph: {end:,}/{N:,}")
+
+        if verbose:
+            # Stats
+            avg_match = 0
+            sample_n = min(1000, N)
+            sample_idx = np.random.choice(N, sample_n, replace=False)
+            for i in sample_idx:
+                nn_idx = neighbors[i, 0]
+                match_count = np.sum(valid_sids[i] == valid_sids[nn_idx])
+                avg_match += match_count
+            avg_match /= sample_n
+            print(f"  Graph stats: avg top-1 digit match = {avg_match:.1f}/{m}")
+
+        return neighbors
