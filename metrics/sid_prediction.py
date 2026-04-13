@@ -833,31 +833,9 @@ class SemanticIDPredictionMetric(BaseMetric):
         # DataLoader kwargs
         dl_kwargs = {'pin_memory': True, 'num_workers': 4} if device == 'cuda' else {}
 
-        # ============================================================
-        # Phase 0: Baseline eval (untrained model)
-        # ============================================================
+        # Eval dataset (reused after training)
         eval_dataset = ListDataset(eval_samples, n_layers)
         eval_loader = DataLoader(eval_dataset, batch_size=batch_size, **dl_kwargs)
-
-        if verbose:
-            print(f"  [Baseline] evaluating (untrained, recall_beam={recall_beam_size})...")
-        eval_t0 = time.time()
-        baseline_metrics = self._run_eval(
-            raw_model, eval_loader, n_layers, beam_size, device,
-            sid_to_items=sid_to_items, eval_target_cids=eval_target_cids,
-            recall_beam_size=recall_beam_size,
-            run_beam=True, verbose=verbose,
-            beam_search_module=beam_module,
-        )
-        baseline_elapsed = time.time() - eval_t0
-
-        if verbose:
-            print(f"  [Baseline] done in {baseline_elapsed:.1f}s")
-            print(f"  [Baseline] Perplexity: {baseline_metrics['perplexity']:.2f} (random: {n_clusters})")
-            print(f"    Depth Acc (beam): {[f'{a:.4f}' for a in baseline_metrics['depth_acc_beam']]}")
-            print(f"    Depth Hit@10: {[f'{h:.4f}' for h in baseline_metrics['depth_hit@10']]}")
-            for rk_key in sorted(k for k in baseline_metrics if k.startswith('item_recall@')):
-                print(f"    {rk_key}: {baseline_metrics[rk_key]:.4f}")
 
         # ============================================================
         # Phase 1: Train on train_samples (uid-level shuffle)
@@ -951,14 +929,11 @@ class SemanticIDPredictionMetric(BaseMetric):
 
         if verbose:
             print(f"  [Trained] Results:")
-            print(f"    Perplexity: {ppl:.2f} (baseline: {baseline_metrics['perplexity']:.2f}, random: {n_clusters})")
+            print(f"    Perplexity: {ppl:.2f} (random: {n_clusters})")
             print(f"    Depth Acc (beam): {[f'{a:.4f}' for a in depth_acc]}")
             print(f"    Depth Hit@10: {[f'{h:.4f}' for h in hit10]}")
             for rk_key in sorted(k for k in trained_metrics if k.startswith('item_recall@')):
-                rk = trained_metrics[rk_key]
-                bk = baseline_metrics.get(rk_key)
-                bk_str = f", baseline: {bk:.4f}" if bk is not None else ""
-                print(f"    {rk_key}: {rk:.4f}{bk_str}")
+                print(f"    {rk_key}: {trained_metrics[rk_key]:.4f}")
 
         # Collision stats for context
         sid_counts = [len(items) for items in sid_to_items.values()]
@@ -971,10 +946,6 @@ class SemanticIDPredictionMetric(BaseMetric):
             'depth_acc_beam': depth_acc,
             'depth_hit@5': hit5,
             'depth_hit@10': hit10,
-            'baseline_perplexity': baseline_metrics['perplexity'],
-            'baseline_depth_acc_beam': baseline_metrics['depth_acc_beam'],
-            'baseline_depth_hit@5': baseline_metrics['depth_hit@5'],
-            'baseline_depth_hit@10': baseline_metrics['depth_hit@10'],
             'beam_size': beam_size,
             'recall_beam_size': recall_beam_size,
             'n_items': n_items,
@@ -994,21 +965,16 @@ class SemanticIDPredictionMetric(BaseMetric):
             'model_top_k': 2,
             'model_expert_dim': 1024,
             # Timing
-            'baseline_eval_time_s': round(baseline_elapsed, 1),
             'train_time_s': round(train_elapsed, 1),
             'train_samples_per_s': round(len(train_samples) / train_elapsed),
             'trained_eval_time_s': round(trained_eval_elapsed, 1),
-            'total_time_s': round(baseline_elapsed + train_elapsed + trained_eval_elapsed, 1),
+            'total_time_s': round(train_elapsed + trained_eval_elapsed, 1),
         }
 
         # Item recall results (dynamic keys from _run_eval)
         for key in trained_metrics:
             if key.startswith('item_recall@'):
                 details[key] = trained_metrics[key]
-        for key in baseline_metrics:
-            if key.startswith('item_recall@'):
-                details[f'baseline_{key}'] = baseline_metrics[key]
-
         return MetricResult(
             name=self.name,
             value=ppl,

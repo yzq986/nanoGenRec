@@ -120,12 +120,16 @@ push_config() {
         return 1
     fi
 
-    # Commit if message provided
+    # Company identity for private config
+    local COMPANY_NAME="Company User"
+    local COMPANY_EMAIL="user@company.com"
+
+    # Commit if message provided (使用公司身份)
     if [ -n "$COMMIT_MSG" ]; then
         git add -A
         if ! git diff --cached --quiet; then
-            git commit -m "$COMMIT_MSG"
-            echo "Committed: $COMMIT_MSG"
+            git -c user.name="$COMPANY_NAME" -c user.email="$COMPANY_EMAIL" commit -m "$COMMIT_MSG"
+            echo "Committed (as $COMPANY_NAME): $COMMIT_MSG"
         else
             echo "Nothing to commit in config/"
         fi

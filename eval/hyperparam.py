@@ -53,6 +53,7 @@ def run_single_experiment(
     device: str = 'cuda',
     recall_beam_size: int = 50,
     eval_sample_size: int = 50000,
+    only_sid: bool = False,
 ) -> Tuple[Dict[str, float], float]:
     """运行单次 RKMeans 训练 + eval，返回 (metrics_dict, train_seconds)"""
     from gr_demo.eval.behavior import BehaviorMetricsEvaluator
@@ -94,7 +95,8 @@ def run_single_experiment(
             behavior_data=behavior_data,
             device=device,
         )
-        evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
+        if not only_sid:
+            evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
         evaluator.register_metrics(['semantic_id_prediction'])
         sid_kwargs = {
             'semantic_id_prediction': {
@@ -136,14 +138,11 @@ def run_single_experiment(
     if 'semantic_id_prediction' in metric_results:
         sid = metric_results['semantic_id_prediction']
         results['ntp_perplexity'] = round(sid.value, 4)
-        results['ntp_baseline_ppl'] = sid.details.get('baseline_perplexity')
         results['ntp_depth_acc'] = sid.layer_values
         results['ntp_depth_hit@10'] = sid.details.get('depth_hit@10')
-        results['ntp_baseline_hit@10'] = sid.details.get('baseline_depth_hit@10')
         # Item recall (the key non-monotonic metric)
         for k in (10, 50, 100, 500):
             results[f'item_recall@{k}'] = sid.details.get(f'item_recall@{k}')
-            results[f'baseline_item_recall@{k}'] = sid.details.get(f'baseline_item_recall@{k}')
 
     return results, train_time
 
@@ -450,6 +449,8 @@ def parse_args():
     # SID prediction (NTP) 相关
     parser.add_argument('--skip_ntp', action='store_true',
                         help='Skip SID prediction NTP (only run intrinsic metrics)')
+    parser.add_argument('--only-sid', action='store_true',
+                        help='Only run SID prediction (skip intrinsic metrics)')
     parser.add_argument('--recall_beam_size', type=int, default=50,
                         help='Beam size for item recall in NTP eval (default: 50)')
     parser.add_argument('--eval_sample_size', type=int, default=50000,
@@ -533,6 +534,7 @@ def main():
                     device=args.device,
                     recall_beam_size=args.recall_beam_size,
                     eval_sample_size=args.eval_sample_size,
+                    only_sid=args.only_sid,
                 )
 
                 result = {
@@ -553,8 +555,7 @@ def main():
                 print(f"    collision={col_val}  entropy={ent}  balance={bal}  recon={rec}")
                 if 'ntp_perplexity' in metrics:
                     ppl = metrics['ntp_perplexity']
-                    base = metrics.get('ntp_baseline_ppl', 'N/A')
-                    print(f"    ★ ntp_ppl={ppl}  baseline_ppl={base}")
+                    print(f"    ★ ntp_ppl={ppl}")
                     recall_parts = []
                     for k in (10, 50, 100, 500):
                         rk = metrics.get(f'item_recall@{k}')
