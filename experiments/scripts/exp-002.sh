@@ -25,4 +25,10 @@ python run.py hyperparam --skip_embedding \
     --name exp002-fsq
 
 echo ""
+echo ">>> Committing results..."
+git add experiments/
+git commit -m "EXP-002 results: ResKmeansFSQ vs RKMeans baseline" || echo "Nothing to commit"
+./push.sh
+
+echo ""
 echo "EXP-002 complete!"

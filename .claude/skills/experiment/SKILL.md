@@ -42,6 +42,14 @@ Record a new experiment entry in `experiments/log.md` using the project's struct
    - Add `echo` lines for progress visibility between commands
    - If the experiment has multiple configs (e.g. baseline + variants), include all of them
    - The Run Commands section in log.md should reference this script: `bash experiments/scripts/exp-{nnn}.sh`
+   - **At the end of the script**, add git commit + push to auto-persist results:
+     ```bash
+     echo ""
+     echo ">>> Committing results..."
+     git add experiments/
+     git commit -m "EXP-{NNN} results: {short title}" || echo "Nothing to commit"
+     ./push.sh
+     ```
 
 ## Entry Format
 
@@ -144,6 +152,12 @@ echo ">>> Running cluster sweep..."
 python run.py hyperparam --skip_embedding \
     --clusters 512 1024 2048 \
     --name exp002-cluster-sweep
+
+echo ""
+echo ">>> Committing results..."
+git add experiments/
+git commit -m "EXP-002 results: NTP Recall vs Cluster Size" || echo "Nothing to commit"
+./push.sh
 
 echo ""
 echo "EXP-002 complete!"
