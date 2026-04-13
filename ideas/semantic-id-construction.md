@@ -38,8 +38,8 @@
 ### 关键问题
 
 1. token 数量 vs 词表大小的 tradeoff — OneRec 用 3 token x 8192, OPQ 倾向多 token x 小词表
-2. NTP 模型需要适配更长的 token 序列，beam search 成本增加
-3. 需要验证: 并行 ID 的 NTP 预测是否确实比残差 ID 更好
+2. **推理方式需要重新设计**: 并行 ID 各 token 无依赖，不应再用自回归 beam search (tree search)，而应每个 position 独立预测 top-k → 笛卡尔积组合 → rerank (grid search)。这是并行 ID 的核心优势 — 搜索空间从树形变为网格，远大于残差编码。成本在于组合后的 rerank 策略。
+3. 需要验证: 并行 ID 的独立预测 + grid search 是否确实比残差 ID 的自回归 beam search 召回更好
 
 ---
 
