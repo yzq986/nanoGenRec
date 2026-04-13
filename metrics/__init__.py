@@ -23,6 +23,7 @@ from .behavior import (
     EmbeddingBehaviorCorrelationMetric,
     PositiveNegativeSeparationMetric,
 )
+from .embedding_hitrate import EmbeddingHitRateMetric
 from .sid_prediction import SemanticIDPredictionMetric
 from .report import ReportGenerator
 
@@ -43,6 +44,7 @@ BEHAVIOR_METRICS = {
     'semantic_neighbor_hit_rate': SemanticNeighborHitRateMetric,
     'embedding_behavior_correlation': EmbeddingBehaviorCorrelationMetric,
     'positive_negative_separation': PositiveNegativeSeparationMetric,
+    'embedding_hit_rate': EmbeddingHitRateMetric,
     'semantic_id_prediction': SemanticIDPredictionMetric,
 }
 
@@ -65,6 +67,7 @@ __all__ = [
     'SemanticNeighborHitRateMetric',
     'EmbeddingBehaviorCorrelationMetric',
     'PositiveNegativeSeparationMetric',
+    'EmbeddingHitRateMetric',
     'SemanticIDPredictionMetric',
     # Utilities
     'ReportGenerator',
