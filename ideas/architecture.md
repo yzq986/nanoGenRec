@@ -16,10 +16,16 @@ AutoregressiveNTPModel (当前 6-layer decoder, beam=5)
 │   └── 1205→160 token, 3.7x FLOP 减少
 ├── IDEA-onemall-4: Loss-Free MoE (动态 bias 替代 aux loss)
 │   └── 低风险改进 MoE load balancing
+├── IDEA-glide-0: Soft Prompt Injection (user embedding → prefix)
+│   └── Spotify 验证, 非惯常收听 +5.4%, 新发现 +14.3%
 ├── IDEA-oneloc-0: Context-augmented Attention (side-info 注入)
 │   └── additive similarity + gating，需 encoder-decoder 架构
-└── IDEA-oneloc-1: Category Prompt (邻域 cross-attention 提示)
-    └── 泛化为 interest/category prompt prefix
+├── IDEA-oneloc-1: Category Prompt (邻域 cross-attention 提示)
+│   └── 泛化为 interest/category prompt prefix
+├── IDEA-oxygen-0: Fast-Slow Thinking (近线 LLM + 实时 GR)
+│   └── LLM 推理蒸馏为指令，IGR 意图过滤，SA-GCPO 多场景 RL
+└── IDEA-llada-0: Discrete Diffusion (替代自回归)
+    └── 双向注意力 + 自适应生成顺序，解决错误累积
 ```
 
 ---
@@ -233,12 +239,123 @@ class QueryFormer(nn.Module):
 
 ---
 
+## IDEA-glide-0: Soft Prompt Injection (用户 Embedding → Decoder Prefix)
+
+**优先级**: P1
+**来源**: GLIDE (Spotify, arxiv 2603.17540, Mar 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+GLIDE 将推荐建模为 **instruction-following** 任务。关键架构创新: 将长期用户 embedding 作为 **soft prompts** 注入 decoder，而非将用户信息编码为 token 序列。
+
+1. **Soft Prompt Injection**: 长期用户 embedding → learned projection → 作为 decoder 的前缀 KV states
+2. **Instruction Conditioning**: 短期行为序列 + 轻量用户上下文作为 "指令"，引导生成方向
+3. **Semantic ID Catalog Grounding**: 用 SID 确保生成的推荐都是有效 catalog item
+
+Spotify 大规模在线 A/B (百万级用户): **非惯常收听 +5.4%，新节目发现 +14.3%**。
+
+### 与当前项目的关联
+
+- 当前 NTP 模型没有任何 user representation 注入机制
+- IDEA-oneloc-1 (Category Prompt) 提出了类似的 prefix 思路，但 GLIDE 更通用: 任何用户 embedding 都可以做 soft prompt
+- **低成本实现**: 在 decoder 输入序列前加几个 learned prefix token (来自 user embedding projection)，不需要改变 decoder 架构
+- 可以与 IDEA-sid-1 (协同信号增强 embedding) 结合: 增强后的 user embedding 做 soft prompt
+
+### 实验设计草案
+
+**实现**:
+1. User embedding: 用用户近期行为的 item embedding 均值 (或 attention pooling)
+2. Projection: `MLP(user_embed_dim → decoder_embed_dim × n_prefix)` → reshape 为 n_prefix 个 prefix token
+3. Decoder 输入: `[prefix_1, ..., prefix_n, sid_1, sid_2, sid_3]`
+4. n_prefix ∈ {2, 4, 8}
+
+**评估**: 有/无 soft prompt 的 NTP Recall@K
+
+### 关键问题
+
+1. User embedding 从哪里来? 当前项目没有预训练的 user embedding
+2. 如果用行为序列均值作为 user embedding，信息量是否足够
+3. Prefix token 增加了序列长度 → 训练和推理成本上升
+
+---
+
+## IDEA-oxygen-0: Fast-Slow Thinking (近线 LLM 推理 + 实时生成)
+
+**优先级**: P2
+**来源**: OxygenREC (arxiv 2512.22386, Dec 2025)
+**状态**: 待讨论
+
+### 核心思想
+
+OxygenREC 提出 **Fast-Slow Thinking** 架构解决 LLM 推理在实时推荐中不可用的问题:
+
+1. **Slow Thinking (近线)**: LLM 离线/近线生成 **Contextual Reasoning Instructions** — 将复杂用户意图推理蒸馏为结构化指令
+2. **Fast Thinking (实时)**: 高效 encoder-decoder 消费这些指令做实时 SID 生成
+3. **Instruction-Guided Retrieval (IGR)**: 用指令过滤行为序列，只保留意图相关的交互
+4. **SA-GCPO**: Soft Adaptive Group Clip Policy Optimization，多场景统一 RL 对齐
+
+核心创新: 将 LLM 的深层推理能力通过"指令"传递给轻量模型，实现"train-once-deploy-everywhere"。
+
+### 与当前项目的关联
+
+- 当前项目没有 LLM 推理环节，NTP 模型直接从行为序列生成 SID
+- Fast-Slow 架构在我们当前阶段过于复杂，但 **IGR (指令引导的行为过滤)** 思想值得借鉴:
+  - 不是把用户全部行为序列都输入，而是先用轻量模型/规则过滤出与当前上下文相关的子序列
+- SA-GCPO 是 GRPO 的多场景扩展，与 IDEA-onemall-2 有关联
+
+### 关键问题
+
+1. 当前项目是单场景，Fast-Slow + 多场景部署的价值有限
+2. IGR 的"指令"从哪里来? 需要 LLM 或规则系统支持
+3. 适合作为架构终极形态参考，当前阶段不适合实施
+
+---
+
+## IDEA-llada-0: Discrete Diffusion 替代自回归解码
+
+**优先级**: P2
+**来源**: LLaDA-Rec (arxiv 2511.06254, Nov 2025)
+**状态**: 待讨论
+
+### 核心思想
+
+LLaDA-Rec 用 **Masked Discrete Diffusion** 替代自回归解码生成 SID，解决两个根本问题:
+
+1. **单向约束**: causal attention 限制每个 token 只能看到前面的 token，破坏全局语义建模
+2. **错误累积**: 左→右固定生成顺序让早期 token 错误传播到后续 token
+
+技术要点:
+- **Parallel Tokenization Scheme**: 专为双向注意力设计的 SID（与 RQ 的有序 SID 不同）
+- **Dual Masking**: user-history level (序列间依赖) + next-item level (item 内 token 间语义)
+- **Adapted Beam Search**: 适配 diffusion 的非固定顺序解码
+
+### 与当前项目的关联
+
+- 当前 NTP 模型是纯自回归 (`AutoregressiveNTPModel`)
+- IDEA-sid-0 (OPQ 并行 ID) 已经在走非自回归路线 (并行预测+图解码)
+- LLaDA-Rec 提供了另一种非自回归方案: diffusion。与 OPQ 的区别:
+  - OPQ: 完全独立预测各 token → 图解码约束
+  - Diffusion: 迭代去噪，token 间有隐式交互 → 可能更好的全局一致性
+- **目前优先级低**: IDEA-sid-0 (OPQ) 已经在实验中，先看 OPQ 结果
+
+### 关键问题
+
+1. Diffusion 的推理延迟: 需要多步去噪 (T=10~50 steps)，比自回归和并行预测都慢
+2. 与 OPQ 并行预测的对比: 需要在相同 SID 配置下才有意义
+3. 训练复杂度: diffusion training 需要噪声调度、去噪网络设计等额外工程
+
+---
+
 ## 优先级总结
 
 | 优先级 | ID | 实验 | 原因 |
 |--------|-----|------|------|
 | P1 | IDEA-gr4ad-1 | LazyAR 解码器 | 与 ARCHITECTURE.md Lazy Decoder-Only 方向一致；扩展 token 数或 beam 后必需 |
 | P1 | IDEA-onemall-1 | Query-Former 序列压缩 | 3.7x FLOP 减少，但需要更长序列场景 |
+| P1 | IDEA-glide-0 | Soft Prompt Injection | 低成本注入用户表示，Spotify 在线验证 |
 | P2 | IDEA-onemall-4 | Loss-Free MoE Balancing | 低风险低成本，8 experts 下收益可能有限 |
 | P2 | IDEA-oneloc-0 | Context-augmented Attention | 需要 encoder-decoder 架构，当前无落地场景 |
 | P2 | IDEA-oneloc-1 | Category Prompt | 需要 encoder-decoder 架构，泛化形式有价值 |
+| P2 | IDEA-oxygen-0 | Fast-Slow Thinking | 架构终极形态参考，当前阶段过于复杂 |
+| P2 | IDEA-llada-0 | Discrete Diffusion 解码 | 非自回归新范式，但 OPQ 优先 |

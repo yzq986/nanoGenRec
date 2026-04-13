@@ -14,6 +14,12 @@ NTP 纯监督学习 (当前 baseline)
 │   └── GRPO > DPO, 768 候选 normalized advantage
 ├── IDEA-oneloc-2: DPO + 双目标奖励 (OneLoc 方案)
 │   └── popularity + diversity 双目标
+├── IDEA-align3-0: Progressive DPO (Align³GR, 快手, AAAI 2026 Oral)
+│   └── SP-DPO (自博弈) → RF-DPO (真实反馈), 无需外部 reward model
+├── IDEA-rankgr-0: Listwise DPO + Rescore (RankGR, 淘宝)
+│   └── IAP (listwise DPO 解码) + RSP (轻量 rescore), 近万 QPS
+├── IDEA-uni-0: Search Preference Optimization (UniSearch, 快手)
+│   └── reward model + user feedback, 搜索场景
 └── IDEA-gr4ad-3: RSPO (GR4AD 方案)
     └── list-wise Lambda-weighted, NDCG-inspired
     └── 最强但前置依赖最重
@@ -178,10 +184,126 @@ GR4AD 提出 list-wise RL 方法 RSPO: 将 beam search 产出的候选列表按 
 
 ---
 
+## IDEA-align3-0: Progressive DPO (SP-DPO → RF-DPO 三层对齐)
+
+**优先级**: P1
+**来源**: Align³GR (Kuaishou, arxiv 2511.11255, Nov 2025, AAAI 2026 Oral)
+**状态**: 待讨论
+
+### 核心思想
+
+Align³GR 提出统一三层对齐框架:
+
+1. **Token-level Alignment**: Dual tokenization 融合语义和协同信号 (与 IDEA-pit-0 有关联)
+2. **Behavior Modeling-level Alignment**: 双向语义对齐增强行为建模
+3. **Preference-level Alignment**: **Progressive DPO** — 先 SP-DPO (自博弈) 再 RF-DPO (真实反馈):
+   - **SP-DPO (Self-Play DPO)**: 模型自己生成候选集，按 reward 排序构造 preference pairs → 不需要外部 reward model
+   - **RF-DPO (Real-Feedback DPO)**: 用真实用户行为反馈替换自博弈 reward → 更准确的对齐信号
+
+**结果**: Recall@10 +17.8%, NDCG@10 +20.2% (offline). 快手工业部署在线 A/B 显著提升。AAAI 2026 Oral。
+
+### 与当前项目的关联
+
+- 直接强化 IDEA-onemall-2 (GRPO/DPO): Progressive DPO 是一种更稳定的 DPO 训练策略
+- **SP-DPO 解决了"没有外部 reward model"的痛点**: 用自博弈替代外部 reward
+- 当前项目没有线上排序模型做 reward，SP-DPO 是最实际的 RL 入门方案
+- RF-DPO 阶段可以用行为数据 (clicked > not-clicked) 替代线上反馈
+
+### 实验设计草案
+
+**Phase 1 — SP-DPO**:
+1. 训练好 NTP baseline
+2. 用 NTP 模型 beam search 生成 top-K 候选
+3. 用简单 reward (embedding similarity to ground truth) 对候选排序
+4. Top-1 = positive, Bottom-1 = negative → DPO loss
+
+**Phase 2 — RF-DPO**:
+1. 用行为数据: clicked item = positive, exposed-but-not-clicked item = negative
+2. 替换 SP-DPO 的 preference pairs
+
+### 关键问题
+
+1. 与 IDEA-onemall-2 (GRPO) 的关系: Progressive DPO 和 GRPO 哪个更好? 可以做对比实验
+2. SP-DPO 的 reward 设计: 用什么作为 "自博弈" 的评判标准
+
+---
+
+## IDEA-rankgr-0: Listwise DPO + Two-Phase Decode-Rescore
+
+**优先级**: P1
+**来源**: RankGR (Alibaba/Taobao, arxiv 2602.08575, Feb 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+RankGR 将生成式检索分为两阶段:
+
+1. **Initial Assessment Phase (IAP)**: 在自回归解码中注入 **listwise DPO**，让模型理解候选间的偏序关系
+2. **Refined Scoring Phase (RSP)**: 对 IAP 的 top-λ 候选，用轻量评分模块重新打分 (建模候选与输入序列的交互)
+
+两阶段在统一 GR 模型中联合优化。淘宝"猜你喜欢"在线验证 + 近万 QPS 实时服务。
+
+### 与当前项目的关联
+
+- **直接增强 IDEA-gr4ad-3 (RSPO)**: RankGR 的 listwise DPO 是 RSPO 的工业验证版本
+- RSP (rescore 阶段) 是新技术: 不需要外部 reranking 模型，在 GR 模型内部加一个轻量 scorer
+- 可以与 IDEA-gr4ad-4 (Dynamic Beam Search) 配合: IAP 用小 beam 快速筛选，RSP 对 top candidates 精细打分
+
+### 实验设计草案
+
+**Phase 1 — Listwise DPO in NTP**:
+- 训练 NTP 时，对同一 user 的 beam search 结果按行为信号排序
+- 构造 listwise preference → DPO loss
+
+**Phase 2 — RSP Module**:
+- 在 NTP decoder 输出端加一个 cross-attention scorer
+- 输入: user 行为序列 + 候选 SID → 输出: 精细分数
+- 用分数 rerank top-K 候选
+
+### 关键问题
+
+1. RSP 的计算开销: 对每个 top-λ 候选做 cross-attention，推理延迟增加多少
+2. 与 IDEA-gr4ad-4 (Dynamic Beam) 的配合: beam 产出 → RSP rescore → 最终 top-K
+
+---
+
+## IDEA-uni-0: Search Preference Optimization (SPO)
+
+**优先级**: P2
+**来源**: UniSearch (Kuaishou, arxiv 2509.06887, Sep 2025)
+**状态**: 待讨论
+
+### 核心思想
+
+UniSearch 用 **Search Preference Optimization (SPO)** 将 reward model 和用户真实反馈融入生成式搜索:
+
+1. 训练 reward model 对生成候选打分
+2. 用真实用户反馈 (点击、停留时长) 作为额外信号
+3. 将 reward 信号通过 preference optimization 注入生成器
+
+快手直播搜索部署: **近年最大单次实验提升**。
+
+### 与当前项目的关联
+
+- SPO 本质上是 GRPO/DPO 的搜索场景特化版本
+- 与 IDEA-onemall-2 (GRPO) 和 IDEA-align3-0 (Progressive DPO) 有重叠
+- 独特价值: reward model 的训练方法和 user feedback 的融合方式可以借鉴
+- **优先级低**: 当前不做搜索场景，核心 RL 技术已被其他 idea 覆盖
+
+### 关键问题
+
+1. 与 IDEA-onemall-2 / IDEA-align3-0 的去重: SPO 的独特贡献是什么?
+2. 当前无搜索场景，价值有限
+
+---
+
 ## 优先级总结
 
 | 优先级 | ID | 实验 | 原因 |
 |--------|-----|------|------|
 | P1 | IDEA-onemall-2 | GRPO/DPO 强化学习 | 战略重要但依赖强基线 + reward model |
 | P1 | IDEA-oneloc-2 | DPO + 双目标奖励 | DPO 比 PPO 简单，可作为 RL 入门 |
+| P1 | IDEA-align3-0 | Progressive DPO (SP→RF) | SP-DPO 解决无 reward model 痛点，AAAI 2026 Oral |
+| P1 | IDEA-rankgr-0 | Listwise DPO + Rescore | 淘宝验证，RSP 模块是新技术 |
 | P2 | IDEA-gr4ad-3 | RSPO 排序优化 | 收益最大但前置依赖最重 |
+| P2 | IDEA-uni-0 | SPO 搜索偏好优化 | 与 GRPO/DPO 重叠，无搜索场景 |
