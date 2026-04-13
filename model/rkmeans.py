@@ -44,6 +44,7 @@ class FaissKMeansLayer:
             verbose=verbose,
             gpu=self.gpu,
             seed=42,
+            max_points_per_centroid=len(data_np),
         )
         kmeans.train(data_np)
 
