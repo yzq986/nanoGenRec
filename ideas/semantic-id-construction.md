@@ -2,7 +2,7 @@
 
 **来源**: 知乎综述文章 3.1 节 + Meta RPG (KDD'25, arxiv 2506.05781)
 **日期**: 2026-04-13
-**更新**: 2026-04-13 (RPG 论文细节补充)
+**更新**: 2026-04-13 (RPG 论文完整消融 + 新 IDEA 补充)
 
 ---
 
@@ -188,3 +188,105 @@
 1. 多模态 embed 的存储和计算成本 (qwen3-vl-8b 的 4096D)
 2. 模态对齐训练的复杂度
 3. 是否先在小规模数据上验证粗细粒度方案的收益
+
+---
+
+## IDEA-sid-4: Token-Space MTP 辅助 Loss (适用于自回归模型)
+
+**优先级**: P1
+**来源**: RPG (KDD'25, arxiv 2506.05781) §2.2.1 Multi-Token Prediction
+**状态**: 待讨论
+
+### 核心思想
+
+RPG 的 MTP loss 将 item 预测分解为各 token 独立的 CE loss 之和: ℒ = -Σⱼ log P(c_j | s)。这比传统 item-level CE 有两个关键优势:
+1. **细粒度语义学习**: 在 token 空间（M 个类）而非 item 空间（N >> M 个类）优化，模型学到的是 sub-item 级别的语义特征
+2. **冷启动友好**: 低频 item 与高频 item 共享 token，通过 token 共现获得充分训练信号。RPG 在所有频次桶 ([0,5] 到 [16,20]) 均显著优于 TIGER
+
+**关键洞察**: 这个 loss 不要求并行预测 — 可以作为辅助目标加到任何 SID 模型上。即使在自回归模型中，最后一个 token 的隐层表示 h_L 编码了完整序列信息，可以对 h_L 施加 MTP loss 来强化语义理解。
+
+### 与当前项目的关联
+
+- 当前 NTP 模型 (`metrics/sid_prediction.py:AutoregressiveNTPModel`) 只有逐 token CE loss + MoE aux loss
+- **与 IDEA-onemall-0 (In-Batch Contrastive Loss) 互补**: onemall-0 用 item embedding 做对比，本 IDEA 用 token-level CE 做细粒度监督
+- 即使最终走自回归路线 (不用 RPG 的并行预测)，MTP 辅助 loss 也是有价值的正则化
+- 如果走 IDEA-sid-0 (OPQ 并行 ID)，MTP 就是 primary loss
+
+### 实验设计草案
+
+**方案 A — 作为自回归模型的辅助 loss**:
+1. 取最后一个 SID token 位置的隐层表示 h_3^L
+2. 对 h_3^L 加 m 个独立 MLP projection heads (m = SID token 数)
+3. 每个 head 输出 M 维 logits → CE loss
+4. 总 loss: `L_NTP + α * L_MTP + 0.01 * L_moe`
+
+**方案 B — 直接作为 parallel prediction primary loss** (= IDEA-sid-0 Phase 2):
+1. 用户序列 → Transformer encoder → s
+2. s → m 个 MLP heads → m 个 softmax → MTP loss
+3. 推理: graph-constrained decoding
+
+**变量** (方案 A):
+- α ∈ {0.1, 0.5, 1.0}
+- 是否与 IDEA-onemall-0 (contrastive loss) 叠加
+
+**评估**: SID accuracy, beam search Recall@K, 冷启动 item 子集的 Recall
+
+### 关键问题
+
+1. 方案 A 需要最后位置的隐层同时编码 "下一个 item 的所有 token" 信息 — 是否与自回归训练的 teacher forcing 冲突？(teacher forcing 时 h_3 已经看到了 target 的前 3 个 token)
+2. 如果用 BOS 位置的隐层 h_0（只编码用户序列，没看到 target token），是否更合理？
+3. 与 IDEA-onemall-0 的关系: 两者都在同一个隐层位置施加额外 loss，可能有梯度冲突
+
+---
+
+## IDEA-sid-5: SID Codebook Embedding 聚合作为 Item 表示
+
+**优先级**: P2
+**来源**: RPG (KDD'25) §2.1.2 Semantic ID Embedding Aggregation
+**状态**: 待讨论
+
+### 核心思想
+
+RPG 用 SID 的 codebook embedding 的 mean/max pooling 作为 item 表示，替代原始高维 embedding。每个 codebook j 有一个可学习 embedding table E_j ∈ ℝ^(M×d)。item 的 SID = (c_1, ..., c_m)，其表示为:
+
+`v_item = Pool(E_1[c_1], E_2[c_2], ..., E_m[c_m])`
+
+这样 item 表示的维度 = d（与 token embedding 维度相同），与 item 总数 N 无关。所有 item 共享 m 个大小为 M 的 codebook，总 embedding 参数 = m × M × d（远小于 N × d 的全 embedding table）。
+
+### 与当前项目的关联
+
+- 当前 NTP 模型的 item embedding 是 SID token 的 lookup + positional encoding，已经隐式用了类似的 codebook embedding
+- RPG 的聚合方式更显式: mean pooling 所有 codebook embedding → 单向量表示
+- 可用于: (1) item retrieval (2) item 冷启动 (3) 作为 ranking model 的 item feature
+- 但当前 NTP 模型只有 3 个 token (RKMeans)，聚合收益不大。如果切换到 OPQ (16~64 token)，聚合方式变得重要
+
+### 实验设计草案
+
+**前置: IDEA-sid-0 Phase 2 (OPQ + 并行预测模型)**
+
+**验证**:
+1. 训练好并行预测模型后，提取 codebook embeddings
+2. 对每个 item 做 mean/max pooling → item vector
+3. 用 item vector 做 ANN retrieval → 对比 graph decoding 的 recall
+4. 分析: pooled embedding 是否保留了足够的语义区分度？
+
+**评估**: cosine similarity 分布, retrieval recall@K, t-SNE 可视化
+
+### 关键问题
+
+1. mean pooling 是否会丢失 token 间的交互信息？RPG 论文没有对 mean vs max 做消融
+2. 只有在 OPQ (长 ID) 场景才有意义 — 3 个 token 的 mean pooling 太粗糙
+3. 与 FAISS 检索的关系: 如果 pooled embedding 质量足够好，可以用传统 ANN 代替 graph decoding
+
+---
+
+## 优先级总结
+
+| 优先级 | ID | 实验 | 原因 |
+|--------|-----|------|------|
+| P0 | IDEA-sid-0 | OPQ 并行语义 ID (已 → EXP-004) | ARCHITECTURE.md 核心方向，RPG 完整验证，代码已就绪 |
+| P1 | IDEA-sid-1 | 协同信号增强 Embedding | 与量化方案正交，改善 embedding 质量对所有下游实验受益 |
+| P1 | IDEA-sid-2 | Balanced KMeans | 低成本改进码本利用率 |
+| P1 | IDEA-sid-4 | Token-Space MTP 辅助 Loss | RPG 证明 token-space CE > item-space CE，冷启动友好，可叠加到自回归模型 |
+| P2 | IDEA-sid-3 | 多模态语义 ID (ESANS) | 需要多模态 embedding 基建 |
+| P2 | IDEA-sid-5 | SID Codebook Embedding 聚合 | 依赖 IDEA-sid-0 Phase 2 (OPQ 长 ID)，短 ID 下收益不大 |
