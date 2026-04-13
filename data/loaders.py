@@ -77,6 +77,22 @@ def load_text_from_s3(s3_path: str, max_partitions: int = 0) -> Tuple[np.ndarray
     return content_ids, texts, images_list, languages
 
 
+def load_content_texts(s3_path: str = None) -> dict:
+    """Load content_id -> text mapping from S3 parquet.
+
+    Returns:
+        dict: {content_id_str: text_string}
+    """
+    if s3_path is None:
+        from gr_demo.config import S3_CONTENT_TEXT_EXPOSED, DEFAULT_DATE
+        s3_path = f'{S3_CONTENT_TEXT_EXPOSED}/{DEFAULT_DATE}'
+
+    content_ids, texts, _, _ = load_text_from_s3(s3_path)
+    mapping = {str(cid): txt for cid, txt in zip(content_ids, texts) if txt}
+    print(f"Content text mapping: {len(mapping):,} items with text")
+    return mapping
+
+
 def load_old_embeddings_from_s3(s3_path: str, max_partitions: int = 0) -> Tuple[np.ndarray, np.ndarray]:
     """Load old Sentence-BERT embeddings from S3 parquet files
 
