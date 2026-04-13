@@ -32,6 +32,7 @@ class FaissKMeansLayer:
             verbose: print progress
         """
         import faiss
+        import gc
 
         data_np = data.cpu().numpy().astype(np.float32)
 
@@ -64,11 +65,26 @@ class FaissKMeansLayer:
         print(f"  Final: Cluster counts - min: {cluster_counts.min()}, "
               f"max: {cluster_counts.max()}, mean: {cluster_counts.mean():.1f}")
 
-    def predict(self, data: torch.Tensor) -> torch.Tensor:
+        # Free FAISS GPU resources
+        del kmeans
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def predict(self, data: torch.Tensor, chunk_size: int = 50000) -> torch.Tensor:
         """Assign data to nearest centroid. Returns indices tensor."""
-        data_gpu = data.to(self.centroids.device)
-        distances = torch.cdist(data_gpu, self.centroids, p=2) ** 2
-        return distances.argmin(dim=1)
+        if len(data) <= chunk_size:
+            data_gpu = data.to(self.centroids.device)
+            distances = torch.cdist(data_gpu, self.centroids, p=2) ** 2
+            return distances.argmin(dim=1)
+
+        # Chunk to avoid OOM on large datasets
+        all_assignments = []
+        for i in range(0, len(data), chunk_size):
+            chunk = data[i:i + chunk_size].to(self.centroids.device)
+            distances = torch.cdist(chunk, self.centroids, p=2) ** 2
+            all_assignments.append(distances.argmin(dim=1))
+        return torch.cat(all_assignments, dim=0)
 
     def get_centroids(self) -> torch.Tensor:
         return self.centroids
@@ -145,6 +161,10 @@ class ResidualQuantizationMultiGPU:
 
             residual_norm = torch.norm(current_residuals, dim=1).mean().item()
             print(f"  Residual norm (mean): {residual_norm:.6f}")
+
+        # Final GPU cleanup after all layers trained
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         print(f"\n{'='*60}")
         print("Training completed!")
