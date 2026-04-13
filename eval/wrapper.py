@@ -1,4 +1,4 @@
-"""Model wrappers for evaluation — RKMeans and ResKmeansFSQ."""
+"""Model wrappers for evaluation — RKMeans, ResKmeansFSQ, and OPQ."""
 
 from typing import Any, Dict
 
@@ -88,8 +88,76 @@ class ResKmeansFSQModelWrapper:
         ]
 
 
+class _OPQSubspaceLayer:
+    """Wraps one OPQ subspace to match _KMeansLayer interface.
+
+    For OPQ, each "layer" is a subspace — NOT a residual layer.
+    centroids are projected back to full D-dim original space so that
+    sum(centroids[assignments] for all layers) gives the full reconstruction.
+    """
+
+    def __init__(self, full_centroids: torch.Tensor, sub_codes: torch.Tensor):
+        """
+        Args:
+            full_centroids: (M, D) centroids in original space (inverse-rotated, zero-padded)
+            sub_codes: (N,) pre-computed assignments for this subspace
+        """
+        self.centroids = full_centroids
+        self._sub_codes = sub_codes
+
+    def predict(self, data: torch.Tensor) -> torch.Tensor:
+        """Return pre-computed codes (OPQ assignment requires rotation + PQ, not distance)."""
+        return self._sub_codes.to(data.device)
+
+
+class OPQModelWrapper:
+    """Wrapper for OPQ model data.
+
+    Exposes m subspace layers as kmeans_layers for evaluator compatibility.
+    Key difference from RKMeans: layers are PARALLEL (not residual).
+    The evaluator's _precompute_assignments does sequential residual subtraction,
+    which is wrong for OPQ. So we pre-compute assignments and provide
+    full-space centroids such that the sum-of-centroids reconstruction
+    is mathematically equivalent to OPQ decode.
+    """
+
+    def __init__(self, model_data: Dict[str, Any], codes: 'np.ndarray', device: str = 'cuda'):
+        """
+        Args:
+            model_data: OPQ model dict (from OPQQuantizer.save())
+            codes: (N, m) pre-computed OPQ codes for eval embeddings
+            device: computation device
+        """
+        from gr_demo.model.opq import OPQQuantizer
+
+        self.normalize_residuals = model_data.get('normalize_input', True)
+        self.n_subvectors = model_data['n_subvectors']
+        self.n_layers = self.n_subvectors
+        self.n_clusters = model_data['n_clusters_per_sub']
+        self.n_features = model_data['n_features']
+
+        self.device = device if torch.cuda.is_available() else 'cpu'
+        self.primary_device = self.device
+
+        # Rebuild OPQ to get full-space centroids
+        opq = OPQQuantizer.from_saved(model_data)
+        fullspace_centroids = opq.get_fullspace_centroids()
+
+        # Build subspace layers with pre-computed codes
+        self.kmeans_layers = []
+        for j in range(self.n_subvectors):
+            sub_codes = torch.tensor(codes[:, j], dtype=torch.long)
+            layer = _OPQSubspaceLayer(
+                full_centroids=fullspace_centroids[j].to(self.device),
+                sub_codes=sub_codes,
+            )
+            self.kmeans_layers.append(layer)
+
+
 def load_model_wrapper(model_data: Dict[str, Any], device: str = 'cuda'):
     """Auto-detect model type and return appropriate wrapper."""
-    if model_data.get('model_type') == 'rkmeans_fsq':
+    model_type = model_data.get('model_type')
+    if model_type == 'rkmeans_fsq':
         return ResKmeansFSQModelWrapper(model_data, device)
+    # OPQ requires codes to be passed separately — use OPQModelWrapper directly
     return RKMeansModelWrapper(model_data, device)

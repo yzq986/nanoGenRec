@@ -10,7 +10,7 @@
 
 **优先级**: P0
 **来源**: 3.1.2.2 (Meta RPG, KDD'25), Kaiming OPQ
-**状态**: 待讨论 → 推进实验
+**状态**: 已采纳 → EXP-004 (Phase 1 intrinsic), Phase 2 待定
 **参考代码**: github.com/facebookresearch/RPG_KDD2025
 
 ### 核心思想

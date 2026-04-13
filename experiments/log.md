@@ -39,6 +39,50 @@
 
 ---
 
+## EXP-004: OPQ Parallel Semantic IDs — Intrinsic Metrics
+
+**Date**: 2026-04-13
+**Status**: planned
+**IDEA**: IDEA-001 (Phase 1)
+**Reference**: Meta RPG (KDD'25, arxiv 2506.05781)
+
+### Background
+当前 RKMeans (3 层 x 1024 clusters) 使用残差编码，各层串行依赖。ARCHITECTURE.md 已明确需要切换到并行 tokenizer。RPG 论文证明 OPQ (Optimized Product Quantization) 在生成式推荐中优于 RQ，且支持并行预测。
+
+本实验验证 OPQ 在我们 5M item / 1024D Qwen3-0.6b embedding 上的量化质量（intrinsic metrics），不涉及 NTP 预测模型。
+
+### Hypothesis
+OPQ 将 1024D embedding 切分为 m 个独立子向量分别量化，编码空间远大于 RKMeans (256^8 >> 1024^3)，collision 应显著更低。recon_loss 需要实测验证 — PQ 的独立子空间假设可能不如 RQ 的残差逼近。
+
+### Design
+- **Variable**: n_subvectors (m=8, 16, 32), n_clusters_per_sub (M=256)
+- **Fixed**: normalize_input=True, OPQ rotation training (FAISS default)
+- **Metric**: collision_rate, exclusivity, reconstruction_loss, entropy, cluster_balance
+- **Data**: 5M items, qwen3-0.6b 1024D embedding (cached)
+
+**Comparison matrix**:
+
+| Config | Quantizer | Tokens | Vocab/token | Total space | 子向量维度 |
+|--------|-----------|--------|-------------|-------------|-----------|
+| Baseline (EXP-001) | RKMeans 3x1024 | 3 | 1024 | 1024^3 ≈ 10^9 | N/A (residual) |
+| OPQ-8x256 | OPQ | 8 | 256 | 256^8 ≈ 10^19 | 128D |
+| OPQ-16x256 | OPQ | 16 | 256 | 256^16 ≈ 10^38 | 64D |
+| OPQ-32x256 | OPQ | 32 | 256 | 256^32 ≈ 10^77 | 32D |
+
+### Run
+`bash experiments/scripts/exp-004.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+若 OPQ 量化质量可接受 → IDEA-001 Phase 2: 并行预测 NTP 模型 + Graph-Constrained Decoding
+
+---
+
 ## EXP-003: Learned FSQ — MLP projection + straight-through training
 
 **Date**: 2026-04-13

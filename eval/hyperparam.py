@@ -16,8 +16,9 @@ from gr_demo.model.rkmeans import ResidualQuantizationMultiGPU
 from gr_demo.model.semantic_ids import generate_semantic_ids
 from gr_demo.model.fsq import FSQ_LEVEL_CONFIGS
 from gr_demo.model.rkmeans_fsq import ResKmeansFSQ, generate_semantic_ids_fsq
+from gr_demo.model.opq import OPQQuantizer
 from gr_demo.data.loaders import load_exposed_iids
-from gr_demo.eval.wrapper import RKMeansModelWrapper, ResKmeansFSQModelWrapper
+from gr_demo.eval.wrapper import RKMeansModelWrapper, ResKmeansFSQModelWrapper, OPQModelWrapper
 from gr_demo.eval.evaluator import MetricsEvaluator
 
 from gr_demo.metrics import INTRINSIC_METRICS, BEHAVIOR_METRICS, MetricResult
@@ -267,6 +268,84 @@ def run_single_experiment_fsq(
     results['fsq_projection'] = fsq_projection
     results['fsq_mlp_hidden'] = fsq_mlp_hidden
     results['fsq_epochs'] = fsq_epochs
+
+    return results, train_time
+
+
+def run_single_experiment_opq(
+    train_embeddings: torch.Tensor,
+    eval_embeddings: torch.Tensor,
+    content_ids: np.ndarray,
+    n_features: int,
+    n_subvectors: int,
+    n_clusters_per_sub: int,
+    behavior_data: Dict = None,
+    device: str = 'cuda',
+    recall_beam_size: int = 50,
+    eval_sample_size: int = 50000,
+    only_sid: bool = False,
+) -> Tuple[Dict[str, float], float]:
+    """Run single OPQ train + eval, return (metrics_dict, train_seconds)"""
+
+    t0 = time.time()
+
+    model = OPQQuantizer(
+        n_features=n_features,
+        n_subvectors=n_subvectors,
+        n_clusters_per_sub=n_clusters_per_sub,
+        normalize_input=NORMALIZE_RESIDUALS,
+    )
+    model.train(train_embeddings)
+
+    train_time = time.time() - t0
+
+    # Encode + generate SIDs
+    codes = model.encode(eval_embeddings)  # (N, m)
+    semantic_ids = model.generate_semantic_ids(eval_embeddings)
+
+    # Build model wrapper (with pre-computed codes)
+    model_data = {
+        'model_type': 'opq',
+        'n_features': n_features,
+        'n_subvectors': n_subvectors,
+        'n_clusters_per_sub': n_clusters_per_sub,
+        'normalize_input': NORMALIZE_RESIDUALS,
+        'rotation': model._rotation,
+        'codebooks': model._codebooks,
+    }
+    model_wrapper = OPQModelWrapper(model_data, codes=codes, device=device)
+
+    # Evaluate (intrinsic metrics only — NTP not supported for OPQ yet)
+    evaluator = MetricsEvaluator(
+        embeddings=eval_embeddings,
+        model=model_wrapper,
+        semantic_ids=semantic_ids,
+        device=device,
+    )
+    evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
+    metric_results = evaluator.evaluate()
+
+    # Flatten results
+    results = {}
+    for mr in metric_results.values():
+        results.update(mr.to_flat_dict())
+
+    if 'codebook_utilization' in metric_results:
+        cb = metric_results['codebook_utilization']
+        results['space_utilization'] = cb.details.get('space_utilization', 0)
+        results['depth_codebook_util'] = cb.layer_values
+        depth_stats = cb.details.get('depth_stats', [])
+        results['depth_unique_prefixes'] = [d.get('n_unique', 0) for d in depth_stats]
+
+    if 'semantic_id_collision' in metric_results:
+        col = metric_results['semantic_id_collision']
+        prefix_stats = col.details.get('prefix_stats', [])
+        results['prefix_avg_items'] = [s.get('avg_items', 0) for s in prefix_stats]
+
+    # OPQ-specific fields
+    results['quantizer_type'] = 'opq'
+    results['n_subvectors'] = n_subvectors
+    results['n_clusters_per_sub'] = n_clusters_per_sub
 
     return results, train_time
 
@@ -597,8 +676,8 @@ def parse_args():
 
     # Quantizer type
     parser.add_argument('--quantizer', type=str, default='rkmeans',
-                        choices=['rkmeans', 'rkmeans_fsq'],
-                        help='Quantizer type: rkmeans (pure 3-layer KMeans) or rkmeans_fsq (2 KMeans + 1 FSQ)')
+                        choices=['rkmeans', 'rkmeans_fsq', 'opq'],
+                        help='Quantizer type: rkmeans | rkmeans_fsq | opq')
     parser.add_argument('--fsq_levels', type=str, nargs='+', default=None,
                         help=f'FSQ level config keys to sweep (available: {list(FSQ_LEVEL_CONFIGS.keys())})')
     parser.add_argument('--fsq_projection', type=str, default='pca',
@@ -608,6 +687,12 @@ def parse_args():
                         help='Hidden dim for MLP projection (default: 128)')
     parser.add_argument('--fsq_epochs', type=int, default=50,
                         help='Training epochs for MLP projection (default: 50)')
+
+    # OPQ 相关
+    parser.add_argument('--n_subvectors', type=int, nargs='+', default=None,
+                        help='OPQ: number of subvectors (tokens per item). e.g. --n_subvectors 8 16 32')
+    parser.add_argument('--n_clusters_per_sub', type=int, default=256,
+                        help='OPQ: clusters per subvector codebook (must be power of 2, default: 256)')
 
     # SID prediction (NTP) 相关
     parser.add_argument('--skip_ntp', action='store_true',
@@ -636,10 +721,14 @@ def main():
     fsq_levels_keys = []
     if quantizer_type == 'rkmeans_fsq':
         fsq_levels_keys = args.fsq_levels or list(FSQ_LEVEL_CONFIGS.keys())
-        # Validate keys
         for key in fsq_levels_keys:
             if key not in FSQ_LEVEL_CONFIGS:
                 raise ValueError(f"Unknown FSQ level config: {key}. Available: {list(FSQ_LEVEL_CONFIGS.keys())}")
+
+    # OPQ subvectors sweep
+    opq_subvectors_list = []
+    if quantizer_type == 'opq':
+        opq_subvectors_list = args.n_subvectors or [8, 16, 32]
 
     if quantizer_type == 'rkmeans_fsq':
         total = len(clusters_list) * len(niter_list) * len(nredo_list) * len(fsq_levels_keys)
@@ -648,6 +737,11 @@ def main():
         print(f"  niter:      {niter_list}")
         print(f"  nredo:      {nredo_list}")
         print(f"  fsq_levels: {fsq_levels_keys}")
+    elif quantizer_type == 'opq':
+        total = len(opq_subvectors_list)
+        print(f"Grid search (opq): {len(opq_subvectors_list)} subvector configs = {total} experiments")
+        print(f"  n_subvectors:      {opq_subvectors_list}")
+        print(f"  n_clusters_per_sub: {args.n_clusters_per_sub}")
     else:
         total = len(clusters_list) * len(niter_list) * len(nredo_list)
         print(f"Grid search: {len(clusters_list)} clusters x {len(niter_list)} niters x {len(nredo_list)} nredos = {total} experiments")
@@ -673,6 +767,8 @@ def main():
         for r in existing_results:
             if r.get('quantizer_type') == 'rkmeans_fsq':
                 key = (r['num_clusters'], r['niter'], r['nredo'], 'fsq', r.get('fsq_levels_key', ''))
+            elif r.get('quantizer_type') == 'opq':
+                key = ('opq', r.get('n_subvectors'), r.get('n_clusters_per_sub'))
             else:
                 key = (r['num_clusters'], r['niter'], r['nredo'])
             existing_keys.add(key)
@@ -701,7 +797,14 @@ def main():
 
     # Build experiment configs
     experiment_configs = []
-    if quantizer_type == 'rkmeans_fsq':
+    if quantizer_type == 'opq':
+        for n_sub in opq_subvectors_list:
+            experiment_configs.append({
+                'quantizer_type': 'opq',
+                'n_subvectors': n_sub,
+                'n_clusters_per_sub': args.n_clusters_per_sub,
+            })
+    elif quantizer_type == 'rkmeans_fsq':
         for num_clusters in clusters_list:
             for niter in niter_list:
                 for nredo in nredo_list:
@@ -726,17 +829,24 @@ def main():
 
     for cfg in experiment_configs:
         exp_idx += 1
-        num_clusters = cfg['num_clusters']
-        niter = cfg['niter']
-        nredo = cfg['nredo']
+        is_opq = cfg['quantizer_type'] == 'opq'
         is_fsq = cfg['quantizer_type'] == 'rkmeans_fsq'
-        fsq_key = cfg.get('fsq_levels_key', '')
 
-        # Build unique key for dedup
-        if is_fsq:
+        # Build unique key and label for dedup
+        if is_opq:
+            n_sub = cfg['n_subvectors']
+            n_cpersub = cfg['n_clusters_per_sub']
+            config_key = ('opq', n_sub, n_cpersub)
+            label = f"opq: m={n_sub}, M={n_cpersub}"
+        elif is_fsq:
+            num_clusters = cfg['num_clusters']
+            niter, nredo = cfg['niter'], cfg['nredo']
+            fsq_key = cfg.get('fsq_levels_key', '')
             config_key = (num_clusters, niter, nredo, 'fsq', fsq_key)
             label = f"clusters={num_clusters}, niter={niter}, nredo={nredo}, fsq={fsq_key}"
         else:
+            num_clusters = cfg['num_clusters']
+            niter, nredo = cfg['niter'], cfg['nredo']
             config_key = (num_clusters, niter, nredo)
             label = f"clusters={num_clusters}, niter={niter}, nredo={nredo}"
 
@@ -749,7 +859,21 @@ def main():
         print(f"# Experiment {exp_idx}/{total}: {label}")
         print(f"{'#'*60}")
 
-        if is_fsq:
+        if is_opq:
+            metrics, train_time = run_single_experiment_opq(
+                train_embeddings=train_tensor,
+                eval_embeddings=eval_tensor,
+                content_ids=content_ids,
+                n_features=n_features,
+                n_subvectors=cfg['n_subvectors'],
+                n_clusters_per_sub=cfg['n_clusters_per_sub'],
+                behavior_data=behavior_data,
+                device=args.device,
+                recall_beam_size=args.recall_beam_size,
+                eval_sample_size=args.eval_sample_size,
+                only_sid=args.only_sid,
+            )
+        elif is_fsq:
             fsq_levels = FSQ_LEVEL_CONFIGS[fsq_key]
             metrics, train_time = run_single_experiment_fsq(
                 train_embeddings=train_tensor,
@@ -789,13 +913,17 @@ def main():
             )
 
         result = {
-            'num_clusters': num_clusters,
-            'niter': niter,
-            'nredo': nredo,
             'quantizer_type': cfg['quantizer_type'],
             'metrics': metrics,
             'train_time': train_time,
         }
+        if is_opq:
+            result['n_subvectors'] = cfg['n_subvectors']
+            result['n_clusters_per_sub'] = cfg['n_clusters_per_sub']
+        else:
+            result['num_clusters'] = num_clusters
+            result['niter'] = niter
+            result['nredo'] = nredo
         if is_fsq:
             result['fsq_levels_key'] = fsq_key
             result['fsq_levels'] = FSQ_LEVEL_CONFIGS[fsq_key]
@@ -810,6 +938,8 @@ def main():
         rec = metrics.get('reconstruction_loss', 'N/A')
         print(f"\n>>> [{exp_idx}/{total}] {label}  time={train_time:.0f}s")
         print(f"    collision={col_val}  entropy={ent}  balance={bal}  recon={rec}")
+        if is_opq:
+            print(f"    n_subvectors={cfg['n_subvectors']}, n_clusters_per_sub={cfg['n_clusters_per_sub']}")
         if is_fsq:
             print(f"    fsq_codebook_size={metrics.get('fsq_codebook_size', 'N/A')}")
         if 'ntp_perplexity' in metrics:
@@ -822,11 +952,14 @@ def main():
                     recall_parts.append(f"@{k}={rk:.4f}")
             if recall_parts:
                 print(f"    ★ item_recall: {', '.join(recall_parts)}")
+        # Print per-depth stats (limit to first 4 for OPQ which may have many layers)
         for key in ('semantic_id_collision_depth', 'entropy_depth', 'cluster_balance_depth', 'codebook_utilization_depth'):
             if key in metrics:
                 short = key.replace('_depth', '')
                 vals = metrics[key]
-                print(f"    {short}: {['d%d=%.4f' % (i+1, v) for i, v in enumerate(vals)]}")
+                shown = vals[:4]
+                suffix = f" ... ({len(vals)} total)" if len(vals) > 4 else ""
+                print(f"    {short}: {['d%d=%.4f' % (i+1, v) for i, v in enumerate(shown)]}{suffix}")
 
         # 每次实验后保存中间结果 (JSON)
         with open(json_path, 'w') as f:
