@@ -57,6 +57,14 @@ push_main() {
     local BRANCH
     BRANCH="$(git branch --show-current)"
 
+    # Safety: if on a stale _mirror_company_ branch, switch back to master
+    if [[ "$BRANCH" == _mirror_company_* ]]; then
+        echo "  Warning: stuck on temp branch $BRANCH, switching to master..."
+        git checkout master --quiet
+        git branch -D "$BRANCH" --quiet 2>/dev/null || true
+        BRANCH="master"
+    fi
+
     # Commit if message provided
     if [ -n "$COMMIT_MSG" ]; then
         git add -A
@@ -82,6 +90,9 @@ push_main() {
     local BASE
     BASE="$(git merge-base "company/${BRANCH}" "$BRANCH" 2>/dev/null || echo "")"
 
+    # Ensure cleanup on interrupt
+    trap 'git checkout "$BRANCH" --quiet 2>/dev/null; git branch -D "$TEMP_BRANCH" --quiet 2>/dev/null; trap - INT TERM; return 1' INT TERM
+
     git checkout -b "$TEMP_BRANCH" "$BRANCH" --quiet
 
     if [ -n "$BASE" ]; then
@@ -99,6 +110,7 @@ push_main() {
     git push company "$TEMP_BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: push to company failed"
 
     # Cleanup
+    trap - INT TERM
     git checkout "$BRANCH" --quiet
     git branch -D "$TEMP_BRANCH" --quiet
     echo "  Company mirror complete."
