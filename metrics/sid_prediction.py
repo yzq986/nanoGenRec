@@ -633,7 +633,7 @@ def _score_sids(
 
     Args:
         log_probs: (batch, m, M) per-digit log probabilities
-        valid_sids: (N, m) all SID codes
+        valid_sids: (N, m) all SID codes (should be on same device as log_probs)
         sid_indices: (batch, C) indices into valid_sids to score
 
     Returns:
@@ -644,7 +644,8 @@ def _score_sids(
     device = log_probs.device
 
     # Gather SID codes: (batch, C, m)
-    codes = valid_sids[sid_indices.cpu()].to(device)  # (batch, C, m)
+    idx = sid_indices.to(valid_sids.device)
+    codes = valid_sids[idx].to(device)  # (batch, C, m)
 
     # Score each digit: log_probs[b, j, codes[b,c,j]]
     scores = torch.zeros(batch_size, C, device=device)
@@ -696,28 +697,28 @@ def graph_constrained_decode(
 
     valid_sids_dev = valid_sids.to(device)
 
-    # 1. Initial seed selection via per-digit prefiltering
-    #    For digit 0, take top-K values → find all SIDs with that digit value → score them
-    #    This avoids scoring all N SIDs
+    # 1. Initial seed selection via per-digit prefiltering (GPU-friendly)
+    #    For digit 0, take top-K values → find all SIDs matching → score them
     _, top_digit0 = log_probs[:, 0, :].topk(prefilter_per_digit, dim=-1)  # (batch, K)
 
-    # Build candidate set: SIDs whose digit 0 matches any of top-K values
-    # For efficiency, build a mask per batch element
+    # Build candidate set on GPU: for each batch, SIDs whose digit 0 ∈ top-K
+    digit0_all = valid_sids_dev[:, 0]  # (N,)
     seed_candidates_list = []
     for bi in range(batch_size):
-        top_vals = set(top_digit0[bi].cpu().tolist())
-        # Find SID indices where digit 0 is in top_vals
-        digit0_codes = valid_sids[:, 0].numpy()
-        mask = np.isin(digit0_codes, list(top_vals))
-        cand_idx = np.where(mask)[0]
+        top_vals = top_digit0[bi]  # (K,) on device
+        # Boolean mask: which SIDs have digit 0 matching any of top_vals
+        mask = (digit0_all.unsqueeze(-1) == top_vals.unsqueeze(0)).any(dim=-1)  # (N,)
+        cand_idx = mask.nonzero(as_tuple=True)[0]
         # Limit candidates
-        if len(cand_idx) > 10000:
-            # Sample if too many
-            cand_idx = cand_idx[np.random.choice(len(cand_idx), 10000, replace=False)]
-        seed_candidates_list.append(torch.tensor(cand_idx, dtype=torch.long, device=device))
+        if cand_idx.size(0) > 10000:
+            perm = torch.randperm(cand_idx.size(0), device=device)[:10000]
+            cand_idx = cand_idx[perm]
+        seed_candidates_list.append(cand_idx)
 
     # Pad to same length for batched scoring
     max_cand = max(c.size(0) for c in seed_candidates_list)
+    if max_cand == 0:
+        max_cand = 1  # edge case
     seed_candidates = torch.zeros(batch_size, max_cand, dtype=torch.long, device=device)
     cand_mask = torch.zeros(batch_size, max_cand, dtype=torch.bool, device=device)
     for bi in range(batch_size):
@@ -726,7 +727,7 @@ def graph_constrained_decode(
         cand_mask[bi, :n_c] = True
 
     # Score seed candidates
-    seed_scores = _score_sids(log_probs, valid_sids, seed_candidates)  # (batch, max_cand)
+    seed_scores = _score_sids(log_probs, valid_sids_dev, seed_candidates)  # (batch, max_cand)
     seed_scores[~cand_mask] = -1e9  # mask invalid
 
     # Select top-b seeds
@@ -744,7 +745,7 @@ def graph_constrained_decode(
         combined = torch.cat([current_indices, neighbor_flat], dim=-1)  # (batch, b + b*k)
 
         # Score all candidates
-        combined_scores = _score_sids(log_probs, valid_sids, combined)
+        combined_scores = _score_sids(log_probs, valid_sids_dev, combined)
 
         # Select top-b
         top_b = min(b, combined.size(1))
@@ -755,7 +756,7 @@ def graph_constrained_decode(
     neighbors = graph_neighbors[current_indices.cpu()].to(device)
     neighbor_flat = neighbors.reshape(batch_size, -1)
     final_combined = torch.cat([current_indices, neighbor_flat], dim=-1)
-    final_scores = _score_sids(log_probs, valid_sids, final_combined)
+    final_scores = _score_sids(log_probs, valid_sids_dev, final_combined)
 
     actual_top_n = min(top_n, final_combined.size(1))
     top_scores, top_idx = final_scores.topk(actual_top_n, dim=-1)
@@ -1426,7 +1427,7 @@ class SemanticIDPredictionMetric(BaseMetric):
             print(f"  Evaluating on {len(eval_samples)} samples (graph-constrained decoding)...")
 
         eval_t0 = time.time()
-        raw_model.eval()
+        ntp_model.eval()  # DP wrapper or raw model — both work
 
         eval_losses = []
         # Per-digit accuracy (independent, not prefix)
@@ -1443,6 +1444,10 @@ class SemanticIDPredictionMetric(BaseMetric):
 
         use_amp = (device != 'cpu' and torch.cuda.is_available())
 
+        # Pre-move GCD data to GPU 0 once
+        valid_sids_gpu = valid_sids_tensor.to(device)
+        graph_neighbors_gpu = graph_neighbors_tensor  # keep on CPU, GCD indexes into it
+
         with torch.no_grad():
             for batch_idx, (input_batch, target_batch) in enumerate(eval_loader):
                 input_batch = input_batch.to(device, non_blocking=True)
@@ -1450,7 +1455,7 @@ class SemanticIDPredictionMetric(BaseMetric):
                 curr_batch_size = input_batch.size(0)
 
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp):
-                    logits, _ = raw_model(input_batch)  # (batch, m, M)
+                    logits, _ = ntp_model(input_batch)  # (batch, m, M) — uses all GPUs via DP
 
                 # MTP loss
                 loss = sum(
@@ -1473,7 +1478,7 @@ class SemanticIDPredictionMetric(BaseMetric):
                 # Graph-Constrained Decoding for item recall
                 log_probs = F.log_softmax(logits.float(), dim=-1)  # (batch, m, M)
                 top_sids, top_scores = graph_constrained_decode(
-                    log_probs, valid_sids_tensor, graph_neighbors_tensor,
+                    log_probs, valid_sids_gpu, graph_neighbors_gpu,
                     b=10, q=3, k=100, top_n=500,
                 )
                 # top_sids: (batch, top_n, m)
@@ -1588,7 +1593,7 @@ class SemanticIDPredictionMetric(BaseMetric):
         """Build SID graph based on code-space Hamming-like distance.
 
         For each SID, find top_k nearest neighbors by number of matching digits.
-        Uses vectorized scoring with random tie-breaking for diversity.
+        GPU-accelerated: distributes chunks across all available GPUs.
 
         Args:
             valid_sids: (N, m) int array
@@ -1599,44 +1604,80 @@ class SemanticIDPredictionMetric(BaseMetric):
             neighbors: (N, top_k) int32 array
         """
         N, m = valid_sids.shape
+        n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
         if verbose:
-            print(f"  Building code-space SID graph: {N:,} SIDs, m={m}, top_k={top_k}")
+            print(f"  Building code-space SID graph: {N:,} SIDs, m={m}, top_k={top_k}, GPUs={n_gpus}")
 
-        # For large N, process in chunks to avoid OOM
-        chunk_size = min(2048, N)
         neighbors = np.zeros((N, top_k), dtype=np.int32)
 
-        sids_tensor = torch.tensor(valid_sids, dtype=torch.long)
+        if n_gpus == 0:
+            # CPU fallback
+            sids_tensor = torch.tensor(valid_sids, dtype=torch.long)
+            chunk_size = min(1024, N)
+            for start in range(0, N, chunk_size):
+                end = min(start + chunk_size, N)
+                chunk = sids_tensor[start:end]
+                matches = (chunk.unsqueeze(1) == sids_tensor.unsqueeze(0)).sum(dim=-1).float()
+                for i in range(end - start):
+                    matches[i, start + i] = -1
+                _, topk_idx = matches.topk(top_k, dim=-1)
+                neighbors[start:end] = topk_idx.numpy()
+            return neighbors
 
-        for start in range(0, N, chunk_size):
-            end = min(start + chunk_size, N)
-            chunk = sids_tensor[start:end]  # (chunk, m)
+        # Multi-GPU: split query chunks across GPUs
+        # Keep full SID table on each GPU, process query chunks in parallel
+        import concurrent.futures
 
-            # Count matching digits: (chunk, N)
-            matches = (chunk.unsqueeze(1) == sids_tensor.unsqueeze(0)).sum(dim=-1).float()
-
-            # Mask self
-            for i in range(end - start):
-                matches[i, start + i] = -1
-
-            # Top-k
-            _, topk_idx = matches.topk(top_k, dim=-1)
-            neighbors[start:end] = topk_idx.numpy()
-
-            if verbose and (end - start) > 0 and (end % (chunk_size * 10) == 0 or end == N):
-                print(f"    Graph: {end:,}/{N:,}")
+        # Determine chunk size per GPU based on VRAM
+        # (chunk, N, m) int64 tensor: chunk * N * m * 8 bytes
+        # For N=5M, m=8: each row of the expanded tensor = 5M * 8 * 8 = 320MB
+        # Safe chunk size: ~256 rows per GPU per iteration for 80GB A100
+        chunk_per_gpu = min(256, max(1, N // (n_gpus * 4)))
+        total_chunks = (N + chunk_per_gpu - 1) // chunk_per_gpu
 
         if verbose:
-            # Stats
-            avg_match = 0
+            print(f"    chunk_per_gpu={chunk_per_gpu}, total_chunks={total_chunks}")
+
+        def process_chunk_on_gpu(args):
+            gpu_id, start, end = args
+            device = torch.device(f'cuda:{gpu_id}')
+            sids_gpu = torch.tensor(valid_sids, dtype=torch.long, device=device)
+            chunk = sids_gpu[start:end]  # (C, m)
+            # Hamming similarity: count matching digits
+            matches = (chunk.unsqueeze(1) == sids_gpu.unsqueeze(0)).sum(dim=-1).float()  # (C, N)
+            # Mask self
+            self_indices = torch.arange(start, end, device=device)
+            matches[torch.arange(end - start, device=device), self_indices] = -1
+            _, topk_idx = matches.topk(min(top_k, N - 1), dim=-1)
+            return start, end, topk_idx.cpu().numpy()
+
+        # Build work items: assign chunks round-robin to GPUs
+        work_items = []
+        for chunk_idx in range(total_chunks):
+            start = chunk_idx * chunk_per_gpu
+            end = min(start + chunk_per_gpu, N)
+            gpu_id = chunk_idx % n_gpus
+            work_items.append((gpu_id, start, end))
+
+        # Process with thread pool (GPU ops release GIL)
+        completed = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_gpus) as executor:
+            futures = [executor.submit(process_chunk_on_gpu, item) for item in work_items]
+            for future in concurrent.futures.as_completed(futures):
+                start, end, topk = future.result()
+                neighbors[start:end, :topk.shape[1]] = topk
+                completed += end - start
+                if verbose and (completed % (chunk_per_gpu * n_gpus * 5) == 0 or completed >= N):
+                    print(f"    Graph: {completed:,}/{N:,}")
+
+        if verbose:
             sample_n = min(1000, N)
             sample_idx = np.random.choice(N, sample_n, replace=False)
-            for i in sample_idx:
-                nn_idx = neighbors[i, 0]
-                match_count = np.sum(valid_sids[i] == valid_sids[nn_idx])
-                avg_match += match_count
-            avg_match /= sample_n
+            avg_match = np.mean([
+                np.sum(valid_sids[i] == valid_sids[neighbors[i, 0]])
+                for i in sample_idx
+            ])
             print(f"  Graph stats: avg top-1 digit match = {avg_match:.1f}/{m}")
 
         return neighbors
