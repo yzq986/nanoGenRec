@@ -62,15 +62,8 @@ ResKmeansFSQ 在第3层使用 FSQ 替代 KMeans，因为 FSQ 的 implicit codebo
 | Hybrid B | 1024 x 2 layers | FSQ [7,5,5,5,5] | 4375 |
 | Hybrid C | 1024 x 2 layers | FSQ [4,4,4,4,4,4] | 4096 |
 
-### Run Commands
-```bash
-# Baseline
-python -m gr_demo hyperparam --skip_embedding --clusters 1024 --name exp002-baseline
-
-# FSQ experiments
-python -m gr_demo hyperparam --skip_embedding --quantizer rkmeans_fsq \
-    --clusters 1024 --fsq_levels 4d_4096 5d_4375 6d_4096 --name exp002-fsq
-```
+### Run
+`bash experiments/scripts/exp-002.sh`
 
 ### Results
 _(pending)_
