@@ -4,7 +4,9 @@ import glob
 import json
 import os
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# repo root = gr_demo/, need its parent so `from gr_demo.xxx` works
+repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(repo_root))
 from gr_demo.eval.hyperparam import generate_report
 
 dirs = sorted(glob.glob("experiments/hyperparam/*exp004*"))
