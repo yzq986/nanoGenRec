@@ -121,11 +121,11 @@ class FSQLayer:
             if L % 2 == 1:
                 # Odd: round to {-half, ..., half}
                 qi = torch.round(zi).long()
-                codes[:, i] = qi + half  # shift to [0, L-1]
+                codes[:, i] = (qi + half).clamp(0, L - 1)
             else:
                 # Even: shift by 0.5 to break symmetry, then round
                 qi = torch.round(zi - 0.5).long() + 1  # {-half+1, ..., half}
-                codes[:, i] = qi + half - 1  # shift to [0, L-1]
+                codes[:, i] = (qi + half - 1).clamp(0, L - 1)
 
         return codes
 
@@ -268,10 +268,10 @@ class LearnedFSQLayer:
             zi = half * torch.tanh(z[:, i])
             if L % 2 == 1:
                 qi = torch.round(zi).long()
-                codes[:, i] = qi + half
+                codes[:, i] = (qi + half).clamp(0, L - 1)
             else:
                 qi = torch.round(zi - 0.5).long() + 1
-                codes[:, i] = qi + half - 1
+                codes[:, i] = (qi + half - 1).clamp(0, L - 1)
         return codes
 
     def _quantize_ste(self, z: torch.Tensor) -> torch.Tensor:
@@ -284,9 +284,9 @@ class LearnedFSQLayer:
             half = L // 2
             zi_cont = half * torch.tanh(z[:, i])
             if L % 2 == 1:
-                zi_hard = torch.round(zi_cont)
+                zi_hard = torch.round(zi_cont).clamp(-half, half)
             else:
-                zi_hard = torch.round(zi_cont - 0.5) + 1
+                zi_hard = (torch.round(zi_cont - 0.5) + 1).clamp(-half + 1, half)
             # STE: forward uses hard values, backward uses continuous gradients
             z_q[:, i] = zi_cont + (zi_hard - zi_cont).detach()
         return z_q
