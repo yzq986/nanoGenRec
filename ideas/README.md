@@ -20,91 +20,76 @@
 
 ## 全局演进图
 
+核心依赖链（红 = P0，蓝 = P1，灰虚线 = P2 折叠）。完整 idea 列表见各维度文件。
+
 ```mermaid
-graph TD
-    subgraph Tokenizer["🔢 Tokenizer"]
-        SID0["IDEA-sid-0<br/>OPQ 并行 ID<br/>→ EXP-004 ✅"]
-        SID2["IDEA-sid-2<br/>Balanced KMeans"]
-        GR0["IDEA-gr4ad-0<br/>MGMR 不等大码本"]
-        OM5["IDEA-onemall-5<br/>RKMeans+FSQ<br/>→ EXP-003"]
-        PIT0["IDEA-pit-0<br/>Co-gen 动态 Tokenizer"]
-        FORGE0["IDEA-forge-0<br/>SID Proxy Metrics"]
+%%{ init: { 'flowchart': { 'curve': 'linear', 'rankSpacing': 60, 'nodeSpacing': 25 } } }%%
+graph LR
+    classDef p0 fill:#c62828,color:#fff,stroke:#b71c1c,font-weight:bold
+    classDef p1 fill:#1565c0,color:#fff,stroke:#0d47a1
+    classDef p2 fill:#546e7a,color:#fff,stroke:#455a64,stroke-dasharray:4
+
+    %% ═══ Col 1: Tokenizer & Embedding ═══
+    subgraph COL1 [" Tokenizer / Embedding "]
+        direction TB
+        SID0("sid-0 OPQ 并行 ID → EXP-004 ✅"):::p0
+        GR0("gr4ad-0 MGMR 不等大码本"):::p0
+        OM5("onemall-5 RKMeans+FSQ → EXP-003"):::p0
+        SID2("sid-2 Balanced KMeans"):::p1
+        FORGE0("forge-0 Proxy Metrics"):::p1
+        PIT0("pit-0 Co-gen Tokenizer"):::p1
+        SID1("sid-1 协同信号 / onemall-3 属性增强"):::p1
+        P2_TOK("sid-3, oneloc-3 &nbsp;(2 P2)"):::p2
     end
 
-    subgraph Embedding["📐 Embedding"]
-        SID1["IDEA-sid-1<br/>协同信号增强"]
-        SID3["IDEA-sid-3<br/>多模态 ESANS"]
-        OM3["IDEA-onemall-3<br/>属性增强"]
-        OL3["IDEA-oneloc-3<br/>Side-info 融合"]
+    %% ═══ Col 2: Architecture & Training ═══
+    subgraph COL2 [" Architecture / Training "]
+        direction TB
+        OM0("onemall-0 Contrastive Loss"):::p0
+        SID4("sid-4 MTP 辅助 Loss"):::p1
+        GR1("gr4ad-1 LazyAR"):::p1
+        PLUM0("plum-0 LLM CPT"):::p1
+        GR2("gr4ad-2 Value-Aware"):::p1
+        OM1("onemall-1 Query-Former"):::p1
+        GLIDE0("glide-0 Soft Prompt"):::p1
+        OL5("oneloc-5 Multi-behavior"):::p1
+        P2_ARCH("onemall-4, oneloc-0/1, oxygen-0, llada-0, sid-5 &nbsp;(6 P2)"):::p2
     end
 
-    subgraph Architecture["🏗️ Architecture"]
-        GR1["IDEA-gr4ad-1<br/>LazyAR 解码器"]
-        OM1["IDEA-onemall-1<br/>Query-Former"]
-        OM4["IDEA-onemall-4<br/>Loss-Free MoE"]
-        OL0["IDEA-oneloc-0<br/>Context Attn"]
-        OL1["IDEA-oneloc-1<br/>Category Prompt"]
-        GLIDE0["IDEA-glide-0<br/>Soft Prompt Injection"]
-        OXY0["IDEA-oxygen-0<br/>Fast-Slow Thinking"]
-        LLADA0["IDEA-llada-0<br/>Discrete Diffusion"]
+    %% ═══ Col 3: RL / Inference / Scaling ═══
+    subgraph COL3 [" RL / Inference / Scaling "]
+        direction TB
+        OL4("oneloc-4 Scaling Law 序列长度≫模型"):::p0
+        OM2("onemall-2 GRPO/DPO"):::p1
+        AL0("align3-0 Progressive DPO"):::p1
+        RG0("rankgr-0 Listwise DPO+Rescore"):::p1
+        GR4("gr4ad-4 Dynamic Beam"):::p1
+        STAT0("static-0 CSR 约束解码"):::p1
+        EARN0("earn-0 Register 压缩"):::p1
+        KUN0("kunlun-0 Rec Scaling Laws"):::p1
+        HSTU0("hstu-0 Sparse Attn"):::p1
+        P2_RL("gr4ad-3, oneloc-2, uni-0, flame-0 &nbsp;(4 P2)"):::p2
     end
 
-    subgraph Training["🎯 Training"]
-        OM0["IDEA-onemall-0<br/>Contrastive Loss"]
-        SID4["IDEA-sid-4<br/>MTP 辅助 Loss"]
-        SID5["IDEA-sid-5<br/>Codebook Embed 聚合"]
-        GR2["IDEA-gr4ad-2<br/>Value-Aware"]
-        OL5["IDEA-oneloc-5<br/>Multi-behavior"]
-        PLUM0["IDEA-plum-0<br/>LLM CPT"]
-    end
+    %% ═══ Edges: 只走 Col1→Col2→Col3，无回流 ═══
+    SID0 --> SID4
+    SID0 --> GR1
+    SID0 --> STAT0
+    GR0 --> GR4
+    FORGE0 --> SID4
+    PIT0 --> GLIDE0
+    SID1 --> OL5
 
-    subgraph RL["🎮 RL Alignment"]
-        OM2["IDEA-onemall-2<br/>GRPO/DPO"]
-        OL2["IDEA-oneloc-2<br/>DPO+双目标"]
-        GR3["IDEA-gr4ad-3<br/>RSPO"]
-        AL0["IDEA-align3-0<br/>Progressive DPO"]
-        RG0["IDEA-rankgr-0<br/>Listwise DPO+Rescore"]
-        UNI0["IDEA-uni-0<br/>SPO"]
-    end
-
-    subgraph Inference["⚡ Inference"]
-        GR4["IDEA-gr4ad-4<br/>Dynamic Beam"]
-        STAT0["IDEA-static-0<br/>CSR 约束解码"]
-        EARN0["IDEA-earn-0<br/>Register 压缩"]
-        FLAME0["IDEA-flame-0<br/>GR Serving"]
-    end
-
-    subgraph Scaling["📈 Scaling"]
-        OL4["IDEA-oneloc-4<br/>序列长度>>模型大小"]
-        KUN0["IDEA-kunlun-0<br/>Rec Scaling Laws"]
-        HSTU0["IDEA-hstu-0<br/>Sparse Attn Co-design"]
-    end
-
-    %% Cross-dimension dependencies
-    SID0 -->|"OPQ 长 ID 需要"| SID5
-    SID0 -->|"并行预测 = MTP primary"| SID4
-    SID0 -->|"长 ID → 约束解码价值大增"| STAT0
-    SID1 --> OM3
-    OL3 -.->|"统一为 embedding enrichment"| SID1
-    GR0 -->|"不等大码本适配"| GR4
-    OM0 -->|"建立强基线"| OM2
-    OM0 -->|"建立强基线"| OL2
-    OM0 -->|"建立强基线"| AL0
-    GR2 -->|"reward signal"| GR3
-    OM2 -->|"升级为 list-wise"| GR3
-    OM2 -->|"对比 Progressive DPO"| AL0
-    RG0 -->|"rescore 配合"| GR4
-    SID0 -->|"长 ID + 大 beam"| GR1
-    OL4 -->|"指导序列长度"| OM1
-    OL4 -->|"指导 scaling 策略"| KUN0
-    SID2 -->|"大码本更需 balanced"| GR0
-    PLUM0 -->|"LLM backbone 需要"| EARN0
-    PLUM0 -->|"LLM backbone"| HSTU0
-    FORGE0 -.->|"加速 tokenizer 搜索"| SID0
-    FORGE0 -.->|"加速 tokenizer 搜索"| GR0
-    PIT0 -->|"协同信号注入"| SID1
-    GLIDE0 -.->|"泛化 Category Prompt"| OL1
-    EARN0 -.->|"互补: 注意力范围 vs AR 依赖"| GR1
+    OM0 --> OM2
+    OM0 --> AL0
+    GR2 --> P2_RL
+    PLUM0 --> EARN0
+    PLUM0 --> HSTU0
+    GR1 --> EARN0
+    OM1 --> HSTU0
+    OL4 --> KUN0
+    RG0 --> GR4
+    OM2 --> P2_RL
 ```
 
 ## ID 来源追溯
