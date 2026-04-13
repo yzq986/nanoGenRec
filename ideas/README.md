@@ -8,7 +8,7 @@
 
 | 文件 | 维度 | Ideas 数 | P0 |
 |------|------|---------|-----|
-| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen) | 6 | sid-0, gr4ad-0, onemall-5 |
+| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen) | 6 | sid-0 |
 | [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性) | 4 | — |
 | [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Diffusion) | 8 | — |
 | [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/LLM-CPT) | 6 | onemall-0 |
@@ -16,7 +16,7 @@
 | [inference.md](inference.md) | 推理优化 (Dynamic Beam/CSR约束/Register压缩) | 4 | — |
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | oneloc-4 |
 
-**总计: 37 ideas (5 P0 / 22 P1 / 10 P2)**
+**总计: 37 ideas (3 P0 / 24 P1 / 10 P2)**
 
 ## 全局演进图
 
@@ -33,8 +33,8 @@ graph LR
     subgraph COL1 [" Tokenizer / Embedding "]
         direction TB
         SID0("sid-0 OPQ 并行 ID → EXP-004 ✅"):::p0
-        GR0("gr4ad-0 MGMR 不等大码本"):::p0
-        OM5("onemall-5 RKMeans+FSQ → EXP-003"):::p0
+        GR0("gr4ad-0 MGMR 不等大码本"):::p1
+        OM5("onemall-5 RKMeans+FSQ"):::p1
         SID2("sid-2 Balanced KMeans"):::p1
         FORGE0("forge-0 Proxy Metrics"):::p1
         PIT0("pit-0 Co-gen Tokenizer"):::p1
@@ -122,8 +122,6 @@ graph LR
 | ID | 维度 | 实验 | 原因 |
 |-----|------|------|------|
 | IDEA-sid-0 | Tokenizer | OPQ 并行语义 ID → EXP-004 | ARCHITECTURE.md 核心方向，RPG 完整验证 |
-| IDEA-gr4ad-0 | Tokenizer | MGMR 不等大码本 | 零成本改进 collision/utilization |
-| IDEA-onemall-5 | Tokenizer | RKMeans+FSQ → EXP-003 | OneMall 验证方向正确，代码已就绪 |
 | IDEA-onemall-0 | Training | NTP Contrastive Loss | OneMall 标配，为 RL 建立强基线 |
 | IDEA-oneloc-4 | Scaling | 序列长度 vs 模型大小 | 直接决定资源分配策略 |
 
@@ -131,6 +129,8 @@ graph LR
 
 | ID | 维度 | 实验 |
 |-----|------|------|
+| IDEA-gr4ad-0 | Tokenizer | MGMR 不等大码本 (RQ 对比基线) |
+| IDEA-onemall-5 | Tokenizer | RKMeans+FSQ (RQ 对比基线) |
 | IDEA-sid-1 | Embedding | 协同信号增强 |
 | IDEA-sid-2 | Tokenizer | Balanced KMeans |
 | IDEA-sid-4 | Training | Token-Space MTP Loss |
