@@ -55,19 +55,20 @@
 OPQ 将 1024D embedding 切分为 m 个独立子向量分别量化，编码空间远大于 RKMeans (256^8 >> 1024^3)，collision 应显著更低。recon_loss 需要实测验证 — PQ 的独立子空间假设可能不如 RQ 的残差逼近。
 
 ### Design
-- **Variable**: n_subvectors (m=8, 16, 32), n_clusters_per_sub (M=256)
+- **Variable**: n_subvectors (m=4, 8, 16, 32), n_clusters_per_sub (M=256)
 - **Fixed**: normalize_input=True, OPQ rotation training (FAISS default)
 - **Metric**: collision_rate, exclusivity, reconstruction_loss, entropy, cluster_balance
 - **Data**: 5M items, qwen3-0.6b 1024D embedding (cached)
 
 **Comparison matrix**:
 
-| Config | Quantizer | Tokens | Vocab/token | Total space | 子向量维度 |
-|--------|-----------|--------|-------------|-------------|-----------|
-| Baseline (EXP-001) | RKMeans 3x1024 | 3 | 1024 | 1024^3 ≈ 10^9 | N/A (residual) |
-| OPQ-8x256 | OPQ | 8 | 256 | 256^8 ≈ 10^19 | 128D |
-| OPQ-16x256 | OPQ | 16 | 256 | 256^16 ≈ 10^38 | 64D |
-| OPQ-32x256 | OPQ | 32 | 256 | 256^32 ≈ 10^77 | 32D |
+| Config | Quantizer | Tokens | Vocab/token | Bits | 子向量维度 |
+|--------|-----------|--------|-------------|------|-----------|
+| Baseline (EXP-001) | RKMeans 3x1024 | 3 | 1024 | 30 | N/A (residual) |
+| **OPQ-4x256** | **OPQ** | **4** | **256** | **32** | **256D (等 bits 对照)** |
+| OPQ-8x256 | OPQ | 8 | 256 | 64 | 128D |
+| OPQ-16x256 | OPQ | 16 | 256 | 128 | 64D |
+| OPQ-32x256 | OPQ | 32 | 256 | 256 | 32D |
 
 ### Run
 `bash experiments/scripts/exp-004.sh`
