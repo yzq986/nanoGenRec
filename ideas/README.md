@@ -115,6 +115,29 @@ graph LR
 | `kunlun` | Kunlun (arxiv 2602.10016) | Meta Ads Scaling Laws |
 | `hstu` | ULTRA-HSTU (arxiv 2602.16986) | Meta Sparse Attention Co-design |
 
+## 核心设计原则
+
+> **Embedding 质量决定 SID 上限，NTP 模型只是在给定 SID 下逼近上限。**
+
+```
+Text → [Embedding 模型] → 1024D → [Quantizer] → SID → [NTP 模型] → Predict
+        ~~~~~~~~~~~~~~~~~~~~~~~~                        ~~~~~~~~~~
+        投入在这里: 决定天花板                          保持简单: 逼近天花板
+```
+
+| | Embedding 端 (优先) | NTP 模型端 (延后) |
+|---|---|---|
+| **学什么** | 让行为相似的 item embedding 更近 | 学 SID token 序列模式 |
+| **受益范围** | 所有下游 (OPQ/RKMeans/任何 NTP) | 仅限该模型本身 |
+| **成本** | 一次性 (fine-tune → 缓存 embedding) | 每次 eval 都重新训练 |
+| **评估** | `embedding_hit_rate` (秒级) | `--run_ntp` (十分钟级) |
+
+**依据**: RPG 消融 (SID 质量 >> 模型架构)、FORGE (proxy metrics 无需 NTP 即可预测下游性能)。
+
+**NTP 复杂化时机**: `embedding_hit_rate` 见顶后，或准备上线部署需要端到端 recall 数字时。
+
+---
+
 ## 全局优先级总览
 
 ### P0 — 战略方向 / 立即执行
