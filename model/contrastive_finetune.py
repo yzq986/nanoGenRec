@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -461,6 +462,7 @@ def train(args):
         hr_monitor = InlineHRMonitor(behavior_data_str, eval_interval=2000, min_items=10000)
 
     global_step = 0
+    log_entries = []  # accumulate per-print-step metrics for results.json
     t_train_start = time.time()
     total_micro_steps = len(dataloader) * args.epochs
 
@@ -533,13 +535,19 @@ def train(args):
                     hr_str = f" | HR@50={hr50:.4f} ({len(hr_monitor.embedding_buffer):,} items)"
 
                 pairs_seen = global_micro * args.batch_size * world_size
+                cur_loss = round(loss.item() * grad_accum, 4)
                 print(f"  [Epoch {epoch+1}/{args.epochs}] "
                       f"Step {batch_idx}/{len(dataloader)} ({pairs_seen/1e6:.2f}M pairs) | "
-                      f"loss={loss.item() * grad_accum:.4f} | lr={lr_now:.2e} | "
+                      f"loss={cur_loss:.4f} | lr={lr_now:.2e} | "
                       f"ETA {eta_str}{hr_str}")
 
+                entry = {'step': batch_idx, 'pairs_seen': pairs_seen,
+                         'loss': cur_loss, 'lr': lr_now, 'epoch': epoch + 1}
+                if hr50 is not None:
+                    entry['hr50'] = round(hr50, 4)
+                log_entries.append(entry)
+
                 # W&B log — x-axis = pairs_seen (cross-experiment comparable)
-                pairs_seen = global_micro * args.batch_size * world_size
                 if wandb is not None:
                     log_dict = {
                         'loss': loss.item() * grad_accum,
@@ -569,7 +577,7 @@ def train(args):
             print(f"  Epoch {epoch+1} done: avg_loss={epoch_loss:.4f} "
                   f"({time.time() - t_epoch:.0f}s) | ETA remaining: {eta_str}{hr_epoch_str}")
 
-    # ── Save model ──
+    # ── Save model + results ──
     if is_main:
         output_model_dir = os.path.join(args.output_dir, 'model')
         os.makedirs(output_model_dir, exist_ok=True)
@@ -577,6 +585,33 @@ def train(args):
         raw_model.save_pretrained(output_model_dir)
         tokenizer.save_pretrained(output_model_dir)
         print(f"Model saved to {output_model_dir}")
+
+        # Save training results summary
+        final_hr50 = None
+        if hr_monitor is not None and len(hr_monitor.embedding_buffer) >= hr_monitor.min_items:
+            final_hr50 = hr_monitor._compute_hr50()
+        results = {
+            'experiment_name': args.experiment_name,
+            'model_name': args.model_name,
+            'temperature': args.temperature,
+            'epochs': args.epochs,
+            'lr': args.lr,
+            'batch_size': args.batch_size,
+            'grad_accum': args.grad_accum,
+            'max_pairs': args.max_pairs,
+            'actual_pairs': len(dataset),
+            'world_size': world_size,
+            'effective_batch_size': args.batch_size * args.grad_accum * world_size,
+            'final_avg_loss': round(epoch_loss, 4),
+            'final_hr50': round(final_hr50, 4) if final_hr50 is not None else None,
+            'hr50_items': len(hr_monitor.embedding_buffer) if hr_monitor else 0,
+            'training_time_s': round(time.time() - t_train_start, 1),
+            'log': log_entries,
+        }
+        results_path = os.path.join(args.output_dir, 'results.json')
+        with open(results_path, 'w') as f:
+            json.dump(results, f, indent=2)
+        print(f"Results saved to {results_path}")
 
         if wandb is not None:
             wandb.finish()
