@@ -461,7 +461,6 @@ def train(args):
         hr_monitor = InlineHRMonitor(behavior_data_str, eval_interval=2000, min_items=10000)
 
     global_step = 0
-    print_count = 0  # counter for gating HR@50 via --hr_every
     t_train_start = time.time()
     total_micro_steps = len(dataloader) * args.epochs
 
@@ -526,13 +525,10 @@ def train(args):
                     eta_str = "..."
                 lr_now = scheduler.get_last_lr()[0]
 
-                # Inline HR@50: compute every hr_every print steps
+                # Inline HR@50: compute every print step
                 hr_str = ""
                 hr50 = None
-                print_count += 1
-                if (hr_monitor is not None
-                        and print_count % args.hr_every == 0
-                        and len(hr_monitor.embedding_buffer) >= hr_monitor.min_items):
+                if hr_monitor is not None and len(hr_monitor.embedding_buffer) >= hr_monitor.min_items:
                     hr50 = hr_monitor._compute_hr50()
                     hr_str = f" | HR@50={hr50:.4f} ({len(hr_monitor.embedding_buffer):,} items)"
 
@@ -604,14 +600,12 @@ def main():
     parser.add_argument('--grad_accum', type=int, default=8,
                         help='Gradient accumulation steps (effective_batch = batch_size * grad_accum * n_gpus)')
     parser.add_argument('--lr', type=float, default=1e-5)
-    parser.add_argument('--max_pairs', type=int, default=2_000_000,
-                        help='Max I2I pairs to generate (2M ≈ 1h on 8xA100)')
+    parser.add_argument('--max_pairs', type=int, default=1_000_000,
+                        help='Max I2I pairs to generate (1M ≈ 30min on 8xA100)')
     parser.add_argument('--dry_run', action='store_true',
                         help='Smoke test: 1%% data, 1 epoch, 10 steps, verify full pipeline')
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--experiment_name', type=str, default='default')
-    parser.add_argument('--hr_every', type=int, default=2,
-                        help='Compute HR@50 every N print steps (default: 2 = every 800 micro-steps)')
 
     args = parser.parse_args()
     train(args)
