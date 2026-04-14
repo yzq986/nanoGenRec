@@ -51,47 +51,47 @@ rm -rf "$EXP_DIR/smoke_test"
 echo ""
 echo ">>> Phase 1: Contrastive fine-tune Qwen3-0.6B (8 GPU DDP, sequential)"
 
-# Config A: τ=0.05, 3 epochs
-echo "[Config A] Starting: τ=0.05, 3 epochs, 8 GPU"
+# Config A: τ=0.05, 1 epoch
+echo "[Config A] Starting: τ=0.05, 1 epoch, 8 GPU"
 torchrun --nproc_per_node=8 \
     model/contrastive_finetune.py \
     --temperature 0.05 \
-    --epochs 3 \
+    --epochs 1 \
     --batch_size 32 \
     --grad_accum 8 \
     --lr 1e-5 \
-    --output_dir "$EXP_DIR/config_a_t005_ep3" \
+    --output_dir "$EXP_DIR/config_a_t005_ep1" \
     --experiment_name "config_a"
 echo "[Config A] Done"
-commit_result "EXP-007 config A done: τ=0.05, 3ep"
+commit_result "EXP-007 config A done: τ=0.05, 1ep"
 
-# Config B: τ=0.07, 3 epochs
-echo "[Config B] Starting: τ=0.07, 3 epochs, 8 GPU"
+# Config B: τ=0.07, 1 epoch
+echo "[Config B] Starting: τ=0.07, 1 epoch, 8 GPU"
 torchrun --nproc_per_node=8 \
     model/contrastive_finetune.py \
     --temperature 0.07 \
-    --epochs 3 \
+    --epochs 1 \
     --batch_size 32 \
     --grad_accum 8 \
     --lr 1e-5 \
-    --output_dir "$EXP_DIR/config_b_t007_ep3" \
+    --output_dir "$EXP_DIR/config_b_t007_ep1" \
     --experiment_name "config_b"
 echo "[Config B] Done"
-commit_result "EXP-007 config B done: τ=0.07, 3ep"
+commit_result "EXP-007 config B done: τ=0.07, 1ep"
 
-# Config C: τ=0.05, 5 epochs
-echo "[Config C] Starting: τ=0.05, 5 epochs, 8 GPU"
+# Config C: τ=0.05, 1 epoch, lr=3e-5 (higher lr to see if faster convergence)
+echo "[Config C] Starting: τ=0.05, 1 epoch, lr=3e-5, 8 GPU"
 torchrun --nproc_per_node=8 \
     model/contrastive_finetune.py \
     --temperature 0.05 \
-    --epochs 5 \
+    --epochs 1 \
     --batch_size 32 \
     --grad_accum 8 \
-    --lr 1e-5 \
-    --output_dir "$EXP_DIR/config_c_t005_ep5" \
+    --lr 3e-5 \
+    --output_dir "$EXP_DIR/config_c_t005_lr3e5" \
     --experiment_name "config_c"
 echo "[Config C] Done"
-commit_result "EXP-007 config C done: τ=0.05, 5ep"
+commit_result "EXP-007 config C done: τ=0.05, lr=3e-5"
 echo ""
 echo ">>> Phase 1 complete: all 3 configs trained"
 
@@ -101,7 +101,7 @@ echo ">>> Phase 1 complete: all 3 configs trained"
 echo ""
 echo ">>> Phase 2: Generate embeddings from fine-tuned models"
 
-for config in config_a_t005_ep3 config_b_t007_ep3 config_c_t005_ep5; do
+for config in config_a_t005_ep1 config_b_t007_ep1 config_c_t005_lr3e5; do
     echo "  Generating embeddings for $config ..."
     python run.py encode \
         --model_path "$EXP_DIR/$config/model" \
@@ -129,7 +129,7 @@ echo ">>> Phase 3: Evaluate all configs"
 ) &
 
 # Fine-tuned configs
-for config in config_a_t005_ep3 config_b_t007_ep3 config_c_t005_ep5; do
+for config in config_a_t005_ep1 config_b_t007_ep1 config_c_t005_lr3e5; do
     (
         echo "[$config] Evaluating..."
         python run.py hyperparam --skip_embedding \
