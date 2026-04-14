@@ -501,6 +501,44 @@ def train(args):
     if is_main:
         hr_monitor = InlineHRMonitor(behavior_data_str, eval_interval=2000, min_items=10000)
 
+    # ── Eval-only mode: no training, just compute baseline HR@50 ──
+    if args.eval_only and is_main:
+        print("Eval-only mode: computing baseline HR@50 (no training)")
+        model.eval()
+        with torch.no_grad():
+            for batch_idx, (texts_a, texts_b, cids_a, cids_b) in enumerate(dataloader):
+                all_texts = list(texts_a) + list(texts_b)
+                inputs = tokenizer(all_texts, padding=True, truncation=True,
+                                   max_length=256, return_tensors='pt')
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                    raw_model = model.module if world_size > 1 else model
+                    out = raw_model(**inputs)
+                    embeddings = F.normalize(out.last_hidden_state[:, -1, :].float(), dim=-1)
+                all_cids = list(cids_a) + list(cids_b)
+                hr_monitor.update(all_cids, embeddings.detach())
+                if (batch_idx + 1) % 100 == 0:
+                    print(f"  Encoded {len(hr_monitor.embedding_buffer):,} items ({batch_idx+1} batches)")
+                if len(hr_monitor.embedding_buffer) >= 50000:
+                    break
+        hr50 = hr_monitor._compute_hr50()
+        n_items = len(hr_monitor.embedding_buffer)
+        print(f"Baseline HR@50 = {hr50:.4f} ({n_items:,} items)")
+        os.makedirs(args.output_dir, exist_ok=True)
+        results = {
+            'experiment_name': args.experiment_name,
+            'model_name': args.model_name,
+            'lora': False, 'cap_loss_weight': 0,
+            'final_hr50': round(hr50, 4), 'hr50_items': n_items,
+            'eval_only': True,
+        }
+        with open(os.path.join(args.output_dir, 'results.json'), 'w') as f:
+            json.dump(results, f, indent=2)
+        print(f"Saved to {args.output_dir}/results.json")
+        if world_size > 1:
+            dist.destroy_process_group()
+        return
+
     global_step = 0
     log_entries = []  # accumulate per-print-step metrics for results.json
     t_train_start = time.time()
@@ -713,6 +751,8 @@ def main():
                         help='Max I2I pairs to generate (500K ≈ 15min on 8xA100)')
     parser.add_argument('--dry_run', action='store_true',
                         help='Smoke test: 1%% data, 1 epoch, 10 steps, verify full pipeline')
+    parser.add_argument('--eval_only', action='store_true',
+                        help='No training — forward pass to compute baseline HR@50')
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--experiment_name', type=str, default='default')
     parser.add_argument('--cap_loss_weight', type=float, default=0.0,

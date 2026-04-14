@@ -65,12 +65,18 @@ fi
 # Baseline: evaluate original Qwen3 embedding (no fine-tune)
 # ──────────────────────────────────────────────
 if run_config BL; then
-echo ">>> Baseline: evaluating original Qwen3-0.6B embedding (no fine-tune)"
-python run.py hyperparam --skip_embedding \
-    --quantizer opq --n_subvectors 8 \
-    --name exp007-baseline \
-    --append
-commit_result "EXP-007 baseline eval done"
+echo ">>> Baseline: evaluating original Qwen3-0.6B embedding HR@50 (no fine-tune)"
+torchrun --nproc_per_node=1 \
+    model/contrastive_finetune.py \
+    --eval_only \
+    --temperature 0.05 \
+    --batch_size 64 \
+    --grad_accum 1 \
+    --lr 0 \
+    --output_dir "$EXP_DIR/baseline" \
+    --experiment_name "baseline"
+echo "[Baseline] Done"
+commit_result "EXP-007 baseline HR@50 done"
 fi
 
 # ──────────────────────────────────────────────
