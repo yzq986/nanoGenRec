@@ -249,6 +249,7 @@ def train(args):
     model = AutoModel.from_pretrained(
         model_name, trust_remote_code=True, torch_dtype=torch.bfloat16
     ).to(device)
+    model.gradient_checkpointing_enable()
     model.train()
 
     if world_size > 1:
