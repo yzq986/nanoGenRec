@@ -533,23 +533,26 @@ def train(args):
                     if hr50 is not None:
                         hr_str = f" | HR@50={hr50:.4f} ({len(hr_monitor.embedding_buffer):,} items)"
 
+                pairs_seen = global_micro * args.batch_size * world_size
                 print(f"  [Epoch {epoch+1}/{args.epochs}] "
-                      f"Step {batch_idx}/{len(dataloader)} | "
+                      f"Step {batch_idx}/{len(dataloader)} ({pairs_seen/1e6:.2f}M pairs) | "
                       f"loss={loss.item() * grad_accum:.4f} | lr={lr_now:.2e} | "
                       f"ETA {eta_str}{hr_str}")
 
-                # W&B log
+                # W&B log — x-axis = pairs_seen (cross-experiment comparable)
+                pairs_seen = global_micro * args.batch_size * world_size
                 if wandb is not None:
                     log_dict = {
                         'loss': loss.item() * grad_accum,
                         'lr': lr_now,
                         'throughput': speed if global_micro > 0 else 0,
+                        'pairs_seen': pairs_seen,
                         'epoch': epoch + batch_idx / len(dataloader),
                         'buffer_items': len(hr_monitor.embedding_buffer) if hr_monitor else 0,
                     }
                     if hr50 is not None:
                         log_dict['HR@50'] = hr50
-                    wandb.log(log_dict, step=global_micro)
+                    wandb.log(log_dict, step=pairs_seen)
 
         epoch_loss /= len(dataloader)
         if is_main:
@@ -598,8 +601,8 @@ def main():
     parser.add_argument('--grad_accum', type=int, default=8,
                         help='Gradient accumulation steps (effective_batch = batch_size * grad_accum * n_gpus)')
     parser.add_argument('--lr', type=float, default=1e-5)
-    parser.add_argument('--max_pairs', type=int, default=5_000_000,
-                        help='Max I2I pairs to generate')
+    parser.add_argument('--max_pairs', type=int, default=2_000_000,
+                        help='Max I2I pairs to generate (2M ≈ 1h on 8xA100)')
     parser.add_argument('--dry_run', action='store_true',
                         help='Smoke test: 1%% data, 1 epoch, 10 steps, verify full pipeline')
     parser.add_argument('--output_dir', type=str, required=True)
