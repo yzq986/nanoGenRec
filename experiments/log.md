@@ -39,6 +39,54 @@
 
 ---
 
+## EXP-008: FORGE Proxy 对比 — MLP-FSQ vs OPQ 最优解
+
+**Date**: 2026-04-14
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+EXP-003 最优 (MLP-FSQ h=64, collision=0.041) 和 EXP-004 最优 (OPQ 8×256, collision=0.0037) 只有 intrinsic metrics，缺行为层面验证。已实现的 FORGE proxy metrics 无需训练 NTP 就能评估 SID 质量：
+- `embedding_hit_rate`: embedding I2I 邻居共现率（所有方案相同，作为 baseline）
+- `semantic_neighbor_hit_rate`: SID 前缀邻居共现率（区分 tokenizer，核心指标）
+
+目标：快速对比两条路线，决定哪条进入 NTP 阶段。
+
+### Hypothesis
+
+1. OPQ 8×256 的 `semantic_neighbor_hit_rate` 应显著高于 MLP-FSQ h=64，因为更低的 collision (0.0037 vs 0.041) 意味着更精细的 SID 分区
+2. `embedding_hit_rate` 三组相同（相同 embedding，只是 tokenizer 不同）
+3. OPQ 4×256 (等 bits 对照) 的 `semantic_neighbor_hit_rate` 介于 MLP-FSQ 和 OPQ 8×256 之间
+
+### Design
+
+| Config | Tokenizer | Tokens | Bits | 已知 collision |
+|--------|-----------|--------|------|---------------|
+| A | MLP-FSQ h=64 (6d_4096) | 3 | 32 | 0.0411 |
+| B | OPQ 4×256 (等 bits 对照) | 4 | 32 | 0.1063 |
+| C | OPQ 8×256 (最优) | 8 | 64 | 0.0037 |
+
+- **Fixed**: Qwen3-0.6B 1024D embedding (cached), behavior_data 7d
+- **Metric**:
+  - **Primary**: `semantic_neighbor_hit_rate` — SID 前缀邻居在行为图中的共现率
+  - **Baseline**: `embedding_hit_rate` — embedding 空间 I2I 邻居共现率（三组应相同）
+  - **Secondary**: intrinsic metrics (collision, recon_loss, entropy)
+
+### Run
+`bash experiments/scripts/exp-008.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-007: Collaborative Signal Enhanced Embedding (Qwen3-0.6B Full Fine-tune)
 
 **Date**: 2026-04-13

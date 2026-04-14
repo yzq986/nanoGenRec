@@ -103,6 +103,7 @@ def run_single_experiment(
         if not only_sid:
             evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
         evaluator.register_metrics(['embedding_hit_rate'])
+        evaluator.register_metrics(['semantic_neighbor_hit_rate'])
         sid_kwargs = {}
         if run_ntp:
             evaluator.register_metrics(['semantic_id_prediction'])
@@ -221,6 +222,7 @@ def run_single_experiment_fsq(
         if not only_sid:
             evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
         evaluator.register_metrics(['embedding_hit_rate'])
+        evaluator.register_metrics(['semantic_neighbor_hit_rate'])
         sid_kwargs = {}
         if run_ntp:
             evaluator.register_metrics(['semantic_id_prediction'])
@@ -340,6 +342,7 @@ def run_single_experiment_opq(
         if not only_sid:
             evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
         evaluator.register_metrics(['embedding_hit_rate'])
+        evaluator.register_metrics(['semantic_neighbor_hit_rate'])
         sid_kwargs = {}
         if run_ntp:
             evaluator.register_metrics(['semantic_id_prediction'])
