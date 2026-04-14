@@ -44,8 +44,8 @@ echo "    Config C (τ=0.05, 5ep) runs after A finishes (same GPUs)"
         model/contrastive_finetune.py \
         --temperature 0.05 \
         --epochs 3 \
-        --batch_size 64 \
-        --grad_accum 8 \
+        --batch_size 16 \
+        --grad_accum 32 \
         --lr 1e-5 \
         --output_dir "$EXP_DIR/config_a_t005_ep3" \
         --experiment_name "config_a"
@@ -58,8 +58,8 @@ echo "    Config C (τ=0.05, 5ep) runs after A finishes (same GPUs)"
         model/contrastive_finetune.py \
         --temperature 0.05 \
         --epochs 5 \
-        --batch_size 64 \
-        --grad_accum 8 \
+        --batch_size 16 \
+        --grad_accum 32 \
         --lr 1e-5 \
         --output_dir "$EXP_DIR/config_c_t005_ep5" \
         --experiment_name "config_c"
@@ -75,8 +75,8 @@ PID_AC=$!
         model/contrastive_finetune.py \
         --temperature 0.07 \
         --epochs 3 \
-        --batch_size 64 \
-        --grad_accum 8 \
+        --batch_size 16 \
+        --grad_accum 32 \
         --lr 1e-5 \
         --output_dir "$EXP_DIR/config_b_t007_ep3" \
         --experiment_name "config_b"

@@ -240,6 +240,7 @@ def train(args):
     model = AutoModel.from_pretrained(
         model_name, trust_remote_code=True, torch_dtype=torch.float16
     ).to(device)
+    model.gradient_checkpointing_enable()
     model.train()
 
     if world_size > 1:
@@ -405,9 +406,9 @@ def main():
                         help='HuggingFace model name')
     parser.add_argument('--temperature', type=float, default=0.05)
     parser.add_argument('--epochs', type=int, default=3)
-    parser.add_argument('--batch_size', type=int, default=64,
+    parser.add_argument('--batch_size', type=int, default=16,
                         help='Per-GPU batch size (reduce if OOM)')
-    parser.add_argument('--grad_accum', type=int, default=8,
+    parser.add_argument('--grad_accum', type=int, default=32,
                         help='Gradient accumulation steps (effective_batch = batch_size * grad_accum * n_gpus)')
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--max_pairs', type=int, default=5_000_000,
