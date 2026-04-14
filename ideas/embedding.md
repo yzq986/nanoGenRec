@@ -10,7 +10,11 @@
 
 ```
 Qwen3 纯文本 embedding (1024D, 当前 baseline)
-├── IDEA-sid-1: 协同信号增强 (I2I 对比学习)
+├── IDEA-sid-1: 直接 fine-tune Qwen3 (I2I 对比学习)
+│   └── EXP-007 验证: full/LoRA fine-tune 均无效, HR@50 卡在 ~0.02
+├── IDEA-onerec-3: QFormer Tokenizer (冻结 Qwen3 + cross-attention 压缩)  ★ 推荐
+│   └── OneRec/BLIP-2 方案, 信息瓶颈 + 梯度集中, 解决 EXP-007 的根本问题
+├── IDEA-onerec-0: Caption Loss (防遗忘语义, 已实现 --cap_loss_weight)
 ├── IDEA-onemall-3: 属性增强 (category/price/shop 对比学习)
 ├── IDEA-sid-3: 多模态 ESANS (粗细粒度多模态融合)
 └── IDEA-oneloc-3: Side-info 融合 (量化输入空间丰富化)
@@ -214,12 +218,125 @@ L_anchor = 1 - cos(embed_finetuned, embed_original)
 
 ---
 
+## IDEA-onerec-3: QFormer Tokenizer (冻结底座 + Cross-Attention 压缩)
+
+**优先级**: P0
+**来源**: OneRec (arxiv 2506.13695v4) §Tokenizer + BLIP-2 QFormer
+**状态**: 待实现 — EXP-007 验证了直接 fine-tune 无效后的核心方案
+
+### 核心思想
+
+EXP-007 的根本问题: 直接在 Qwen3-0.6B 上做 contrastive fine-tune（不管全量还是 LoRA）都推不动模型——cap_loss 纹丝不动，HR@50 卡在 ~0.02。
+
+OneRec 的解决方案: **不动底座，在上面加一个可训练的 QFormer**。
+
+```
+OneRec 架构:
+  miniCPM-V-8B (frozen, 8B) → 1280 tokens × 512d
+      ↓
+  QFormer (trainable, 4 layers, 4 query tokens)
+      ↓
+  4 tokens × 512d (压缩后的 item 表征)
+      ↓
+  L_I2I (InfoNCE) + L_caption_gen (next-token prediction)
+      ↓
+  RQ-KMeans → 3 层 SID
+
+我们的适配:
+  Qwen3-Embedding-0.6B (frozen) → S tokens × 1024d (last hidden states)
+      ↓
+  QFormer (trainable, N layers, M query tokens)
+      ↓
+  M tokens × D (压缩后的 item 表征)
+      ↓
+  L_I2I (InfoNCE, 已有) + L_caption (已实现 --cap_loss_weight)
+      ↓
+  OPQ 量化 → SID
+```
+
+### 为什么 QFormer 能解决 EXP-007 的问题
+
+| 问题 | 直接 fine-tune (EXP-007) | QFormer |
+|------|---|---|
+| 梯度信号稀释 | I2I 梯度摊到 600M 参数，约等于没有 | 梯度集中在 QFormer (~30-50M)，底座冻结 |
+| 语义遗忘 | cap_loss 监控不变 = 模型没动 | 底座冻结 = 天然保持语义 |
+| 信息瓶颈 | 无，1024d 全部传递 | S×1024 → M×D 强制压缩，学会提取协同相关信息 |
+| 优化目标 | "微调整个表征空间" (太大) | "学会从丰富表征中选择什么" (更直接) |
+
+### QFormer 关键设计 (来自 BLIP-2 + OneRec)
+
+**Learnable Query Tokens**: M 个可训练的 query 向量，通过 cross-attention "询问" frozen encoder 的 hidden states。
+
+**Cross-Attention 机制**:
+```
+Q = learnable_queries          (M × D)
+K, V = encoder_hidden_states   (S × 1024)
+Output = CrossAttn(Q, K, V)    (M × D)
+```
+
+**关键超参**:
+- M (query tokens): OneRec 用 4，OneMall 用 10/type。我们可以从 {4, 8, 16} 搜索
+- QFormer layers: OneRec 4 层。从 {2, 4} 开始
+- Output dim D: 与 OPQ 子向量维度对齐（当前 m=8, sub_dim=128 → D=1024 或压缩到 512）
+- 最终 embedding: mean-pool M 个 query token → 单个向量 → OPQ
+
+### 实验设计草案
+
+**Phase 1 — 最小验证 (验证梯度能否流动)**:
+- M=4 query tokens, 2 层 QFormer, D=1024
+- 冻结 Qwen3, 只训练 QFormer
+- L_I2I only, 500K pairs, lr=1e-4
+- 关注: cap_loss 是否开始变化，HR@50 是否突破 0.02
+
+**Phase 2 — 加 Caption Loss**:
+- L = L_I2I + λ * L_caption (--cap_loss_weight)
+- 对比有/无 caption loss 的 HR@50 差异
+
+**Phase 3 — 超参搜索**:
+- M ∈ {4, 8, 16}
+- QFormer layers ∈ {2, 4}
+- lr ∈ {1e-4, 5e-4, 1e-3}
+
+**评估**: HR@50 (与 EXP-007 直接对比), cap_loss 变化量
+
+### 实现要点
+
+1. **新建 `model/qformer.py`**: QFormer 模块 (cross-attention + FFN + learnable queries)
+2. **修改 `model/contrastive_finetune.py`**:
+   - `--use_qformer` flag
+   - 冻结 Qwen3，取 `last_hidden_state` (不只是最后一个 token)
+   - QFormer 处理 hidden states → 得到压缩表征
+   - 压缩表征做 InfoNCE + caption loss
+3. **修改 `model/encode.py`**: 推理时加载 QFormer，生成压缩 embedding
+4. **量化 pipeline**: OPQ 输入维度可能变化，需适配
+
+### 与 architecture.md IDEA-onemall-1 的区别
+
+| | IDEA-onemall-1 (architecture.md) | IDEA-onerec-3 (本 IDEA) |
+|---|---|---|
+| 层面 | NTP ranking 阶段 | Embedding/Tokenizer 阶段 |
+| 压缩什么 | 用户行为序列 (1205→160 tokens) | Item 多模态/文本表征 (S→M tokens) |
+| 目的 | 减少 NTP decoder FLOP | 产出用于量化的 item embedding |
+| 训练信号 | NTP next-token loss | I2I contrastive + caption loss |
+
+两者是 QFormer 在不同阶段的应用，互不冲突，可以共存。
+
+### 关键问题
+
+1. **输出格式**: QFormer 输出 M 个 token，OPQ 期望单个向量。需要 pooling (mean/cls) 或展开为更长向量
+2. **Qwen3-Embedding 是 encoder**: hidden states 是双向的 (非 causal)，QFormer 的 cross-attention 可以利用全部 context
+3. **训练成本**: QFormer ~30-50M 参数，比 LoRA 略大但远小于全量 fine-tune
+4. **推理变化**: encode 时需要多跑一个 QFormer forward，增加 ~5% 推理时间
+
+---
+
 ## 优先级总结
 
 | 优先级 | ID | 实验 | 原因 |
 |--------|-----|------|------|
-| P1 | IDEA-sid-1 | 协同信号增强 Embedding | 与量化方案正交，改善 embedding 质量对所有下游实验受益 |
-| P1 | IDEA-onemall-3 | Tokenizer 属性增强 Contrastive | OneMall +1.5% HR，与 IDEA-sid-1 互补 |
-| P1 | IDEA-onerec-0 | Caption Loss (防遗忘语义) | EXP-007 的补充，OneRec 标配 |
-| P1 | IDEA-oneloc-3 | Side-info 融合量化输入 | 与 IDEA-sid-1 统一为 "embedding enrichment" |
+| **P0** | **IDEA-onerec-3** | **QFormer Tokenizer** | **EXP-007 验证直接 fine-tune 无效; OneRec 核心架构, 解决梯度稀释+信息瓶颈** |
+| P1 | IDEA-onerec-0 | Caption Loss (联合训练) | 已实现 `--cap_loss_weight`, 与 QFormer 配合使用 |
+| P1 | IDEA-onemall-3 | Tokenizer 属性增强 Contrastive | OneMall +1.5% HR，可在 QFormer 基础上叠加 |
+| P1 | IDEA-oneloc-3 | Side-info 融合量化输入 | QFormer 输入端可融合 side-info |
+| ~~P1~~ | ~~IDEA-sid-1~~ | ~~直接 fine-tune 协同信号~~ | ~~EXP-007 已验证无效 (full/LoRA, 多种 lr/τ)~~ |
 | P2 | IDEA-sid-3 | 多模态语义 ID (ESANS) | 需要多模态 embedding 基建 |
