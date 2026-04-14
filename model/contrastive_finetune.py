@@ -358,7 +358,7 @@ def train(args):
         wandb = None
 
     # ── Load model ──
-    from transformers import AutoModel, AutoTokenizer
+    from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 
     model_name = args.model_name
     if is_main:
@@ -370,6 +370,27 @@ def train(args):
     ).to(device)
     model.gradient_checkpointing_enable()
     model.train()
+
+    # ── LM head for caption reconstruction loss (monitor only, no BP) ──
+    lm_head = None
+    LM_MODEL_NAME = "Qwen/Qwen3-0.6B"
+    if is_main:
+        print(f"Loading LM head from {LM_MODEL_NAME} (frozen, monitor only)...")
+    try:
+        causal_model = AutoModelForCausalLM.from_pretrained(
+            LM_MODEL_NAME, trust_remote_code=True, torch_dtype=torch.bfloat16
+        )
+        lm_head = causal_model.lm_head.to(device)
+        lm_head.requires_grad_(False)
+        lm_head.eval()
+        del causal_model
+        torch.cuda.empty_cache()
+        if is_main:
+            print(f"  LM head loaded: {lm_head.in_features}→{lm_head.out_features} (frozen)")
+    except Exception as e:
+        if is_main:
+            print(f"  LM head not available, skipping caption loss: {e}")
+        lm_head = None
 
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank])
@@ -635,8 +656,8 @@ def main():
     parser.add_argument('--grad_accum', type=int, default=8,
                         help='Gradient accumulation steps (effective_batch = batch_size * grad_accum * n_gpus)')
     parser.add_argument('--lr', type=float, default=1e-5)
-    parser.add_argument('--max_pairs', type=int, default=1_000_000,
-                        help='Max I2I pairs to generate (1M ≈ 30min on 8xA100)')
+    parser.add_argument('--max_pairs', type=int, default=500_000,
+                        help='Max I2I pairs to generate (500K ≈ 15min on 8xA100)')
     parser.add_argument('--dry_run', action='store_true',
                         help='Smoke test: 1%% data, 1 epoch, 10 steps, verify full pipeline')
     parser.add_argument('--output_dir', type=str, required=True)
