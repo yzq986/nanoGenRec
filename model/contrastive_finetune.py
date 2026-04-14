@@ -245,27 +245,51 @@ def train(args):
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank])
 
-    # ── Load data ──
+    # ── Load data (rank 0 builds dataset, then broadcast to all ranks) ──
     if is_main:
         print("Loading data...")
+        from gr_demo.data.loaders import load_content_texts
+        content_id_to_text = load_content_texts()
 
-    # Load content texts
-    from gr_demo.data.loaders import load_content_texts
-    content_id_to_text = load_content_texts()
+        from gr_demo.eval.batch import load_all_behavior_data
+        behavior_data = load_all_behavior_data()
 
-    # Load behavior data
-    from gr_demo.eval.batch import load_all_behavior_data
-    behavior_data = load_all_behavior_data()
+        behavior_data_str = {
+            'uid': behavior_data['uid'],
+            'iid': np.array([str(x) for x in behavior_data['iid']]),
+            'action_bitmap': behavior_data['action_bitmap'],
+            'first_ts': behavior_data.get('first_ts', np.zeros(len(behavior_data['uid']), dtype=np.int64)),
+        }
 
-    # Convert behavior iids to strings to match content_id_to_text keys
-    behavior_data_str = {
-        'uid': behavior_data['uid'],
-        'iid': np.array([str(x) for x in behavior_data['iid']]),
-        'action_bitmap': behavior_data['action_bitmap'],
-        'first_ts': behavior_data.get('first_ts', np.zeros(len(behavior_data['uid']), dtype=np.int64)),
-    }
+        dataset = I2IPairDataset(content_id_to_text, behavior_data_str, max_pairs=args.max_pairs)
+        # Share pairs + text mapping to other ranks via broadcast
+        shared = (dataset.pairs, dataset.content_id_to_text)
+    else:
+        shared = None
 
-    dataset = I2IPairDataset(content_id_to_text, behavior_data_str, max_pairs=args.max_pairs)
+    if world_size > 1:
+        import pickle
+        if is_main:
+            data_bytes = pickle.dumps(shared)
+            size_tensor = torch.tensor([len(data_bytes)], dtype=torch.long, device=device)
+        else:
+            size_tensor = torch.tensor([0], dtype=torch.long, device=device)
+        dist.broadcast(size_tensor, src=0)
+
+        if is_main:
+            data_tensor = torch.frombuffer(bytearray(data_bytes), dtype=torch.uint8).to(device)
+        else:
+            data_tensor = torch.zeros(size_tensor.item(), dtype=torch.uint8, device=device)
+        dist.broadcast(data_tensor, src=0)
+
+        if not is_main:
+            shared = pickle.loads(data_tensor.cpu().numpy().tobytes())
+
+        pairs, content_id_to_text = shared
+        dataset = I2IPairDataset.__new__(I2IPairDataset)
+        dataset.pairs = pairs
+        dataset.content_id_to_text = content_id_to_text
+        print(f"[Rank {local_rank}] Received {len(dataset.pairs):,} pairs")
 
     sampler = DistributedSampler(dataset, shuffle=True) if world_size > 1 else None
     dataloader = DataLoader(
@@ -279,8 +303,14 @@ def train(args):
     )
 
     # ── Optimizer ──
+    # Gradient accumulation: effective_batch = batch_size * grad_accum * world_size
+    grad_accum = args.grad_accum
+    effective_batch = args.batch_size * grad_accum * world_size
+    if is_main:
+        print(f"Batch: {args.batch_size}/GPU × {grad_accum} accum × {world_size} GPUs = {effective_batch} effective")
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
-    total_steps = len(dataloader) * args.epochs
+    total_steps = (len(dataloader) // grad_accum) * args.epochs
     warmup_steps = int(total_steps * 0.1)
 
     def lr_lambda(step):
@@ -309,19 +339,16 @@ def train(args):
             # Tokenize
             inputs_a = tokenizer(
                 list(texts_a), padding=True, truncation=True,
-                max_length=512, return_tensors='pt'
+                max_length=256, return_tensors='pt'
             )
             inputs_b = tokenizer(
                 list(texts_b), padding=True, truncation=True,
-                max_length=512, return_tensors='pt'
+                max_length=256, return_tensors='pt'
             )
             inputs_a = {k: v.to(device) for k, v in inputs_a.items()}
             inputs_b = {k: v.to(device) for k, v in inputs_b.items()}
 
-            optimizer.zero_grad()
-
             with torch.amp.autocast('cuda'):
-                # Forward: last hidden state, last token
                 out_a = (model.module if world_size > 1 else model)(**inputs_a)
                 emb_a = F.normalize(out_a.last_hidden_state[:, -1, :], dim=-1)
 
@@ -329,22 +356,26 @@ def train(args):
                 emb_b = F.normalize(out_b.last_hidden_state[:, -1, :], dim=-1)
 
                 loss = info_nce_loss(emb_a, emb_b, temperature=args.temperature)
+                loss = loss / grad_accum  # scale for accumulation
 
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
 
-            epoch_loss += loss.item()
-            global_step += 1
+            if (batch_idx + 1) % grad_accum == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                scheduler.step()
+                global_step += 1
 
-            if is_main and batch_idx % 50 == 0:
+            epoch_loss += loss.item() * grad_accum  # unscale for logging
+
+            if is_main and batch_idx % (50 * grad_accum) == 0:
                 lr_now = scheduler.get_last_lr()[0]
                 print(f"  [Epoch {epoch+1}/{args.epochs}] "
                       f"Step {batch_idx}/{len(dataloader)} | "
-                      f"loss={loss.item():.4f} | lr={lr_now:.2e}")
+                      f"loss={loss.item() * grad_accum:.4f} | lr={lr_now:.2e}")
 
         epoch_loss /= len(dataloader)
         if is_main:
@@ -374,8 +405,10 @@ def main():
                         help='HuggingFace model name')
     parser.add_argument('--temperature', type=float, default=0.05)
     parser.add_argument('--epochs', type=int, default=3)
-    parser.add_argument('--batch_size', type=int, default=512,
-                        help='Per-GPU batch size')
+    parser.add_argument('--batch_size', type=int, default=64,
+                        help='Per-GPU batch size (reduce if OOM)')
+    parser.add_argument('--grad_accum', type=int, default=8,
+                        help='Gradient accumulation steps (effective_batch = batch_size * grad_accum * n_gpus)')
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--max_pairs', type=int, default=5_000_000,
                         help='Max I2I pairs to generate')
