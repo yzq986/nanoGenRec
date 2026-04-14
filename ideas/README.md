@@ -9,14 +9,14 @@
 | 文件 | 维度 | Ideas 数 | P0 |
 |------|------|---------|-----|
 | [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen) | 6 | sid-0 |
-| [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性) | 4 | — |
+| [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性/Caption) | 5 | — |
 | [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Diffusion) | 8 | — |
-| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/LLM-CPT) | 6 | onemall-0 |
-| [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/Progressive/Listwise/SPO) | 6 | — |
+| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/LLM-CPT/RSFT) | 8 | onemall-0 |
+| [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise) | 7 | — |
 | [inference.md](inference.md) | 推理优化 (Dynamic Beam/CSR约束/Register压缩) | 4 | — |
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | oneloc-4 |
 
-**总计: 37 ideas (3 P0 / 24 P1 / 10 P2)**
+**总计: 41 ideas (3 P0 / 27 P1 / 11 P2)**
 
 ## 全局演进图
 
@@ -114,6 +114,7 @@ graph LR
 | `earn` | EARN (arxiv 2507.00715) | Register Token 推理加速, KDD 2025 |
 | `kunlun` | Kunlun (arxiv 2602.10016) | Meta Ads Scaling Laws |
 | `hstu` | ULTRA-HSTU (arxiv 2602.16986) | Meta Sparse Attention Co-design |
+| `onerec` | OneRec (arxiv 2506.13695v4) | 快手主站生成式推荐 (400M DAU) |
 
 ## 核心设计原则
 
@@ -174,6 +175,9 @@ Text → [Embedding 模型] → 1024D → [Quantizer] → SID → [NTP 模型] �
 | IDEA-kunlun-0 | Scaling | Rec Scaling Laws (MFU + GDPA) |
 | IDEA-hstu-0 | Scaling | Sparse Self-Attention Co-design |
 | IDEA-oneloc-2 | RL | DPO + 双目标 |
+| IDEA-onerec-0 | Embedding | Caption Loss (防遗忘语义) |
+| IDEA-onerec-1 | Training | RSFT 过滤低质量训练样本 |
+| IDEA-onerec-3 | RL | ECPO + Format Reward |
 | IDEA-oneloc-3 | Embedding | Side-info 融合 |
 | IDEA-oneloc-5 | Training | Multi-behavior 序列 |
 
@@ -189,5 +193,6 @@ Text → [Embedding 模型] → 1024D → [Quantizer] → SID → [NTP 模型] �
 | IDEA-gr4ad-3 | RL | RSPO 排序优化 |
 | IDEA-uni-0 | RL | SPO 搜索偏好优化 |
 | IDEA-flame-0 | Inference | GR Serving 系统 |
+| IDEA-onerec-2 | Training | SID 替代 VID 输入 |
 | IDEA-oneloc-0 | Architecture | Context-augmented Attn |
 | IDEA-oneloc-1 | Architecture | Category Prompt |

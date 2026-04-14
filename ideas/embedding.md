@@ -170,11 +170,56 @@ OneLoc 在残差量化的初始 embedding 中融合地理上下文: `r_0 = conca
 
 ---
 
+## IDEA-onerec-0: Caption Generation Loss (防止协同微调遗忘语义)
+
+**优先级**: P1
+**来源**: OneRec (arxiv 2506.13695v4) §Tokenizer Training
+**状态**: 待讨论 — 直接关联 EXP-007
+
+### 核心思想
+
+OneRec 在 tokenizer 的对比学习训练中同时加入 **caption generation loss**:
+- 对比 loss (`L_I2I`): 拉近协同 pair
+- Caption loss (`L_caption_gen`): 给定 item 的多模态表示，预测 item 的文本 caption (next-token prediction)
+
+Caption loss 的作用是 **"prevents hallucination by performing next-token prediction on video captions"** — 防止对比学习过度拟合协同信号而丢失内容语义。
+
+### 与当前项目的关联
+
+- **EXP-007 目前只有 InfoNCE loss**，没有语义保持机制。如果 3 epoch 训练后 embedding 丢失了文本语义（cosine_similarity 分布变差），说明需要加 caption loss
+- Qwen3-Embedding-0.6B 是 encoder 模型，不直接支持 causal LM generation
+- **替代方案**: 用 contrastive loss 保持语义 — 同 item 微调前后的 embedding 做正样本 (anchor preservation)，或加一个轻量 text reconstruction head
+
+### 实验设计草案
+
+**方案 A — Embedding Anchor Preservation (推荐，最简单)**:
+```
+L = L_InfoNCE + β * L_anchor
+L_anchor = 1 - cos(embed_finetuned, embed_original)
+```
+冻结一份原始 Qwen3 作为 anchor，微调后的 embedding 不能离原始太远。
+
+**方案 B — Text Reconstruction Head**:
+- 在 Qwen3 encoder 输出上加一个轻量 decoder head
+- 预测 item title tokens
+- `L = L_InfoNCE + β * L_text_recon`
+
+**评估**: 对比有/无 caption loss 的 embedding 在 `embedding_hit_rate` + `cosine_similarity` 上的变化
+
+### 关键问题
+
+1. β 的选择: 太大压制协同学习，太小没效果
+2. 方案 A 的 anchor preservation 可能过于保守 — 限制了 embedding 空间的移动幅度
+3. EXP-007 结果出来后看 `cosine_similarity` 是否退化，决定是否需要加
+
+---
+
 ## 优先级总结
 
 | 优先级 | ID | 实验 | 原因 |
 |--------|-----|------|------|
 | P1 | IDEA-sid-1 | 协同信号增强 Embedding | 与量化方案正交，改善 embedding 质量对所有下游实验受益 |
 | P1 | IDEA-onemall-3 | Tokenizer 属性增强 Contrastive | OneMall +1.5% HR，与 IDEA-sid-1 互补 |
+| P1 | IDEA-onerec-0 | Caption Loss (防遗忘语义) | EXP-007 的补充，OneRec 标配 |
 | P1 | IDEA-oneloc-3 | Side-info 融合量化输入 | 与 IDEA-sid-1 统一为 "embedding enrichment" |
 | P2 | IDEA-sid-3 | 多模态语义 ID (ESANS) | 需要多模态 embedding 基建 |
