@@ -856,8 +856,8 @@ def main():
     parser.add_argument('--grad_accum', type=int, default=8,
                         help='Gradient accumulation steps (effective_batch = batch_size * grad_accum * n_gpus)')
     parser.add_argument('--lr', type=float, default=1e-5)
-    parser.add_argument('--max_pairs', type=int, default=500_000,
-                        help='Max I2I pairs to generate (500K ≈ 15min on 8xA100)')
+    parser.add_argument('--max_pairs', type=int, default=2_000_000,
+                        help='Max I2I pairs to generate')
     parser.add_argument('--dry_run', action='store_true',
                         help='Smoke test: 1%% data, 1 epoch, 10 steps, verify full pipeline')
     parser.add_argument('--eval_only', action='store_true',
