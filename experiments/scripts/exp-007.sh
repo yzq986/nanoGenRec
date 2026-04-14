@@ -4,7 +4,7 @@ set -e
 # EXP-007: Collaborative Signal Enhanced Embedding (Qwen3-0.6B Full Fine-tune)
 # Date: 2026-04-13
 # IDEA: sid-1 — I2I contrastive learning to inject collaborative signals into embedding
-# Hardware: 8 x A100 80GB NVLink
+# Hardware: 8 x A100 40GB
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -41,8 +41,8 @@ torchrun --nproc_per_node=8 \
     model/contrastive_finetune.py \
     --temperature 0.05 \
     --epochs 3 \
-    --batch_size 16 \
-    --grad_accum 16 \
+    --batch_size 32 \
+    --grad_accum 8 \
     --lr 1e-5 \
     --output_dir "$EXP_DIR/config_a_t005_ep3" \
     --experiment_name "config_a"
@@ -55,8 +55,8 @@ torchrun --nproc_per_node=8 \
     model/contrastive_finetune.py \
     --temperature 0.07 \
     --epochs 3 \
-    --batch_size 16 \
-    --grad_accum 16 \
+    --batch_size 32 \
+    --grad_accum 8 \
     --lr 1e-5 \
     --output_dir "$EXP_DIR/config_b_t007_ep3" \
     --experiment_name "config_b"
@@ -69,8 +69,8 @@ torchrun --nproc_per_node=8 \
     model/contrastive_finetune.py \
     --temperature 0.05 \
     --epochs 5 \
-    --batch_size 16 \
-    --grad_accum 16 \
+    --batch_size 32 \
+    --grad_accum 8 \
     --lr 1e-5 \
     --output_dir "$EXP_DIR/config_c_t005_ep5" \
     --experiment_name "config_c"

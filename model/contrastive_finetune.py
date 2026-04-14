@@ -240,7 +240,6 @@ def train(args):
     model = AutoModel.from_pretrained(
         model_name, trust_remote_code=True, torch_dtype=torch.bfloat16
     ).to(device)
-    model.gradient_checkpointing_enable()
     model.train()
 
     if world_size > 1:
@@ -298,7 +297,7 @@ def train(args):
         batch_size=args.batch_size,
         sampler=sampler,
         shuffle=(sampler is None),
-        num_workers=4,
+        num_workers=8,
         pin_memory=True,
         drop_last=True,
     )
@@ -337,24 +336,20 @@ def train(args):
         t_epoch = time.time()
 
         for batch_idx, (texts_a, texts_b) in enumerate(dataloader):
-            # Tokenize
-            inputs_a = tokenizer(
-                list(texts_a), padding=True, truncation=True,
+            # Tokenize both batches together → single forward pass
+            all_texts = list(texts_a) + list(texts_b)
+            inputs = tokenizer(
+                all_texts, padding=True, truncation=True,
                 max_length=256, return_tensors='pt'
             )
-            inputs_b = tokenizer(
-                list(texts_b), padding=True, truncation=True,
-                max_length=256, return_tensors='pt'
-            )
-            inputs_a = {k: v.to(device) for k, v in inputs_a.items()}
-            inputs_b = {k: v.to(device) for k, v in inputs_b.items()}
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            B = len(texts_a)
 
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                out_a = (model.module if world_size > 1 else model)(**inputs_a)
-                emb_a = F.normalize(out_a.last_hidden_state[:, -1, :].float(), dim=-1)
-
-                out_b = (model.module if world_size > 1 else model)(**inputs_b)
-                emb_b = F.normalize(out_b.last_hidden_state[:, -1, :].float(), dim=-1)
+                raw_model = model.module if world_size > 1 else model
+                out = raw_model(**inputs)
+                embeddings = F.normalize(out.last_hidden_state[:, -1, :].float(), dim=-1)
+                emb_a, emb_b = embeddings[:B], embeddings[B:]
 
                 loss = info_nce_loss(emb_a, emb_b, temperature=args.temperature)
                 loss = loss / grad_accum
@@ -404,9 +399,9 @@ def main():
                         help='HuggingFace model name')
     parser.add_argument('--temperature', type=float, default=0.05)
     parser.add_argument('--epochs', type=int, default=3)
-    parser.add_argument('--batch_size', type=int, default=16,
-                        help='Per-GPU batch size (reduce if OOM)')
-    parser.add_argument('--grad_accum', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=32,
+                        help='Per-GPU batch size (reduce to 16 if OOM)')
+    parser.add_argument('--grad_accum', type=int, default=8,
                         help='Gradient accumulation steps (effective_batch = batch_size * grad_accum * n_gpus)')
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--max_pairs', type=int, default=5_000_000,
