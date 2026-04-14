@@ -23,7 +23,7 @@ if [[ "${1:-}" == "--no-smoke" ]]; then
     SKIP_SMOKE=true
     shift
 fi
-CONFIGS="${@:-A B C D E F}"
+CONFIGS="${@:-A B C D E F G H I}"
 run_config() { [[ " $CONFIGS " == *" $1 "* ]]; }
 echo "Selected configs: $CONFIGS (smoke: $( $SKIP_SMOKE && echo skip || echo run ))"
 
@@ -166,6 +166,59 @@ echo "[Config F] Done"
 commit_result "EXP-007 config F done: τ=0.05, lr=1e-3"
 fi
 
+# ── Round 3: LoRA (freeze base, concentrate gradient on adapter) ──
+
+# Config G: LoRA r=16, lr=1e-4
+if run_config G; then
+echo "[Config G] Starting: LoRA r=16, τ=0.05, lr=1e-4, 8 GPU"
+torchrun --nproc_per_node=8 \
+    model/contrastive_finetune.py \
+    --lora --lora_rank 16 \
+    --temperature 0.05 \
+    --epochs 1 \
+    --batch_size 32 \
+    --grad_accum 8 \
+    --lr 1e-4 \
+    --output_dir "$EXP_DIR/config_g_lora_r16" \
+    --experiment_name "config_g"
+echo "[Config G] Done"
+commit_result "EXP-007 config G done: LoRA r=16, lr=1e-4"
+fi
+
+# Config H: LoRA r=16, lr=5e-4
+if run_config H; then
+echo "[Config H] Starting: LoRA r=16, τ=0.05, lr=5e-4, 8 GPU"
+torchrun --nproc_per_node=8 \
+    model/contrastive_finetune.py \
+    --lora --lora_rank 16 \
+    --temperature 0.05 \
+    --epochs 1 \
+    --batch_size 32 \
+    --grad_accum 8 \
+    --lr 5e-4 \
+    --output_dir "$EXP_DIR/config_h_lora_lr5e4" \
+    --experiment_name "config_h"
+echo "[Config H] Done"
+commit_result "EXP-007 config H done: LoRA r=16, lr=5e-4"
+fi
+
+# Config I: LoRA r=64, lr=1e-4 (more capacity)
+if run_config I; then
+echo "[Config I] Starting: LoRA r=64, τ=0.05, lr=1e-4, 8 GPU"
+torchrun --nproc_per_node=8 \
+    model/contrastive_finetune.py \
+    --lora --lora_rank 64 \
+    --temperature 0.05 \
+    --epochs 1 \
+    --batch_size 32 \
+    --grad_accum 8 \
+    --lr 1e-4 \
+    --output_dir "$EXP_DIR/config_i_lora_r64" \
+    --experiment_name "config_i"
+echo "[Config I] Done"
+commit_result "EXP-007 config I done: LoRA r=64, lr=1e-4"
+fi
+
 echo ""
 echo ">>> Phase 1 complete: selected configs trained"
 
@@ -177,6 +230,9 @@ declare -A CONFIG_DIRS=(
     [D]=config_d_lr1e4
     [E]=config_e_lr3e4
     [F]=config_f_lr1e3
+    [G]=config_g_lora_r16
+    [H]=config_h_lora_lr5e4
+    [I]=config_i_lora_r64
 )
 
 # ──────────────────────────────────────────────
@@ -185,7 +241,7 @@ declare -A CONFIG_DIRS=(
 echo ""
 echo ">>> Phase 2: Generate embeddings from fine-tuned models"
 
-for key in A B C D E F; do
+for key in A B C D E F G H I; do
     run_config "$key" || continue
     config="${CONFIG_DIRS[$key]}"
     echo "  Generating embeddings for $config ..."
@@ -215,7 +271,7 @@ echo ">>> Phase 3: Evaluate all configs"
 ) &
 
 # Fine-tuned configs
-for key in A B C D E F; do
+for key in A B C D E F G H I; do
     run_config "$key" || continue
     config="${CONFIG_DIRS[$key]}"
     (

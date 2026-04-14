@@ -371,6 +371,24 @@ def train(args):
     model.gradient_checkpointing_enable()
     model.train()
 
+    # ── LoRA: freeze base model, inject trainable adapters ──
+    if args.lora:
+        from peft import LoraConfig, get_peft_model
+        model.requires_grad_(False)
+        lora_config = LoraConfig(
+            r=args.lora_rank,
+            lora_alpha=args.lora_rank * 2,
+            target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+            lora_dropout=0.05,
+            bias="none",
+        )
+        model = get_peft_model(model, lora_config)
+        if is_main:
+            trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+            total = sum(p.numel() for p in model.parameters())
+            print(f"LoRA enabled: {trainable/1e6:.1f}M trainable / {total/1e6:.1f}M total "
+                  f"({trainable/total*100:.1f}%)")
+
     # ── LM head for caption reconstruction loss (monitor only, no BP) ──
     lm_head = None
     LM_MODEL_NAME = "Qwen/Qwen3-0.6B"
@@ -622,6 +640,9 @@ def train(args):
         output_model_dir = os.path.join(args.output_dir, 'model')
         os.makedirs(output_model_dir, exist_ok=True)
         raw_model = model.module if world_size > 1 else model
+        if args.lora:
+            raw_model = raw_model.merge_and_unload()
+            print("LoRA merged into base model")
         raw_model.save_pretrained(output_model_dir)
         tokenizer.save_pretrained(output_model_dir)
         print(f"Model saved to {output_model_dir}")
@@ -636,6 +657,8 @@ def train(args):
             'temperature': args.temperature,
             'epochs': args.epochs,
             'lr': args.lr,
+            'lora': args.lora,
+            'lora_rank': args.lora_rank if args.lora else None,
             'batch_size': args.batch_size,
             'grad_accum': args.grad_accum,
             'max_pairs': args.max_pairs,
@@ -681,6 +704,10 @@ def main():
                         help='Smoke test: 1%% data, 1 epoch, 10 steps, verify full pipeline')
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--experiment_name', type=str, default='default')
+    parser.add_argument('--lora', action='store_true',
+                        help='Freeze base model, train LoRA adapters only (requires peft)')
+    parser.add_argument('--lora_rank', type=int, default=16,
+                        help='LoRA rank (default: 16, ~10M trainable params)')
 
     args = parser.parse_args()
     train(args)
