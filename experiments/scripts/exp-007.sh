@@ -68,7 +68,6 @@ if run_config BL; then
 echo ">>> Baseline: evaluating original Qwen3-0.6B embedding (no fine-tune)"
 python run.py hyperparam --skip_embedding \
     --quantizer opq --n_subvectors 8 \
-    --behavior_path auto \
     --name exp007-baseline \
     --append
 commit_result "EXP-007 baseline eval done"

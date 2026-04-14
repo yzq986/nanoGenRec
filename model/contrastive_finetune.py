@@ -397,7 +397,7 @@ def train(args):
         print(f"Loading LM head from {LM_MODEL_NAME} (frozen, {cap_mode})...")
     try:
         causal_model = AutoModelForCausalLM.from_pretrained(
-            LM_MODEL_NAME, trust_remote_code=True, torch_dtype=torch.bfloat16
+            LM_MODEL_NAME, torch_dtype=torch.bfloat16
         )
         lm_head = causal_model.lm_head.to(device)
         lm_head.requires_grad_(False)
