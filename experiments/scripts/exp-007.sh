@@ -14,6 +14,12 @@ LOCKFILE="/tmp/exp007_git.lock"
 EXP_DIR="experiments/hyperparam/2026-04-13_exp007-collab-embed"
 mkdir -p "$EXP_DIR"
 
+# Config selection: pass config names as args, e.g. ./exp-007.sh B C
+# No args = run all (A B C)
+CONFIGS="${@:-A B C}"
+run_config() { [[ " $CONFIGS " == *" $1 "* ]]; }
+echo "Selected configs: $CONFIGS"
+
 commit_result() {
     local msg="$1"
     (
@@ -52,6 +58,7 @@ echo ""
 echo ">>> Phase 1: Contrastive fine-tune Qwen3-0.6B (8 GPU DDP, sequential)"
 
 # Config A: τ=0.05, 1 epoch
+if run_config A; then
 echo "[Config A] Starting: τ=0.05, 1 epoch, 8 GPU"
 torchrun --nproc_per_node=8 \
     model/contrastive_finetune.py \
@@ -64,8 +71,10 @@ torchrun --nproc_per_node=8 \
     --experiment_name "config_a"
 echo "[Config A] Done"
 commit_result "EXP-007 config A done: τ=0.05, 1ep"
+fi
 
 # Config B: τ=0.07, 1 epoch
+if run_config B; then
 echo "[Config B] Starting: τ=0.07, 1 epoch, 8 GPU"
 torchrun --nproc_per_node=8 \
     model/contrastive_finetune.py \
@@ -78,8 +87,10 @@ torchrun --nproc_per_node=8 \
     --experiment_name "config_b"
 echo "[Config B] Done"
 commit_result "EXP-007 config B done: τ=0.07, 1ep"
+fi
 
 # Config C: τ=0.05, 1 epoch, lr=3e-5 (higher lr to see if faster convergence)
+if run_config C; then
 echo "[Config C] Starting: τ=0.05, 1 epoch, lr=3e-5, 8 GPU"
 torchrun --nproc_per_node=8 \
     model/contrastive_finetune.py \
@@ -92,8 +103,16 @@ torchrun --nproc_per_node=8 \
     --experiment_name "config_c"
 echo "[Config C] Done"
 commit_result "EXP-007 config C done: τ=0.05, lr=3e-5"
+fi
 echo ""
-echo ">>> Phase 1 complete: all 3 configs trained"
+echo ">>> Phase 1 complete: selected configs trained"
+
+# Config name → directory mapping
+declare -A CONFIG_DIRS=(
+    [A]=config_a_t005_ep1
+    [B]=config_b_t007_ep1
+    [C]=config_c_t005_lr3e5
+)
 
 # ──────────────────────────────────────────────
 # Phase 2: Generate embeddings from fine-tuned models (parallel)
@@ -101,7 +120,9 @@ echo ">>> Phase 1 complete: all 3 configs trained"
 echo ""
 echo ">>> Phase 2: Generate embeddings from fine-tuned models"
 
-for config in config_a_t005_ep1 config_b_t007_ep1 config_c_t005_lr3e5; do
+for key in A B C; do
+    run_config "$key" || continue
+    config="${CONFIG_DIRS[$key]}"
     echo "  Generating embeddings for $config ..."
     python run.py encode \
         --model_path "$EXP_DIR/$config/model" \
@@ -109,7 +130,7 @@ for config in config_a_t005_ep1 config_b_t007_ep1 config_c_t005_lr3e5; do
         --model_type qwen3-text &
 done
 wait
-echo ">>> Phase 2 complete: all embeddings generated"
+echo ">>> Phase 2 complete: embeddings generated"
 
 # ──────────────────────────────────────────────
 # Phase 3: Evaluate — embedding_hit_rate + OPQ intrinsic (parallel)
@@ -129,7 +150,9 @@ echo ">>> Phase 3: Evaluate all configs"
 ) &
 
 # Fine-tuned configs
-for config in config_a_t005_ep1 config_b_t007_ep1 config_c_t005_lr3e5; do
+for key in A B C; do
+    run_config "$key" || continue
+    config="${CONFIG_DIRS[$key]}"
     (
         echo "[$config] Evaluating..."
         python run.py hyperparam --skip_embedding \
