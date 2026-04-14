@@ -39,6 +39,57 @@
 
 ---
 
+## EXP-009: QFormer Tokenizer — 冻结 Qwen3 + Cross-Attention 压缩
+
+**Date**: 2026-04-14
+**Status**: planned
+**IDEA**: IDEA-onerec-3
+**Results**: TBD
+
+### Background
+
+EXP-007 证明直接 fine-tune Qwen3-0.6B（全量/LoRA，多种 lr/τ）完全无法推动模型——cap_loss 纹丝不动，HR@50 卡在 ~0.02。根本原因: I2I 梯度稀释在 600M 参数中。
+
+OneRec 的核心方案: 冻结底座，在上面加一个可训练的 QFormer (cross-attention + learnable queries)。梯度集中在 ~30-50M 参数的 QFormer 上，底座天然保持语义。BLIP-2 QFormer 已被 OneRec (miniCPM-V-8B + 4-layer QFormer) 验证有效。
+
+### Hypothesis
+
+1. QFormer 训练时 cap_loss 会明显下降（不同于 EXP-007 的纹丝不动），证明梯度可以有效流动
+2. HR@50 显著突破 EXP-007 的 0.02 baseline（预期 > 0.05）
+3. 信息压缩 (S tokens → M tokens) 迫使 QFormer 学会提取协同相关信息而非照搬语义
+
+### Design
+
+**Phase 1 — 最小验证 (梯度能否流动)**:
+
+| Config | QFormer Layers | Query Tokens (M) | lr | Loss |
+|--------|---------------|-------------------|------|------|
+| A | 2 | 4 | 1e-4 | L_I2I only |
+| B | 2 | 4 | 5e-4 | L_I2I only |
+| C | 4 | 4 | 1e-4 | L_I2I only |
+
+- **Variable**: QFormer depth × learning rate
+- **Fixed**: Qwen3-0.6B frozen, M=4 query tokens, D=1024, τ=0.05, batch_size=32, grad_accum=8, max_pairs=500K, 1 epoch, 8xA100 DDP
+- **Metric**:
+  - **Primary**: HR@50 (InlineHRMonitor, 与 EXP-007 baseline 直接对比)
+  - **Diagnostic**: cap_loss 变化量 (W&B)、I2I loss 收敛速度
+  - **Secondary**: OPQ intrinsic (collision, recon_loss) on QFormer embeddings
+- **Data**: 行为数据 7 天, ~5M items
+
+### Run
+`bash experiments/scripts/exp-009.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-008: FORGE Proxy 对比 — MLP-FSQ vs OPQ 最优解
 
 **Date**: 2026-04-14
