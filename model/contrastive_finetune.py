@@ -637,42 +637,48 @@ def train(args):
                 # Note: with QFormer, cap_loss uses encoder hidden states (not QFormer output)
                 # to monitor semantic preservation of the frozen base model.
                 caption_loss_val = None
+                # Caption loss: lm_head(hidden) produces (N, S, vocab~150K) — OOM risk.
+                # Monitor-only paths subsample to CAP_MONITOR_N samples.
+                # Training path chunks across batch dim.
+                CAP_MONITOR_N = 4
                 if lm_head is not None and args.cap_loss_weight > 0:
                     if args.use_qformer:
                         # Encoder is frozen → cap_loss is monitor-only in QFormer mode
-                        # (no unfrozen params to backprop into)
                         with torch.no_grad():
-                            hidden = out.last_hidden_state
-                            labels = inputs['input_ids']
-                            logits = lm_head(hidden)
-                            shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
-                            shift_labels = labels[:, 1:].contiguous().view(-1)
+                            h = out.last_hidden_state[:CAP_MONITOR_N]
+                            l = inputs['input_ids'][:CAP_MONITOR_N]
+                            logits = lm_head(h)
+                            sl = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
+                            st = l[:, 1:].contiguous().view(-1)
                             caption_loss_val = F.cross_entropy(
-                                shift_logits, shift_labels,
-                                ignore_index=tokenizer.pad_token_id).item()
+                                sl, st, ignore_index=tokenizer.pad_token_id).item()
                     else:
                         # Gradient flows through hidden_states → model (lm_head stays frozen)
+                        # Chunk to avoid OOM on (2B, S, vocab)
                         hidden = out.last_hidden_state  # (2B, S, D)
                         labels = inputs['input_ids']    # (2B, S)
-                        logits = lm_head(hidden)        # (2B, S, vocab)
-                        shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
-                        shift_labels = labels[:, 1:].contiguous().view(-1)
-                        cap_loss = F.cross_entropy(shift_logits, shift_labels,
-                                                   ignore_index=tokenizer.pad_token_id)
+                        cap_losses = []
+                        for chunk_h, chunk_l in zip(hidden.chunk(4), labels.chunk(4)):
+                            logits = lm_head(chunk_h)
+                            sl = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
+                            st = chunk_l[:, 1:].contiguous().view(-1)
+                            cap_losses.append(F.cross_entropy(
+                                sl, st, ignore_index=tokenizer.pad_token_id))
+                        cap_loss = torch.stack(cap_losses).mean()
                         loss = loss + args.cap_loss_weight * cap_loss / grad_accum
                         caption_loss_val = cap_loss.item()
                 elif lm_head is not None and is_main and batch_idx % (50 * grad_accum) == 0:
-                    # Monitor only (no BP), rank 0 print steps only
+                    # Monitor only (no BP), subsample to avoid OOM
                     with torch.no_grad():
-                        hidden = (out.last_hidden_state.detach() if not args.use_qformer
-                                  else out.last_hidden_state)
-                        labels = inputs['input_ids']
-                        logits = lm_head(hidden)
-                        shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
-                        shift_labels = labels[:, 1:].contiguous().view(-1)
+                        h = (out.last_hidden_state[:CAP_MONITOR_N].detach()
+                             if not args.use_qformer
+                             else out.last_hidden_state[:CAP_MONITOR_N])
+                        l = inputs['input_ids'][:CAP_MONITOR_N]
+                        logits = lm_head(h)
+                        sl = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
+                        st = l[:, 1:].contiguous().view(-1)
                         caption_loss_val = F.cross_entropy(
-                            shift_logits, shift_labels,
-                            ignore_index=tokenizer.pad_token_id).item()
+                            sl, st, ignore_index=tokenizer.pad_token_id).item()
 
             loss.backward()
 
