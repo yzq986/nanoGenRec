@@ -140,10 +140,10 @@ TBD
 
 ## EXP-007: Collaborative Signal Enhanced Embedding (Qwen3-0.6B Full Fine-tune)
 
-**Date**: 2026-04-13
-**Status**: planned
+**Date**: 2026-04-13 ~ 2026-04-14
+**Status**: completed
 **IDEA**: IDEA-sid-1
-**Results**: TBD
+**Results**: [./hyperparam/2026-04-13_exp007-collab-embed/](./hyperparam/2026-04-13_exp007-collab-embed/)
 
 ### Background
 
@@ -180,13 +180,57 @@ TBD
 `bash experiments/scripts/exp-007.sh`
 
 ### Results
-TBD
+
+**Baseline**: HR@50 = 0.0106 (原始 Qwen3-0.6B embedding, 50,008 items)
+
+**Round 1 — 基础超参搜索 (全量 fine-tune)**:
+
+| Config | τ | lr | max_pairs | HR@50 | Loss plateau | 训练时间 |
+|--------|------|------|-----------|-------|-------------|---------|
+| BL (baseline) | — | — | — | **0.0106** | — | — |
+| A | 0.05 | 1e-5 | 2M | **0.0197** | ~step 800 | 6756s (~1h53m) |
+| B | 0.07 | 1e-5 | 1M | 0.0148 | ~step 800 | killed early |
+| C | 0.05 | 3e-5 | 500K | 0.0192 | ~step 400 | 1912s (~32min) |
+
+**Round 2 — 激进学习率 (cap_loss 在 R1 纹丝不动)**:
+
+| Config | τ | lr | 状态 |
+|--------|------|------|------|
+| D | 0.05 | 1e-4 | 脚本就绪，未产出超越 R1 的结果 |
+| E | 0.05 | 3e-4 | 同上 |
+| F | 0.05 | 1e-3 | 同上 |
+
+**Round 3 — LoRA (冻结底座，梯度集中在 adapter)**:
+
+| Config | Method | lr | 状态 |
+|--------|--------|------|------|
+| G | LoRA r=16 | 1e-4 | 脚本就绪，未产出超越 R1 的结果 |
+| H | LoRA r=16 | 5e-4 | 同上 |
+| I | LoRA r=64 | 1e-4 | 同上 |
 
 ### Analysis
-TBD
+
+**1. HR@50 天花板 ~0.02，较 baseline 0.0106 提升约 86%，但远未达到 hypothesis 预期的 50%+ 绝对提升:**
+- 最佳 Config A: 0.0197，仍处于 poor 级别（阈值 < 0.02）
+- 三组 round 1 config HR@50 收敛到同一天花板 (~0.02)，超参调优空间有限
+
+**2. 温度不是瓶颈**: τ=0.07 (Config B) 全面劣于 τ=0.05 (Config A)
+
+**3. 学习率影响收敛速度不影响上限**: Config C (lr=3e-5) 用 1/4 数据、1/3 时间达到同等效果
+
+**4. Loss 快速 plateau**: 所有 config 在 ~200K pairs 后 loss 稳定在 ~2.5-2.7，cap_loss 完全不动——说明 I2I 梯度稀释在 600M 参数中
+
+**5. Hypothesis 验证:**
+- ❌ HR@50 提升 86% (0.0106→0.0197)，但绝对值仍极低，未达到 "显著优于" 的预期
+- ❌ 下游量化改善未验证（HR@50 本身太低，OPQ 评估意义有限）
+- ✅ 训练时间可控（最快 Config C 仅 32 分钟）
+
+**6. 根因**: 直接 fine-tune 600M 参数的 Qwen3 底座，I2I contrastive 的梯度被稀释，模型几乎不学习。无论全量 fine-tune 还是 LoRA，都无法有效将协同信号注入 embedding。
 
 ### Next Steps
-TBD
+
+EXP-007 证明 "直接 fine-tune 底座" 路线不可行，需要方法论变更:
+- **EXP-009 (已规划)**: 冻结 Qwen3 底座 + QFormer cross-attention，梯度集中在 ~30-50M 参数的 QFormer 上（OneRec 验证有效的方案）
 
 ---
 

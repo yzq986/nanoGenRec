@@ -334,10 +334,7 @@ def train(args):
         # W&B init (rank 0 only)
         try:
             import wandb
-            wandb.init(
-                project="gr-demo",
-                name=args.experiment_name,
-                config={
+            wandb_config = {
                     'temperature': args.temperature,
                     'epochs': args.epochs,
                     'batch_size': args.batch_size,
@@ -348,7 +345,18 @@ def train(args):
                     'effective_batch': args.batch_size * args.grad_accum * world_size,
                     'model_name': args.model_name,
                     'dry_run': args.dry_run,
-                },
+                    'use_qformer': args.use_qformer,
+            }
+            if args.use_qformer:
+                wandb_config.update({
+                    'qformer_layers': args.qformer_layers,
+                    'qformer_queries': args.qformer_queries,
+                    'qformer_heads': args.qformer_heads,
+                })
+            wandb.init(
+                project="gr-demo",
+                name=args.experiment_name,
+                config=wandb_config,
             )
             print("W&B initialized")
         except Exception as e:
@@ -371,8 +379,38 @@ def train(args):
     model.gradient_checkpointing_enable()
     model.train()
 
+    # ── QFormer: freeze base model, train cross-attention compressor ──
+    qformer = None
+    if args.use_qformer:
+        from model.qformer import QFormer as QFormerModule
+
+        model.requires_grad_(False)
+        model.eval()  # frozen encoder stays in eval mode (no dropout)
+        # Disable gradient checkpointing for frozen encoder (not needed)
+        model.gradient_checkpointing_disable()
+
+        # Detect encoder hidden dim from model config
+        d_enc = model.config.hidden_size  # 1024 for Qwen3-0.6B
+
+        qformer = QFormerModule(
+            num_queries=args.qformer_queries,
+            num_layers=args.qformer_layers,
+            d_model=d_enc,  # match encoder dim for simplicity
+            d_enc=d_enc,
+            n_heads=args.qformer_heads,
+            dropout=args.qformer_dropout,
+        ).to(device)
+        qformer.train()
+
+        if is_main:
+            print(f"QFormer enabled: {qformer.param_count()} "
+                  f"(queries={args.qformer_queries}, layers={args.qformer_layers}, "
+                  f"d={d_enc}, heads={args.qformer_heads})")
+            base_params = sum(p.numel() for p in model.parameters())
+            print(f"  Base model frozen: {base_params/1e6:.1f}M params (no grad)")
+
     # ── LoRA: freeze base model, inject trainable adapters ──
-    if args.lora:
+    elif args.lora:
         from peft import LoraConfig, get_peft_model
         model.requires_grad_(False)
         lora_config = LoraConfig(
@@ -412,7 +450,11 @@ def train(args):
         lm_head = None
 
     if world_size > 1:
-        model = DDP(model, device_ids=[local_rank])
+        if args.use_qformer:
+            # Only QFormer needs DDP (base model is frozen, no gradient sync)
+            qformer = DDP(qformer, device_ids=[local_rank])
+        else:
+            model = DDP(model, device_ids=[local_rank])
 
     # ── Load data (rank 0 builds dataset, then broadcast to all ranks) ──
     if is_main:
@@ -478,7 +520,8 @@ def train(args):
     if is_main:
         print(f"Batch: {args.batch_size}/GPU × {grad_accum} accum × {world_size} GPUs = {effective_batch} effective")
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
+    train_params = qformer.parameters() if args.use_qformer else model.parameters()
+    optimizer = torch.optim.AdamW(train_params, lr=args.lr, weight_decay=0.01)
     total_steps = (len(dataloader) // grad_accum) * args.epochs
     warmup_steps = int(total_steps * 0.1)
 
@@ -505,6 +548,8 @@ def train(args):
     if args.eval_only and is_main:
         print("Eval-only mode: computing baseline HR@50 (no training)")
         model.eval()
+        if qformer is not None:
+            qformer.eval()
         with torch.no_grad():
             for batch_idx, (texts_a, texts_b, cids_a, cids_b) in enumerate(dataloader):
                 all_texts = list(texts_a) + list(texts_b)
@@ -512,9 +557,15 @@ def train(args):
                                    max_length=256, return_tensors='pt')
                 inputs = {k: v.to(device) for k, v in inputs.items()}
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                    raw_model = model.module if world_size > 1 else model
+                    raw_model = model.module if (world_size > 1 and not args.use_qformer) else model
                     out = raw_model(**inputs)
-                    embeddings = F.normalize(out.last_hidden_state[:, -1, :].float(), dim=-1)
+                    if args.use_qformer:
+                        enc_mask = inputs['attention_mask'].bool()
+                        raw_qf = qformer.module if (world_size > 1 and isinstance(qformer, DDP)) else qformer
+                        pooled = raw_qf(out.last_hidden_state, enc_mask)
+                        embeddings = F.normalize(pooled.float(), dim=-1)
+                    else:
+                        embeddings = F.normalize(out.last_hidden_state[:, -1, :].float(), dim=-1)
                 all_cids = list(cids_a) + list(cids_b)
                 hr_monitor.update(all_cids, embeddings.detach())
                 if (batch_idx + 1) % 100 == 0:
@@ -562,31 +613,59 @@ def train(args):
             B = len(texts_a)
 
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                raw_model = model.module if world_size > 1 else model
-                out = raw_model(**inputs)
-                embeddings = F.normalize(out.last_hidden_state[:, -1, :].float(), dim=-1)
+                raw_model = model.module if (world_size > 1 and not args.use_qformer) else model
+
+                if args.use_qformer:
+                    # Frozen encoder → full hidden states → QFormer → pooled embedding
+                    with torch.no_grad():
+                        out = raw_model(**inputs)
+                        encoder_hidden = out.last_hidden_state  # (2B, S, D_enc)
+                    # attention_mask as bool for QFormer cross-attention masking
+                    enc_mask = inputs['attention_mask'].bool()  # (2B, S)
+                    pooled = qformer(encoder_hidden.detach(), enc_mask)  # (2B, d_model)
+                    embeddings = F.normalize(pooled.float(), dim=-1)
+                else:
+                    out = raw_model(**inputs)
+                    embeddings = F.normalize(out.last_hidden_state[:, -1, :].float(), dim=-1)
+
                 emb_a, emb_b = embeddings[:B], embeddings[B:]
 
                 contrastive_loss = info_nce_loss(emb_a, emb_b, temperature=args.temperature)
                 loss = contrastive_loss / grad_accum
 
                 # Caption reconstruction loss
+                # Note: with QFormer, cap_loss uses encoder hidden states (not QFormer output)
+                # to monitor semantic preservation of the frozen base model.
                 caption_loss_val = None
                 if lm_head is not None and args.cap_loss_weight > 0:
-                    # Gradient flows through hidden_states → model (lm_head stays frozen)
-                    hidden = out.last_hidden_state  # (2B, S, D)
-                    labels = inputs['input_ids']    # (2B, S)
-                    logits = lm_head(hidden)        # (2B, S, vocab)
-                    shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
-                    shift_labels = labels[:, 1:].contiguous().view(-1)
-                    cap_loss = F.cross_entropy(shift_logits, shift_labels,
-                                               ignore_index=tokenizer.pad_token_id)
-                    loss = loss + args.cap_loss_weight * cap_loss / grad_accum
-                    caption_loss_val = cap_loss.item()
+                    if args.use_qformer:
+                        # Encoder is frozen → cap_loss is monitor-only in QFormer mode
+                        # (no unfrozen params to backprop into)
+                        with torch.no_grad():
+                            hidden = out.last_hidden_state
+                            labels = inputs['input_ids']
+                            logits = lm_head(hidden)
+                            shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
+                            shift_labels = labels[:, 1:].contiguous().view(-1)
+                            caption_loss_val = F.cross_entropy(
+                                shift_logits, shift_labels,
+                                ignore_index=tokenizer.pad_token_id).item()
+                    else:
+                        # Gradient flows through hidden_states → model (lm_head stays frozen)
+                        hidden = out.last_hidden_state  # (2B, S, D)
+                        labels = inputs['input_ids']    # (2B, S)
+                        logits = lm_head(hidden)        # (2B, S, vocab)
+                        shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
+                        shift_labels = labels[:, 1:].contiguous().view(-1)
+                        cap_loss = F.cross_entropy(shift_logits, shift_labels,
+                                                   ignore_index=tokenizer.pad_token_id)
+                        loss = loss + args.cap_loss_weight * cap_loss / grad_accum
+                        caption_loss_val = cap_loss.item()
                 elif lm_head is not None and is_main and batch_idx % (50 * grad_accum) == 0:
                     # Monitor only (no BP), rank 0 print steps only
                     with torch.no_grad():
-                        hidden = out.last_hidden_state.detach()
+                        hidden = (out.last_hidden_state.detach() if not args.use_qformer
+                                  else out.last_hidden_state)
                         labels = inputs['input_ids']
                         logits = lm_head(hidden)
                         shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
@@ -603,7 +682,8 @@ def train(args):
                 hr_monitor.update(all_cids, embeddings.detach())
 
             if (batch_idx + 1) % grad_accum == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                clip_params = qformer.parameters() if args.use_qformer else model.parameters()
+                torch.nn.utils.clip_grad_norm_(clip_params, 1.0)
                 optimizer.step()
                 optimizer.zero_grad()
                 scheduler.step()
@@ -687,13 +767,33 @@ def train(args):
     if is_main:
         output_model_dir = os.path.join(args.output_dir, 'model')
         os.makedirs(output_model_dir, exist_ok=True)
-        raw_model = model.module if world_size > 1 else model
-        if args.lora:
-            raw_model = raw_model.merge_and_unload()
-            print("LoRA merged into base model")
-        raw_model.save_pretrained(output_model_dir)
-        tokenizer.save_pretrained(output_model_dir)
-        print(f"Model saved to {output_model_dir}")
+
+        if args.use_qformer:
+            # Save QFormer weights + config (base model is unchanged, no need to save)
+            raw_qf = qformer.module if isinstance(qformer, DDP) else qformer
+            qformer_path = os.path.join(output_model_dir, 'qformer.pt')
+            torch.save({
+                'state_dict': raw_qf.state_dict(),
+                'config': {
+                    'num_queries': args.qformer_queries,
+                    'num_layers': args.qformer_layers,
+                    'd_model': raw_qf.d_model,
+                    'd_enc': model.config.hidden_size,
+                    'n_heads': args.qformer_heads,
+                    'dropout': args.qformer_dropout,
+                    'base_model': args.model_name,
+                },
+            }, qformer_path)
+            tokenizer.save_pretrained(output_model_dir)
+            print(f"QFormer saved to {qformer_path} ({raw_qf.param_count()})")
+        else:
+            raw_model = model.module if world_size > 1 else model
+            if args.lora:
+                raw_model = raw_model.merge_and_unload()
+                print("LoRA merged into base model")
+            raw_model.save_pretrained(output_model_dir)
+            tokenizer.save_pretrained(output_model_dir)
+            print(f"Model saved to {output_model_dir}")
 
         # Save training results summary
         final_hr50 = None
@@ -707,6 +807,9 @@ def train(args):
             'lr': args.lr,
             'lora': args.lora,
             'lora_rank': args.lora_rank if args.lora else None,
+            'use_qformer': args.use_qformer,
+            'qformer_layers': args.qformer_layers if args.use_qformer else None,
+            'qformer_queries': args.qformer_queries if args.use_qformer else None,
             'cap_loss_weight': args.cap_loss_weight,
             'batch_size': args.batch_size,
             'grad_accum': args.grad_accum,
@@ -761,6 +864,16 @@ def main():
                         help='Freeze base model, train LoRA adapters only (requires peft)')
     parser.add_argument('--lora_rank', type=int, default=16,
                         help='LoRA rank (default: 16, ~10M trainable params)')
+    parser.add_argument('--use_qformer', action='store_true',
+                        help='Freeze Qwen3, train QFormer cross-attention compressor on top')
+    parser.add_argument('--qformer_layers', type=int, default=2,
+                        help='Number of QFormer layers (default: 2)')
+    parser.add_argument('--qformer_queries', type=int, default=4,
+                        help='Number of learnable query tokens M (default: 4)')
+    parser.add_argument('--qformer_heads', type=int, default=16,
+                        help='QFormer attention heads (default: 16)')
+    parser.add_argument('--qformer_dropout', type=float, default=0.1,
+                        help='QFormer dropout rate')
 
     args = parser.parse_args()
     train(args)
