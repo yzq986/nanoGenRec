@@ -82,7 +82,7 @@ torchrun --nproc_per_node=8 \
     --batch_size 32 \
     --grad_accum 8 \
     --lr 1e-4 \
-    --max_pairs 2000000 \
+    --max_pairs 5000000 \
     --output_dir "$EXP_DIR/config_a_L2_M4_lr1e4" \
     --experiment_name "qformer_a"
 echo "[Config A] Done"
@@ -102,7 +102,7 @@ torchrun --nproc_per_node=8 \
     --batch_size 32 \
     --grad_accum 8 \
     --lr 5e-4 \
-    --max_pairs 2000000 \
+    --max_pairs 5000000 \
     --output_dir "$EXP_DIR/config_b_L2_M4_lr5e4" \
     --experiment_name "qformer_b"
 echo "[Config B] Done"
@@ -122,7 +122,7 @@ torchrun --nproc_per_node=8 \
     --batch_size 32 \
     --grad_accum 8 \
     --lr 1e-4 \
-    --max_pairs 2000000 \
+    --max_pairs 5000000 \
     --output_dir "$EXP_DIR/config_c_L4_M4_lr1e4" \
     --experiment_name "qformer_c"
 echo "[Config C] Done"
