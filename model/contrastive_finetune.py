@@ -338,6 +338,9 @@ def train(args):
               f"{total_steps} total steps")
 
     global_step = 0
+    t_train_start = time.time()
+    total_micro_steps = len(dataloader) * args.epochs
+
     for epoch in range(args.epochs):
         if sampler is not None:
             sampler.set_epoch(epoch)
@@ -382,15 +385,32 @@ def train(args):
                 break
 
             if is_main and batch_idx % (50 * grad_accum) == 0:
+                global_micro = epoch * len(dataloader) + batch_idx
+                elapsed = time.time() - t_train_start
+                if global_micro > 0:
+                    speed = global_micro / elapsed  # steps/sec
+                    remaining = (total_micro_steps - global_micro) / speed
+                    eta_m, eta_s = divmod(int(remaining), 60)
+                    eta_h, eta_m = divmod(eta_m, 60)
+                    eta_str = f"{eta_h}h{eta_m:02d}m" if eta_h else f"{eta_m}m{eta_s:02d}s"
+                else:
+                    eta_str = "..."
                 lr_now = scheduler.get_last_lr()[0]
                 print(f"  [Epoch {epoch+1}/{args.epochs}] "
                       f"Step {batch_idx}/{len(dataloader)} | "
-                      f"loss={loss.item() * grad_accum:.4f} | lr={lr_now:.2e}")
+                      f"loss={loss.item() * grad_accum:.4f} | lr={lr_now:.2e} | "
+                      f"ETA {eta_str}")
 
         epoch_loss /= len(dataloader)
         if is_main:
+            elapsed_total = time.time() - t_train_start
+            epochs_done = epoch + 1
+            eta_remaining = elapsed_total / epochs_done * (args.epochs - epochs_done)
+            eta_m, eta_s = divmod(int(eta_remaining), 60)
+            eta_h, eta_m = divmod(eta_m, 60)
+            eta_str = f"{eta_h}h{eta_m:02d}m" if eta_h else f"{eta_m}m{eta_s:02d}s"
             print(f"  Epoch {epoch+1} done: avg_loss={epoch_loss:.4f} "
-                  f"({time.time() - t_epoch:.0f}s)")
+                  f"({time.time() - t_epoch:.0f}s) | ETA remaining: {eta_str}")
 
     # ── Save model ──
     if is_main:
