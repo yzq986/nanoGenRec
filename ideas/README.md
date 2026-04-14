@@ -8,15 +8,15 @@
 
 | 文件 | 维度 | Ideas 数 | P0 |
 |------|------|---------|-----|
-| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen) | 6 | sid-0 |
+| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision) | 8 | sid-0 |
 | [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性/Caption) | 5 | — |
-| [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Diffusion) | 8 | — |
-| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/LLM-CPT/RSFT) | 8 | onemall-0 |
-| [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise) | 7 | — |
+| [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion) | 14 | — |
+| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp) | 12 | onemall-0 |
+| [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO) | 8 | — |
 | [inference.md](inference.md) | 推理优化 (Dynamic Beam/CSR约束/Register压缩) | 4 | — |
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | oneloc-4 |
 
-**总计: 41 ideas (3 P0 / 27 P1 / 11 P2)**
+**总计: 54 ideas (3 P0 / 36 P1 / 15 P2)**
 
 ## 全局演进图
 
@@ -39,6 +39,8 @@ graph LR
         FORGE0("forge-0 Proxy Metrics"):::p1
         PIT0("pit-0 Co-gen Tokenizer"):::p1
         SID1("sid-1 协同信号 / onemall-3 属性增强"):::p1
+        QS0("quasid-0 Hamming Repulsion"):::p1
+        R3V0("r3vae-0 Reference Vector SID"):::p1
         P2_TOK("sid-3, oneloc-3 &nbsp;(2 P2)"):::p2
     end
 
@@ -53,7 +55,13 @@ graph LR
         OM1("onemall-1 Query-Former"):::p1
         GLIDE0("glide-0 Soft Prompt"):::p1
         OL5("oneloc-5 Multi-behavior"):::p1
-        P2_ARCH("onemall-4, oneloc-0/1, oxygen-0, llada-0, sid-5 &nbsp;(6 P2)"):::p2
+        DGR0("dualgr-0 ENTP-Loss"):::p1
+        STAMP0("stamp-0 Semantic Pruning+MTP"):::p1
+        S2GR0("s2gr-0 Reasoning Tokens"):::p1
+        TBG0("tbg-0 Next Session Pred"):::p1
+        GTI0("gti-0 Grounded Token Init"):::p1
+        HSTU1B("hstu1b-0 Task Decomposition"):::p1
+        P2_ARCH("onemall-4, oneloc-0/1, oxygen-0, llada-0/mdgr-0, sid-5, gr2-0, higr-0 &nbsp;(8 P2)"):::p2
     end
 
     %% ═══ Col 3: RL / Inference / Scaling ═══
@@ -68,28 +76,35 @@ graph LR
         EARN0("earn-0 Register 压缩"):::p1
         KUN0("kunlun-0 Rec Scaling Laws"):::p1
         HSTU0("hstu-0 Sparse Attn"):::p1
-        P2_RL("gr4ad-3, oneloc-2, uni-0, flame-0 &nbsp;(4 P2)"):::p2
+        P2_RL("gr4ad-3, oneloc-2, uni-0, flame-0, gpr-0 &nbsp;(5 P2)"):::p2
     end
 
     %% ═══ Edges: 只走 Col1→Col2→Col3，无回流 ═══
     SID0 --> SID4
     SID0 --> GR1
     SID0 --> STAT0
+    SID0 --> STAMP0
     GR0 --> GR4
     FORGE0 --> SID4
+    FORGE0 --> R3V0
     PIT0 --> GLIDE0
     SID1 --> OL5
+    SID1 --> QS0
 
     OM0 --> OM2
     OM0 --> AL0
+    OM0 --> DGR0
     GR2 --> P2_RL
     PLUM0 --> EARN0
     PLUM0 --> HSTU0
+    PLUM0 --> GTI0
     GR1 --> EARN0
     OM1 --> HSTU0
     OL4 --> KUN0
+    OL4 --> HSTU1B
     RG0 --> GR4
     OM2 --> P2_RL
+    S2GR0 --> P2_ARCH
 ```
 
 ## ID 来源追溯
@@ -115,6 +130,19 @@ graph LR
 | `kunlun` | Kunlun (arxiv 2602.10016) | Meta Ads Scaling Laws |
 | `hstu` | ULTRA-HSTU (arxiv 2602.16986) | Meta Sparse Attention Co-design |
 | `onerec` | OneRec (arxiv 2506.13695v4) | 快手主站生成式推荐 (400M DAU) |
+| `quasid` | QuaSID (arxiv 2603.00632) | 快手电商 SID 碰撞消歧 |
+| `r3vae` | R3-VAE (arxiv 2604.11440) | Reference Vector SID 生成 + 评估指标 |
+| `dualgr` | DualGR (arxiv 2511.12518) | 快手短视频 Exposure-Aware NTP (WWW 2026) |
+| `stamp` | STAMP (arxiv 2604.05329) | 阿里 Semantic Pruning + MTP |
+| `tbg` | TBGRecall (arxiv 2508.11977) | 阿里 Next Session Prediction |
+| `hstu1b` | Scaling HSTU to 1B (arxiv 2507.15994) | Task Decomposition Scaling (KDD 2026) |
+| `s2gr` | S²GR (arxiv 2601.18664) | Stepwise Reasoning Tokens |
+| `gr2` | GR2 (arxiv 2602.07774) | Meta LLM Reasoning Reranker |
+| `genrank` | GenRank (arxiv 2505.04180) | 小红书 Generative Ranking |
+| `gti` | GTI (arxiv 2604.02324) | LinkedIn Grounded Token Init |
+| `higr` | HiGR (arxiv 2512.24787) | 腾讯 Hierarchical Slate Planning |
+| `mdgr` | MDGR (arxiv 2601.19501) | 阿里 Masked Diffusion GR |
+| `gpr` | GPR (arxiv 2511.10138) | 腾讯微信 One-Model 广告推荐 |
 
 ## 核心设计原则
 
@@ -180,6 +208,15 @@ Text → [Embedding 模型] → 1024D → [Quantizer] → SID → [NTP 模型] �
 | IDEA-onerec-3 | RL | ECPO + Format Reward |
 | IDEA-oneloc-3 | Embedding | Side-info 融合 |
 | IDEA-oneloc-5 | Training | Multi-behavior 序列 |
+| IDEA-quasid-0 | Tokenizer | Collision-Qualified SID (Hamming Repulsion) |
+| IDEA-r3vae-0 | Tokenizer | Reference Vector SID + 评估指标 |
+| IDEA-dualgr-0 | Training | Exposure-Aware NTP Loss (ENTP) |
+| IDEA-stamp-0 | Training | Semantic Pruning + MTP |
+| IDEA-tbg-0 | Training | Next Session Prediction + Data Recency |
+| IDEA-hstu1b-0 | Training | Task Decomposition (Feedback + Next-Item) |
+| IDEA-s2gr-0 | Architecture | Stepwise Reasoning Tokens |
+| IDEA-genrank-0 | Architecture | Architecture > Training Paradigm |
+| IDEA-gti-0 | Architecture | Grounded Token Init for LLM+SID |
 
 ### P2 — 有前置依赖
 
@@ -189,10 +226,13 @@ Text → [Embedding 模型] → 1024D → [Quantizer] → SID → [NTP 模型] �
 | IDEA-sid-5 | Training | Codebook Embed 聚合 |
 | IDEA-onemall-4 | Architecture | Loss-Free MoE |
 | IDEA-oxygen-0 | Architecture | Fast-Slow Thinking |
-| IDEA-llada-0 | Architecture | Discrete Diffusion 解码 |
+| IDEA-llada-0 / IDEA-mdgr-0 | Architecture | Discrete Diffusion 解码 (MDGR 工业验证) |
 | IDEA-gr4ad-3 | RL | RSPO 排序优化 |
 | IDEA-uni-0 | RL | SPO 搜索偏好优化 |
 | IDEA-flame-0 | Inference | GR Serving 系统 |
 | IDEA-onerec-2 | Training | SID 替代 VID 输入 |
 | IDEA-oneloc-0 | Architecture | Context-augmented Attn |
 | IDEA-oneloc-1 | Architecture | Category Prompt |
+| IDEA-gr2-0 | Architecture | LLM Reasoning Reranker |
+| IDEA-higr-0 | Architecture | Hierarchical Slate Planning |
+| IDEA-gpr-0 | RL | HEPO Hierarchical Policy Opt |

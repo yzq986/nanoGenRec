@@ -334,6 +334,36 @@ $$A_i = \begin{cases} 1 & \text{if } o_i \in I_{\text{legal}} \\ 0 & \text{if } 
 
 ---
 
+## IDEA-gpr-0: HEPO — Hierarchy Enhanced Policy Optimization
+
+**优先级**: P2
+**来源**: GPR (Tencent/Weixin Channels, arxiv 2511.10138, Nov 2025)
+**状态**: 待讨论
+
+### 核心思想
+
+GPR 是腾讯微信视频号广告的 one-model 生成式推荐框架，其 RL 组件 **HEPO (Hierarchy Enhanced Policy Optimization)** 利用 SID 的层级结构做对齐:
+
+- 结合 MTP (Multi-Token Prediction), Value-Aware Fine-Tuning, 和 HEPO 三阶段联合训练
+- HEPO 利用 SID 的 coarse-to-fine 层级信息设计 reward (不同层级的预测正确性给不同 reward)
+- 统一 interest modeling + value alignment + policy optimization
+
+微信视频号广告全量部署: **GMV 和 CTCVR 显著提升** (具体数字在论文正文)。
+
+### 与当前项目的关联
+
+- HEPO 利用 SID 层级结构做 hierarchical reward 是新思路 — 区别于 GRPO/DPO 的 flat reward
+- 例: 预测对了 L1 但错了 L2/L3 → 部分 reward (比完全预测错好)
+- 与 IDEA-onerec-3 (ECPO + Format Reward) 互补: ECPO 关注 clipping，HEPO 关注 hierarchical reward structure
+
+### 关键问题
+
+1. 依赖 RL 基础设施成熟后实施
+2. 论文全文细节需要补充 HEPO 的具体算法
+3. 适合在 GRPO/DPO 基础方案验证后作为进阶改进
+
+---
+
 ## 优先级总结
 
 | 优先级 | ID | 实验 | 原因 |
@@ -345,3 +375,4 @@ $$A_i = \begin{cases} 1 & \text{if } o_i \in I_{\text{legal}} \\ 0 & \text{if } 
 | P1 | IDEA-onerec-3 | ECPO + Format Reward | OneRec 生产验证，GRPO 的直接升级 |
 | P2 | IDEA-gr4ad-3 | RSPO 排序优化 | 收益最大但前置依赖最重 |
 | P2 | IDEA-uni-0 | SPO 搜索偏好优化 | 与 GRPO/DPO 重叠，无搜索场景 |
+| P2 | IDEA-gpr-0 | HEPO Hierarchical Policy Opt | 腾讯微信广告部署, 层级 reward 新思路 |

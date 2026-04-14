@@ -305,6 +305,93 @@ Taobao "猜你喜欢" 在线验证: **交易量 +0.35%**。
 
 ---
 
+## IDEA-quasid-0: Collision-Qualified SID Learning (Hamming-Guided Repulsion)
+
+**优先级**: P1
+**来源**: QuaSID (Kuaishou E-commerce, arxiv 2603.00632, Feb 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+QuaSID 发现 SID collision 问题并非同质的: 有些碰撞是真正有害的"语义冲突" (semantically unrelated items get identical SIDs)，有些是良性的 (data redundancy)。QuaSID 提出两个机制:
+
+1. **Hamming-guided Margin Repulsion**: 用 SID 间 Hamming distance 作为碰撞严重度指标，将低 Hamming 距离的冲突 item pair 在 encoder 空间推开。推力与碰撞严重度成正比
+2. **Conflict-Aware Valid Pair Masking**: 自动过滤"良性碰撞"(protocol-induced benign overlaps)，只对真正有害的碰撞施加 repulsion
+
+额外: 加入 **dual-tower contrastive objective** 在 tokenization 中注入协同信号。
+
+**Plug-and-play**: repulsion loss 可以增强任何 SID 学习框架。
+
+快手电商在线 A/B (5% traffic): **ranking GMV-S2 +2.38%, 冷启动订单 +6.42%**。
+
+### 与当前项目的关联
+
+- 当前 EXP-001 的 collision_rate = 1.75%，我们已经在 `eval/evaluator.py` 中追踪碰撞
+- QuaSID 的 insight 是: **不是所有碰撞都应该被同等对待**。当前我们只看 collision count，不区分碰撞的严重程度
+- Hamming distance 计算零成本 — SID 已经是离散码，直接比较
+- **Plug-and-play**: 可以直接加到 EXP-007 (contrastive embedding fine-tune) 的训练中
+- 与 IDEA-sid-1 (协同信号增强) 互补: sid-1 改善 embedding 本身，QuaSID 在 SID 空间施加碰撞约束
+
+### 实验设计草案
+
+**Phase 1 — Collision 严重度分析**:
+- 对现有 SID assignment (EXP-001/EXP-004)，计算所有碰撞 pair 的语义距离 (embedding cosine)
+- 分类: 高 cosine = 良性碰撞 (语义本来就近), 低 cosine = 有害碰撞
+- 量化: 有害碰撞占比多少? 如果很低 → 收益有限
+
+**Phase 2 — Hamming Repulsion Loss**:
+- 在 embedding fine-tune (EXP-007 流程) 中加入 repulsion loss
+- 对 Hamming distance < threshold 的 item pair 施加 margin loss
+- L_repulsion = max(0, margin - cosine(e_i, e_j)) * severity_weight(hamming_dist)
+
+**评估**: collision_rate, 有害碰撞比例, embedding_hit_rate
+
+### 关键问题
+
+1. 在 RKMeans (3 层 x 1024) 下碰撞率已经只有 1.75%，repulsion 收益可能有限
+2. OPQ (8~32 token x 256) 碰撞率更低 → 此 idea 可能对 RKMeans 路线更有价值
+3. Repulsion 和 contrastive loss 的梯度冲突: 一个要推开，一个要拉近
+
+---
+
+## IDEA-r3vae-0: Reference Vector-Guided SID Generation (稳定训练 + 评估指标)
+
+**优先级**: P1
+**来源**: R3-VAE (arxiv 2604.11440, Apr 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+R3-VAE 解决 VQ-based SID 生成的两个根本问题:
+
+1. **训练不稳定**: STE (straight-through estimator) 梯度传播不足 + 初始化敏感 → **Reference Vector** 作为语义锚点稳定训练
+2. **评估代价高**: 评估 SID 质量需要训练完整 GR 模型 + A/B test → 提出 **Semantic Cohesion** 和 **Preference Discrimination** 两个 standalone metrics，可在 SID 生成后直接评估
+
+Reference vector + dot-product rating 机制还能防止 **codebook collapse** (死码本问题)。
+
+新闻推荐平台在线 A/B: **MRR +1.62%**。作为 CTR 模型 item ID 替代: **冷启动 +15.36%**。
+
+### 与当前项目的关联
+
+- 当前 RKMeans 训练没有 codebook collapse 问题 (每层都用 KMeans)，但切到 VQ-VAE 或 learned quantization 时会遇到
+- **Semantic Cohesion + Preference Discrimination 指标** 与 IDEA-forge-0 (SID Proxy Metrics) 异曲同工 — 都是无需训练 NTP 即可评估 SID 质量
+- 如果整合两者，可以建立 **完整的 SID 质量评估工具包**: 训练前 (FORGE proxy) + 训练后 (R3-VAE metrics)
+- 冷启动 +15.36% 的结果对我们有启发: SID 可以作为 CTR 模型的 item feature
+
+### 实验设计草案
+
+**Phase 1 — 实现 R3-VAE 评估指标**:
+- 在 `eval/evaluator.py` 中实现 Semantic Cohesion 和 Preference Discrimination
+- 在已有 EXP-001/EXP-004 SID assignments 上回测
+- 验证: 这两个指标是否与 NTP recall 相关
+
+### 关键问题
+
+1. 具体指标定义需要读论文全文
+2. 与 IDEA-forge-0 的 proxy metrics 去重/合并
+
+---
+
 ## 优先级总结
 
 | 优先级 | ID | 实验 | 原因 |
@@ -315,3 +402,5 @@ Taobao "猜你喜欢" 在线验证: **交易量 +0.35%**。
 | P1 | IDEA-sid-2 | Balanced KMeans | 低成本改进码本利用率 |
 | P1 | IDEA-pit-0 | Co-generative 动态 Tokenizer | 端到端联合训练 tokenizer+NTP, One-to-Many SID |
 | P1 | IDEA-forge-0 | SID Proxy Metrics + Offline Pretraining | 加速 tokenizer 超参搜索 10x |
+| P1 | IDEA-quasid-0 | Collision-Qualified SID (Hamming Repulsion) | 快手电商验证 +2.38% GMV, plug-and-play |
+| P1 | IDEA-r3vae-0 | Reference Vector SID + 评估指标 | 稳定训练 + standalone SID 评估, 与 forge-0 互补 |

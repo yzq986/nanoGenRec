@@ -341,6 +341,187 @@ OneRec 在 2.6B 规模实验中发现: 用 Semantic ID token 直接作为 encode
 
 ---
 
+## IDEA-dualgr-0: Exposure-Aware NTP Loss (ENTP-Loss)
+
+**优先级**: P1
+**来源**: DualGR (Kuaishou, arxiv 2511.12518, Nov 2025, WWW 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+DualGR 发现标准 NTP loss 只学"用户点了什么"，但忽略了"用户看了但没点什么"这个强负信号。ENTP-Loss 引入 **exposure-aware 负样本**:
+
+- 把 **unclicked exposures** 作为 **coarse-level hard negatives**
+- 在 SID 第一层 (coarse level) 用这些负样本增强学习信号
+- 效果: 模型更快识别用户兴趣衰退 (timely interest fade-out)
+
+DualGR 还提出:
+1. **Dual-Branch Long/Short-Term Router (DBR)**: 分离长短期兴趣，selective activation
+2. **Search-based SID Decoding (S2D)**: 限制 fine-level 解码在 coarse bucket 内
+
+快手短视频在线 A/B: **video views +0.527%, watch time +0.432%**。WWW 2026。
+
+### 与当前项目的关联
+
+- 当前 NTP 训练 (`sid_prediction.py`) 只用正样本 (用户行为序列)，没有负信号
+- ENTP-Loss 是 **零架构改动** 的训练改进: 只需在 loss 计算中加入曝光未点击的 SID 作为负样本
+- 与 IDEA-onerec-1 (RSFT) 互补: RSFT 过滤低质量正样本，ENTP 引入高质量负样本
+- 与 IDEA-onemall-0 (contrastive loss) 正交: onemall-0 在 embedding 空间做对比，ENTP 在 NTP 的 CE loss 中引入负信号
+
+### 实验设计草案
+
+**实现**:
+1. 对每个训练样本，收集同 session 的曝光未点击 item SIDs
+2. 在 NTP loss 中，对 coarse level (第一层 SID token) 的 softmax 概率:
+   - 降低对 unclicked-exposure SID token 的概率
+   - 具体: 在 CE loss 中加入 margin/penalty 项
+3. 变量: penalty weight, 只在 L1 还是全层都用负信号
+
+**评估**: NTP recall@K, 特别关注"兴趣变化"场景 (用户最近行为转向新类目)
+
+### 关键问题
+
+1. 需要行为数据包含"曝光未点击"信息 — 当前 `export_behavior.py` 是否已覆盖?
+2. Hard negative 太强可能导致模型过于保守 (偏向热门 item)
+3. Long/short-term 分支 (DBR) 需要更大的架构改动，可以独立拆分
+
+---
+
+## IDEA-stamp-0: Semantic Adaptive Pruning + Multi-step Auxiliary Prediction (STAMP)
+
+**优先级**: P1
+**来源**: STAMP (Alibaba, arxiv 2604.05329, Apr 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+STAMP 发现高粒度 SID 存在 **Semantic Dilution Effect**: SID 越长越精细，冗余 token 越多，稀释了学习信号 → 训练效率下降 + 性能不单调波动。
+
+双端优化:
+1. **Semantic Adaptive Pruning (SAP)** — 输入端: 前向传播中动态过滤冗余 SID token，将 noisy 序列压缩为 compact 信息密集表示
+2. **Multi-step Auxiliary Prediction (MAP)** — 输出端: 用 multi-token prediction 目标替代 single-token NTP，densify 监督信号
+
+**结果**: **1.23-1.38x 训练加速, 17.2%-54.7% VRAM 减少**，性能不降。
+
+### 与当前项目的关联
+
+- 当前 3 层 SID 短序列下不存在 semantic dilution 问题
+- **但如果切到 OPQ (16-64 token)**，semantic dilution 会成为关键问题:
+  - 64 个 SID token 中很多可能是冗余的 (低信息量子向量)
+  - STAMP 的 SAP 可以动态剪掉冗余 token → 解决 OPQ 长 SID 的训练效率问题
+- MAP (multi-step prediction) 与 IDEA-sid-4 (MTP auxiliary loss) 方向一致，但 STAMP 更聚焦于作为 **SID 稀疏信号的补偿**
+- 1.23-1.38x 训练加速对 8xA100 环境有实际价值
+
+### 实验设计草案
+
+**前置: IDEA-sid-0 Phase 2 (OPQ 长 SID)**
+
+**Phase 1 — MAP (可立即实验)**:
+- 在当前 NTP 模型中，除了预测下一个 token，同时预测未来 2-3 个 token
+- 增加 2-3 个 projection heads，multi-token CE loss
+- L = L_NTP + α * L_MAP
+
+**Phase 2 — SAP (OPQ 后)**:
+- 对 OPQ 长 SID 序列，训练 gating module 动态选择信息密集的 token
+- 被 prune 的 token 不参与后续 attention 计算
+
+**评估**: 训练时间, VRAM 用量, Recall@K
+
+### 关键问题
+
+1. 当前 3 token SID 太短，pruning 没意义 → 主要价值在 OPQ 路线
+2. MAP 与 IDEA-sid-4 (MTP) 重叠，但 STAMP 的动机不同 (densify signal vs cold-start)
+
+---
+
+## IDEA-tbg-0: Next Session Prediction (NSP) — 替代 Item-by-Item 自回归
+
+**优先级**: P1
+**来源**: TBGRecall (Alibaba, arxiv 2508.11977, Aug 2025)
+**状态**: 待讨论
+
+### 核心思想
+
+标准 GR 逐 item 自回归生成 (A→B→C→D)，存在强序列依赖。TBGRecall 提出 **Next Session Prediction (NSP)**: 将行为划分为多个 session，每个 session 有一个 session token + 多个 item token:
+
+```
+[S1] item1 item2 item3 [S2] item4 item5 [S3] → predict [S4] item6 item7
+```
+
+session 内 item 无序 (消除 positional bias)，session 间有序 (保留时间依赖)。
+
+另一关键发现: **data recency > data volume** — 用少量最近数据训练 > 用大量历史数据训练。
+
+在公开数据集和阿里工业数据集上均展示 **clear scaling law trend**。
+
+### 与当前项目的关联
+
+- 当前 NTP 模型逐 item 预测，每个 item 的 SID 序列是独立自回归的
+- NSP 提供了 **更高层的抽象**: 预测"下一个 session"而非"下一个 item"
+- **data recency insight** 直接可用: 训练时给近期行为更高权重，或只用最近 N 天数据
+- 与 IDEA-onerec-1 (RSFT) 互补: RSFT 过滤低质量样本，NSP 改变建模粒度
+
+### 实验设计草案
+
+**Phase 1 — Data Recency 验证 (零成本)**:
+- 在当前 NTP 训练中，对比: 全量历史 vs 最近 30 天 vs 最近 7 天
+- 如果 recency > volume，可以大幅降低训练成本
+
+**Phase 2 — Session-Level Prediction**:
+- 在用户行为中划分 session (按时间间隔 > 30 min)
+- 在 NTP 输入中插入 [SESSION] token
+- session 内 item 随机打乱 (去除位置 bias)
+
+### 关键问题
+
+1. Session 划分规则: 按时间间隔? 按行为类型?
+2. Session 内无序可能丢失 fine-grained 时间信号
+3. 当前行为数据是否有 timestamp 支持 session 划分
+
+---
+
+## IDEA-hstu1b-0: Task Decomposition for Scaling (Feedback + Next-Item 分离)
+
+**优先级**: P1
+**来源**: Scaling Recommender Transformers to 1B (arxiv 2507.15994, Jul 2025, KDD 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+在 HSTU/Generative Recommenders 框架上，将自回归学习 **分解为两个子任务**:
+
+1. **Feedback Prediction**: 预测用户对已展示 item 的反馈 (like/dislike/skip)
+2. **Next-Item Prediction**: 预测用户接下来会交互的 item
+
+这个分解在 176M → 1B 参数范围内保持有效 scaling。
+
+音乐流媒体平台部署: **listening time +2.26%, user likes +6.37%** — 作者声称是该平台深度学习系统历史上最大单次提升。KDD 2026。
+
+### 与当前项目的关联
+
+- 当前 NTP 模型只做 next-item prediction (任务 2)，完全没有 feedback prediction (任务 1)
+- Task decomposition 的 insight: **用户反馈本身是有价值的监督信号**，不仅仅是"预测下一个 item"
+- 实现简单: 在用户序列中加入 feedback token (liked/skipped/watched_full)，让模型同时预测 feedback + next item
+- 与 IDEA-oneloc-5 (Multi-behavior) 有关联但不同: oneloc-5 区分行为类型作为输入，本 IDEA 把 feedback 作为预测目标
+
+### 实验设计草案
+
+**方案 — Dual-Task NTP**:
+1. 用户序列: `item1 [FEEDBACK:like] item2 [FEEDBACK:skip] item3 → predict [FEEDBACK:?] item4`
+2. 模型同时预测 feedback token 和 next-item SID
+3. `L = L_next_item + α * L_feedback`
+4. 变量: α ∈ {0.1, 0.5, 1.0}
+
+**评估**: NTP recall@K (core metric) + feedback prediction accuracy (auxiliary metric)
+
+### 关键问题
+
+1. 需要行为数据包含反馈类型 (like/skip/watch_full 等)
+2. 当前 39.5M 小模型下分解是否有价值? 论文在 >176M 才看到 scaling 效果
+3. Feedback token 增加序列长度 ~2x → 训练成本增加
+
+---
+
 ## 优先级总结
 
 | 优先级 | ID | 实验 | 原因 |
@@ -351,5 +532,9 @@ OneRec 在 2.6B 规模实验中发现: 用 Semantic ID token 直接作为 encode
 | P1 | IDEA-oneloc-5 | Multi-behavior 序列融合 | 低成本区分不同行为强度 |
 | P1 | IDEA-plum-0 | LLM Continued Pre-Training | YouTube 数十亿用户验证，利用预训练知识 |
 | P1 | IDEA-onerec-1 | RSFT 过滤低质量训练样本 | 零成本数据质量提升，OneRec 标配 |
+| P1 | IDEA-dualgr-0 | Exposure-Aware NTP Loss | 快手 WWW 2026, 零架构改动引入负信号 |
+| P1 | IDEA-stamp-0 | Semantic Pruning + MTP | 解决 OPQ 长 SID 的训练效率, 1.23x 加速 |
+| P1 | IDEA-tbg-0 | Next Session Prediction + Data Recency | 阿里验证 scaling law, data recency > volume |
+| P1 | IDEA-hstu1b-0 | Task Decomposition (Feedback + Next-Item) | KDD 2026, 历史最大提升, 1B 参数 scaling |
 | P2 | IDEA-sid-5 | Codebook Embedding 聚合 | 依赖 IDEA-sid-0 Phase 2，短 ID 下收益不大 |
 | P2 | IDEA-onerec-2 | SID 替代 VID 输入 | 大模型场景下有价值，当前无需 |
