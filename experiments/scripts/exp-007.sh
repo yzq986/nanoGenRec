@@ -62,6 +62,19 @@ else
 fi
 
 # ──────────────────────────────────────────────
+# Baseline: evaluate original Qwen3 embedding (no fine-tune)
+# ──────────────────────────────────────────────
+if run_config BL; then
+echo ">>> Baseline: evaluating original Qwen3-0.6B embedding (no fine-tune)"
+python run.py hyperparam --skip_embedding \
+    --quantizer opq --n_subvectors 8 \
+    --behavior_path auto \
+    --name exp007-baseline \
+    --append
+commit_result "EXP-007 baseline eval done"
+fi
+
+# ──────────────────────────────────────────────
 # Phase 1: Contrastive fine-tune (all 8 GPUs per config, sequential)
 # 8 GPU DDP: 2x throughput + 2x negatives vs 4 GPU
 # ──────────────────────────────────────────────
