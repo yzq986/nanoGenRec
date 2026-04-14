@@ -14,11 +14,18 @@ LOCKFILE="/tmp/exp007_git.lock"
 EXP_DIR="experiments/hyperparam/2026-04-13_exp007-collab-embed"
 mkdir -p "$EXP_DIR"
 
-# Config selection: pass config names as args, e.g. ./exp-007.sh B C
-# No args = run all (A B C)
+# Options: --no-smoke to skip smoke test, then config names (A B C)
+# Examples: ./exp-007.sh --no-smoke B C
+#           ./exp-007.sh C
+#           ./exp-007.sh  (runs all with smoke test)
+SKIP_SMOKE=false
+if [[ "${1:-}" == "--no-smoke" ]]; then
+    SKIP_SMOKE=true
+    shift
+fi
 CONFIGS="${@:-A B C}"
 run_config() { [[ " $CONFIGS " == *" $1 "* ]]; }
-echo "Selected configs: $CONFIGS"
+echo "Selected configs: $CONFIGS (smoke: $( $SKIP_SMOKE && echo skip || echo run ))"
 
 commit_result() {
     local msg="$1"
@@ -37,18 +44,22 @@ echo "=========================================="
 # ──────────────────────────────────────────────
 # Phase 0: Smoke test — 1% data, 10 steps, verify pipeline
 # ──────────────────────────────────────────────
-echo ""
-echo ">>> Phase 0: Smoke test (1% data, 10 steps)"
-torchrun --nproc_per_node=8 \
-    model/contrastive_finetune.py \
-    --dry_run \
-    --temperature 0.05 \
-    --batch_size 32 \
-    --grad_accum 8 \
-    --lr 1e-5 \
-    --output_dir "$EXP_DIR/smoke_test"
-echo ">>> Smoke test PASSED"
-rm -rf "$EXP_DIR/smoke_test"
+if $SKIP_SMOKE; then
+    echo ">>> Phase 0: Skipped (--no-smoke)"
+else
+    echo ""
+    echo ">>> Phase 0: Smoke test (1% data, 10 steps)"
+    torchrun --nproc_per_node=8 \
+        model/contrastive_finetune.py \
+        --dry_run \
+        --temperature 0.05 \
+        --batch_size 32 \
+        --grad_accum 8 \
+        --lr 1e-5 \
+        --output_dir "$EXP_DIR/smoke_test"
+    echo ">>> Smoke test PASSED"
+    rm -rf "$EXP_DIR/smoke_test"
+fi
 
 # ──────────────────────────────────────────────
 # Phase 1: Contrastive fine-tune (all 8 GPUs per config, sequential)
