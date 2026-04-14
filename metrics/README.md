@@ -41,6 +41,23 @@ from gr_demo.metrics import INTRINSIC_METRICS, BEHAVIOR_METRICS, AVAILABLE_METRI
 - **Markdown**: 摘要表格 + 逐指标详情 + 解读指南
 - **CSV**: 扁平表格，用于跨模型对比
 
+## embedding_hit_rate 与 NTP recall 的关系
+
+两者测的是不同阶段的能力:
+
+- **embedding_hit_rate (HR@50)** = 教材质量评估（知识点组织得好不好）
+- **NTP recall@K** = 学生考试成绩（最终答对了多少题）
+
+教材好，学生**有可能**考好；教材烂，学生**一定**考不好。但教材好不代表学生一定考好——还取决于学生能力（模型大小）、学习时间（训练量）、看了多少章（序列长度）。
+
+因果链:
+
+```
+embedding 质量 (HR@50) → SID 质量 → NTP 学习难度 → NTP recall@K
+```
+
+日常用 `embedding_hit_rate`（秒级 proxy），NTP（`--run_ntp`）仅在需要端到端 recall 数字时开启。
+
 ## 质量等级
 
 每个指标通过阈值自动判定等级: `excellent` / `good` / `acceptable` / `poor`
