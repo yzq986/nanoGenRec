@@ -1,0 +1,58 @@
+{
+  "experiment_name": "config_c",
+  "model_name": "Qwen/Qwen3-Embedding-0.6B",
+  "temperature": 0.05,
+  "epochs": 1,
+  "lr": 3e-05,
+  "batch_size": 32,
+  "grad_accum": 8,
+  "max_pairs": 500000,
+  "actual_pairs": 500000,
+  "world_size": 8,
+  "effective_batch_size": 2048,
+  "final_avg_loss": 2.868,
+  "final_hr50": 0.0192,
+  "hr50_items": 30352,
+  "training_time_s": 1911.9,
+  "log": [
+    {
+      "step": 0,
+      "pairs_seen": 0,
+      "loss": 6.6894,
+      "lr": 0.0,
+      "epoch": 1
+    },
+    {
+      "step": 400,
+      "pairs_seen": 102400,
+      "loss": 2.7303,
+      "lr": 2.8977960438171787e-05,
+      "epoch": 1,
+      "hr50": 0.0135
+    },
+    {
+      "step": 800,
+      "pairs_seen": 204800,
+      "loss": 2.6764,
+      "lr": 2.2000009848385107e-05,
+      "epoch": 1,
+      "hr50": 0.016
+    },
+    {
+      "step": 1200,
+      "pairs_seen": 307200,
+      "loss": 2.6018,
+      "lr": 1.1602548488613533e-05,
+      "epoch": 1,
+      "hr50": 0.0175
+    },
+    {
+      "step": 1600,
+      "pairs_seen": 409600,
+      "loss": 2.5919,
+      "lr": 2.86474508437579e-06,
+      "epoch": 1,
+      "hr50": 0.0187
+    }
+  ]
+}
