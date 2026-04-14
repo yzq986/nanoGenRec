@@ -329,6 +329,32 @@ def train(args):
               f"bs={args.batch_size}, lr={args.lr}, world_size={world_size}")
         print(f"Output: {args.output_dir}")
 
+        # W&B init (rank 0 only)
+        try:
+            import wandb
+            wandb.init(
+                project="gr-demo",
+                name=args.experiment_name,
+                config={
+                    'temperature': args.temperature,
+                    'epochs': args.epochs,
+                    'batch_size': args.batch_size,
+                    'grad_accum': args.grad_accum,
+                    'lr': args.lr,
+                    'max_pairs': args.max_pairs,
+                    'world_size': world_size,
+                    'effective_batch': args.batch_size * args.grad_accum * world_size,
+                    'model_name': args.model_name,
+                    'dry_run': args.dry_run,
+                },
+            )
+            print("W&B initialized")
+        except Exception as e:
+            wandb = None
+            print(f"W&B not available: {e}")
+    else:
+        wandb = None
+
     # ── Load model ──
     from transformers import AutoModel, AutoTokenizer
 
@@ -500,6 +526,7 @@ def train(args):
 
                 # Inline HR@50: check every eval_interval steps
                 hr_str = ""
+                hr50 = None
                 if hr_monitor is not None:
                     hr50 = hr_monitor.maybe_eval(batch_idx)
                     if hr50 is not None:
@@ -509,6 +536,19 @@ def train(args):
                       f"Step {batch_idx}/{len(dataloader)} | "
                       f"loss={loss.item() * grad_accum:.4f} | lr={lr_now:.2e} | "
                       f"ETA {eta_str}{hr_str}")
+
+                # W&B log
+                if wandb is not None:
+                    log_dict = {
+                        'loss': loss.item() * grad_accum,
+                        'lr': lr_now,
+                        'throughput': speed if global_micro > 0 else 0,
+                        'epoch': epoch + batch_idx / len(dataloader),
+                        'buffer_items': len(hr_monitor.embedding_buffer) if hr_monitor else 0,
+                    }
+                    if hr50 is not None:
+                        log_dict['HR@50'] = hr50
+                    wandb.log(log_dict, step=global_micro)
 
         epoch_loss /= len(dataloader)
         if is_main:
@@ -534,6 +574,9 @@ def train(args):
         raw_model.save_pretrained(output_model_dir)
         tokenizer.save_pretrained(output_model_dir)
         print(f"Model saved to {output_model_dir}")
+
+        if wandb is not None:
+            wandb.finish()
 
     if world_size > 1:
         dist.destroy_process_group()
