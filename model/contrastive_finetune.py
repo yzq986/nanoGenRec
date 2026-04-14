@@ -525,13 +525,12 @@ def train(args):
                     eta_str = "..."
                 lr_now = scheduler.get_last_lr()[0]
 
-                # Inline HR@50: check every eval_interval steps
+                # Inline HR@50: compute every print step (cheap — ~2s for 30k items on CPU)
                 hr_str = ""
                 hr50 = None
-                if hr_monitor is not None:
-                    hr50 = hr_monitor.maybe_eval(batch_idx)
-                    if hr50 is not None:
-                        hr_str = f" | HR@50={hr50:.4f} ({len(hr_monitor.embedding_buffer):,} items)"
+                if hr_monitor is not None and len(hr_monitor.embedding_buffer) >= hr_monitor.min_items:
+                    hr50 = hr_monitor._compute_hr50()
+                    hr_str = f" | HR@50={hr50:.4f} ({len(hr_monitor.embedding_buffer):,} items)"
 
                 pairs_seen = global_micro * args.batch_size * world_size
                 print(f"  [Epoch {epoch+1}/{args.epochs}] "
