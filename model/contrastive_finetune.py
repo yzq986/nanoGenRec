@@ -238,7 +238,7 @@ def train(args):
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModel.from_pretrained(
-        model_name, trust_remote_code=True, torch_dtype=torch.float16
+        model_name, trust_remote_code=True, torch_dtype=torch.bfloat16
     ).to(device)
     model.gradient_checkpointing_enable()
     model.train()
@@ -321,7 +321,7 @@ def train(args):
         return 0.5 * (1 + np.cos(np.pi * progress))
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    scaler = torch.amp.GradScaler('cuda')
+    # BF16 on A100: no GradScaler needed (sufficient dynamic range)
 
     # ── Training ──
     if is_main:
@@ -349,23 +349,21 @@ def train(args):
             inputs_a = {k: v.to(device) for k, v in inputs_a.items()}
             inputs_b = {k: v.to(device) for k, v in inputs_b.items()}
 
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 out_a = (model.module if world_size > 1 else model)(**inputs_a)
-                emb_a = F.normalize(out_a.last_hidden_state[:, -1, :], dim=-1)
+                emb_a = F.normalize(out_a.last_hidden_state[:, -1, :].float(), dim=-1)
 
                 out_b = (model.module if world_size > 1 else model)(**inputs_b)
-                emb_b = F.normalize(out_b.last_hidden_state[:, -1, :], dim=-1)
+                emb_b = F.normalize(out_b.last_hidden_state[:, -1, :].float(), dim=-1)
 
                 loss = info_nce_loss(emb_a, emb_b, temperature=args.temperature)
-                loss = loss / grad_accum  # scale for accumulation
+                loss = loss / grad_accum
 
-            scaler.scale(loss).backward()
+            loss.backward()
 
             if (batch_idx + 1) % grad_accum == 0:
-                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                scaler.step(optimizer)
-                scaler.update()
+                optimizer.step()
                 optimizer.zero_grad()
                 scheduler.step()
                 global_step += 1
