@@ -41,7 +41,10 @@ Record a new experiment entry in `experiments/log.md` using the project's struct
    - Make the script executable-ready (include `#!/bin/bash` and `set -e`)
    - Add `echo` lines for progress visibility between commands
    - If the experiment has multiple configs (e.g. baseline + variants), include all of them
-   - **GPU 并行**: 实验环境是 **8 x A100 (80GB, NVLink)**。当实验包含多个独立 config 时，**必须**用 `CUDA_VISIBLE_DEVICES` 将不同 config 分配到不同 GPU 并行跑（`&` 后台 + `wait`），而非串行。每个 config 结果出来就立即 `git commit + ./push.sh`（用 `flock` 串行化 git 操作避免并行冲突）。只有存在 GPU 间依赖（如后续 config 依赖前序结果）时才串行。
+   - **GPU 利用策略**: 实验环境是 **8 x A100 (40GB)**。根据实验类型选择不同的并行策略：
+     - **DDP 训练类实验**（如对比学习微调、NTP 训练）：每个 config 占满全部 8 卡 `torchrun --nproc_per_node=8`，多个 config 串行执行。原因：DDP 8 卡比 4 卡吞吐翻倍 + 对比学习 negatives 翻倍，串行反而总 wall time 更短。
+     - **非 DDP 独立实验**（如超参搜索、量化评测）：用 `CUDA_VISIBLE_DEVICES` 将不同 config 分配到不同 GPU 并行跑（`&` 后台 + `wait`）。
+     - 每个 config 结果出来就立即 `git commit + ./push.sh`（用 `flock` 串行化 git 操作避免并行冲突）。
    - The Run Commands section in log.md should reference this script: `bash experiments/scripts/exp-{nnn}.sh`
    - **At the end of the script**, add git commit + push to auto-persist results:
      ```bash
