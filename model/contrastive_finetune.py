@@ -515,6 +515,22 @@ def train(args):
 
             loss.backward()
 
+            # Caption reconstruction loss (monitor only, no BP, rank 0 print steps only)
+            caption_loss_val = None
+            if lm_head is not None and is_main and batch_idx % (50 * grad_accum) == 0:
+                with torch.no_grad():
+                    hidden = out.last_hidden_state.detach()  # (2B, S, D)
+                    labels = inputs['input_ids']             # (2B, S)
+                    chunk_losses = []
+                    for ci in range(hidden.size(0)):
+                        logits = lm_head(hidden[ci])         # (S, vocab)
+                        shift_logits = logits[:-1]           # (S-1, vocab)
+                        shift_labels = labels[ci, 1:]        # (S-1,)
+                        chunk_losses.append(
+                            F.cross_entropy(shift_logits, shift_labels, ignore_index=tokenizer.pad_token_id)
+                        )
+                    caption_loss_val = torch.stack(chunk_losses).mean().item()
+
             # Cache embeddings for inline HR@50 (rank 0 only, detach→CPU, zero GPU cost)
             if hr_monitor is not None:
                 all_cids = list(cids_a) + list(cids_b)
@@ -557,10 +573,11 @@ def train(args):
 
                 pairs_seen = global_micro * args.batch_size * world_size
                 cur_loss = round(loss.item() * grad_accum, 4)
+                cap_str = f" | cap_loss={caption_loss_val:.4f}" if caption_loss_val is not None else ""
                 print(f"  [Epoch {epoch+1}/{args.epochs}] "
                       f"Step {batch_idx}/{len(dataloader)} ({pairs_seen/1e6:.2f}M pairs) | "
                       f"loss={cur_loss:.4f} | lr={lr_now:.2e} | "
-                      f"ETA {eta_str}{hr_str}")
+                      f"ETA {eta_str}{hr_str}{cap_str}")
 
                 entry = {'step': batch_idx, 'pairs_seen': pairs_seen,
                          'loss': cur_loss, 'lr': lr_now, 'epoch': epoch + 1}
@@ -580,6 +597,8 @@ def train(args):
                     }
                     if hr50 is not None:
                         log_dict['HR@50'] = hr50
+                    if caption_loss_val is not None:
+                        log_dict['caption_loss'] = caption_loss_val
                     wandb.log(log_dict, step=pairs_seen)
 
         epoch_loss /= len(dataloader)
