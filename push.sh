@@ -90,29 +90,39 @@ push_main() {
     local BASE
     BASE="$(git merge-base "company/${BRANCH}" "$BRANCH" 2>/dev/null || echo "")"
 
-    # Ensure cleanup on interrupt
-    trap 'git checkout "$BRANCH" --quiet 2>/dev/null; git branch -D "$TEMP_BRANCH" --quiet 2>/dev/null; trap - INT TERM; return 1' INT TERM
+    # Ensure cleanup on interrupt or failure — always return to original branch
+    cleanup_mirror() {
+        git rebase --abort --quiet 2>/dev/null || true
+        git checkout "$BRANCH" --quiet 2>/dev/null || true
+        git branch -D "$TEMP_BRANCH" --quiet 2>/dev/null || true
+    }
+    trap 'cleanup_mirror; trap - INT TERM; return 1' INT TERM
 
     git checkout -b "$TEMP_BRANCH" "$BRANCH" --quiet
 
+    local REBASE_OK=true
     if [ -n "$BASE" ]; then
         # 重写 base 之后的 commits
         GIT_SEQUENCE_EDITOR=true git rebase --quiet --onto "$BASE" "$BASE" "$TEMP_BRANCH" \
             --exec "GIT_COMMITTER_NAME='$COMPANY_NAME' GIT_COMMITTER_EMAIL='$COMPANY_EMAIL' git commit --amend --no-edit --quiet --author='$COMPANY_NAME <$COMPANY_EMAIL>'" \
-            2>/dev/null || true
+            2>/dev/null || REBASE_OK=false
     else
         # 没有共同祖先，重写所有 commits
         GIT_SEQUENCE_EDITOR=true git rebase --quiet --root "$TEMP_BRANCH" \
             --exec "GIT_COMMITTER_NAME='$COMPANY_NAME' GIT_COMMITTER_EMAIL='$COMPANY_EMAIL' git commit --amend --no-edit --quiet --author='$COMPANY_NAME <$COMPANY_EMAIL>'" \
-            2>/dev/null || true
+            2>/dev/null || REBASE_OK=false
+    fi
+
+    if [ "$REBASE_OK" = false ]; then
+        echo "  Warning: rebase failed, aborting..."
+        git rebase --abort --quiet 2>/dev/null || true
     fi
 
     git push company "$TEMP_BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: push to company failed"
 
-    # Cleanup
+    # Cleanup — always return to original branch
     trap - INT TERM
-    git checkout "$BRANCH" --quiet
-    git branch -D "$TEMP_BRANCH" --quiet
+    cleanup_mirror
     echo "  Company mirror complete."
 
     echo "Main repo push complete."
