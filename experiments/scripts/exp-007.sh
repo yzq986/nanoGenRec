@@ -23,7 +23,7 @@ if [[ "${1:-}" == "--no-smoke" ]]; then
     SKIP_SMOKE=true
     shift
 fi
-CONFIGS="${@:-A B C}"
+CONFIGS="${@:-A B C D E F}"
 run_config() { [[ " $CONFIGS " == *" $1 "* ]]; }
 echo "Selected configs: $CONFIGS (smoke: $( $SKIP_SMOKE && echo skip || echo run ))"
 
@@ -115,6 +115,57 @@ torchrun --nproc_per_node=8 \
 echo "[Config C] Done"
 commit_result "EXP-007 config C done: τ=0.05, lr=3e-5"
 fi
+
+# ── Round 2: aggressive lr (cap_loss flat in A/B/C → model not learning) ──
+
+# Config D: lr=1e-4 (10x of A)
+if run_config D; then
+echo "[Config D] Starting: τ=0.05, 1 epoch, lr=1e-4, 8 GPU"
+torchrun --nproc_per_node=8 \
+    model/contrastive_finetune.py \
+    --temperature 0.05 \
+    --epochs 1 \
+    --batch_size 32 \
+    --grad_accum 8 \
+    --lr 1e-4 \
+    --output_dir "$EXP_DIR/config_d_lr1e4" \
+    --experiment_name "config_d"
+echo "[Config D] Done"
+commit_result "EXP-007 config D done: τ=0.05, lr=1e-4"
+fi
+
+# Config E: lr=3e-4 (30x of A)
+if run_config E; then
+echo "[Config E] Starting: τ=0.05, 1 epoch, lr=3e-4, 8 GPU"
+torchrun --nproc_per_node=8 \
+    model/contrastive_finetune.py \
+    --temperature 0.05 \
+    --epochs 1 \
+    --batch_size 32 \
+    --grad_accum 8 \
+    --lr 3e-4 \
+    --output_dir "$EXP_DIR/config_e_lr3e4" \
+    --experiment_name "config_e"
+echo "[Config E] Done"
+commit_result "EXP-007 config E done: τ=0.05, lr=3e-4"
+fi
+
+# Config F: lr=1e-3 (100x of A)
+if run_config F; then
+echo "[Config F] Starting: τ=0.05, 1 epoch, lr=1e-3, 8 GPU"
+torchrun --nproc_per_node=8 \
+    model/contrastive_finetune.py \
+    --temperature 0.05 \
+    --epochs 1 \
+    --batch_size 32 \
+    --grad_accum 8 \
+    --lr 1e-3 \
+    --output_dir "$EXP_DIR/config_f_lr1e3" \
+    --experiment_name "config_f"
+echo "[Config F] Done"
+commit_result "EXP-007 config F done: τ=0.05, lr=1e-3"
+fi
+
 echo ""
 echo ">>> Phase 1 complete: selected configs trained"
 
@@ -123,6 +174,9 @@ declare -A CONFIG_DIRS=(
     [A]=config_a_t005_ep1
     [B]=config_b_t007_ep1
     [C]=config_c_t005_lr3e5
+    [D]=config_d_lr1e4
+    [E]=config_e_lr3e4
+    [F]=config_f_lr1e3
 )
 
 # ──────────────────────────────────────────────
@@ -131,7 +185,7 @@ declare -A CONFIG_DIRS=(
 echo ""
 echo ">>> Phase 2: Generate embeddings from fine-tuned models"
 
-for key in A B C; do
+for key in A B C D E F; do
     run_config "$key" || continue
     config="${CONFIG_DIRS[$key]}"
     echo "  Generating embeddings for $config ..."
@@ -161,7 +215,7 @@ echo ">>> Phase 3: Evaluate all configs"
 ) &
 
 # Fine-tuned configs
-for key in A B C; do
+for key in A B C D E F; do
     run_config "$key" || continue
     config="${CONFIG_DIRS[$key]}"
     (
