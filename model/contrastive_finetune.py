@@ -224,6 +224,15 @@ def train(args):
     device = torch.device(f'cuda:{local_rank}')
     is_main = (local_rank == 0)
 
+    # ── Dry run: override to minimal config ──
+    if args.dry_run:
+        args.max_pairs = 10_000
+        args.epochs = 1
+        if is_main:
+            print("=" * 40)
+            print("DRY RUN: 1% data, 1 epoch, 10 steps")
+            print("=" * 40)
+
     if is_main:
         print(f"Config: τ={args.temperature}, epochs={args.epochs}, "
               f"bs={args.batch_size}, lr={args.lr}, world_size={world_size}")
@@ -365,6 +374,12 @@ def train(args):
 
             epoch_loss += loss.item() * grad_accum  # unscale for logging
 
+            # Dry run: stop after 10 steps
+            if args.dry_run and batch_idx >= 10:
+                if is_main:
+                    print(f"  DRY RUN: stopped after {batch_idx} steps, loss={loss.item() * grad_accum:.4f}")
+                break
+
             if is_main and batch_idx % (50 * grad_accum) == 0:
                 lr_now = scheduler.get_last_lr()[0]
                 print(f"  [Epoch {epoch+1}/{args.epochs}] "
@@ -406,6 +421,8 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--max_pairs', type=int, default=5_000_000,
                         help='Max I2I pairs to generate')
+    parser.add_argument('--dry_run', action='store_true',
+                        help='Smoke test: 1%% data, 1 epoch, 10 steps, verify full pipeline')
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--experiment_name', type=str, default='default')
 
