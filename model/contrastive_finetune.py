@@ -389,11 +389,12 @@ def train(args):
             print(f"LoRA enabled: {trainable/1e6:.1f}M trainable / {total/1e6:.1f}M total "
                   f"({trainable/total*100:.1f}%)")
 
-    # ── LM head for caption reconstruction loss (monitor only, no BP) ──
+    # ── LM head for caption reconstruction loss (frozen probe; --cap_loss_weight>0 enables BP) ──
     lm_head = None
     LM_MODEL_NAME = "Qwen/Qwen3-0.6B"
     if is_main:
-        print(f"Loading LM head from {LM_MODEL_NAME} (frozen, monitor only)...")
+        cap_mode = "training" if args.cap_loss_weight > 0 else "monitor only"
+        print(f"Loading LM head from {LM_MODEL_NAME} (frozen, {cap_mode})...")
     try:
         causal_model = AutoModelForCausalLM.from_pretrained(
             LM_MODEL_NAME, trust_remote_code=True, torch_dtype=torch.bfloat16
@@ -528,26 +529,35 @@ def train(args):
                 embeddings = F.normalize(out.last_hidden_state[:, -1, :].float(), dim=-1)
                 emb_a, emb_b = embeddings[:B], embeddings[B:]
 
-                loss = info_nce_loss(emb_a, emb_b, temperature=args.temperature)
-                loss = loss / grad_accum
+                contrastive_loss = info_nce_loss(emb_a, emb_b, temperature=args.temperature)
+                loss = contrastive_loss / grad_accum
+
+                # Caption reconstruction loss
+                caption_loss_val = None
+                if lm_head is not None and args.cap_loss_weight > 0:
+                    # Gradient flows through hidden_states → model (lm_head stays frozen)
+                    hidden = out.last_hidden_state  # (2B, S, D)
+                    labels = inputs['input_ids']    # (2B, S)
+                    logits = lm_head(hidden)        # (2B, S, vocab)
+                    shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
+                    shift_labels = labels[:, 1:].contiguous().view(-1)
+                    cap_loss = F.cross_entropy(shift_logits, shift_labels,
+                                               ignore_index=tokenizer.pad_token_id)
+                    loss = loss + args.cap_loss_weight * cap_loss / grad_accum
+                    caption_loss_val = cap_loss.item()
+                elif lm_head is not None and is_main and batch_idx % (50 * grad_accum) == 0:
+                    # Monitor only (no BP), rank 0 print steps only
+                    with torch.no_grad():
+                        hidden = out.last_hidden_state.detach()
+                        labels = inputs['input_ids']
+                        logits = lm_head(hidden)
+                        shift_logits = logits[:, :-1, :].contiguous().view(-1, logits.size(-1))
+                        shift_labels = labels[:, 1:].contiguous().view(-1)
+                        caption_loss_val = F.cross_entropy(
+                            shift_logits, shift_labels,
+                            ignore_index=tokenizer.pad_token_id).item()
 
             loss.backward()
-
-            # Caption reconstruction loss (monitor only, no BP, rank 0 print steps only)
-            caption_loss_val = None
-            if lm_head is not None and is_main and batch_idx % (50 * grad_accum) == 0:
-                with torch.no_grad():
-                    hidden = out.last_hidden_state.detach()  # (2B, S, D)
-                    labels = inputs['input_ids']             # (2B, S)
-                    chunk_losses = []
-                    for ci in range(hidden.size(0)):
-                        logits = lm_head(hidden[ci])         # (S, vocab)
-                        shift_logits = logits[:-1]           # (S-1, vocab)
-                        shift_labels = labels[ci, 1:]        # (S-1,)
-                        chunk_losses.append(
-                            F.cross_entropy(shift_logits, shift_labels, ignore_index=tokenizer.pad_token_id)
-                        )
-                    caption_loss_val = torch.stack(chunk_losses).mean().item()
 
             # Cache embeddings for inline HR@50 (rank 0 only, detach→CPU, zero GPU cost)
             if hr_monitor is not None:
@@ -659,6 +669,7 @@ def train(args):
             'lr': args.lr,
             'lora': args.lora,
             'lora_rank': args.lora_rank if args.lora else None,
+            'cap_loss_weight': args.cap_loss_weight,
             'batch_size': args.batch_size,
             'grad_accum': args.grad_accum,
             'max_pairs': args.max_pairs,
@@ -704,6 +715,8 @@ def main():
                         help='Smoke test: 1%% data, 1 epoch, 10 steps, verify full pipeline')
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--experiment_name', type=str, default='default')
+    parser.add_argument('--cap_loss_weight', type=float, default=0.0,
+                        help='Caption reconstruction loss weight (0=monitor only, >0=train with it)')
     parser.add_argument('--lora', action='store_true',
                         help='Freeze base model, train LoRA adapters only (requires peft)')
     parser.add_argument('--lora_rank', type=int, default=16,
