@@ -20,6 +20,14 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Model checkpoints (large binary files, stay on EFS)
+experiments/hyperparam/**/model/
+experiments/hyperparam/**/embeddings/
+experiments/hyperparam/**/smoke_test/
+*.pt
+*.bin
+*.safetensors
+
 # Eval output (generated at runtime)
 eval_results/
 eval_results_with_behavior/
