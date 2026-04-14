@@ -164,7 +164,98 @@ class I2IPairDataset(Dataset):
 
     def __getitem__(self, idx):
         cid_a, cid_b = self.pairs[idx]
-        return self.content_id_to_text[cid_a], self.content_id_to_text[cid_b]
+        return self.content_id_to_text[cid_a], self.content_id_to_text[cid_b], cid_a, cid_b
+
+
+# ============================================================
+# Inline HR@50 Monitor (zero-overhead embedding reuse)
+# ============================================================
+
+class InlineHRMonitor:
+    """Accumulate embeddings from training batches, compute HR@50 periodically.
+
+    Key insight: training forward pass already computes item embeddings.
+    We just detach + move to CPU — zero extra GPU compute.
+    When enough unique items accumulate, run FAISS HR@50 on CPU.
+    """
+
+    def __init__(self, behavior_data: dict, eval_interval: int = 2000, min_items: int = 10000):
+        """
+        Args:
+            behavior_data: {'uid': [...], 'iid': [...], 'action_bitmap': [...]}
+            eval_interval: compute HR@50 every N micro-steps
+            min_items: minimum unique items before first eval
+        """
+        self.eval_interval = eval_interval
+        self.min_items = min_items
+        self.embedding_buffer = {}  # cid -> embedding (numpy, float32)
+
+        # Pre-compute co-occurrence map from behavior data
+        t0 = time.time()
+        user_items = defaultdict(set)
+        self.item_users = defaultdict(set)
+        for uid, iid, action in zip(
+            behavior_data['uid'], behavior_data['iid'], behavior_data['action_bitmap']
+        ):
+            if action > 0:
+                user_items[uid].add(iid)
+                self.item_users[iid].add(uid)
+        self.user_items = user_items
+        print(f"  InlineHRMonitor: pre-computed co-occurrence "
+              f"({len(self.item_users):,} items, {len(user_items):,} users, "
+              f"{time.time() - t0:.1f}s)")
+
+    def update(self, cids: list, embeddings: torch.Tensor):
+        """Cache embeddings from a training batch. Called every step on rank 0.
+
+        Args:
+            cids: list of content_id strings
+            embeddings: (N, D) tensor, already normalized, on GPU
+        """
+        embs_cpu = embeddings.detach().cpu().numpy()
+        for i, cid in enumerate(cids):
+            self.embedding_buffer[cid] = embs_cpu[i]
+
+    def maybe_eval(self, step: int) -> Optional[float]:
+        """Compute HR@50 if interval reached and enough items. Returns HR@50 or None."""
+        if step % self.eval_interval != 0 or step == 0:
+            return None
+        if len(self.embedding_buffer) < self.min_items:
+            return None
+        return self._compute_hr50()
+
+    def _compute_hr50(self, top_k: int = 50) -> float:
+        """Compute HR@50 on buffered embeddings using FAISS."""
+        import faiss
+
+        cids = list(self.embedding_buffer.keys())
+        embs = np.array([self.embedding_buffer[c] for c in cids], dtype=np.float32)
+        N, D = embs.shape
+
+        # Build FAISS index
+        index = faiss.IndexFlatIP(D)
+        index.add(embs)
+        _, I = index.search(embs, top_k + 1)  # +1 to exclude self
+
+        # Compute HR@50
+        hit_rates = []
+        for i, cid in enumerate(cids):
+            if cid not in self.item_users:
+                continue
+            # Co-occurrence items for this cid
+            cooccur = set()
+            for uid in self.item_users[cid]:
+                cooccur.update(self.user_items[uid])
+            cooccur.discard(cid)
+            if not cooccur:
+                continue
+
+            # Top-K neighbors (exclude self)
+            neighbors = [cids[j] for j in I[i] if j != i][:top_k]
+            hits = sum(1 for n in neighbors if n in cooccur)
+            hit_rates.append(hits / len(cooccur) if cooccur else 0.0)
+
+        return float(np.mean(hit_rates)) if hit_rates else 0.0
 
 
 # ============================================================
@@ -337,6 +428,11 @@ def train(args):
         print(f"Training: {len(dataset):,} pairs, {len(dataloader)} steps/epoch, "
               f"{total_steps} total steps")
 
+    # ── Inline HR@50 monitor (rank 0 only, zero GPU overhead) ──
+    hr_monitor = None
+    if is_main:
+        hr_monitor = InlineHRMonitor(behavior_data_str, eval_interval=2000, min_items=10000)
+
     global_step = 0
     t_train_start = time.time()
     total_micro_steps = len(dataloader) * args.epochs
@@ -348,7 +444,7 @@ def train(args):
         epoch_loss = 0.0
         t_epoch = time.time()
 
-        for batch_idx, (texts_a, texts_b) in enumerate(dataloader):
+        for batch_idx, (texts_a, texts_b, cids_a, cids_b) in enumerate(dataloader):
             # Tokenize both batches together → single forward pass
             all_texts = list(texts_a) + list(texts_b)
             inputs = tokenizer(
@@ -368,6 +464,11 @@ def train(args):
                 loss = loss / grad_accum
 
             loss.backward()
+
+            # Cache embeddings for inline HR@50 (rank 0 only, detach→CPU, zero GPU cost)
+            if hr_monitor is not None:
+                all_cids = list(cids_a) + list(cids_b)
+                hr_monitor.update(all_cids, embeddings.detach())
 
             if (batch_idx + 1) % grad_accum == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -396,10 +497,18 @@ def train(args):
                 else:
                     eta_str = "..."
                 lr_now = scheduler.get_last_lr()[0]
+
+                # Inline HR@50: check every eval_interval steps
+                hr_str = ""
+                if hr_monitor is not None:
+                    hr50 = hr_monitor.maybe_eval(batch_idx)
+                    if hr50 is not None:
+                        hr_str = f" | HR@50={hr50:.4f} ({len(hr_monitor.embedding_buffer):,} items)"
+
                 print(f"  [Epoch {epoch+1}/{args.epochs}] "
                       f"Step {batch_idx}/{len(dataloader)} | "
                       f"loss={loss.item() * grad_accum:.4f} | lr={lr_now:.2e} | "
-                      f"ETA {eta_str}")
+                      f"ETA {eta_str}{hr_str}")
 
         epoch_loss /= len(dataloader)
         if is_main:
@@ -409,8 +518,13 @@ def train(args):
             eta_m, eta_s = divmod(int(eta_remaining), 60)
             eta_h, eta_m = divmod(eta_m, 60)
             eta_str = f"{eta_h}h{eta_m:02d}m" if eta_h else f"{eta_m}m{eta_s:02d}s"
+            # Epoch-end HR@50
+            hr_epoch_str = ""
+            if hr_monitor is not None:
+                hr50 = hr_monitor._compute_hr50()
+                hr_epoch_str = f" | HR@50={hr50:.4f} ({len(hr_monitor.embedding_buffer):,} items)"
             print(f"  Epoch {epoch+1} done: avg_loss={epoch_loss:.4f} "
-                  f"({time.time() - t_epoch:.0f}s) | ETA remaining: {eta_str}")
+                  f"({time.time() - t_epoch:.0f}s) | ETA remaining: {eta_str}{hr_epoch_str}")
 
     # ── Save model ──
     if is_main:
