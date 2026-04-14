@@ -29,63 +29,53 @@ echo "EXP-007: Collaborative Signal Enhanced Embedding"
 echo "=========================================="
 
 # ──────────────────────────────────────────────
-# Phase 1: Contrastive fine-tune (3 configs in parallel across GPUs)
+# Phase 1: Contrastive fine-tune (all 8 GPUs per config, sequential)
+# 8 GPU DDP: 2x throughput + 2x negatives vs 4 GPU
 # ──────────────────────────────────────────────
 echo ""
-echo ">>> Phase 1: Contrastive fine-tune Qwen3-0.6B"
-echo "    Config A (τ=0.05, 3ep) → GPU 0,1,2,3"
-echo "    Config B (τ=0.07, 3ep) → GPU 4,5,6,7"
-echo "    Config C (τ=0.05, 5ep) runs after A finishes (same GPUs)"
+echo ">>> Phase 1: Contrastive fine-tune Qwen3-0.6B (8 GPU DDP, sequential)"
 
-# Config A: τ=0.05, 3 epochs (GPU 0-3)
-(
-    echo "[Config A] Starting: τ=0.05, 3 epochs"
-    CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 --master_port=29500 \
-        model/contrastive_finetune.py \
-        --temperature 0.05 \
-        --epochs 3 \
-        --batch_size 16 \
-        --grad_accum 32 \
-        --lr 1e-5 \
-        --output_dir "$EXP_DIR/config_a_t005_ep3" \
-        --experiment_name "config_a"
-    echo "[Config A] Done"
-    commit_result "EXP-007 config A done: τ=0.05, 3ep"
+# Config A: τ=0.05, 3 epochs
+echo "[Config A] Starting: τ=0.05, 3 epochs, 8 GPU"
+torchrun --nproc_per_node=8 \
+    model/contrastive_finetune.py \
+    --temperature 0.05 \
+    --epochs 3 \
+    --batch_size 16 \
+    --grad_accum 16 \
+    --lr 1e-5 \
+    --output_dir "$EXP_DIR/config_a_t005_ep3" \
+    --experiment_name "config_a"
+echo "[Config A] Done"
+commit_result "EXP-007 config A done: τ=0.05, 3ep"
 
-    # Config C reuses GPU 0-3 after A finishes: τ=0.05, 5 epochs
-    echo "[Config C] Starting: τ=0.05, 5 epochs"
-    CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 --master_port=29500 \
-        model/contrastive_finetune.py \
-        --temperature 0.05 \
-        --epochs 5 \
-        --batch_size 16 \
-        --grad_accum 32 \
-        --lr 1e-5 \
-        --output_dir "$EXP_DIR/config_c_t005_ep5" \
-        --experiment_name "config_c"
-    echo "[Config C] Done"
-    commit_result "EXP-007 config C done: τ=0.05, 5ep"
-) &
-PID_AC=$!
+# Config B: τ=0.07, 3 epochs
+echo "[Config B] Starting: τ=0.07, 3 epochs, 8 GPU"
+torchrun --nproc_per_node=8 \
+    model/contrastive_finetune.py \
+    --temperature 0.07 \
+    --epochs 3 \
+    --batch_size 16 \
+    --grad_accum 16 \
+    --lr 1e-5 \
+    --output_dir "$EXP_DIR/config_b_t007_ep3" \
+    --experiment_name "config_b"
+echo "[Config B] Done"
+commit_result "EXP-007 config B done: τ=0.07, 3ep"
 
-# Config B: τ=0.07, 3 epochs (GPU 4-7)
-(
-    echo "[Config B] Starting: τ=0.07, 3 epochs"
-    CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --nproc_per_node=4 --master_port=29501 \
-        model/contrastive_finetune.py \
-        --temperature 0.07 \
-        --epochs 3 \
-        --batch_size 16 \
-        --grad_accum 32 \
-        --lr 1e-5 \
-        --output_dir "$EXP_DIR/config_b_t007_ep3" \
-        --experiment_name "config_b"
-    echo "[Config B] Done"
-    commit_result "EXP-007 config B done: τ=0.07, 3ep"
-) &
-PID_B=$!
-
-wait $PID_AC $PID_B
+# Config C: τ=0.05, 5 epochs
+echo "[Config C] Starting: τ=0.05, 5 epochs, 8 GPU"
+torchrun --nproc_per_node=8 \
+    model/contrastive_finetune.py \
+    --temperature 0.05 \
+    --epochs 5 \
+    --batch_size 16 \
+    --grad_accum 16 \
+    --lr 1e-5 \
+    --output_dir "$EXP_DIR/config_c_t005_ep5" \
+    --experiment_name "config_c"
+echo "[Config C] Done"
+commit_result "EXP-007 config C done: τ=0.05, 5ep"
 echo ""
 echo ">>> Phase 1 complete: all 3 configs trained"
 
