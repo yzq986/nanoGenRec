@@ -13,8 +13,12 @@ from gr_demo.config import (
     EFS_HF_CACHE,
     EFS_IMAGE_CACHE,
     EFS_EMBEDDING_CACHE,
-    DEFAULT_DATE,
 )
+
+# ── Default dates (non-sensitive, version-controlled) ──
+DEFAULT_DATE = "2026-03-31"
+DEFAULT_DATE_START = "2026-03-01"
+DEFAULT_DATE_END = "2026-03-31"
 
 # 设置 HuggingFace 缓存目录到大容量 EFS（仅在 cloud notebook 环境下生效）
 HF_CACHE_DIR = EFS_HF_CACHE

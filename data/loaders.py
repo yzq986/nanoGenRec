@@ -84,7 +84,8 @@ def load_content_texts(s3_path: str = None) -> dict:
         dict: {content_id_str: text_string}
     """
     if s3_path is None:
-        from gr_demo.config import S3_CONTENT_TEXT_EXPOSED, DEFAULT_DATE
+        from gr_demo.config import S3_CONTENT_TEXT_EXPOSED
+        from gr_demo.config import DEFAULT_DATE
         s3_path = f'{S3_CONTENT_TEXT_EXPOSED}/{DEFAULT_DATE}'
 
     content_ids, texts, _, _ = load_text_from_s3(s3_path)
@@ -140,7 +141,8 @@ def resolve_behavior_paths(behavior_path: str) -> list:
     - 具体 S3 路径: 原样返回
     """
     if behavior_path == "auto":
-        from gr_demo.config import S3_USER_BEHAVIOR, DEFAULT_DATE_START, DEFAULT_DATE_END
+        from gr_demo.config import S3_USER_BEHAVIOR
+        from gr_demo.config import DEFAULT_DATE_START, DEFAULT_DATE_END
         from datetime import datetime, timedelta
         start = datetime.strptime(DEFAULT_DATE_START, "%Y-%m-%d")
         end = datetime.strptime(DEFAULT_DATE_END, "%Y-%m-%d")

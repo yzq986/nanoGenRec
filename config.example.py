@@ -50,9 +50,6 @@ EFS_DEFAULT_OUTPUT = f"{EFS_BASE}/feed_content_embedding_v4.tar.gz"
 
 
 # ============================================================
-# Default Dates
+# Default Dates — moved to config.py (non-sensitive)
 # ============================================================
-
-DEFAULT_DATE = "2026-03-31"
-DEFAULT_DATE_START = "2026-03-24"
-DEFAULT_DATE_END = "2026-03-31"
+# DEFAULT_DATE, DEFAULT_DATE_START, DEFAULT_DATE_END are now in config.py

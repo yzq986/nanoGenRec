@@ -24,8 +24,16 @@ AutoregressiveNTPModel (当前 6-layer decoder, beam=5)
 │   └── 泛化为 interest/category prompt prefix
 ├── IDEA-oxygen-0: Fast-Slow Thinking (近线 LLM + 实时 GR)
 │   └── LLM 推理蒸馏为指令，IGR 意图过滤，SA-GCPO 多场景 RL
-└── IDEA-llada-0: Discrete Diffusion (替代自回归)
-    └── 双向注意力 + 自适应生成顺序，解决错误累积
+├── IDEA-llada-0: Discrete Diffusion (替代自回归)
+│   └── 双向注意力 + 自适应生成顺序，解决错误累积
+├── IDEA-metaidx-0: 层次化索引 + Test-Time Training (Meta)
+│   └── cross-attention + RQ 学层次索引, 中间节点=高质量数据→TTT
+├── IDEA-oneranker-0: 统一生成与排序 (Tencent WeiXin)
+│   └── Fake Item Token + DC Loss + Value-Aware Decoupling, GMV +1.34%
+├── IDEA-orec-think-0: In-Text Reasoning (快手)
+│   └── Itemic Alignment + Reasoning Scaffolding + Multi-validity Reward
+└── IDEA-reg4rec-0: MoE 并行量化 + 推理自反思 (阿里)
+    └── MPQ 无序 token + PARS/MSRA/CORP 推理增强
 ```
 
 ---
@@ -660,6 +668,10 @@ Huawei AppGallery 工业数据集 + 在线 A/B: **超越 HSTU 和 MTGR**, WWW 20
 | P1 | IDEA-unirec-0 | Chain-of-Attribute Prefix | 贝叶斯理论 + HR@50 +22.6%, 桥接生成与判别 |
 | P1 | IDEA-gems-0 | Multi-Stream Temporal Decoder | 快手 100K+ 序列部署, lifelong GR 工程方案 |
 | P1 | IDEA-hpgr-0 | Session-MIM + Preference Sparse Attn | Huawei WWW 2026, 超越 HSTU 的动态稀疏注意力 |
+| P1 | IDEA-metaidx-0 | 层次化索引 + Test-Time Training | Meta 数十亿用户部署，hierarchical pruning + TTT |
+| P1 | IDEA-oneranker-0 | 统一生成与排序 | Tencent WeiXin GMV +1.34%, DC Loss 可作辅助 loss |
+| P1 | IDEA-orec-think-0 | In-Text Reasoning for GR | 快手 +0.159%, multi-validity reward 可先用于 GRPO |
+| P1 | IDEA-reg4rec-0 | MoE 并行量化 + 推理自反思 | 阿里在线验证, CORP/MSRA 组件可独立落地 |
 | P2 | IDEA-onemall-4 | Loss-Free MoE Balancing | 低风险低成本，8 experts 下收益可能有限 |
 | P2 | IDEA-oneloc-0 | Context-augmented Attention | 需要 encoder-decoder 架构，当前无落地场景 |
 | P2 | IDEA-oneloc-1 | Category Prompt | 需要 encoder-decoder 架构，泛化形式有价值 |
@@ -667,3 +679,148 @@ Huawei AppGallery 工业数据集 + 在线 A/B: **超越 HSTU 和 MTGR**, WWW 20
 | P2 | IDEA-llada-0 / IDEA-mdgr-0 | Discrete Diffusion 解码 | 非自回归新范式，MDGR 工业验证 +1.20% revenue |
 | P2 | IDEA-gr2-0 | LLM Reasoning Reranker | Meta 远期方案, 无在线 A/B |
 | P2 | IDEA-higr-0 | Hierarchical Slate Planning | Tencent 验证, 属于 reranking 阶段 |
+
+---
+
+## IDEA-metaidx-0: 层次化索引 + Test-Time Training
+
+**优先级**: P1
+**来源**: Meta, Efficient Retrieval Scaling with Hierarchical Indexing (arxiv 2604.12965)
+**状态**: 待讨论
+
+### 核心思想
+
+Meta 提出为大规模 foundation retrieval model 联合学习层次化索引: 用 cross-attention + residual quantization 构建 hierarchical index，使搜索从根到叶逐层剪枝。关键发现: 中间索引节点对应一组高质量数据子集，在推理时用该子集对模型做 fine-tune (即 "test-time training") 可显著提升 retrieval 质量。已部署于 Facebook + Instagram 的广告推荐，服务数十亿用户。
+
+### 与当前项目的关联
+
+- 当前 NTP beam search 在全 SID 空间上解码，随 item pool 增长 latency 线性增加
+- 层次化索引可以替代/增强 prefix tree constrained decoding (IDEA-static-0 CSR 方案)，提供更 semantic-aware 的剪枝
+- Test-time training 概念对冷启动 / 时效性场景有价值: 新品类上线时用对应索引节点的 "高质量子集" 做 fast adaptation
+- 与 IDEA-earn-0 (Register Token 压缩) 互补: 一个优化搜索路径，一个优化 KV cache
+
+### 实验设计草案
+
+**Phase 1 — 验证层次化剪枝**:
+- 在现有 3-token SID 上，用 KMeans 层级 (L1, L2) 作为天然 hierarchical index
+- 对比: full beam search vs 逐层 top-K 剪枝 (先在 L1 选 top-32 cluster，再在 L2 展开)
+- 评估: Recall@K 损失 vs latency 减少
+
+**Phase 2 — Test-time training**:
+- 对每个 L1 cluster 子集做 NTP model 的少量 fine-tune (或 LoRA adaptation)
+- 评估: cluster-level Recall 提升 vs fine-tune 成本
+
+### 关键问题
+
+1. 3-token SID 本身层级就浅，层次化剪枝空间有限；更适合扩展到 4+ token SID 后
+2. Test-time training 在推荐场景的实时性约束: Meta 用了近线 pipeline，我们需要评估 overhead
+3. 与 IDEA-static-0 CSR 约束解码的关系: 互补还是替代？
+
+---
+
+## IDEA-oneranker-0: 统一生成与排序 (Value-Aware Generation-Ranking Integration)
+
+**优先级**: P1
+**来源**: OneRanker, Tencent WeiXin Channels (arxiv 2603.02999)
+**状态**: 待讨论
+
+### 核心思想
+
+腾讯微信视频号广告提出 OneRanker，将生成阶段和排序阶段深度集成于一个模型: (1) Value-aware multi-task decoupling — 用 task token sequences + causal mask 在共享表示上分离兴趣覆盖和商业价值优化，减少目标冲突; (2) Coarse-to-fine collaborative target awareness — 生成阶段用 Fake Item Tokens 做隐式感知，排序阶段用 ranking decoder 做显式价值对齐; (3) KV pass-through + Distribution Consistency Loss 保证生成和排序的一致性。微信全量部署，GMV +1.34%。
+
+### 与当前项目的关联
+
+- 当前项目 NTP 模型纯做 recall (生成候选)，排序由下游系统完成 → 生成与排序之间存在 gap
+- OneRanker 的 Fake Item Tokens 概念可以用于 NTP 训练: 在 beam search 候选上添加 ranking 信号反馈
+- Distribution Consistency Loss 可视为一种新型辅助 loss (与 IDEA-onemall-0 contrastive loss 互补)
+- 实现需要 ranking stage 的 label 数据 (点击后的 CTR/CVR)，当前数据 pipeline 可能需要扩展
+
+### 实验设计草案
+
+**Phase 1 — Distribution Consistency Loss**:
+- 在 NTP 训练中加入 DC loss: 对 beam 候选的概率分布与外部 ranking score 做 KL divergence
+- 需要: ranking model 的 score 作为 soft label
+- 评估: Recall@K + NDCG (如果有 ranking label)
+
+**Phase 2 — Fake Item Token Awareness**:
+- 在 decoder 输入序列中随机插入 "fake item token" (从 in-batch items 采样) 作为负例
+- 训练模型区分 real vs fake → 隐式引入 ranking 信号
+
+### 关键问题
+
+1. 当前离线实验无 ranking label，需要从行为数据构造 proxy ranking signal
+2. 生成和排序的统一增加模型复杂度，可能影响 NTP 阶段的纯 recall 性能
+3. 更适合系统成熟后 (有完整 pipeline) 再引入
+
+---
+
+## IDEA-orec-think-0: In-Text Reasoning for Generative Recommendation
+
+**优先级**: P1
+**来源**: OneRec-Think, Kuaishou (arxiv 2510.11639)
+**状态**: 待讨论
+
+### 核心思想
+
+快手 OneRec-Think 将对话、推理和个性化推荐统一到一个生成式框架中。核心三步: (1) Itemic Alignment — 跨模态 item-textual 对齐，让模型理解 item 的语义含义; (2) Reasoning Scaffolding — 在 NTP 上下文中激活 LLM 推理能力，不仅预测下一个 SID token，还生成推理链; (3) Multi-validity reward function — 推荐场景的多正确答案特性 (多个 item 都合理) 需要特殊的 reward 设计。"Think-Ahead" 架构允许部署时做实时推理。在快手部署，App Stay Time +0.159%。
+
+与 IDEA-s2gr-0 (Stepwise Reasoning Tokens) 的区别: s2gr-0 是轻量级 think token 插入 (token level)，本 IDEA 是完整的 reasoning chain + multi-validity reward (system level)。
+
+### 与当前项目的关联
+
+- 当前 NTP 是 "隐式预测器"，缺乏可解释性和可控性
+- Itemic Alignment 可以直接复用 Qwen3 embedding + SID 的映射
+- Multi-validity reward 对 RL 阶段尤为重要 (IDEA-onemall-2 GRPO 目前只用单 ground truth)
+- 需要 LLM backbone 支持 reasoning (当前 6-layer decoder 可能不够)
+
+### 实验设计草案
+
+**Phase 1 — Multi-validity reward**:
+- 修改现有 NTP eval: 不只看 top-1 匹配，而是 top-K 中有多少个行为相似 item (用 item category / embedding similarity 判定)
+- 构造 multi-validity reward: R(generated) = max_sim(generated, {positive_set})
+
+**Phase 2 — Reasoning Scaffolding (post-LLM upgrade)**:
+- 需要更大的 backbone (≥1B) 才能支持 reasoning
+- 在 SID token 前插入 reasoning prefix (如 user preference summary)
+- 与 IDEA-s2gr-0 对比: full reasoning chain vs per-token think token
+
+### 关键问题
+
+1. 当前 6-layer small decoder 无法支持 reasoning，需要等 LLM backbone 升级
+2. Multi-validity reward 是更即时可用的 idea，可以先在 GRPO 中应用
+3. 部署时 reasoning chain 增加延迟，需要 "Think-Ahead" 异步架构
+
+---
+
+## IDEA-reg4rec-0: MoE 并行量化码本 + 推理自反思
+
+**优先级**: P1
+**来源**: REG4Rec, Alibaba (arxiv 2508.15308)
+**状态**: 待讨论
+
+### 核心思想
+
+阿里 REG4Rec 将推理 (reasoning) 引入生成式推荐，区别于 IDEA-s2gr-0 和 IDEA-orec-think-0 的关键创新: (1) MoE-based Parallel Quantization (MPQ) — 每个 item 生成多个无序语义 token (而非有序 SID sequence)，构建更大的多样推理空间; (2) Preference Alignment for Reasoning (PARS) — 用推荐领域定制的 reward 来增强推理和反思; (3) Multi-Step Reward Augmentation (MSRA) — 引入未来多步 action 改善泛化; (4) Consistency-Oriented Self-Reflection for Pruning (CORP) — 推理时丢弃不一致的推理路径。
+
+### 与当前项目的关联
+
+- MPQ 的 "多个无序 token" 与当前 "有序 3-token SID" 是根本不同的 paradigm
+- CORP 自反思剪枝可以增强现有 beam search: 在 beam 候选上做 consistency check
+- MSRA 多步 reward 可以增强 IDEA-onemall-2 GRPO: 不仅看下一步，还看未来 N 步
+- 有在线评估，证明工业可行性
+
+### 实验设计草案
+
+**Phase 1 — CORP-style Beam Consistency Pruning**:
+- 在 beam search 完成后，对候选做 consistency check: 多次前向推理，剪掉结果不稳定的候选
+- 评估: Recall@K 变化 + 生成多样性
+
+**Phase 2 — MSRA Multi-Step Reward**:
+- 在 NTP 训练中加入 future reward: L = L_NTP + β * Σ_{t+1..t+3} reward(item_t)
+- 评估: 长期指标 (session-level satisfaction) vs 即时 Recall
+
+### 关键问题
+
+1. MPQ 无序 token 与当前有序 SID 不兼容，需要大改 tokenizer pipeline → P2
+2. CORP 和 MSRA 是更容易落地的组件
+3. 在线评估细节需要看 full paper

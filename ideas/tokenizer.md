@@ -48,7 +48,10 @@ RKMeans 3×1024 (EXP-001 baseline, collision=1.75%)
 ├── IDEA-gr4ad-0: MGMR 不等大码本 → P2 (NTP 后)
 ├── IDEA-pit-0: Co-generative 动态 Tokenizer → P2 (NTP 后)
 ├── IDEA-quasid-0: Hamming Repulsion → P2 (NTP 后)
-└── IDEA-r3vae-0: Reference Vector SID → P2 (NTP 后)
+├── IDEA-r3vae-0: Reference Vector SID → P2 (NTP 后)
+├── IDEA-geogr-0: 地理感知 SID (Co-visited Contrastive) → P2 (需泛化)
+├── IDEA-onevision-0: VRQ 视觉对齐 RQ + 动态剪枝 → P2 (需视觉模态)
+└── IDEA-mmq-0: 共享-专有多模态混合量化 → P2 (需多模态数据)
 ```
 
 ---
@@ -488,3 +491,96 @@ UniRec 在 RQ tokenizer 训练中发现严重的 **token collapse** 问题：部
 | P2 | IDEA-pit-0 | Co-gen Tokenizer | 待定，NTP 后 (前置: NTP baseline) |
 | P2 | IDEA-r3vae-0 | Reference Vector SID | 待定，NTP 后 (主要价值在评估指标) |
 | P2 | IDEA-unirec-1 | Capacity-Constrained SID | 待定，NTP 后 (与 sid-2 合并评估) |
+
+---
+
+## IDEA-geogr-0: 地理感知 SID Tokenization (Co-visited POI 对比学习)
+
+**优先级**: P2
+**来源**: GeoGR, Alibaba/AMAP (arxiv 2602.10411)
+**状态**: 待讨论
+
+### 核心思想
+
+阿里高德地图的 GeoGR 针对 POI 推荐提出 geo-aware SID tokenization: 用地理约束的 co-visited POI pairs 做对比学习，加上迭代 refinement，生成捕获时空协同语义的 SID。关键 insight: POI 的语义不仅取决于内容 (餐厅/商店)，还取决于地理位置和时间模式 (午餐时段的附近餐厅 vs 周末的远郊景点)。配合多阶段 LLM 训练 (template-based CPT + autoregressive SFT) 实现端到端 POI 生成。在高德部署，服务数百万用户。
+
+### 与当前项目的关联
+
+- 与 IDEA-oneloc-3 (side-info 融合) 理念一致但更具体: 不是泛化 side-info，而是专门针对时空信号
+- Co-visited POI 对比学习可以泛化为 "co-consumed item contrastive learning": 用共同消费的 item pairs 强化 SID 的行为语义
+- 当前 MLP-FSQ tokenizer 基于 text embedding，缺乏行为协同信号 → co-consumed contrastive 可能弥补这一 gap
+- Multi-stage LLM training (CPT + SFT) 与 IDEA-plum-0 一致
+
+### 实验设计草案
+
+**Phase 1 — Co-consumed Item Contrastive Loss for Tokenizer**:
+- 在 tokenizer 训练 (或 embedding fine-tune) 中加入: 经常被同一用户消费的 item pair 的 SID 应该共享更多前缀
+- 实现: 在 RQ/FSQ 训练的 assignment 步骤中加入 co-visit affinity penalty
+- 评估: semantic_neighbor_HR (本身就测量行为邻域保留)
+
+### 关键问题
+
+1. 当前数据无地理信息，需要泛化为 co-consumption 信号
+2. 与 IDEA-sid-1 (协同信号增强 embedding) 部分重叠，但 sid-1 是直接 fine-tune embedding，本 IDEA 是在 tokenizer 层注入
+3. NTP 后阶段再考虑 tokenizer 改进 → P2
+
+---
+
+## IDEA-onevision-0: 视觉对齐残差量化 (VRQ) + 动态剪枝
+
+**优先级**: P2
+**来源**: OneVision, Kuaishou (arxiv 2510.05759)
+**状态**: 待讨论
+
+### 核心思想
+
+快手 OneVision 针对视觉搜索 (visual search) 提出 VRQ (Vision-aligned Residual Quantization): 跨多视角对齐同一物体的差异巨大的视觉表征，同时保留产品独特特征，生成用于生成式检索的 semantic ID。配合多阶段语义对齐 (保留视觉相似先验 + 融入用户个性化偏好) 和动态剪枝 (推理效率提升 21%)。在线 A/B: CTR +2.15%, CVR +2.27%, 订单量 +3.12%。
+
+### 与当前项目的关联
+
+- VRQ 的多视角对齐思路可以泛化到多模态: 同一 item 的文本描述、标题、评论可能语义差异大，需要对齐后再量化
+- 动态剪枝 (21% 效率提升) 在推理端有直接价值: 根据输入难度动态调整 SID 序列长度
+- 当前项目是文本 embedding → SID，OneVision 是视觉 embedding → SID，核心 pipeline 相同
+- 在线 A/B 效果显著 (CTR +2.15%)，验证了端到端生成式搜索架构的可行性
+
+### 实验设计草案
+
+需要视觉模态数据，当前项目暂不适用。但动态剪枝思路 (IDEA-stamp-0 也涉及) 可以共同参考。
+
+### 关键问题
+
+1. 当前项目无视觉模态 → VRQ 本身不直接可用
+2. 动态剪枝的思路已被 IDEA-stamp-0 覆盖
+3. 主要价值在于验证 "生成式搜索端到端架构" 的在线效果
+
+---
+
+## IDEA-mmq-0: 共享-专有多模态混合量化 Tokenizer
+
+**优先级**: P2
+**来源**: MMQ, Alibaba (arxiv 2508.15281, WSDM 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+阿里 MMQ 提出两阶段多模态 tokenizer: (1) Shared-Specific Tokenizer — multi-expert 架构，modality-specific experts 捕获各模态独特信息，modality-shared experts 捕获跨模态共性，加正交正则化; (2) Behavior-Aware Fine-Tuning — 用下游推荐目标动态适配 SID 表征，同时用多模态重建 loss 保持模态信息不丢失。支持 generative retrieval 和 discriminative ranking 两种下游任务。WSDM 2026 + 在线 A/B 验证。
+
+### 与当前项目的关联
+
+- 当前 tokenizer 只用 text embedding (Qwen3)，MMQ 的多模态框架提供了扩展路线
+- Shared-Specific Expert 架构可以泛化: 将 "模态" 替换为 "信号类型" (semantic signal vs collaborative signal)
+- Behavior-Aware Fine-Tuning 与 IDEA-onemall-3 (属性增强 contrastive) 思路一致: 用下游任务信号反过来调整 tokenizer
+- 正交正则化防止 expert 退化，对 MoE 相关 IDEA (IDEA-onemall-4) 有参考价值
+
+### 实验设计草案
+
+**Applicable when multimodal data is available:**
+- Shared expert: 学跨模态共性 (text + image 共同描述 item 语义)
+- Specific expert: 学单模态独特信息 (text 的属性描述 vs image 的视觉风格)
+- Behavior-aware fine-tune: 在冻结 expert 后用 NTP recall 目标微调量化层
+
+### 关键问题
+
+1. 当前无多模态数据 → 无法直接实验
+2. Shared-Specific 思路可在单模态下测试 (semantic vs collaborative 双 expert)，但价值未验证
+3. NTP 后阶段再考虑 tokenizer 扩展 → P2

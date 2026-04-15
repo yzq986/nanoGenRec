@@ -39,6 +39,53 @@
 
 ---
 
+## EXP-013: S-tier NTP Model — 6L MoE + Loss-Free Balancing
+
+**Date**: 2026-04-15
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+EXP-010 baseline (2L dense probe, ~5M params) 效果极差 (item_recall@50=0.0008)。部分原因已在 EXP-011 中通过等大 codebook 修复，但模型容量也严重不足。
+
+本实验升级 NTP 模型到 S-tier 规格 (6L MoE, ~42M params)，对应 `ideas/architecture_roadmap.md` Stage 1。同时将 MoE load balancing 从 Switch Transformer auxiliary loss 替换为 Loss-Free dynamic bias (IDEA-onemall-4, DeepSeek-V2 方案)。
+
+新代码: `ntp/model.py` (NTPModel) vs `ntp/baseline.py` (NTPProbe)。
+
+### Hypothesis
+
+1. S-tier (6L MoE, 42M params) 的 item_recall@50 应显著高于 probe (2L dense, 5M)
+2. PPL 下降 > 30% (模型容量 8x，更深层能捕获长程 SID 依赖)
+3. Loss-Free MoE balancing 的 expert 利用率应合理均匀 (max/min freq < 3x)
+
+### Design
+
+- **Variable**: 模型架构 (probe vs s-tier)
+- **Fixed**: SID 4096×3 + FSQ [2]×12 binary (EXP-011-H/012 best), n_items=10, batch_size=4096, 1 epoch, recall_beam_size=500
+- **Metric**: Perplexity, Depth Hit@10, Item Recall@{10,50,100,500}, Expert utilization
+- **Data**: 30 天行为数据, 时间 80/20 split
+
+| Config | Model | Layers | FFN | Params | 说明 |
+|--------|-------|--------|-----|--------|------|
+| A (baseline) | NTPProbe | 2 | Dense 512 | ~5M | EXP-010 复现 |
+| B (s-tier) | NTPModel | 6 | SwiGLU MoE 8E top-2 | ~42M | Loss-Free bias |
+
+### Run
+
+`bash experiments/scripts/exp-013.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-011: Codebook Size 消融 — 等大 1024/4096 + OPQ 对照
 
 **Date**: 2026-04-15

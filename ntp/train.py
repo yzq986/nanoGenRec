@@ -31,7 +31,8 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from gr_demo.config import MODEL_CONFIGS, EFS_EMBEDDING_CACHE
-from gr_demo.ntp.model import NTPProbe, SIDSequenceDataset
+from gr_demo.ntp.baseline import NTPProbe, SIDSequenceDataset
+from gr_demo.ntp.model import NTPModel
 
 
 # ============================================================
@@ -163,25 +164,41 @@ def train_probe(
     n_heads=4,
     n_transformer_layers=2,
     ffn_dim=512,
+    model_type='probe',
 ):
-    """Train NTPProbe with optional DDP. Returns trained probe (unwrapped) on CPU."""
+    """Train NTPProbe or NTPModel with optional DDP. Returns (model, loss, n_params, model_type)."""
 
     use_parallel = n_layers >= 5
 
-    probe = NTPProbe(
-        n_clusters_per_layer=n_clusters_per_layer,
-        n_sid_layers=n_layers,
-        n_items=n_items,
-        embed_dim=embed_dim,
-        n_heads=n_heads,
-        n_transformer_layers=n_transformer_layers,
-        ffn_dim=ffn_dim,
-        parallel=use_parallel,
-    ).to(device)
+    if model_type == 's-tier':
+        probe = NTPModel(
+            n_clusters_per_layer=n_clusters_per_layer,
+            n_sid_layers=n_layers,
+            n_items=n_items,
+            embed_dim=embed_dim,
+            n_heads=n_heads,
+            n_transformer_layers=n_transformer_layers,
+            use_moe=True,
+            n_experts=8,
+            top_k=2,
+            expert_dim=1024,
+            parallel=use_parallel,
+        ).to(device)
+    else:
+        probe = NTPProbe(
+            n_clusters_per_layer=n_clusters_per_layer,
+            n_sid_layers=n_layers,
+            n_items=n_items,
+            embed_dim=embed_dim,
+            n_heads=n_heads,
+            n_transformer_layers=n_transformer_layers,
+            ffn_dim=ffn_dim,
+            parallel=use_parallel,
+        ).to(device)
 
     n_params = sum(p.numel() for p in probe.parameters())
     mode_str = "parallel (MTP)" if use_parallel else "autoregressive"
-    log(is_main, f"  NTPProbe: {n_params / 1e6:.1f}M params, {mode_str}")
+    log(is_main, f"  {model_type}: {n_params / 1e6:.1f}M params, {mode_str}")
 
     # DDP wrap
     if world_size > 1:
@@ -247,7 +264,7 @@ def train_probe(
 
     # Unwrap DDP
     raw_probe = probe.module if isinstance(probe, DDP) else probe
-    return raw_probe.cpu(), avg_loss, n_params
+    return raw_probe.cpu(), avg_loss, n_params, model_type
 
 
 # ============================================================
@@ -256,21 +273,38 @@ def train_probe(
 
 def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
                     sid_to_items, n_clusters_per_layer, n_layers, n_items,
-                    avg_loss, n_params, sid_cache_dir):
+                    avg_loss, n_params, sid_cache_dir, model_type='probe'):
     """Save probe checkpoint + eval data (rank 0 only)."""
     os.makedirs(output_dir, exist_ok=True)
 
-    # 1. Probe checkpoint
-    probe_config = {
-        'n_clusters_per_layer': n_clusters_per_layer,
-        'n_sid_layers': n_layers,
-        'n_items': n_items,
-        'embed_dim': probe.embed_dim,
-        'n_heads': probe.decoder.layers[0].self_attn.num_heads,
-        'n_transformer_layers': len(probe.decoder.layers),
-        'ffn_dim': probe.decoder.layers[0].linear1.out_features,
-        'parallel': probe.parallel,
-    }
+    # 1. Model checkpoint — config varies by model_type
+    if model_type == 's-tier':
+        probe_config = {
+            'model_type': 's-tier',
+            'n_clusters_per_layer': n_clusters_per_layer,
+            'n_sid_layers': n_layers,
+            'n_items': n_items,
+            'embed_dim': probe.embed_dim,
+            'n_heads': probe.layers[0].attn.num_heads,
+            'n_transformer_layers': len(probe.layers),
+            'use_moe': True,
+            'n_experts': 8,
+            'top_k': 2,
+            'expert_dim': 1024,
+            'parallel': probe.parallel,
+        }
+    else:
+        probe_config = {
+            'model_type': 'probe',
+            'n_clusters_per_layer': n_clusters_per_layer,
+            'n_sid_layers': n_layers,
+            'n_items': n_items,
+            'embed_dim': probe.embed_dim,
+            'n_heads': probe.decoder.layers[0].self_attn.num_heads,
+            'n_transformer_layers': len(probe.decoder.layers),
+            'ffn_dim': probe.decoder.layers[0].linear1.out_features,
+            'parallel': probe.parallel,
+        }
     torch.save({
         'model_state_dict': probe.state_dict(),
         'config': probe_config,
@@ -324,6 +358,9 @@ def parse_args():
     parser.add_argument('--n_heads', type=int, default=4)
     parser.add_argument('--n_transformer_layers', type=int, default=2)
     parser.add_argument('--ffn_dim', type=int, default=512)
+    parser.add_argument('--model', type=str, default='probe',
+                        choices=['probe', 's-tier'],
+                        help='Model: probe (2L dense, ~5M) or s-tier (6L MoE, ~39.5M)')
     return parser.parse_args()
 
 
@@ -368,9 +405,25 @@ def main():
     train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = seq_data
     log(is_main, f"  Train: {len(train_data):,}, Eval: {len(eval_data):,}, Layers: {n_layers}")
 
+    # ── S-tier defaults override ──
+    model_type = args.model
+    embed_dim = args.embed_dim
+    n_heads = args.n_heads
+    n_transformer_layers = args.n_transformer_layers
+    ffn_dim = args.ffn_dim
+    lr = args.lr
+
+    if model_type == 's-tier':
+        # Override to S-tier spec unless user explicitly set them
+        embed_dim = 256
+        n_heads = 8
+        n_transformer_layers = 6
+        lr = 1e-3
+        log(is_main, f"  S-tier defaults: d={embed_dim}, H={n_heads}, L={n_transformer_layers}, lr={lr}")
+
     # ── Train ──
-    log(is_main, f"\nStep 4: Training")
-    probe, avg_loss, n_params = train_probe(
+    log(is_main, f"\nStep 4: Training ({model_type})")
+    probe, avg_loss, n_params, model_type = train_probe(
         train_data=train_data,
         n_clusters_per_layer=n_clusters_per_layer,
         n_layers=n_layers,
@@ -380,11 +433,12 @@ def main():
         device=device,
         is_main=is_main,
         batch_size=args.batch_size,
-        lr=args.lr,
-        embed_dim=args.embed_dim,
-        n_heads=args.n_heads,
-        n_transformer_layers=args.n_transformer_layers,
-        ffn_dim=args.ffn_dim,
+        lr=lr,
+        embed_dim=embed_dim,
+        n_heads=n_heads,
+        n_transformer_layers=n_transformer_layers,
+        ffn_dim=ffn_dim,
+        model_type=model_type,
     )
 
     # ── Save (rank 0 only) ──
@@ -407,6 +461,7 @@ def main():
             avg_loss=avg_loss,
             n_params=n_params,
             sid_cache_dir=args.sid_cache,
+            model_type=model_type,
         )
 
         log(is_main, f"\n{'=' * 60}")

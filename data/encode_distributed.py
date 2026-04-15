@@ -20,7 +20,8 @@ from typing import List
 from transformers import AutoModel, AutoTokenizer
 
 from gr_demo.model.embedders import Qwen3TextEmbedder
-from gr_demo.config import S3_CONTENT_TEXT_EXPOSED, EFS_EMBEDDING_CACHE, DEFAULT_DATE
+from gr_demo.config import S3_CONTENT_TEXT_EXPOSED, EFS_EMBEDDING_CACHE
+from gr_demo.config import DEFAULT_DATE
 
 
 # ============================================================

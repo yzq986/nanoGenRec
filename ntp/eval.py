@@ -19,7 +19,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from gr_demo.metrics.base import BaseMetric, MetricResult
-from gr_demo.ntp.model import NTPProbe, SIDSequenceDataset
+from gr_demo.ntp.baseline import NTPProbe, SIDSequenceDataset
+from gr_demo.ntp.model import NTPModel
 
 
 # ============================================================
@@ -90,7 +91,12 @@ class SemanticIDPredictionMetric(BaseMetric):
             map_location='cpu', weights_only=False,
         )
         probe_config = ckpt['config']
-        probe = NTPProbe(**probe_config).to(device)
+        model_type = probe_config.pop('model_type', 'probe')
+
+        if model_type == 's-tier':
+            probe = NTPModel(**probe_config).to(device)
+        else:
+            probe = NTPProbe(**probe_config).to(device)
         probe.load_state_dict(ckpt['model_state_dict'])
         probe.eval()
 
@@ -101,7 +107,7 @@ class SemanticIDPredictionMetric(BaseMetric):
 
         if verbose:
             mode_str = "parallel (MTP)" if use_parallel else "autoregressive"
-            print(f"  NTPProbe: {n_params / 1e6:.1f}M params, {mode_str}")
+            print(f"  {model_type}: {n_params / 1e6:.1f}M params, {mode_str}")
 
         # ── Load eval data ──
         eval_ckpt = torch.load(

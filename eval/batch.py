@@ -14,7 +14,8 @@ from gr_demo.eval.wrapper import RKMeansModelWrapper
 from gr_demo.eval.behavior import BehaviorMetricsEvaluator
 from gr_demo.eval.compare import load_model_results, generate_comparison_report
 
-from gr_demo.config import S3_RKMEANS_BASE, DEFAULT_DATE
+from gr_demo.config import S3_RKMEANS_BASE
+from gr_demo.config import DEFAULT_DATE
 from gr_demo.data.loaders import resolve_behavior_paths
 
 
