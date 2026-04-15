@@ -7,6 +7,7 @@ Usage:
     python -m gr_demo compare         --eval_dir eval_results
     python -m gr_demo hyperparam      --model qwen3-0.6b --skip_embedding
     python -m gr_demo preprocess-sid  --model qwen3-0.6b --behavior_path auto
+    python -m gr_demo train-ntp      --sid_cache experiments/sid_cache/qwen3-0.6b
     python -m gr_demo pack            --rkmeans_s3_path ... --upload
 """
 
@@ -24,6 +25,7 @@ def main():
         print("  compare     Compare multiple model evaluations")
         print("  hyperparam      Hyperparameter grid search")
         print("  preprocess-sid  Train tokenizer + cache SID assignments")
+        print("  train-ntp       Train NTP probe (supports DDP via torchrun)")
         print("  pack            Pack model.tar.gz for deployment")
         sys.exit(1)
 
@@ -49,12 +51,15 @@ def main():
     elif command == 'preprocess-sid':
         from gr_demo.eval.preprocess_sid import main as preprocess_main
         preprocess_main()
+    elif command == 'train-ntp':
+        from gr_demo.eval.train_ntp import main as train_ntp_main
+        train_ntp_main()
     elif command == 'pack':
         from gr_demo.model.pack import main as pack_main
         pack_main()
     else:
         print(f"Unknown command: {command}")
-        print("Available commands: train, eval, eval-all, compare, hyperparam, preprocess-sid, pack")
+        print("Available commands: train, eval, eval-all, compare, hyperparam, preprocess-sid, train-ntp, pack")
         sys.exit(1)
 
 

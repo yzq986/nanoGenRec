@@ -1,15 +1,16 @@
 """
-Semantic ID Next Token Prediction — Lightweight Probe (RPG-style)
+Semantic ID Next Token Prediction — Eval Only.
 
-2-layer Transformer decoder, ~5M params. Designed as a fast probe to
-evaluate SID quality, NOT as a production model. Following RPG (Meta,
-KDD'25): the simplest model that saturates on good SIDs.
+NTPProbe model definition + eval metric. Training is in eval/train_ntp.py (DDP).
+This file's compute() loads a pre-trained checkpoint and runs beam search + recall.
 
-Design principle: Embedding 质量决定 SID 上限，NTP 模型只是 probe。
-复杂模型见 sid_prediction_old.py (archived).
+Usage:
+    1. Train:  torchrun --nproc_per_node=8 run.py train-ntp --sid_cache ...
+    2. Eval:   python run.py hyperparam --ntp_checkpoint ... --run_ntp
 """
 
-from collections import defaultdict
+import json
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -236,6 +237,7 @@ class SemanticIDPredictionMetric(BaseMetric):
         behavior_data: Optional[Dict] = None,
         content_id_to_idx: Optional[Dict[str, int]] = None,
         content_ids: Optional[np.ndarray] = None,
+        ntp_checkpoint: Optional[str] = None,
         n_items: int = 10,
         batch_size: int = 4096,
         beam_size: int = 5,
@@ -246,69 +248,52 @@ class SemanticIDPredictionMetric(BaseMetric):
         force_autoregressive: bool = False,
         **kwargs
     ) -> MetricResult:
-        self.validate_inputs(embeddings, model, semantic_ids)
+        """Eval-only: load pre-trained probe from checkpoint, run beam search + recall.
 
-        if behavior_data is None or content_id_to_idx is None:
+        Requires ntp_checkpoint pointing to a directory with probe.pt + eval_data.pt
+        (produced by `python run.py train-ntp`).
+        """
+        if ntp_checkpoint is None:
             return MetricResult(
                 name=self.name, value=0.0,
-                details={'error': 'behavior_data or content_id_to_idx not provided'},
+                details={'error': 'ntp_checkpoint not provided. Run `train-ntp` first.'},
                 status='unknown',
             )
 
         device = device if torch.cuda.is_available() else 'cpu'
 
-        # ── Build content_id -> tokens ──
-        content_to_tokens = {}
-        idx_to_cid = {v: k for k, v in content_id_to_idx.items()}
-        for idx, sid in enumerate(semantic_ids):
-            if idx in idx_to_cid:
-                content_to_tokens[idx_to_cid[idx]] = [int(t) for t in sid.split('_')]
+        # ── Load checkpoint ──
+        if verbose:
+            print(f"  Loading checkpoint from {ntp_checkpoint}")
 
-        n_layers = len(next(iter(content_to_tokens.values())))
-        n_clusters = max(max(t) for t in content_to_tokens.values()) + 1
+        ckpt = torch.load(
+            os.path.join(ntp_checkpoint, 'probe.pt'),
+            map_location='cpu', weights_only=False,
+        )
+        probe_config = ckpt['config']
+        probe = NTPProbe(**probe_config).to(device)
+        probe.load_state_dict(ckpt['model_state_dict'])
+        probe.eval()
 
-        # ── Build user sequences ──
-        uids = behavior_data['uid']
-        iids = behavior_data['iid']
-        actions = behavior_data['action_bitmap']
-        timestamps = behavior_data.get('first_ts')
+        n_params = sum(p.numel() for p in probe.parameters())
+        n_layers = probe_config['n_sid_layers']
+        n_clusters = probe_config['n_clusters']
+        use_parallel = probe_config['parallel']
 
-        sid_to_items = defaultdict(set)
-        for cid, tokens in content_to_tokens.items():
-            sid_to_items['_'.join(str(t) for t in tokens)].add(cid)
+        if verbose:
+            mode_str = "parallel (MTP)" if use_parallel else "autoregressive"
+            print(f"  NTPProbe: {n_params / 1e6:.1f}M params, {mode_str}")
 
-        user_items = defaultdict(list)
-        for i in range(len(uids)):
-            uid, iid, action = uids[i], iids[i], actions[i]
-            if action > 0 and iid in content_to_tokens:
-                ts = timestamps[i] if timestamps is not None else i
-                user_items[uid].append((ts, content_to_tokens[iid], iid))
+        # ── Load eval data ──
+        eval_ckpt = torch.load(
+            os.path.join(ntp_checkpoint, 'eval_data.pt'),
+            map_location='cpu', weights_only=False,
+        )
+        eval_data = eval_ckpt['eval_data']
+        eval_cids = eval_ckpt['eval_cids']
+        sid_to_items = eval_ckpt['sid_to_items']
 
-        # Generate samples, time-sorted, 80/20 split
-        all_samples = []
-        for uid, items in user_items.items():
-            if len(items) < n_items + 1:
-                continue
-            items.sort(key=lambda x: x[0])
-            for i in range(len(items) - n_items):
-                input_tokens = []
-                for j in range(n_items):
-                    input_tokens.extend(items[i + j][1])
-                target_tokens = items[i + n_items][1]
-                target_cid = items[i + n_items][2]
-                target_ts = items[i + n_items][0]
-                all_samples.append((input_tokens, target_tokens, target_cid, target_ts))
-
-        if not all_samples:
-            return MetricResult(name=self.name, value=0.0,
-                                details={'error': 'No valid sequences'}, status='unknown')
-
-        all_samples.sort(key=lambda x: x[3])
-        split_idx = int(len(all_samples) * 0.8)
-        train_data = [(s[0], s[1]) for s in all_samples[:split_idx]]
-        eval_data = [(s[0], s[1]) for s in all_samples[split_idx:]]
-        eval_cids = [s[2] for s in all_samples[split_idx:]]
-
+        # Subsample eval if needed
         import random
         if eval_sample_size > 0 and len(eval_data) > eval_sample_size:
             random.seed(42)
@@ -317,70 +302,17 @@ class SemanticIDPredictionMetric(BaseMetric):
             eval_cids = [eval_cids[i] for i in indices]
 
         if verbose:
-            print(f"  Samples: {len(all_samples):,} (train={len(train_data):,}, eval={len(eval_data):,})")
-            print(f"  SID: {n_layers} layers x {n_clusters} clusters")
+            print(f"  Eval samples: {len(eval_data):,}")
 
-        use_parallel = n_layers >= 5 and not force_autoregressive
-
-        # ── Build model ──
-        probe = NTPProbe(
-            n_clusters=n_clusters, n_sid_layers=n_layers, n_items=n_items,
-            embed_dim=256, n_heads=4, n_transformer_layers=2, ffn_dim=512,
-            parallel=use_parallel,
-        ).to(device)
-
-        n_params = sum(p.numel() for p in probe.parameters())
-        if verbose:
-            mode_str = "parallel (MTP)" if use_parallel else "autoregressive"
-            print(f"  NTPProbe: {n_params / 1e6:.1f}M params, {mode_str}")
-
-        # ── Train (1 epoch) ──
-        train_loader = DataLoader(
-            SIDSequenceDataset(train_data), batch_size=batch_size,
-            shuffle=True, num_workers=2, pin_memory=True, drop_last=True,
-        )
-
-        optimizer = torch.optim.AdamW(probe.parameters(), lr=3e-3, weight_decay=0.01)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader))
-        n_batches = len(train_loader)
-
-        probe.train()
-        total_loss = 0
-        for step, (input_batch, target_batch) in enumerate(train_loader):
-            input_batch = input_batch.to(device, non_blocking=True)
-            target_batch = target_batch.to(device, non_blocking=True)
-
-            if use_parallel:
-                logits = probe(input_batch)  # (B, L, C)
-                loss = F.cross_entropy(
-                    logits.reshape(-1, n_clusters), target_batch.reshape(-1)
-                )
-            else:
-                # Teacher-forced: single forward pass for all target positions
-                # input: history(30) + target[:-1](2) → 32 tokens
-                # logits at positions [-3:] predict target[0], target[1], target[2]
-                teacher_input = torch.cat([input_batch, target_batch[:, :-1]], dim=1)
-                logits = probe(teacher_input, return_last_n=n_layers)  # (B, L, C)
-                loss = F.cross_entropy(
-                    logits.reshape(-1, n_clusters), target_batch.reshape(-1)
-                )
-
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(probe.parameters(), 1.0)
-            optimizer.step()
-            scheduler.step()
-            total_loss += loss.item()
-
-            if verbose and (step + 1) % 100 == 0:
-                print(f"    step {step+1}/{n_batches}: loss={total_loss/(step+1):.4f}")
-
-        avg = total_loss / n_batches
-        if verbose:
-            print(f"  Train done: loss={avg:.4f}")
+        # ── Load train meta for reporting ──
+        meta_path = os.path.join(ntp_checkpoint, 'train_meta.json')
+        n_train = 0
+        if os.path.exists(meta_path):
+            with open(meta_path) as f:
+                train_meta = json.load(f)
+            n_train = train_meta.get('n_train', 0)
 
         # ── Eval ──
-        probe.eval()
         eval_loader = DataLoader(
             SIDSequenceDataset(eval_data), batch_size=batch_size,
             shuffle=False, num_workers=2, pin_memory=True,
@@ -478,6 +410,9 @@ class SemanticIDPredictionMetric(BaseMetric):
                 eval_offset += B
                 total_eval += B
 
+                if verbose and eval_offset % (batch_size * 10) == 0:
+                    print(f"    eval {eval_offset:,}/{len(eval_data):,}")
+
         if total_eval == 0:
             return MetricResult(name=self.name, value=0.0,
                                 details={'error': 'No eval samples'}, status='unknown')
@@ -491,9 +426,10 @@ class SemanticIDPredictionMetric(BaseMetric):
             'depth_acc_beam': depth_acc,
             'depth_hit@10': depth_h10,
             'n_eval': total_eval,
-            'n_train': len(train_data),
+            'n_train': n_train,
             'n_params': n_params,
             'mode': 'parallel' if use_parallel else 'autoregressive',
+            'ntp_checkpoint': ntp_checkpoint,
         }
         for k in recall_ks:
             details[f'item_recall@{k}'] = item_recall[k] / total_eval

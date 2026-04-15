@@ -851,6 +851,8 @@ def parse_args():
                         help='Max eval samples for NTP (0=all, default: 50000)')
     parser.add_argument('--sid_cache', type=str, default=None,
                         help='Path to preprocess-sid cache dir (skip tokenizer training)')
+    parser.add_argument('--ntp_checkpoint', type=str, default=None,
+                        help='Path to train-ntp checkpoint dir (probe.pt + eval_data.pt)')
     parser.add_argument('--device', type=str, default='cuda')
 
     return parser.parse_args()
@@ -862,85 +864,87 @@ def run_from_sid_cache(args):
     from gr_demo.eval.wrapper import load_model_wrapper
 
     cache_dir = args.sid_cache
-    print(f"Loading SID cache from {cache_dir}")
-
-    # Load cached artifacts
-    config_path = os.path.join(cache_dir, 'config.json')
-    with open(config_path) as f:
-        cache_config = json.load(f)
-    print(f"  Tokenizer: clusters={cache_config['num_clusters']}, "
-          f"fsq={cache_config['fsq_levels_key']}, "
-          f"items={cache_config['n_items']:,}, "
-          f"collision={cache_config['collision_rate']:.4f}")
-
-    sid_dict = np.load(os.path.join(cache_dir, 'semantic_ids.npy'), allow_pickle=True).item()
-    content_ids = np.array(list(sid_dict.keys()))
-    semantic_ids = [sid_dict[cid] for cid in content_ids]
-    print(f"  Loaded {len(semantic_ids):,} SID assignments")
-
-    model_data = torch.load(os.path.join(cache_dir, 'quantizer.pt'), map_location='cpu', weights_only=False)
-    model_wrapper = load_model_wrapper(model_data, device=args.device)
-
-    # Load embeddings (still needed for evaluator)
-    model_key = args.model
-    _, embedding_dim, _, _ = MODEL_CONFIGS[model_key]
-    embedding_cache_dir = f'{EFS_EMBEDDING_CACHE}/{model_key}'
-    incremental_cache_path = f'{embedding_cache_dir}/incremental_cache.npy'
-    embedding_cache_path = f'{embedding_cache_dir}/embeddings.npy'
-    content_ids_cache_path = f'{embedding_cache_dir}/content_ids.npy'
-
-    if os.path.exists(incremental_cache_path):
-        emb_dict = np.load(incremental_cache_path, allow_pickle=True).item()
-        # Align embeddings to cached content_ids order
-        embeddings = np.array([emb_dict[cid] for cid in content_ids if cid in emb_dict], dtype=np.float32)
-        valid_mask = np.array([cid in emb_dict for cid in content_ids])
-        content_ids = content_ids[valid_mask]
-        semantic_ids = [sid for sid, v in zip(semantic_ids, valid_mask) if v]
-    elif os.path.exists(embedding_cache_path):
-        all_embeddings = np.load(embedding_cache_path, allow_pickle=True)
-        all_cids = np.load(content_ids_cache_path, allow_pickle=True)
-        cid_to_idx = {str(c): i for i, c in enumerate(all_cids)}
-        indices = [cid_to_idx[cid] for cid in content_ids if cid in cid_to_idx]
-        embeddings = all_embeddings[indices]
-    else:
-        raise FileNotFoundError(f"Embedding cache not found at {embedding_cache_dir}")
-
-    eval_tensor = torch.tensor(embeddings, dtype=torch.float32)
-    print(f"  Loaded {len(eval_tensor):,} embeddings")
-
-    # Load behavior data
-    from gr_demo.eval.batch import load_all_behavior_data
-    behavior_data = load_all_behavior_data()
-    print(f"  Behavior data: {len(behavior_data['uid']):,} interactions")
-
-    # Evaluate — sid_cache path: only run NTP, skip all tokenizer metrics
-    evaluator = BehaviorMetricsEvaluator(
-        embeddings=eval_tensor,
-        content_ids=content_ids,
-        semantic_ids=semantic_ids,
-        model=model_wrapper,
-        behavior_data=behavior_data,
-        device=args.device,
-    )
-
     run_ntp = args.run_ntp and not args.skip_ntp
-    sid_kwargs = {}
 
-    if run_ntp:
-        evaluator.register_metrics(['semantic_id_prediction'])
-        sid_kwargs['semantic_id_prediction'] = {
-            'device': args.device,
-            'recall_beam_size': args.recall_beam_size,
-            'eval_sample_size': args.eval_sample_size,
-        }
+    # ── NTP-only fast path: checkpoint has everything, skip heavy loading ──
+    if run_ntp and args.ntp_checkpoint:
+        print(f"NTP eval from checkpoint: {args.ntp_checkpoint}")
+        from gr_demo.metrics.sid_prediction import SemanticIDPredictionMetric
+        metric = SemanticIDPredictionMetric()
+        metric_result = metric.compute(
+            embeddings=None,
+            ntp_checkpoint=args.ntp_checkpoint,
+            device=args.device,
+            recall_beam_size=args.recall_beam_size,
+            eval_sample_size=args.eval_sample_size,
+        )
+        metric_results = {metric_result.name: metric_result}
     else:
-        # If not running NTP from cache, still provide basic metrics
+        # Full path: load SID cache + embeddings + behavior for tokenizer metrics
+        print(f"Loading SID cache from {cache_dir}")
+
+        config_path = os.path.join(cache_dir, 'config.json')
+        with open(config_path) as f:
+            cache_config = json.load(f)
+        print(f"  Tokenizer: clusters={cache_config['num_clusters']}, "
+              f"fsq={cache_config['fsq_levels_key']}, "
+              f"items={cache_config['n_items']:,}, "
+              f"collision={cache_config['collision_rate']:.4f}")
+
+        sid_dict = np.load(os.path.join(cache_dir, 'semantic_ids.npy'), allow_pickle=True).item()
+        content_ids = np.array(list(sid_dict.keys()))
+        semantic_ids = [sid_dict[cid] for cid in content_ids]
+        print(f"  Loaded {len(semantic_ids):,} SID assignments")
+
+        model_data = torch.load(os.path.join(cache_dir, 'quantizer.pt'), map_location='cpu', weights_only=False)
+        model_wrapper = load_model_wrapper(model_data, device=args.device)
+
+        # Load embeddings
+        model_key = args.model
+        _, embedding_dim, _, _ = MODEL_CONFIGS[model_key]
+        embedding_cache_dir = f'{EFS_EMBEDDING_CACHE}/{model_key}'
+        incremental_cache_path = f'{embedding_cache_dir}/incremental_cache.npy'
+        embedding_cache_path = f'{embedding_cache_dir}/embeddings.npy'
+        content_ids_cache_path = f'{embedding_cache_dir}/content_ids.npy'
+
+        if os.path.exists(incremental_cache_path):
+            emb_dict = np.load(incremental_cache_path, allow_pickle=True).item()
+            embeddings = np.array([emb_dict[cid] for cid in content_ids if cid in emb_dict], dtype=np.float32)
+            valid_mask = np.array([cid in emb_dict for cid in content_ids])
+            content_ids = content_ids[valid_mask]
+            semantic_ids = [sid for sid, v in zip(semantic_ids, valid_mask) if v]
+        elif os.path.exists(embedding_cache_path):
+            all_embeddings = np.load(embedding_cache_path, allow_pickle=True)
+            all_cids = np.load(content_ids_cache_path, allow_pickle=True)
+            cid_to_idx = {str(c): i for i, c in enumerate(all_cids)}
+            indices = [cid_to_idx[cid] for cid in content_ids if cid in cid_to_idx]
+            embeddings = all_embeddings[indices]
+        else:
+            raise FileNotFoundError(f"Embedding cache not found at {embedding_cache_dir}")
+
+        eval_tensor = torch.tensor(embeddings, dtype=torch.float32)
+        print(f"  Loaded {len(eval_tensor):,} embeddings")
+
+        # Load behavior data
+        from gr_demo.eval.batch import load_all_behavior_data
+        behavior_data = load_all_behavior_data()
+        print(f"  Behavior data: {len(behavior_data['uid']):,} interactions")
+
+        evaluator = BehaviorMetricsEvaluator(
+            embeddings=eval_tensor,
+            content_ids=content_ids,
+            semantic_ids=semantic_ids,
+            model=model_wrapper,
+            behavior_data=behavior_data,
+            device=args.device,
+        )
+
         if not args.only_sid:
             evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
         evaluator.register_metrics(['embedding_hit_rate'])
         evaluator.register_metrics(['semantic_neighbor_hit_rate'])
 
-    metric_results = evaluator.evaluate(metric_kwargs=sid_kwargs)
+        metric_results = evaluator.evaluate(metric_kwargs={})
 
     # Output results
     exp_name = args.name or 'sid-cache'
