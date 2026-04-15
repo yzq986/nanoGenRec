@@ -119,7 +119,11 @@ push_main() {
         fi
         # Restore stashed changes even on error
         if [ "$STASHED" = true ]; then
-            git stash pop --quiet 2>/dev/null || echo "  Warning: stash pop failed, check 'git stash list'"
+            if ! git stash pop --quiet 2>/dev/null; then
+                echo "  ERROR: stash pop failed (conflict?)."
+                echo "  Your changes are safe in 'git stash list'. Run 'git stash pop' manually."
+                echo "  DO NOT run 'git stash drop' until you've recovered your changes!"
+            fi
             STASHED=false
         fi
     }
@@ -150,9 +154,12 @@ push_main() {
     if [ "$REBASE_OK" = false ]; then
         echo "  Warning: rebase failed, aborting..."
         git rebase --abort --quiet 2>/dev/null || true
+        # Fall back to pushing original branch without author rewrite
+        echo "  Falling back: pushing original commits to company (no author rewrite)..."
+        git push company "$BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: fallback push to company failed"
+    else
+        git push company "$TEMP_BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: push to company failed"
     fi
-
-    git push company "$TEMP_BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: push to company failed"
 
     # Cleanup — always return to original branch and restore stash
     trap - INT TERM
