@@ -101,13 +101,18 @@ class NTPProbe(nn.Module):
             self.output_proj = nn.Linear(embed_dim, n_clusters)
 
     def forward(self, input_tokens: torch.Tensor,
-                generated_tokens: Optional[torch.Tensor] = None) -> torch.Tensor:
+                generated_tokens: Optional[torch.Tensor] = None,
+                return_last_n: int = 1) -> torch.Tensor:
         """
         Args:
             input_tokens: (B, seq_len) history SID tokens
             generated_tokens: (B, k) already-generated target tokens (AR mode only)
+            return_last_n: number of trailing positions to return logits for.
+                           1 = last position only (inference), n_sid_layers = teacher-forced training.
         Returns:
-            logits: (B, n_clusters) for AR mode, or (B, n_sid_layers, n_clusters) for parallel
+            logits: (B, n_clusters) if return_last_n=1,
+                    (B, return_last_n, n_clusters) if return_last_n>1,
+                    or (B, n_sid_layers, n_clusters) for parallel mode.
         """
         B = input_tokens.size(0)
         device = input_tokens.device
@@ -142,7 +147,10 @@ class NTPProbe(nn.Module):
             causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
             out = self.decoder(x, x, tgt_mask=causal_mask)
 
-            logits = self.output_proj(out[:, -1, :])  # (B, n_clusters)
+            if return_last_n == 1:
+                logits = self.output_proj(out[:, -1, :])  # (B, C)
+            else:
+                logits = self.output_proj(out[:, -return_last_n:, :])  # (B, N, C)
             return logits
 
     @torch.no_grad()
@@ -326,58 +334,50 @@ class SemanticIDPredictionMetric(BaseMetric):
             mode_str = "parallel (MTP)" if use_parallel else "autoregressive"
             print(f"  NTPProbe: {n_params / 1e6:.1f}M params, {mode_str}")
 
-        # ── Train ──
-        # Cap training samples to avoid extremely long training
-        import random as _rand
-        max_train_samples = 2_000_000
-        if len(train_data) > max_train_samples:
-            if verbose:
-                print(f"  Capping training data: {len(train_data):,} → {max_train_samples:,}")
-            _rand.seed(42)
-            train_data = _rand.sample(train_data, max_train_samples)
-
+        # ── Train (1 epoch) ──
         train_loader = DataLoader(
             SIDSequenceDataset(train_data), batch_size=batch_size,
             shuffle=True, num_workers=2, pin_memory=True, drop_last=True,
         )
 
         optimizer = torch.optim.AdamW(probe.parameters(), lr=3e-3, weight_decay=0.01)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader) * 3)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader))
         n_batches = len(train_loader)
 
         probe.train()
-        for epoch in range(3):
-            total_loss = 0
-            for step, (input_batch, target_batch) in enumerate(train_loader):
-                input_batch = input_batch.to(device, non_blocking=True)
-                target_batch = target_batch.to(device, non_blocking=True)
+        total_loss = 0
+        for step, (input_batch, target_batch) in enumerate(train_loader):
+            input_batch = input_batch.to(device, non_blocking=True)
+            target_batch = target_batch.to(device, non_blocking=True)
 
-                if use_parallel:
-                    logits = probe(input_batch)  # (B, L, C)
-                    loss = F.cross_entropy(
-                        logits.reshape(-1, n_clusters), target_batch.reshape(-1)
-                    )
-                else:
-                    loss = 0.0
-                    for i in range(n_layers):
-                        gen = target_batch[:, :i] if i > 0 else None
-                        logits = probe(input_batch, gen)
-                        loss = loss + F.cross_entropy(logits, target_batch[:, i])
-                    loss = loss / n_layers
+            if use_parallel:
+                logits = probe(input_batch)  # (B, L, C)
+                loss = F.cross_entropy(
+                    logits.reshape(-1, n_clusters), target_batch.reshape(-1)
+                )
+            else:
+                # Teacher-forced: single forward pass for all target positions
+                # input: history(30) + target[:-1](2) → 32 tokens
+                # logits at positions [-3:] predict target[0], target[1], target[2]
+                teacher_input = torch.cat([input_batch, target_batch[:, :-1]], dim=1)
+                logits = probe(teacher_input, return_last_n=n_layers)  # (B, L, C)
+                loss = F.cross_entropy(
+                    logits.reshape(-1, n_clusters), target_batch.reshape(-1)
+                )
 
-                optimizer.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(probe.parameters(), 1.0)
-                optimizer.step()
-                scheduler.step()
-                total_loss += loss.item()
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(probe.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
+            total_loss += loss.item()
 
-                if verbose and (step + 1) % 100 == 0:
-                    print(f"    Epoch {epoch+1}/3 step {step+1}/{n_batches}: loss={total_loss/(step+1):.4f}")
+            if verbose and (step + 1) % 100 == 0:
+                print(f"    step {step+1}/{n_batches}: loss={total_loss/(step+1):.4f}")
 
-            avg = total_loss / n_batches
-            if verbose:
-                print(f"  Epoch {epoch+1}/3: loss={avg:.4f}")
+        avg = total_loss / n_batches
+        if verbose:
+            print(f"  Train done: loss={avg:.4f}")
 
         # ── Eval ──
         probe.eval()
@@ -428,18 +428,21 @@ class SemanticIDPredictionMetric(BaseMetric):
                             if target_cid in set(candidates[:k]):
                                 item_recall[k] += 1
                 else:
-                    # AR eval: teacher-forced loss + hit@10
-                    loss = 0.0
+                    # AR eval: teacher-forced loss + hit@10 (single forward)
+                    teacher_input = torch.cat([input_batch, target_batch[:, :-1]], dim=1)
+                    logits = probe(teacher_input, return_last_n=n_layers)  # (B, L, C)
+                    loss = F.cross_entropy(
+                        logits.reshape(-1, n_clusters), target_batch.reshape(-1)
+                    )
+                    eval_losses.append(loss.item() * B)
+
+                    # Per-layer hit@10 (cumulative prefix)
                     prefix_hit_10 = torch.ones(B, dtype=torch.bool, device=device)
                     for i in range(n_layers):
-                        gen = target_batch[:, :i] if i > 0 else None
-                        logits = probe(input_batch, gen)
-                        loss = loss + F.cross_entropy(logits, target_batch[:, i])
-                        top10 = logits.topk(10, dim=-1).indices
+                        top10 = logits[:, i, :].topk(10, dim=-1).indices
                         hit = (top10 == target_batch[:, i:i+1]).any(dim=-1)
                         prefix_hit_10 = prefix_hit_10 & hit
                         depth_hit_10[i] += prefix_hit_10.sum().item()
-                    eval_losses.append(loss.item() * B)
 
                     # Beam search for recall
                     actual_beam = max(beam_size, recall_beam_size)
@@ -480,7 +483,7 @@ class SemanticIDPredictionMetric(BaseMetric):
                                 details={'error': 'No eval samples'}, status='unknown')
 
         avg_loss = sum(eval_losses) / total_eval
-        ppl = np.exp(avg_loss / n_layers) if not use_parallel else np.exp(avg_loss)
+        ppl = np.exp(avg_loss)
         depth_acc = [c / total_eval for c in depth_correct]
         depth_h10 = [h / total_eval for h in depth_hit_10]
 

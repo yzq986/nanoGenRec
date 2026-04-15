@@ -435,6 +435,46 @@ Reference vector + dot-product rating 机制还能防止 **codebook collapse** (
 
 ---
 
+## IDEA-unirec-1: Capacity-Constrained SID (Exposure-Weighted RQ Penalties)
+
+**优先级**: P2 (NTP 后)
+**来源**: UniRec (Alibaba, arxiv 2025, KDD 2025)
+**状态**: 待定，降级
+
+> **降级原因 (2026-04-15)**: MLP-FSQ 已确认为 tokenizer 赢家。Capacity constraint 主要解决 token collapse（少数 codebook entry 垄断大量 item），与 IDEA-sid-2 (Balanced KMeans) 目标一致，可合并评估。等 NTP 端到端 Recall@K 出来后再决定。
+
+### 核心思想
+
+UniRec 在 RQ tokenizer 训练中发现严重的 **token collapse** 问题：部分 codebook entry 被过度分配（高曝光 item 主导聚类中心），导致长尾 item 的 SID 表示质量差。提出 **Capacity-Constrained SID Learning**:
+
+1. **Exposure-Weighted Assignment Penalty**: 对已分配大量高曝光 item 的 codebook entry 施加惩罚，迫使 tokenizer 更均匀地使用码本
+2. **Residual Capacity Tracking**: 每个 codebook entry 维护一个 capacity 计数器，超过阈值后 assignment cost 线性增加
+3. **两阶段训练**: 先标准 RQ 训练收敛，再加 capacity constraint fine-tune
+
+效果: 码本利用率从 ~60% 提升到 ~95%，长尾 item 的 SID 区分度显著改善。
+
+### 与当前项目的关联
+
+- 当前 MLP-FSQ 的前两层 KMeans Gini=0.31，存在码本不均匀问题
+- Capacity constraint 与 Balanced KMeans (IDEA-sid-2) 目标一致但方法不同：sid-2 在聚类时强制均衡，unirec-1 在 loss 中施加软约束
+- 实现成本低：在 RQ 训练的 assignment 步骤中加 penalty term
+- 与 IDEA-quasid-0 (Hamming Repulsion) 互补：quasid-0 处理有害碰撞，unirec-1 处理码本利用率
+
+### 实验设计草案
+
+**与 IDEA-sid-2 合并评估**:
+- Balanced KMeans (硬约束) vs Capacity Penalty (软约束) vs 两者结合
+- 评估: codebook utilization (Gini), collision_rate, semantic_neighbor_HR
+- 在 MLP-FSQ 架构上验证：对前两层 KMeans 施加 capacity constraint
+
+### 关键问题
+
+1. MLP-FSQ 的第三层 FSQ 天然均匀分布，constraint 主要针对前两层 KMeans
+2. 与 Balanced KMeans 的冗余：两者都解决码本利用率，可能只需选一个
+3. Exposure weighting 需要曝光数据，当前 item metadata 是否包含曝光量
+
+---
+
 ## 优先级总结
 
 | 优先级 | ID | 方向 | 状态 |
@@ -447,3 +487,4 @@ Reference vector + dot-product rating 机制还能防止 **codebook collapse** (
 | P2 | IDEA-quasid-0 | Hamming Repulsion | 待定，NTP 后 (需先确认有害碰撞占比) |
 | P2 | IDEA-pit-0 | Co-gen Tokenizer | 待定，NTP 后 (前置: NTP baseline) |
 | P2 | IDEA-r3vae-0 | Reference Vector SID | 待定，NTP 后 (主要价值在评估指标) |
+| P2 | IDEA-unirec-1 | Capacity-Constrained SID | 待定，NTP 后 (与 sid-2 合并评估) |

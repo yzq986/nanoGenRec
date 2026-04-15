@@ -188,6 +188,75 @@ EARN 发现 LLM-based 推荐模型的注意力模式有独特特征:
 
 ---
 
+## IDEA-promise-0: Process Reward Model + Test-Time Scaling for GR
+
+**优先级**: P1
+**来源**: PROMISE (Kuaishou, arxiv 2601.04674, Jan 2026)
+**状态**: 活跃
+
+### 核心思想
+
+PROMISE 识别了 **Semantic Drift** 问题: 层级 SID 生成中，早期高层 token 的错误会不可逆地将生成轨迹引入无关语义子空间。
+
+解决方案:
+1. **轻量 PRM (Process Reward Model)**: 评估每个中间推理步骤的质量 (而非仅看最终结果的 ORM)
+2. **PRM-guided Beam Search**: 用 PRM 的稠密反馈动态剪枝错误分支 (不只依赖 token probability)
+3. **Test-Time Scaling Laws**: 增加推理计算可以让小模型 match 甚至超越大模型
+
+核心洞察: **在 GR 中复现了 LLM reasoning 的 test-time scaling 规律** — 推理阶段投入更多计算 (更多 beam + PRM 评分) 可以弥补模型容量不足。
+
+快手大规模平台在线 A/B 验证: 显著提升推荐准确率，同时保持部署效率。
+
+### 与当前项目的关联
+
+- 当前 beam search 仅用 token probability 排序 → PRM 可以提供更好的中间步骤质量评估
+- 与 IDEA-gr4ad-4 (Dynamic Beam Search) 互补: gr4ad-4 优化 beam 效率，promise-0 优化 beam 质量
+- Test-time scaling 启示: 当前 39.5M 小模型 + PRM 可能超越未来更大模型的基础 beam search
+- PRM 训练需要: step-level 标注数据 (可用 Monte Carlo rollout 自动构造)
+
+### 关键问题
+
+1. PRM 训练数据构造: step-level 标注成本高 → 需要 Monte Carlo 自动方案
+2. PRM 推理开销: 每个 beam candidate 每步都需 PRM 评分 → 延迟 tradeoff
+3. 前置依赖 NTP baseline (需要先有可用的 beam search 基础)
+
+---
+
+## IDEA-grc-0: Generation-Reflection-Correction Decoding
+
+**优先级**: P1
+**来源**: GRC (Alibaba, arxiv 2602.23639, Feb 2026)
+**状态**: 活跃
+
+### 核心思想
+
+GRC 将标准的单次解码扩展为三阶段 **Generation-Reflection-Correction** 流程:
+
+1. **Generation**: 标准自回归生成初始 SID 序列 (draft)
+2. **Reflection**: 多粒度反思 — 模型审视已生成序列的质量
+3. **Correction**: 基于反思结果修正生成轨迹
+
+关键优化:
+- **GRPO-based RL**: 在整个 GRC 轨迹上做 GRPO 优化, reward 结合 token-level 和 trajectory-level 信号
+- **Entropy-Guided Reflection Scheduling (EGRS)**: serving 时动态分配 reflection 预算 — 高不确定性轨迹多反思, 低不确定性直接输出
+
+阿里大规模工业推荐: **广告收入 +1.79%**, latency 开销可控 (EGRS 只对不确定的 beam 做 reflect)。
+
+### 与当前项目的关联
+
+- 类似 LLM 的 self-reflection/self-correction 但在 SID token 空间操作
+- 与 IDEA-s2gr-0 (Stepwise Reasoning) 互补: s2gr 在每步生成前"思考", GRC 在整体生成后"反思修正"
+- 与 IDEA-promise-0 (PRM) 也互补: PRM 评估步骤质量, GRC 允许修正
+- EGRS 是关键: 不是所有 beam 都做反思, 只对高 entropy 的做 → 控制延迟
+
+### 关键问题
+
+1. 训练数据构造: (draft, reflection, corrected) 三元组的自动生成策略
+2. 序列长度膨胀: GRC 增加 ~2x tokens → 需要 EGRS 控制
+3. 前置: NTP baseline + GRPO 基础设施 (IDEA-onemall-2)
+
+---
+
 ## 优先级总结
 
 | 优先级 | ID | 实验 | 原因 |
@@ -195,4 +264,6 @@ EARN 发现 LLM-based 推荐模型的注意力模式有独特特征:
 | P1 | IDEA-gr4ad-4 | Dynamic Beam Search | 生产 beam=512 时必需；可与 IDEA-gr4ad-0 配套 |
 | P1 | IDEA-static-0 | CSR 约束解码 | YouTube 开源验证，OPQ 长 ID 下价值极大 |
 | P1 | IDEA-earn-0 | Register Token 压缩 | 3.79x speedup, 与 LazyAR 互补, KDD 2025 |
+| P1 | IDEA-promise-0 | PRM-guided Beam Search | 快手在线验证, test-time scaling 解锁小模型潜力 |
+| P1 | IDEA-grc-0 | Generation-Reflection-Correction | 阿里 +1.79% revenue, EGRS 控制延迟, 与 GRPO 协同 |
 | P2 | IDEA-flame-0 | GR Serving 系统 | 生产部署参考，当前阶段优先级低 |
