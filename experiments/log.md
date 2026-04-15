@@ -124,9 +124,9 @@ EXP-007 + EXP-009 两轮实验证明: **I2I contrastive fine-tune (无论全量/
 
 ## EXP-008: FORGE Proxy 对比 — MLP-FSQ vs OPQ 最优解
 
-**Date**: 2026-04-14
-**Status**: planned
-**Results**: TBD
+**Date**: 2026-04-14 ~ 2026-04-15
+**Status**: completed
+**Results**: [./hyperparam/2026-04-15_exp008-mlpfsq-h64/](./hyperparam/2026-04-15_exp008-mlpfsq-h64/), [./hyperparam/2026-04-15_exp008-opq-m4/](./hyperparam/2026-04-15_exp008-opq-m4/), [./hyperparam/2026-04-15_exp008-opq-m8/](./hyperparam/2026-04-15_exp008-opq-m8/)
 
 ### Background
 
@@ -160,13 +160,47 @@ EXP-003 最优 (MLP-FSQ h=64, collision=0.041) 和 EXP-004 最优 (OPQ 8×256, c
 `bash experiments/scripts/exp-008.sh`
 
 ### Results
-TBD
+
+数据: 554,754 exposed items (从 5,162,650 总 embedding 中过滤), 行为数据 7 天 (03-24 ~ 03-30)
+
+| Config | Tokenizer | Tokens | Bits | collision | recon_loss | embedding_HR | **semantic_neighbor_HR** | 训练时间 |
+|--------|-----------|--------|------|-----------|------------|-------------|------------------------|---------|
+| **A** | **MLP-FSQ h=64** | **3** | **32** | **0.1074** | **0.3668** | **0.0047** | **0.0780** | 106s |
+| B | OPQ 4×256 | 4 | 32 | 0.0351 | 0.3760 | 0.0047 | 0.0502 | 73s |
+| C | OPQ 8×256 | 8 | 64 | 0.0006 | 0.3408 | 0.0043 | 0.0326 | 99s |
 
 ### Analysis
-TBD
+
+**结果与 hypothesis 完全相反 — MLP-FSQ 大幅领先 OPQ:**
+
+**1. Hypothesis 验证:**
+- ❌ H1: OPQ 8×256 的 semantic_neighbor_HR (0.033) **远低于** MLP-FSQ (0.078)，collision 低 180 倍却输了 58%
+- ✅ H2: embedding_HR 三组几乎相同 (~0.0047)，符合预期
+- ❌ H3: OPQ 4×256 (0.050) 介于两者之间，但方向反了——不是 MLP-FSQ < OPQ 4×256 < OPQ 8×256，而是 MLP-FSQ > OPQ 4×256 > OPQ 8×256
+
+**2. collision 越低 ≠ 行为质量越好:**
+- OPQ 8×256 追求极低 collision (0.06%)，将 embedding 空间切成 ~553K 个几乎不重叠的 bin
+- 但过度细分破坏了语义邻域结构——SID 前缀相近的 item 不再是行为上的邻居
+- MLP-FSQ 的 collision 10.7% 看似"差"，但保留了层级聚集结构，SID 前缀邻居的行为共现率反而更高
+
+**3. 层级结构 > 扁平结构:**
+- MLP-FSQ: 3 层层级 (KMeans → KMeans → FSQ)，每层逐步细化，前缀天然编码粗到细的语义聚类
+- OPQ: 8 个并行子向量独立量化，token 间无层级关系，前缀邻居不具有语义含义
+
+**4. 等 bits 对照 (32 bits):**
+- MLP-FSQ (0.078) vs OPQ 4×256 (0.050)，MLP-FSQ 赢 56%
+- 相同信息量下，层级残差编码的 SID 前缀邻域比并行 PQ 的前缀邻域更有行为意义
+
+**5. 注意: MLP-FSQ 不使用行为数据训练:**
+- MLP 仅优化残差重建 loss (||residual - Decoder(FSQ(Encoder(residual)))||²)，纯无监督
+- 行为质量的优势完全来自层级结构对 embedding 邻域的保持，而非学习行为信号
 
 ### Next Steps
-TBD
+
+**MLP-FSQ h=64 确认为 tokenizer 路线赢家**，进入 NTP 阶段:
+1. 用 MLP-FSQ 生成全量 SID，训练 NTP 预测模型
+2. 端到端评估 Recall@K
+3. 考虑是否需要更大的 FSQ codebook (当前 4096) 或更多 KMeans 层
 
 ---
 
