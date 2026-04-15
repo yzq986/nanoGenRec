@@ -4,14 +4,14 @@
     "metrics": {
       "reconstruction_loss": 0.3668,
       "reconstruction_loss_depth": [
-        0.4135,
-        0.3737,
+        0.4126,
+        0.3716,
         0.3668
       ],
       "codebook_utilization": 0.0001,
       "codebook_utilization_depth": [
         1.0,
-        0.1497,
+        0.1506,
         0.0001
       ],
       "codebook_utilization_depth_stats": [
@@ -23,177 +23,177 @@
         },
         {
           "depth": 2,
-          "n_unique": 156967,
+          "n_unique": 157906,
           "theoretical_space": 1048576,
-          "utilization": 0.14969539642333984
+          "utilization": 0.1505908966064453
         },
         {
           "depth": 3,
-          "n_unique": 468339,
-          "theoretical_space": 4093640704,
-          "utilization": 0.00011440647430107242
+          "n_unique": 426946,
+          "theoretical_space": 3888119808,
+          "utilization": 0.00010980783028381414
         }
       ],
-      "codebook_utilization_space_utilization": 0.00011440647430107242,
-      "entropy": 0.981,
+      "codebook_utilization_space_utilization": 0.00010980783028381414,
+      "entropy": 0.9854,
       "entropy_depth": [
-        0.9735,
-        0.8334,
-        0.5862
+        0.9739,
+        0.8352,
+        0.5844
       ],
       "entropy_depth_stats": [
         {
           "depth": 1,
-          "entropy": 9.735,
+          "entropy": 9.7389,
           "max_entropy": 10.0,
-          "normalized": 0.9735,
+          "normalized": 0.9739,
           "n_unique_prefix": 1024
         },
         {
           "depth": 2,
-          "entropy": 16.6679,
+          "entropy": 16.7048,
           "max_entropy": 20.0,
-          "normalized": 0.8334,
-          "n_unique_prefix": 156967
+          "normalized": 0.8352,
+          "n_unique_prefix": 157906
         },
         {
           "depth": 3,
-          "entropy": 18.718,
-          "max_entropy": 31.9307,
-          "normalized": 0.5862,
-          "n_unique_prefix": 468339
+          "entropy": 18.6174,
+          "max_entropy": 31.8564,
+          "normalized": 0.5844,
+          "n_unique_prefix": 426946
         }
       ],
-      "cosine_similarity": 0.0889,
-      "effective_dimension": 0.6562,
-      "semantic_id_collision": 0.1301,
+      "cosine_similarity": 0.0895,
+      "effective_dimension": 0.6553,
+      "semantic_id_collision": 0.1074,
       "semantic_id_collision_depth": [
-        0.9982,
-        0.7171,
-        0.1558
+        0.9979,
+        0.6756,
+        0.1229
       ],
       "semantic_id_collision_prefix_stats": [
         {
           "depth": 1,
           "n_unique_prefix": 1024,
-          "collision_rate": 0.9982,
-          "conflict_rate": 0.9824,
+          "collision_rate": 0.9979,
+          "conflict_rate": 0.9883,
           "exclusivity": 0.0,
-          "avg_items": 541.75,
+          "avg_items": 475.36,
           "min": 1,
-          "max": 1541,
-          "p50": 539,
-          "p90": 929,
-          "p99": 1291,
-          "le_1": 18,
-          "le_2": 31,
+          "max": 1391,
+          "p50": 475,
+          "p90": 799,
+          "p99": 1092,
+          "le_1": 12,
+          "le_2": 26,
           "le_5": 54,
           "le_10": 63,
-          "le_50": 75,
-          "le_100": 86,
-          "le_500": 441,
-          "gt_500": 583
+          "le_50": 79,
+          "le_100": 92,
+          "le_500": 552,
+          "gt_500": 472
         },
         {
           "depth": 2,
-          "n_unique_prefix": 156967,
-          "collision_rate": 0.7171,
-          "conflict_rate": 0.6432,
-          "exclusivity": 0.101,
-          "avg_items": 3.53,
+          "n_unique_prefix": 157906,
+          "collision_rate": 0.6756,
+          "conflict_rate": 0.5993,
+          "exclusivity": 0.13,
+          "avg_items": 3.08,
           "min": 1,
-          "max": 176,
+          "max": 122,
           "p50": 2,
-          "p90": 8,
-          "p99": 19,
-          "le_1": 56008,
-          "le_2": 86572,
-          "le_5": 128922,
-          "le_10": 148896,
-          "le_50": 156916,
-          "le_100": 156963,
-          "le_500": 156967,
+          "p90": 7,
+          "p99": 17,
+          "le_1": 63280,
+          "le_2": 95702,
+          "le_5": 136136,
+          "le_10": 152308,
+          "le_50": 157879,
+          "le_100": 157904,
+          "le_500": 157906,
           "gt_500": 0
         },
         {
           "depth": 3,
-          "n_unique_prefix": 468339,
-          "collision_rate": 0.1558,
-          "conflict_rate": 0.1301,
-          "exclusivity": 0.7344,
-          "avg_items": 1.18,
+          "n_unique_prefix": 426946,
+          "collision_rate": 0.1229,
+          "conflict_rate": 0.1074,
+          "exclusivity": 0.7829,
+          "avg_items": 1.14,
           "min": 1,
-          "max": 38,
+          "max": 36,
           "p50": 1,
           "p90": 2,
-          "p99": 4,
-          "le_1": 407422,
-          "le_2": 453360,
-          "le_5": 467284,
-          "le_10": 468221,
-          "le_50": 468339,
-          "le_100": 468339,
-          "le_500": 468339,
+          "p99": 3,
+          "le_1": 381072,
+          "le_2": 417808,
+          "le_5": 426518,
+          "le_10": 426908,
+          "le_50": 426946,
+          "le_100": 426946,
+          "le_500": 426946,
           "gt_500": 0
         }
       ],
       "semantic_id_collision_prefix_avg_items": [
-        541.75,
-        3.53,
-        1.18
+        475.36,
+        3.08,
+        1.14
       ],
-      "cluster_balance": 0.1405,
+      "cluster_balance": 0.1123,
       "cluster_balance_depth": [
-        0.3157,
-        0.4747,
-        0.1405
+        0.3117,
+        0.4588,
+        0.1123
       ],
       "cluster_balance_depth_stats": [
         {
           "depth": 1,
-          "gini": 0.3157,
-          "cv": 0.5582,
+          "gini": 0.3117,
+          "cv": 0.5502,
           "n_unique_prefix": 1024,
           "min_count": 1.0,
-          "max_count": 1541.0,
-          "mean_count": 541.75
+          "max_count": 1391.0,
+          "mean_count": 475.36
         },
         {
           "depth": 2,
-          "gini": 0.4747,
-          "cv": 1.1342,
-          "n_unique_prefix": 156967,
+          "gini": 0.4588,
+          "cv": 1.1156,
+          "n_unique_prefix": 157906,
           "min_count": 1.0,
-          "max_count": 176.0,
-          "mean_count": 3.53
+          "max_count": 122.0,
+          "mean_count": 3.08
         },
         {
           "depth": 3,
-          "gini": 0.1405,
-          "cv": 0.5216,
-          "n_unique_prefix": 468339,
+          "gini": 0.1123,
+          "cv": 0.4264,
+          "n_unique_prefix": 426946,
           "min_count": 1.0,
-          "max_count": 38.0,
-          "mean_count": 1.18
+          "max_count": 36.0,
+          "mean_count": 1.14
         }
       ],
-      "embedding_hit_rate": 0.0042,
-      "semantic_neighbor_hit_rate": 0.0738,
-      "space_utilization": 0.00011440647430107242,
+      "embedding_hit_rate": 0.0047,
+      "semantic_neighbor_hit_rate": 0.078,
+      "space_utilization": 0.00010980783028381414,
       "depth_codebook_util": [
         1.0,
-        0.14969539642333984,
-        0.00011440647430107242
+        0.1505908966064453,
+        0.00010980783028381414
       ],
       "depth_unique_prefixes": [
         1024,
-        156967,
-        468339
+        157906,
+        426946
       ],
       "prefix_avg_items": [
-        541.75,
-        3.53,
-        1.18
+        475.36,
+        3.08,
+        1.14
       ],
       "quantizer_type": "rkmeans_fsq",
       "fsq_levels_key": "6d_4096",
@@ -202,7 +202,7 @@
       "fsq_mlp_hidden": 64,
       "fsq_epochs": 50
     },
-    "train_time": 113.97104740142822,
+    "train_time": 105.80576658248901,
     "num_clusters": 1024,
     "niter": 25,
     "nredo": 3,
