@@ -815,6 +815,11 @@ def run_from_sid_cache(args):
     cache_dir = args.sid_cache
     run_ntp = args.run_ntp and not args.skip_ntp
 
+    # Load cache config (needed for result metadata in both paths)
+    config_path = os.path.join(cache_dir, 'config.json')
+    with open(config_path) as f:
+        cache_config = json.load(f)
+
     # ── NTP-only fast path: checkpoint has everything, skip heavy loading ──
     if run_ntp and args.ntp_checkpoint:
         print(f"NTP eval from checkpoint: {args.ntp_checkpoint}")
@@ -831,10 +836,6 @@ def run_from_sid_cache(args):
     else:
         # Full path: load SID cache + embeddings + behavior for tokenizer metrics
         print(f"Loading SID cache from {cache_dir}")
-
-        config_path = os.path.join(cache_dir, 'config.json')
-        with open(config_path) as f:
-            cache_config = json.load(f)
         print(f"  Tokenizer: clusters={cache_config['num_clusters']}, "
               f"fsq={cache_config['fsq_levels_key']}, "
               f"items={cache_config['n_items']:,}, "
