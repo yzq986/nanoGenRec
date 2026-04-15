@@ -10,7 +10,7 @@
 set -euo pipefail
 
 # ── Config ──
-NAME="exp011-H-4096x3-12d-binary"
+NAME="exp011-H-4096x3-12d-binary-30d"
 N_GPUS="${N_GPUS:-$(python -c 'import torch; print(max(1, torch.cuda.device_count()))')}"
 
 SID_CACHE="experiments/sid_cache/${NAME}"
@@ -65,7 +65,7 @@ python run.py hyperparam \
     --sid_cache "${SID_CACHE}" \
     --ntp_checkpoint "${NTP_CKPT}" \
     --run_ntp \
-    --recall_beam_size 50 \
+    --recall_beam_size 500 \
     --eval_sample_size 50000 \
     --name "${NAME}"
 
