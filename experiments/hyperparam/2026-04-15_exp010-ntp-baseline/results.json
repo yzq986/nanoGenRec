@@ -1,0 +1,18 @@
+[
+  {
+    "quantizer_type": "rkmeans_fsq",
+    "sid_cache": "experiments/sid_cache/qwen3-0.6b",
+    "metrics": {
+      "semantic_id_prediction": 5.3438,
+      "semantic_id_prediction_depth": [
+        0.0067,
+        0.0001,
+        0.0001
+      ]
+    },
+    "num_clusters": 1024,
+    "fsq_levels_key": "6d_4096",
+    "n_items": 554281,
+    "collision_rate": 0.052033
+  }
+]
