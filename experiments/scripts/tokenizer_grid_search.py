@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""EXP-012: Tokenizer Grid Search — KMeans cluster × FSQ type × OPQ control.
+"""Tokenizer Grid Search — KMeans cluster × FSQ type × OPQ control.
 
-Grid: 4 cluster sizes (1024/2048/4096/8192) × 2 FSQ types (binary/multi) + 4 OPQ
-Total: 12 configs, only 4 KMeans trainings (cached per cluster size).
+Searches over cluster sizes × FSQ types (binary/multi-level) + OPQ controls.
+Caches KMeans training per cluster size, only retrains FSQ for each variant.
 
 Multi-GPU: different cluster-size groups run on different GPUs in parallel.
   --gpus 0,1,2,3   → 4 groups in parallel
   --gpus 0          → serial on GPU 0
 
-Only 4 key metrics: collision, codebook_util, cluster_balance, semantic_neighbor_HR.
-Merges existing EXP-011 results to avoid re-running completed configs.
+Only key metrics: collision, codebook_util, cluster_balance, semantic_neighbor_HR.
+Reusable across different embedding models — just change load_data().
 """
 
 import argparse
