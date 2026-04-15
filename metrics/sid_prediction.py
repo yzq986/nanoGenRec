@@ -327,6 +327,15 @@ class SemanticIDPredictionMetric(BaseMetric):
             print(f"  NTPProbe: {n_params / 1e6:.1f}M params, {mode_str}")
 
         # ── Train ──
+        # Cap training samples to avoid extremely long training
+        import random as _rand
+        max_train_samples = 2_000_000
+        if len(train_data) > max_train_samples:
+            if verbose:
+                print(f"  Capping training data: {len(train_data):,} → {max_train_samples:,}")
+            _rand.seed(42)
+            train_data = _rand.sample(train_data, max_train_samples)
+
         train_loader = DataLoader(
             SIDSequenceDataset(train_data), batch_size=batch_size,
             shuffle=True, num_workers=2, pin_memory=True, drop_last=True,
@@ -334,11 +343,12 @@ class SemanticIDPredictionMetric(BaseMetric):
 
         optimizer = torch.optim.AdamW(probe.parameters(), lr=3e-3, weight_decay=0.01)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader) * 3)
+        n_batches = len(train_loader)
 
         probe.train()
         for epoch in range(3):
             total_loss = 0
-            for input_batch, target_batch in train_loader:
+            for step, (input_batch, target_batch) in enumerate(train_loader):
                 input_batch = input_batch.to(device, non_blocking=True)
                 target_batch = target_batch.to(device, non_blocking=True)
 
@@ -362,7 +372,10 @@ class SemanticIDPredictionMetric(BaseMetric):
                 scheduler.step()
                 total_loss += loss.item()
 
-            avg = total_loss / len(train_loader)
+                if verbose and (step + 1) % 100 == 0:
+                    print(f"    Epoch {epoch+1}/3 step {step+1}/{n_batches}: loss={total_loss/(step+1):.4f}")
+
+            avg = total_loss / n_batches
             if verbose:
                 print(f"  Epoch {epoch+1}/3: loss={avg:.4f}")
 

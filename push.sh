@@ -117,8 +117,20 @@ push_main() {
         if ! git symbolic-ref HEAD >/dev/null 2>&1; then
             git checkout -f master --quiet 2>/dev/null || true
         fi
+        # Restore stashed changes even on error
+        if [ "$STASHED" = true ]; then
+            git stash pop --quiet 2>/dev/null || echo "  Warning: stash pop failed, check 'git stash list'"
+            STASHED=false
+        fi
     }
     trap 'cleanup_mirror; trap - INT TERM; return 1' INT TERM
+
+    # Stash any uncommitted changes so checkout -f won't destroy them
+    local STASHED=false
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        git stash push --quiet -m "push.sh: auto-stash before company mirror"
+        STASHED=true
+    fi
 
     git checkout -b "$TEMP_BRANCH" "$BRANCH" --quiet
 
@@ -142,7 +154,7 @@ push_main() {
 
     git push company "$TEMP_BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: push to company failed"
 
-    # Cleanup — always return to original branch
+    # Cleanup — always return to original branch and restore stash
     trap - INT TERM
     cleanup_mirror
 
