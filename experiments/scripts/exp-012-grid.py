@@ -393,8 +393,13 @@ def run_fsq_group(cluster_size, fsq_configs, embeddings, content_ids, behavior_d
     """Run a single KMeans group: train KMeans once, sweep FSQ variants."""
     from gr_demo.model.fsq import FSQ_LEVEL_CONFIGS
 
+    # Pin this process to the assigned GPU (FAISS uses CUDA_VISIBLE_DEVICES)
+    gpu_id = int(device.split(':')[1]) if ':' in device else 0
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+    device = 'cuda:0'  # after masking, always use device 0
+
     print(f"\n{'#' * 60}")
-    print(f"# [{device}] KMeans cluster={cluster_size} — {len(fsq_configs)} FSQ variants")
+    print(f"# [GPU {gpu_id}] KMeans cluster={cluster_size} — {len(fsq_configs)} FSQ variants")
     print(f"{'#' * 60}")
 
     t0 = time.time()
@@ -432,6 +437,11 @@ def run_fsq_group(cluster_size, fsq_configs, embeddings, content_ids, behavior_d
 
 def run_opq_group(opq_configs, embeddings, content_ids, behavior_data, device):
     """Run OPQ configs on a given device."""
+    # Pin this process to the assigned GPU
+    gpu_id = int(device.split(':')[1]) if ':' in device else 0
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+    device = 'cuda:0'
+
     results = []
     for name, n_sub, n_cpersub, desc in opq_configs:
         print(f"\n  [{device}] >>> {name}: {desc}")
