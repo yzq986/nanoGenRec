@@ -76,8 +76,10 @@ class NTPProbe(nn.Module):
         self.parallel = parallel
         self.seq_len = n_items * n_sid_layers
 
-        # Token + position embeddings
-        self.token_emb = nn.Embedding(n_clusters, embed_dim)
+        # Per-layer token embeddings (different codebooks per SID layer)
+        self.token_embs = nn.ModuleList([
+            nn.Embedding(n_clusters, embed_dim) for _ in range(n_sid_layers)
+        ])
         max_len = self.seq_len + n_sid_layers
         self.pos_emb = nn.Embedding(max_len, embed_dim)
 
@@ -101,6 +103,23 @@ class NTPProbe(nn.Module):
             # Shared output projection (autoregressive)
             self.output_proj = nn.Linear(embed_dim, n_clusters)
 
+    def _embed_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Per-layer token embedding lookup. Position i uses token_embs[i % n_sid_layers]."""
+        B, T = tokens.size()
+        device = tokens.device
+        L = self.n_sid_layers
+
+        # layer_ids: [0,1,2, 0,1,2, ..., 0,1,2] for each position
+        layer_ids = torch.arange(T, device=device) % L
+
+        # Gather per-layer embeddings
+        x = torch.zeros(B, T, self.embed_dim, device=device)
+        for l in range(L):
+            mask = (layer_ids == l)  # (T,)
+            if mask.any():
+                x[:, mask] = self.token_embs[l](tokens[:, mask])
+        return x
+
     def forward(self, input_tokens: torch.Tensor,
                 generated_tokens: Optional[torch.Tensor] = None,
                 return_last_n: int = 1) -> torch.Tensor:
@@ -121,7 +140,7 @@ class NTPProbe(nn.Module):
         if self.parallel:
             # Encode history, then independent prediction per position
             positions = torch.arange(self.seq_len, device=device).unsqueeze(0)
-            x = self.token_emb(input_tokens) + self.pos_emb(positions)
+            x = self._embed_tokens(input_tokens) + self.pos_emb(positions)
 
             causal_mask = nn.Transformer.generate_square_subsequent_mask(
                 self.seq_len, device=device
@@ -143,7 +162,7 @@ class NTPProbe(nn.Module):
 
             T = tokens.size(1)
             positions = torch.arange(T, device=device).unsqueeze(0)
-            x = self.token_emb(tokens) + self.pos_emb(positions)
+            x = self._embed_tokens(tokens) + self.pos_emb(positions)
 
             causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
             out = self.decoder(x, x, tgt_mask=causal_mask)

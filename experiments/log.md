@@ -39,7 +39,7 @@
 
 ---
 
-## EXP-010: NTP Baseline — MLP-FSQ SID 端到端 Recall
+## EXP-011: Codebook Size 消融 — 等大 1024/4096 + OPQ 对照
 
 **Date**: 2026-04-15
 **Status**: planned
@@ -47,30 +47,34 @@
 
 ### Background
 
-Tokenizer 阶段结束，MLP-FSQ h=64 确认为赢家 (EXP-008, semantic_neighbor_HR=0.078)。现在需要第一个端到端 NTP 数字：用当前 2 层 Transformer probe (~5M params) 在 MLP-FSQ SID 上训练，拿到 item Recall@K baseline。
+EXP-010 NTP baseline 效果极差 (L1 acc=0.7%, item_recall@50=0.0008)，根因之一是当前 SID 配置 **L1=1024, L2=1024, L3=4096 不等大**，NTP 模型用全局 max=4027 作为统一 vocab。
 
-当前 NTP probe 参数:
-- 2 层 causal Transformer decoder, embed_dim=256, n_heads=4, ffn_dim=512
-- 3 epochs, AdamW lr=3e-3, CosineAnnealing
-- 行为序列 n_items=10, beam_size=50
-- SID: 3 tokens (L1=1024, L2=1024, L3=4096)
+查阅 OneMall 原文发现其生产配置是 **三层等大 4096×4096×4096**，FSQ 层使用 "binary 16-bit MLP"。需要确定我们的最优 codebook 配置。
 
 ### Hypothesis
 
-- Perplexity 应在 50~150 范围（good~acceptable）
-- Item Recall@50 应显著高于 embedding_hit_rate (0.0047)，因为 NTP 利用了行为序列信息
-- 这个数字作为所有后续 NTP 改进（architecture/training/scaling）的 baseline
+1. 三层等大配置 (1024×3 或 4096×3) 的 semantic_neighbor_HR 不低于当前 1024×1024×4096
+2. Binary FSQ ([2,...,2]) 与 multi-level FSQ ([4,...,4]) 在相同 codebook size 下效果相当
+3. OPQ 3×N (等 token 数对照) 仍然输层级结构 MLP-FSQ（延续 EXP-008 结论）
 
 ### Design
 
-- **Variable**: 无（单配置 baseline）
-- **Fixed**: MLP-FSQ h=64, 2 层 probe, 3 epochs, n_items=10, beam_size=50
-- **Metric**: Perplexity, Depth Accuracy, Item Recall@{10,50,100,500}
-- **Data**: 7 天行为数据 (2026-03-24 ~ 2026-03-30), eval_sample_size=50000
+| Config | L1 (KMeans) | L2 (KMeans) | L3 (FSQ) | FSQ Levels | Bits | 对标 |
+|--------|-------------|-------------|----------|------------|------|------|
+| A (EXP-008) | 1024 | 1024 | 4096 | [4,4,4,4,4,4] | 32 | 已有 baseline |
+| E | 1024 | 1024 | 1024 | [4,4,4,4,4] | 30 | 等大 1024, multi-level |
+| F | 1024 | 1024 | 1024 | [2]×10 | 30 | 等大 1024, binary |
+| G | 4096 | 4096 | 4096 | [4,4,4,4,4,4] | 36 | OneMall 配置 |
+| H | 4096 | 4096 | 4096 | [2]×12 | 36 | OneMall binary |
+| I | OPQ 3×1024 | — | — | — | 30 | 等 bits 对照 E/F |
+| J | OPQ 3×4096 | — | — | — | 36 | 等 bits 对照 G/H |
+
+- **Fixed**: Qwen3-0.6B 1024D embedding (cached), behavior_data 7d, MLP hidden=64, 50 epochs
+- **Metric**: semantic_neighbor_hit_rate (核心), collision_rate, cluster_balance (Gini)
 
 ### Run
 
-`bash experiments/scripts/exp-010.sh`
+`bash experiments/scripts/exp-011.sh`
 
 ### Results
 
@@ -83,6 +87,70 @@ TBD
 ### Next Steps
 
 TBD
+
+---
+
+## EXP-010: NTP Baseline — MLP-FSQ SID 端到端 Recall
+
+**Date**: 2026-04-15
+**Status**: completed (效果极差，需诊断)
+**Results**: [./hyperparam/2026-04-15_exp010-ntp-baseline/](./hyperparam/2026-04-15_exp010-ntp-baseline/)
+
+### Background
+
+Tokenizer 阶段结束，MLP-FSQ h=64 确认为赢家 (EXP-008, semantic_neighbor_HR=0.078)。现在需要第一个端到端 NTP 数字：用当前 2 层 Transformer probe (~5M params) 在 MLP-FSQ SID 上训练，拿到 item Recall@K baseline。
+
+当前 NTP probe 参数:
+- 2 层 causal Transformer decoder, embed_dim=256, n_heads=4, ffn_dim=512
+- **1 epoch** (代码 bug: 缺少 epoch 外循环), AdamW lr=3e-3, CosineAnnealing
+- 行为序列 n_items=10, beam_size=50
+- SID: 3 tokens (L1=1024, L2=1024, **L3=4096** ← 与 L1/L2 不等大)
+
+### Hypothesis
+
+- Perplexity 应在 50~150 范围（good~acceptable）
+- Item Recall@50 应显著高于 embedding_hit_rate (0.0047)，因为 NTP 利用了行为序列信息
+- 这个数字作为所有后续 NTP 改进（architecture/training/scaling）的 baseline
+
+### Design
+
+- **Variable**: 无（单配置 baseline）
+- **Fixed**: MLP-FSQ h=64, 2 层 probe, 1 epoch, n_items=10, beam_size=50
+- **Metric**: Perplexity, Depth Accuracy, Item Recall@{10,50,100,500}
+- **Data**: 7 天行为数据, 19.1M samples (train=15.3M, eval=50K)
+
+### Run
+
+`bash experiments/scripts/exp-010.sh`
+
+### Results
+
+| 指标 | 值 |
+|------|-----|
+| Train loss | 1.70 → 0.47 (3741 steps) |
+| Eval perplexity | 5.34 |
+| Depth acc beam (L1/L2/L3) | 0.007 / 0.000 / 0.000 |
+| **Depth hit@10 (L1/L2/L3)** | **1.000 / 1.000 / 0.401** |
+| Item recall@50 | 0.0008 |
+| Item recall@500 | 0.0008 |
+
+### Analysis
+
+**效果极差，但 teacher-forced hit@10 表明模型学到了。核心问题在 beam search：**
+
+1. **L1/L2/L3 不等大 vocab 共享单一 output head (Linear(256, 4027))**: L1/L2 只有 1024 个合法 token，但 softmax 在 4027 维上做，75% 的概率空间是噪声。Beam search 可能选到 L3 范围的 token 作为 L1 预测
+2. **Teacher-forced hit@10 = 100%**: 说明模型在看到正确上下文时，正确 token 在 top-10 中。但 beam search 一旦 L1 选错，后续全部偏移
+3. **只训练 1 epoch**: train loss 还在下降 (0.47 且斜率明显)，未收敛
+4. **Train-eval gap 大**: train CE ≈ 0.47, eval CE ≈ 1.68 (PPL 5.34)，时间序列切分导致分布偏移
+
+**根因: SID 配置 1024×1024×4096 不等大 + NTP 模型未做 per-layer vocab 处理。**
+
+### Next Steps
+
+1. **EXP-011**: 确定正确的 codebook 配置 (等大 1024×3 或 4096×3)
+2. **修复 NTP 模型**: per-layer output head 或统一 vocab + layer embedding + beam search mask
+3. **增加 epoch**: 1 → 5-10
+4. 修复后重跑 NTP baseline
 
 ---
 
