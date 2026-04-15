@@ -85,10 +85,19 @@ push_main() {
     fi
 
     # Push to personal (原始 commit，个人身份)
-    echo "  Pushing to personal..."
-    git push personal "$BRANCH" 2>&1 || echo "  Warning: push to personal failed"
+    if git remote | grep -q '^personal$'; then
+        echo "  Pushing to personal..."
+        git push personal "$BRANCH" 2>&1 || echo "  Warning: push to personal failed"
+    else
+        echo "  Skipping personal (remote not configured)"
+    fi
 
     # Push to company (重写 author 为公司身份)
+    if ! git remote | grep -q '^company$'; then
+        echo "  Skipping company (remote not configured)"
+        echo "Main repo push complete."
+        return 0
+    fi
     echo "  Mirroring to company (rewriting author)..."
     local COMPANY_NAME="Company User"
     local COMPANY_EMAIL="user@company.com"
