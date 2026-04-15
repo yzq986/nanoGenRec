@@ -39,6 +39,53 @@
 
 ---
 
+## EXP-010: NTP Baseline — MLP-FSQ SID 端到端 Recall
+
+**Date**: 2026-04-15
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+Tokenizer 阶段结束，MLP-FSQ h=64 确认为赢家 (EXP-008, semantic_neighbor_HR=0.078)。现在需要第一个端到端 NTP 数字：用当前 2 层 Transformer probe (~5M params) 在 MLP-FSQ SID 上训练，拿到 item Recall@K baseline。
+
+当前 NTP probe 参数:
+- 2 层 causal Transformer decoder, embed_dim=256, n_heads=4, ffn_dim=512
+- 3 epochs, AdamW lr=3e-3, CosineAnnealing
+- 行为序列 n_items=10, beam_size=50
+- SID: 3 tokens (L1=1024, L2=1024, L3=4096)
+
+### Hypothesis
+
+- Perplexity 应在 50~150 范围（good~acceptable）
+- Item Recall@50 应显著高于 embedding_hit_rate (0.0047)，因为 NTP 利用了行为序列信息
+- 这个数字作为所有后续 NTP 改进（architecture/training/scaling）的 baseline
+
+### Design
+
+- **Variable**: 无（单配置 baseline）
+- **Fixed**: MLP-FSQ h=64, 2 层 probe, 3 epochs, n_items=10, beam_size=50
+- **Metric**: Perplexity, Depth Accuracy, Item Recall@{10,50,100,500}
+- **Data**: 7 天行为数据 (2026-03-24 ~ 2026-03-30), eval_sample_size=50000
+
+### Run
+
+`bash experiments/scripts/exp-010.sh`
+
+### Results
+
+TBD
+
+### Analysis
+
+TBD
+
+### Next Steps
+
+TBD
+
+---
+
 ## EXP-009: QFormer Tokenizer — 冻结 Qwen3 + Cross-Attention 压缩
 
 **Date**: 2026-04-14 ~ 2026-04-15
