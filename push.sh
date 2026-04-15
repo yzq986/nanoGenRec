@@ -187,10 +187,14 @@ push_config() {
         fi
     fi
 
-    # Push to all remotes
+    # Pull --rebase then push to all remotes
+    local CURRENT_BRANCH
+    CURRENT_BRANCH="$(git branch --show-current)"
     for remote in $(git remote); do
+        echo "  Pulling from ${remote} (rebase)..."
+        git pull --rebase "$remote" "$CURRENT_BRANCH" 2>&1 || echo "  Warning: pull from ${remote} failed"
         echo "  Pushing to ${remote}..."
-        git push "$remote" "$(git branch --show-current)" 2>&1 || echo "  Warning: push to ${remote} failed"
+        git push "$remote" "$CURRENT_BRANCH" 2>&1 || echo "  Warning: push to ${remote} failed"
     done
 
     echo "Sensitive repo push complete."
