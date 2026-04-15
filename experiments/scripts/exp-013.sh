@@ -77,6 +77,7 @@ train_and_eval() {
     local NAME=$1
     local MODEL=$2
     local DESC=$3
+    local BATCH=$4
     local NTP_CKPT="experiments/ntp_checkpoints/${NAME}"
 
     echo ""
@@ -93,14 +94,14 @@ train_and_eval() {
                 --sid_cache "${SID_CACHE}" \
                 --output_dir "${NTP_CKPT}" \
                 --model "${MODEL}" \
-                --batch_size 4096 \
+                --batch_size "${BATCH}" \
                 --name "${NAME}"
         else
             python run.py train-ntp \
                 --sid_cache "${SID_CACHE}" \
                 --output_dir "${NTP_CKPT}" \
                 --model "${MODEL}" \
-                --batch_size 4096 \
+                --batch_size "${BATCH}" \
                 --name "${NAME}"
         fi
     fi
@@ -116,11 +117,11 @@ train_and_eval() {
         --name "${NAME}"
 }
 
-# ── Config A: Baseline (NTPProbe, 2L dense) ──
-train_and_eval "exp013-probe" "probe" "NTPProbe — 2L dense, ~5M params"
+# ── Config A: Baseline (NTPProbe, 2L dense, sliding window) ──
+train_and_eval "exp013-probe" "probe" "NTPProbe — 2L dense, ~5M params" 4096
 
-# ── Config B: S-tier (NTPModel, 6L MoE) ──
-train_and_eval "exp013-s-tier" "s-tier" "NTPModel — 6L MoE (8E top-2), ~42M params"
+# ── Config B: S-tier (NTPModel, 6L MoE, packed sequences) ──
+train_and_eval "exp013-s-tier" "s-tier" "NTPModel — 6L MoE (8E top-2), packed training" 256
 
 # ── Commit results ──
 echo ""

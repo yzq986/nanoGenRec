@@ -65,72 +65,186 @@ def log(is_main, msg):
 # Data preparation
 # ============================================================
 
-def build_sequences(sid_dict, behavior_data, n_items=10, verbose_fn=print):
-    """Build (input, target) sequences from SID assignments + behavior data.
-
-    Returns:
-        train_data: list of (input_tokens, target_tokens)
-        eval_data:  list of (input_tokens, target_tokens)
-        eval_cids:  list of target content_ids (aligned with eval_data)
-        sid_to_items: dict {sid_string: set of content_ids}
-        n_layers: int
-        n_clusters_per_layer: list of int (codebook size per SID layer)
-    """
-    # content_id -> token list
+def _parse_sid_dict(sid_dict):
+    """Parse SID dict → content_to_tokens, n_layers, n_clusters_per_layer, sid_to_items."""
     content_to_tokens = {}
     for cid, sid_str in sid_dict.items():
         if isinstance(sid_str, str):
             content_to_tokens[cid] = [int(t) for t in sid_str.split('_')]
         else:
-            # Already a list/tuple
             content_to_tokens[cid] = [int(t) for t in sid_str]
 
     n_layers = len(next(iter(content_to_tokens.values())))
-    # Per-layer codebook sizes (e.g. [1024, 1024, 4096])
     n_clusters_per_layer = []
     for l in range(n_layers):
         max_token = max(tokens[l] for tokens in content_to_tokens.values())
         n_clusters_per_layer.append(max_token + 1)
 
-    # SID -> items reverse mapping (for recall eval)
     sid_to_items = defaultdict(set)
     for cid, tokens in content_to_tokens.items():
         sid_to_items['_'.join(str(t) for t in tokens)].add(cid)
 
-    # Build per-user interaction lists
+    return content_to_tokens, n_layers, n_clusters_per_layer, sid_to_items
+
+
+def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
+    """Vectorized user interaction grouping using numpy. Returns sorted per-user item lists."""
+    import pandas as pd
+
     uids = behavior_data['uid']
     iids = behavior_data['iid']
     actions = behavior_data['action_bitmap']
     timestamps = behavior_data.get('first_ts')
+    if timestamps is None:
+        timestamps = np.arange(len(uids))
 
-    user_items = defaultdict(list)
-    for i in range(len(uids)):
-        uid, iid, action = uids[i], iids[i], actions[i]
-        if action > 0 and iid in content_to_tokens:
-            ts = timestamps[i] if timestamps is not None else i
-            user_items[uid].append((ts, content_to_tokens[iid], iid))
+    verbose_fn(f"  Total interactions: {len(uids):,}")
 
-    verbose_fn(f"  Users with interactions: {len(user_items):,}")
+    # Vectorized filter: action > 0
+    action_mask = actions > 0
+    uids_f = uids[action_mask]
+    iids_f = iids[action_mask]
+    ts_f = timestamps[action_mask]
 
-    # Sliding window samples
-    all_samples = []
-    for uid, items in user_items.items():
-        if len(items) < n_items + 1:
+    # Filter: iid in SID dict (vectorized via pandas isin)
+    valid_iids = set(content_to_tokens.keys())
+    iid_mask = pd.Index(iids_f).isin(valid_iids)
+    uids_f = uids_f[iid_mask]
+    iids_f = iids_f[iid_mask]
+    ts_f = ts_f[iid_mask]
+
+    verbose_fn(f"  Valid interactions: {len(uids_f):,}")
+
+    # Sort by (uid, ts) using numpy lexsort (secondary key first)
+    sort_idx = np.lexsort((ts_f, uids_f))
+    uids_s = uids_f[sort_idx]
+    iids_s = iids_f[sort_idx]
+    ts_s = ts_f[sort_idx]
+
+    # Group boundaries
+    boundaries = np.where(uids_s[1:] != uids_s[:-1])[0] + 1
+    starts = np.concatenate([[0], boundaries])
+    ends = np.concatenate([boundaries, [len(uids_s)]])
+
+    verbose_fn(f"  Users with valid interactions: {len(starts):,}")
+    return uids_s, iids_s, ts_s, starts, ends
+
+
+def build_packed_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512,
+                           verbose_fn=print):
+    """Build packed per-user sequences for training + sliding windows for eval.
+
+    Training: each user → one long SID token sequence (causal mask training).
+    Eval: sliding windows of n_items → target (same format as old, for beam search).
+
+    Returns:
+        train_seqs: list of 1D lists (variable-length SID token sequences)
+        eval_data: list of (input_tokens, target_tokens)
+        eval_cids: list of target content_ids
+        sid_to_items: dict
+        n_layers: int
+        n_clusters_per_layer: list
+    """
+    content_to_tokens, n_layers, n_clusters_per_layer, sid_to_items = \
+        _parse_sid_dict(sid_dict)
+    verbose_fn(f"  SID: {n_layers} layers, codebooks={n_clusters_per_layer}")
+    verbose_fn(f"  Unique SIDs: {len(sid_to_items):,}")
+
+    uids_s, iids_s, ts_s, starts, ends = \
+        _build_user_items(behavior_data, content_to_tokens, verbose_fn)
+
+    # Global 80th percentile timestamp for train/eval split
+    split_ts = np.percentile(ts_s, 80)
+    verbose_fn(f"  Time split at 80th percentile: {split_ts}")
+
+    max_items = max_seq_len // n_layers
+    train_seqs = []
+    eval_data = []
+    eval_cids = []
+
+    for u in range(len(starts)):
+        s, e = starts[u], ends[u]
+        n = e - s
+        if n < 2:
             continue
-        items.sort(key=lambda x: x[0])
-        for i in range(len(items) - n_items):
+
+        user_iids = iids_s[s:e]
+        user_ts = ts_s[s:e]
+
+        # Token lists for each item
+        user_tokens = [content_to_tokens[iid] for iid in user_iids]
+
+        # Train: items with ts <= split_ts → packed sequence
+        train_mask = user_ts <= split_ts
+        n_train = int(train_mask.sum())
+        if n_train >= 2:
+            # Keep most recent max_items
+            train_items = [user_tokens[i] for i in range(n) if train_mask[i]]
+            if len(train_items) > max_items:
+                train_items = train_items[-max_items:]
+            flat = []
+            for toks in train_items:
+                flat.extend(toks)
+            train_seqs.append(flat)
+
+        # Eval: items with ts > split_ts, using preceding n_items as context
+        for i in range(n):
+            if user_ts[i] <= split_ts:
+                continue
+            if i < n_items:
+                continue
+            # Context: preceding n_items items (may include train-period items)
             input_tokens = []
             for j in range(n_items):
-                input_tokens.extend(items[i + j][1])
-            target_tokens = items[i + n_items][1]
-            target_cid = items[i + n_items][2]
-            target_ts = items[i + n_items][0]
+                input_tokens.extend(user_tokens[i - n_items + j])
+            target_tokens = user_tokens[i]
+            eval_data.append((input_tokens, target_tokens))
+            eval_cids.append(user_iids[i])
+
+    if not train_seqs:
+        raise ValueError("No valid training sequences")
+
+    total_tokens = sum(len(s) for s in train_seqs)
+    avg_len = total_tokens / len(train_seqs)
+    verbose_fn(f"  Packed train: {len(train_seqs):,} seqs, "
+               f"{total_tokens:,} tokens, avg {avg_len:.0f} tok/seq")
+    verbose_fn(f"  Eval windows: {len(eval_data):,}")
+    verbose_fn(f"  Unique SIDs with items: {len(sid_to_items):,}")
+
+    return train_seqs, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer
+
+
+def build_sequences(sid_dict, behavior_data, n_items=10, verbose_fn=print):
+    """Legacy sliding window builder for NTPProbe. Kept for backward compat."""
+    content_to_tokens, n_layers, n_clusters_per_layer, sid_to_items = \
+        _parse_sid_dict(sid_dict)
+    verbose_fn(f"  SID: {n_layers} layers, codebooks={n_clusters_per_layer}")
+
+    uids_s, iids_s, ts_s, starts, ends = \
+        _build_user_items(behavior_data, content_to_tokens, verbose_fn)
+
+    all_samples = []
+    for u in range(len(starts)):
+        s, e = starts[u], ends[u]
+        n = e - s
+        if n < n_items + 1:
+            continue
+        user_iids = iids_s[s:e]
+        user_ts = ts_s[s:e]
+        user_tokens = [content_to_tokens[iid] for iid in user_iids]
+
+        for i in range(n - n_items):
+            input_tokens = []
+            for j in range(n_items):
+                input_tokens.extend(user_tokens[i + j])
+            target_tokens = user_tokens[i + n_items]
+            target_cid = user_iids[i + n_items]
+            target_ts = user_ts[i + n_items]
             all_samples.append((input_tokens, target_tokens, target_cid, target_ts))
 
     if not all_samples:
         raise ValueError("No valid sequences generated")
 
-    # Time-sorted 80/20 split
     all_samples.sort(key=lambda x: x[3])
     split_idx = int(len(all_samples) * 0.8)
 
@@ -140,15 +254,156 @@ def build_sequences(sid_dict, behavior_data, n_items=10, verbose_fn=print):
 
     verbose_fn(f"  Total samples: {len(all_samples):,} "
                f"(train={len(train_data):,}, eval={len(eval_data):,})")
-    verbose_fn(f"  SID: {n_layers} layers, codebooks={n_clusters_per_layer}")
     verbose_fn(f"  Unique SIDs with items: {len(sid_to_items):,}")
 
     return train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer
 
 
 # ============================================================
+# Packed sequence dataset + collate
+# ============================================================
+
+class PackedSequenceDataset(torch.utils.data.Dataset):
+    """Dataset of variable-length packed SID token sequences."""
+
+    def __init__(self, sequences):
+        self.sequences = sequences
+
+    def __len__(self):
+        return len(self.sequences)
+
+    def __getitem__(self, idx):
+        return torch.tensor(self.sequences[idx], dtype=torch.long)
+
+
+def packed_collate_fn(batch):
+    """Right-pad variable-length sequences to max length in batch."""
+    lengths = torch.tensor([len(seq) for seq in batch], dtype=torch.long)
+    max_len = lengths.max().item()
+    padded = torch.zeros(len(batch), max_len, dtype=torch.long)
+    for i, seq in enumerate(batch):
+        padded[i, :len(seq)] = seq
+    return padded, lengths
+
+
+# ============================================================
 # Training
 # ============================================================
+
+def train_packed(
+    train_seqs,
+    n_clusters_per_layer,
+    n_layers,
+    n_items,
+    local_rank,
+    world_size,
+    device,
+    is_main,
+    batch_size=4096,
+    lr=1e-3,
+    embed_dim=256,
+    n_heads=8,
+    n_transformer_layers=6,
+    max_seq_len=512,
+):
+    """Train NTPModel with packed user sequences (causal LM style)."""
+
+    model = NTPModel(
+        n_clusters_per_layer=n_clusters_per_layer,
+        n_sid_layers=n_layers,
+        n_items=n_items,
+        embed_dim=embed_dim,
+        n_heads=n_heads,
+        n_transformer_layers=n_transformer_layers,
+        use_moe=True,
+        n_experts=8,
+        top_k=2,
+        expert_dim=1024,
+        parallel=False,  # packed = always causal AR
+        max_seq_len=max_seq_len,
+    ).to(device)
+
+    n_params = sum(p.numel() for p in model.parameters())
+    log(is_main, f"  s-tier (packed): {n_params / 1e6:.1f}M params, max_seq={max_seq_len}")
+
+    if world_size > 1:
+        model = DDP(model, device_ids=[local_rank])
+
+    dataset = PackedSequenceDataset(train_seqs)
+    sampler = DistributedSampler(dataset, shuffle=True) if world_size > 1 else None
+    train_loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=(sampler is None),
+        sampler=sampler,
+        num_workers=2,
+        pin_memory=True,
+        drop_last=True,
+        collate_fn=packed_collate_fn,
+    )
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader))
+    n_batches = len(train_loader)
+
+    log(is_main, f"  Training: {len(train_seqs):,} seqs, "
+                 f"{n_batches} batches/epoch, batch_size={batch_size}, "
+                 f"world_size={world_size}")
+
+    model.train()
+    total_loss = 0.0
+    t0 = time.time()
+
+    for step, (padded, lengths) in enumerate(train_loader):
+        padded = padded.to(device, non_blocking=True)
+        lengths = lengths.to(device, non_blocking=True)
+        B, T = padded.shape
+
+        # LM-style: input = tokens[:-1], target = tokens[1:]
+        input_tokens = padded[:, :-1]
+        target_tokens = padded[:, 1:]
+
+        # Valid mask: position i is valid if i+1 < length
+        arange = torch.arange(T - 1, device=device).unsqueeze(0)
+        target_mask = arange < (lengths.unsqueeze(1) - 1)
+
+        loss = model(input_tokens, packed_targets=target_tokens, packed_mask=target_mask)
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        scheduler.step()
+        total_loss += loss.item()
+
+        if is_main and (step + 1) % 100 == 0:
+            elapsed = time.time() - t0
+            seqs_per_sec = (step + 1) * batch_size * world_size / elapsed
+            remaining = (n_batches - step - 1) / ((step + 1) / elapsed)
+            eta = format_eta(remaining)
+            print(f"    step {step+1}/{n_batches}: "
+                  f"loss={total_loss/(step+1):.4f}, "
+                  f"{seqs_per_sec:.0f} seqs/s, ETA {eta}")
+
+    avg_loss = total_loss / n_batches
+    elapsed = time.time() - t0
+    log(is_main, f"  Train done: loss={avg_loss:.4f} ({elapsed:.1f}s)")
+
+    raw_model = model.module if isinstance(model, DDP) else model
+    return raw_model.cpu(), avg_loss, n_params, 's-tier'
+
+
+def format_eta(seconds):
+    """Format seconds into human-readable ETA string."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        return f"{seconds/60:.0f}m{seconds%60:.0f}s"
+    else:
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        return f"{h}h{m:02d}m"
+
 
 def train_probe(
     train_data,
@@ -293,6 +548,7 @@ def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
             'top_k': 2,
             'expert_dim': 1024,
             'parallel': probe.parallel,
+            'max_seq_len': probe.max_seq_len,
         }
     else:
         probe_config = {
@@ -362,6 +618,8 @@ def parse_args():
     parser.add_argument('--model', type=str, default='probe',
                         choices=['probe', 's-tier'],
                         help='Model: probe (2L dense, ~5M) or s-tier (6L MoE, ~39.5M)')
+    parser.add_argument('--max_seq_len', type=int, default=512,
+                        help='Max packed sequence length in tokens (s-tier only)')
     parser.add_argument('--date_start', type=str, default=None,
                         help='Behavior data start date (YYYY-MM-DD). Default: config DEFAULT_DATE_START')
     parser.add_argument('--date_end', type=str, default=None,
@@ -372,9 +630,11 @@ def parse_args():
 def main():
     args = parse_args()
     local_rank, world_size, device, is_main = setup_ddp()
+    model_type = args.model
 
     log(is_main, "=" * 60)
-    log(is_main, "NTP Probe Training (DDP)" if world_size > 1 else "NTP Probe Training")
+    log(is_main, f"NTP Training — {model_type}" +
+                 (f" (DDP x{world_size})" if world_size > 1 else ""))
     log(is_main, "=" * 60)
 
     # ── Load SID cache ──
@@ -396,9 +656,15 @@ def main():
             date_start=args.date_start, date_end=args.date_end)
         log(is_main, f"  Interactions: {len(behavior_data['uid']):,}")
 
-        log(is_main, "\nStep 3: Building user sequences")
-        train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = \
-            build_sequences(sid_dict, behavior_data, n_items=args.n_items)
+        log(is_main, "\nStep 3: Building sequences")
+        if model_type == 's-tier':
+            train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = \
+                build_packed_sequences(
+                    sid_dict, behavior_data,
+                    n_items=args.n_items, max_seq_len=args.max_seq_len)
+        else:
+            train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = \
+                build_sequences(sid_dict, behavior_data, n_items=args.n_items)
         seq_data = (train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer)
     else:
         seq_data = None
@@ -411,41 +677,50 @@ def main():
     train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = seq_data
     log(is_main, f"  Train: {len(train_data):,}, Eval: {len(eval_data):,}, Layers: {n_layers}")
 
-    # ── S-tier defaults override ──
-    model_type = args.model
-    embed_dim = args.embed_dim
-    n_heads = args.n_heads
-    n_transformer_layers = args.n_transformer_layers
-    ffn_dim = args.ffn_dim
-    lr = args.lr
-
-    if model_type == 's-tier':
-        # Override to S-tier spec unless user explicitly set them
-        embed_dim = 256
-        n_heads = 8
-        n_transformer_layers = 6
-        lr = 1e-3
-        log(is_main, f"  S-tier defaults: d={embed_dim}, H={n_heads}, L={n_transformer_layers}, lr={lr}")
-
     # ── Train ──
-    log(is_main, f"\nStep 4: Training ({model_type})")
-    probe, avg_loss, n_params, model_type = train_probe(
-        train_data=train_data,
-        n_clusters_per_layer=n_clusters_per_layer,
-        n_layers=n_layers,
-        n_items=args.n_items,
-        local_rank=local_rank,
-        world_size=world_size,
-        device=device,
-        is_main=is_main,
-        batch_size=args.batch_size,
-        lr=lr,
-        embed_dim=embed_dim,
-        n_heads=n_heads,
-        n_transformer_layers=n_transformer_layers,
-        ffn_dim=ffn_dim,
-        model_type=model_type,
-    )
+    if model_type == 's-tier':
+        log(is_main, f"\nStep 4: Training (s-tier, packed)")
+        probe, avg_loss, n_params, model_type = train_packed(
+            train_seqs=train_data,
+            n_clusters_per_layer=n_clusters_per_layer,
+            n_layers=n_layers,
+            n_items=args.n_items,
+            local_rank=local_rank,
+            world_size=world_size,
+            device=device,
+            is_main=is_main,
+            batch_size=args.batch_size,
+            lr=1e-3,
+            embed_dim=256,
+            n_heads=8,
+            n_transformer_layers=6,
+            max_seq_len=args.max_seq_len,
+        )
+    else:
+        embed_dim = args.embed_dim
+        n_heads = args.n_heads
+        n_transformer_layers = args.n_transformer_layers
+        ffn_dim = args.ffn_dim
+        lr = args.lr
+
+        log(is_main, f"\nStep 4: Training (probe)")
+        probe, avg_loss, n_params, model_type = train_probe(
+            train_data=train_data,
+            n_clusters_per_layer=n_clusters_per_layer,
+            n_layers=n_layers,
+            n_items=args.n_items,
+            local_rank=local_rank,
+            world_size=world_size,
+            device=device,
+            is_main=is_main,
+            batch_size=args.batch_size,
+            lr=lr,
+            embed_dim=embed_dim,
+            n_heads=n_heads,
+            n_transformer_layers=n_transformer_layers,
+            ffn_dim=ffn_dim,
+            model_type='probe',
+        )
 
     # ── Save (rank 0 only) ──
     if is_main:
