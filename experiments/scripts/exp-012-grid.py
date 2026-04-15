@@ -15,6 +15,7 @@ Merges existing EXP-011 results to avoid re-running completed configs.
 import argparse
 import json
 import math
+import multiprocessing as mp
 import os
 import sys
 import time
@@ -53,10 +54,11 @@ FSQ_CONFIGS = [
 
 OPQ_CONFIGS = [
     # (name, n_subvectors, n_clusters_per_sub, description)
-    ('opq-3x1024', 3, 1024, 'OPQ 3×1024 (30 bit)'),
-    ('opq-3x2048', 3, 2048, 'OPQ 3×2048 (33 bit)'),
-    ('opq-3x4096', 3, 4096, 'OPQ 3×4096 (36 bit)'),
-    ('opq-3x8192', 3, 8192, 'OPQ 3×8192 (39 bit)'),
+    # n_subvectors must divide n_features (1024). Use 4 sub-vectors (256-dim each).
+    ('opq-4x256',  4, 256,  'OPQ 4×256 (32 bit)'),
+    ('opq-4x512',  4, 512,  'OPQ 4×512 (36 bit)'),
+    ('opq-4x1024', 4, 1024, 'OPQ 4×1024 (40 bit)'),
+    ('opq-4x2048', 4, 2048, 'OPQ 4×2048 (44 bit)'),
 ]
 
 # Key metrics only (skip reconstruction_loss, entropy, cosine_sim, effective_dim, embedding_HR)
@@ -326,8 +328,7 @@ EXP011_NAME_MAP = {
     'exp011-1024x3-10d-binary': '1024-binary',
     'exp011-4096x3-6d':         '4096-multi',
     'exp011-4096x3-12d-binary': '4096-binary',
-    'exp011-opq-3x1024':        'opq-3x1024',
-    'exp011-opq-3x4096':        'opq-3x4096',
+    # OPQ configs changed from 3×N to 4×N, no EXP-011 results to merge
 }
 
 
@@ -536,7 +537,7 @@ def main():
             for cs in cluster_sizes:
                 gpu_to_clusters[gpu_assignment[cs]].append(cs)
 
-            with ProcessPoolExecutor(max_workers=n_gpus) as executor:
+            with ProcessPoolExecutor(max_workers=n_gpus, mp_context=mp.get_context('spawn')) as executor:
                 futures = {}
                 for device, cs_list in gpu_to_clusters.items():
                     for cs in cs_list:
@@ -579,7 +580,7 @@ def main():
 
             if n_gpus > 1 and len(pending_opq) > 1:
                 # Distribute OPQ configs across GPUs
-                with ProcessPoolExecutor(max_workers=min(n_gpus, len(pending_opq))) as executor:
+                with ProcessPoolExecutor(max_workers=min(n_gpus, len(pending_opq)), mp_context=mp.get_context('spawn')) as executor:
                     futures = {}
                     for i, (name, n_sub, n_cpersub, desc) in enumerate(pending_opq):
                         device = f'cuda:{gpu_ids[i % n_gpus]}'
