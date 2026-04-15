@@ -9,7 +9,7 @@ echo "=========================================="
 echo "EXP-008: FORGE Proxy — MLP-FSQ vs OPQ"
 echo "=========================================="
 
-BEHAVIOR_PATH="config/behavior_data_7d.parquet"
+BEHAVIOR_PATH="auto"
 LOCK=/tmp/exp008-git.lock
 
 commit_and_push() {
