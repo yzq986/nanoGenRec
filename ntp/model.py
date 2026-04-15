@@ -9,11 +9,144 @@ Reference:
   - DeepSeek / IDEA-onemall-4: Loss-Free dynamic bias MoE balancing
 """
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+# ============================================================
+# SID Trie for constrained beam search
+# ============================================================
+
+class SIDTrie:
+    """Prefix trie over existing SID token sequences.
+
+    Built from sid_to_items dict. At each layer, provides the set of
+    valid next tokens given a prefix, ensuring beam search only
+    produces SIDs that exist in the corpus.
+    """
+
+    def __init__(self, sid_to_items: Dict[str, set], n_layers: int):
+        # children[layer] = dict mapping prefix_tuple → set of valid next tokens
+        self.n_layers = n_layers
+        self.children: List[Dict[tuple, Set[int]]] = [dict() for _ in range(n_layers)]
+
+        for sid_str in sid_to_items:
+            tokens = tuple(int(t) for t in sid_str.split('_'))
+            if len(tokens) != n_layers:
+                continue
+            for layer in range(n_layers):
+                prefix = tokens[:layer]
+                if prefix not in self.children[layer]:
+                    self.children[layer][prefix] = set()
+                self.children[layer][prefix].add(tokens[layer])
+
+    def valid_tokens(self, layer: int, prefix: tuple) -> Set[int]:
+        """Return set of valid tokens at `layer` given `prefix` (tuple of ints)."""
+        return self.children[layer].get(prefix, set())
+
+    def root_tokens(self) -> Set[int]:
+        """Valid tokens at layer 0 (no prefix)."""
+        return self.children[0].get((), set())
+
+
+@torch.no_grad()
+def constrained_beam_search(
+    model,
+    input_tokens: torch.Tensor,
+    trie: SIDTrie,
+    beam_size: int = 500,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Trie-constrained beam search — every beam is a real SID.
+
+    At each decoding step, masks out tokens not in the trie given the
+    current beam prefix. This guarantees every output beam corresponds
+    to an actual item in the corpus.
+
+    Optimized for B=1 (eval processes one sample at a time).
+
+    Args:
+        model: NTPModel or NTPProbe with forward(input, generated, return_last_n=1)
+        input_tokens: (B, T) context tokens
+        trie: SIDTrie built from sid_to_items
+        beam_size: number of beams to keep
+
+    Returns:
+        beams: (B, actual_beams, n_layers) — token indices
+        scores: (B, actual_beams) — log-probabilities
+    """
+    B = input_tokens.size(0)
+    device = input_tokens.device
+    L = trie.n_layers
+
+    beams = torch.zeros(B, 1, 0, dtype=torch.long, device=device)
+    scores = torch.zeros(B, 1, device=device)
+
+    for step in range(L):
+        n_beams = beams.size(1)
+        input_exp = input_tokens.unsqueeze(1).expand(-1, n_beams, -1).reshape(B * n_beams, -1)
+        gen_exp = beams.reshape(B * n_beams, -1) if step > 0 else None
+
+        logits = model.forward(input_exp, gen_exp)
+        log_probs = F.log_softmax(logits, dim=-1)  # (B*n_beams, C)
+        C = log_probs.size(-1)
+
+        # Build trie mask: group beams by prefix to minimize dict lookups
+        mask = torch.zeros(B * n_beams, C, dtype=torch.bool, device=device)
+        beams_cpu = beams.cpu()
+
+        # Group beams by prefix → valid tokens (avoids redundant trie lookups)
+        prefix_to_valid: Dict[tuple, List[int]] = {}
+        for bi in range(B):
+            for ki in range(n_beams):
+                prefix = tuple(beams_cpu[bi, ki].tolist())
+                if prefix not in prefix_to_valid:
+                    valid = trie.valid_tokens(step, prefix)
+                    prefix_to_valid[prefix] = list(valid) if valid else []
+
+        # Apply masks using cached prefix lookups
+        for bi in range(B):
+            for ki in range(n_beams):
+                prefix = tuple(beams_cpu[bi, ki].tolist())
+                valid_list = prefix_to_valid[prefix]
+                if valid_list:
+                    idx = bi * n_beams + ki
+                    mask[idx, valid_list] = True
+
+        # Mask invalid tokens to -inf
+        log_probs = log_probs.masked_fill(~mask, float('-inf'))
+
+        log_probs = log_probs.view(B, n_beams, C)
+        candidate_scores = scores.unsqueeze(-1) + log_probs  # (B, n_beams, C)
+        flat_scores = candidate_scores.view(B, -1)
+
+        # Top-k — cap at number of valid candidates
+        n_valid_total = mask.view(B, -1).any(dim=-1).sum().item()
+        if n_valid_total == 0:
+            break  # no valid continuations
+        k = min(beam_size, flat_scores.size(1))
+        topk_scores, topk_idx = flat_scores.topk(k, dim=-1)
+
+        beam_idx = topk_idx // C
+        token_idx = topk_idx % C
+
+        prev_beams = torch.gather(
+            beams, 1, beam_idx.unsqueeze(-1).expand(-1, -1, step)
+        ) if step > 0 else torch.zeros(B, k, 0, dtype=torch.long, device=device)
+
+        beams = torch.cat([prev_beams, token_idx.unsqueeze(-1)], dim=-1)
+        scores = topk_scores
+
+        # Trim dead beams (-inf score)
+        valid_beam_mask = scores > float('-inf')
+        n_alive = valid_beam_mask.sum(dim=1).max().item()
+        if n_alive < beams.size(1):
+            beams = beams[:, :max(n_alive, 1)]
+            scores = scores[:, :max(n_alive, 1)]
+
+    return beams, scores
 
 
 # ============================================================

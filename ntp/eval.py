@@ -20,7 +20,8 @@ from torch.utils.data import DataLoader
 
 from gr_demo.metrics.base import BaseMetric, MetricResult
 from gr_demo.ntp.baseline import NTPProbe, SIDSequenceDataset
-from gr_demo.ntp.model import NTPModel
+from gr_demo.ntp.model import NTPModel, SIDTrie, constrained_beam_search
+from gr_demo.ntp.train import EvalSequenceDataset, eval_collate_fn
 
 
 # ============================================================
@@ -118,6 +119,13 @@ class SemanticIDPredictionMetric(BaseMetric):
         eval_cids = eval_ckpt['eval_cids']
         sid_to_items = eval_ckpt['sid_to_items']
 
+        # Build SID trie for constrained beam search
+        sid_trie = SIDTrie(sid_to_items, n_layers)
+        if verbose:
+            n_sids = sum(len(v) for v in sid_trie.children[0].values())
+            print(f"  SID trie: {n_sids:,} root tokens, "
+                  f"{len(sid_to_items):,} complete SIDs")
+
         # Subsample eval if needed
         if eval_sample_size > 0 and len(eval_data) > eval_sample_size:
             random.seed(42)
@@ -137,10 +145,24 @@ class SemanticIDPredictionMetric(BaseMetric):
             n_train = train_meta.get('n_train', 0)
 
         # ── Eval ──
-        eval_loader = DataLoader(
-            SIDSequenceDataset(eval_data), batch_size=batch_size,
-            shuffle=False, num_workers=2, pin_memory=True,
-        )
+        # s-tier uses full user history (variable-length), probe uses fixed-length windows
+        varlen_eval = (model_type == 's-tier') and len(eval_data) > 0
+
+        if varlen_eval:
+            eval_loader = DataLoader(
+                EvalSequenceDataset(eval_data), batch_size=batch_size,
+                shuffle=False, num_workers=2, pin_memory=True,
+                collate_fn=eval_collate_fn,
+            )
+            if verbose:
+                input_lens = [len(d[0]) for d in eval_data]
+                print(f"  Variable-length eval: min={min(input_lens)}, "
+                      f"max={max(input_lens)}, avg={np.mean(input_lens):.0f} tokens")
+        else:
+            eval_loader = DataLoader(
+                SIDSequenceDataset(eval_data), batch_size=batch_size,
+                shuffle=False, num_workers=2, pin_memory=True,
+            )
 
         eval_losses = []
         depth_hit_10 = [0] * n_layers
@@ -151,57 +173,114 @@ class SemanticIDPredictionMetric(BaseMetric):
         eval_offset = 0
 
         with torch.no_grad():
-            for input_batch, target_batch in eval_loader:
+            for batch in eval_loader:
+                if varlen_eval:
+                    input_batch, target_batch, lengths = batch
+                    lengths = lengths.to(device, non_blocking=True)
+                else:
+                    input_batch, target_batch = batch
+                    lengths = None
+
                 input_batch = input_batch.to(device, non_blocking=True)
                 target_batch = target_batch.to(device, non_blocking=True)
                 B = input_batch.size(0)
 
                 if use_parallel:
                     logits_list = probe(input_batch)  # [(B, C_l), ...]
+
+                    # Per-layer CE loss
+                    loss = sum(
+                        F.cross_entropy(logits_list[l], target_batch[:, l])
+                        for l in range(n_layers)
+                    ) / n_layers
+                    eval_losses.append(loss.item() * B)
+
+                    # Per-layer hit@10
+                    prefix_hit_10 = torch.ones(B, dtype=torch.bool, device=device)
+                    for i in range(n_layers):
+                        top10 = logits_list[i].topk(10, dim=-1).indices
+                        hit = (top10 == target_batch[:, i:i+1]).any(dim=-1)
+                        prefix_hit_10 = prefix_hit_10 & hit
+                        depth_hit_10[i] += prefix_hit_10.sum().item()
+
+                elif varlen_eval:
+                    # Variable-length: process each sample for teacher-forced metrics
+                    batch_loss = 0.0
+                    for bi in range(B):
+                        L_ctx = lengths[bi].item()
+                        ctx = input_batch[bi, :L_ctx].unsqueeze(0)
+                        tgt = target_batch[bi].unsqueeze(0)
+                        teacher = torch.cat([ctx, tgt[:, :-1]], dim=1)
+                        logits_list_i = probe(teacher, return_last_n=n_layers)
+
+                        batch_loss += sum(
+                            F.cross_entropy(logits_list_i[l], tgt[:, l])
+                            for l in range(n_layers)
+                        ).item() / n_layers
+
+                        prefix_ok = True
+                        for li in range(n_layers):
+                            top10 = logits_list_i[li].topk(10, dim=-1).indices
+                            hit = (top10 == tgt[:, li:li+1]).any(dim=-1).item()
+                            prefix_ok = prefix_ok and hit
+                            if prefix_ok:
+                                depth_hit_10[li] += 1
+                            else:
+                                break
+                    eval_losses.append(batch_loss)
+
                 else:
                     teacher_input = torch.cat([input_batch, target_batch[:, :-1]], dim=1)
                     logits_list = probe(teacher_input, return_last_n=n_layers)
 
-                # Per-layer CE loss
-                loss = sum(
-                    F.cross_entropy(logits_list[l], target_batch[:, l])
-                    for l in range(n_layers)
-                ) / n_layers
-                eval_losses.append(loss.item() * B)
+                    # Per-layer CE loss
+                    loss = sum(
+                        F.cross_entropy(logits_list[l], target_batch[:, l])
+                        for l in range(n_layers)
+                    ) / n_layers
+                    eval_losses.append(loss.item() * B)
 
-                # Per-layer hit@10
-                prefix_hit_10 = torch.ones(B, dtype=torch.bool, device=device)
-                for i in range(n_layers):
-                    top10 = logits_list[i].topk(10, dim=-1).indices
-                    hit = (top10 == target_batch[:, i:i+1]).any(dim=-1)
-                    prefix_hit_10 = prefix_hit_10 & hit
-                    depth_hit_10[i] += prefix_hit_10.sum().item()
+                    # Per-layer hit@10
+                    prefix_hit_10 = torch.ones(B, dtype=torch.bool, device=device)
+                    for i in range(n_layers):
+                        top10 = logits_list[i].topk(10, dim=-1).indices
+                        hit = (top10 == target_batch[:, i:i+1]).any(dim=-1)
+                        prefix_hit_10 = prefix_hit_10 & hit
+                        depth_hit_10[i] += prefix_hit_10.sum().item()
 
                 if not use_parallel:
 
-                    # Beam search for recall
+                    # Trie-constrained beam search — every beam is a real SID
                     actual_beam = max(beam_size, recall_beam_size)
-                    chunk_size = max(1, 2048 // actual_beam)
-                    beam_parts = []
-                    for ci in range(0, B, chunk_size):
-                        chunk = input_batch[ci:ci + chunk_size]
-                        beams = probe.beam_search(chunk, beam_size=actual_beam)
-                        beam_parts.append(beams)
-                    all_beams = torch.cat(beam_parts, dim=0)
 
-                    pred_top1 = all_beams[:, 0, :]
-                    prefix_match = torch.ones(B, dtype=torch.bool, device=device)
-                    for i in range(n_layers):
-                        prefix_match = prefix_match & (pred_top1[:, i] == target_batch[:, i])
-                        depth_correct[i] += prefix_match.sum().item()
+                    # Process each sample individually (constrained search + varlen)
+                    for bi in range(B):
+                        if varlen_eval:
+                            L_ctx = lengths[bi].item()
+                            sample = input_batch[bi, :L_ctx].unsqueeze(0)
+                        else:
+                            sample = input_batch[bi:bi + 1]
 
-                    beams_cpu = all_beams.cpu()
-                    for j in range(B):
-                        target_cid = eval_cids[eval_offset + j]
+                        sample_beams, _ = constrained_beam_search(
+                            probe, sample, sid_trie, beam_size=actual_beam)
+                        # sample_beams: (1, n_beams, n_layers)
+
+                        # Depth accuracy (top-1 beam)
+                        pred_top1 = sample_beams[0, 0]  # (n_layers,)
+                        prefix_ok = True
+                        for li in range(n_layers):
+                            prefix_ok = prefix_ok and (pred_top1[li] == target_batch[bi, li]).item()
+                            if prefix_ok:
+                                depth_correct[li] += 1
+                            else:
+                                break
+
+                        # Item recall — every beam maps to real SID → items
+                        target_cid = eval_cids[eval_offset + bi]
                         candidates = []
                         seen = set()
-                        for bi in range(beams_cpu.size(1)):
-                            sid_str = '_'.join(str(t.item()) for t in beams_cpu[j, bi])
+                        for ki in range(sample_beams.size(1)):
+                            sid_str = '_'.join(str(t.item()) for t in sample_beams[0, ki])
                             for item in sid_to_items.get(sid_str, set()):
                                 if item not in seen:
                                     candidates.append(item)

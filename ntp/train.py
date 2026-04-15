@@ -187,16 +187,18 @@ def build_packed_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512,
                 flat.extend(toks)
             train_seqs.append(flat)
 
-        # Eval: items with ts > split_ts, using preceding n_items as context
+        # Eval: items with ts > split_ts, using full preceding history as context
+        max_context_items = max_seq_len // n_layers  # match training context window
         for i in range(n):
             if user_ts[i] <= split_ts:
                 continue
-            if i < n_items:
+            if i < 2:  # need at least 2 preceding items
                 continue
-            # Context: preceding n_items items (may include train-period items)
+            # Full history context: all items before position i (up to max_context_items)
+            ctx_start = max(0, i - max_context_items)
             input_tokens = []
-            for j in range(n_items):
-                input_tokens.extend(user_tokens[i - n_items + j])
+            for j in range(ctx_start, i):
+                input_tokens.extend(user_tokens[j])
             target_tokens = user_tokens[i]
             eval_data.append((input_tokens, target_tokens))
             eval_cids.append(user_iids[i])
@@ -284,6 +286,32 @@ def packed_collate_fn(batch):
     for i, seq in enumerate(batch):
         padded[i, :len(seq)] = seq
     return padded, lengths
+
+
+class EvalSequenceDataset(torch.utils.data.Dataset):
+    """Variable-length eval dataset: (input_tokens, target_tokens) where inputs vary in length."""
+
+    def __init__(self, samples):
+        self.inputs = [torch.tensor(s[0], dtype=torch.long) for s in samples]
+        self.targets = [torch.tensor(s[1], dtype=torch.long) for s in samples]
+
+    def __len__(self):
+        return len(self.inputs)
+
+    def __getitem__(self, idx):
+        return self.inputs[idx], self.targets[idx]
+
+
+def eval_collate_fn(batch):
+    """Collate variable-length inputs with right-padding. Targets are fixed-size."""
+    inputs, targets = zip(*batch)
+    lengths = torch.tensor([len(inp) for inp in inputs], dtype=torch.long)
+    max_len = lengths.max().item()
+    padded_inputs = torch.zeros(len(inputs), max_len, dtype=torch.long)
+    for i, inp in enumerate(inputs):
+        padded_inputs[i, :len(inp)] = inp
+    targets = torch.stack(targets)
+    return padded_inputs, targets, lengths
 
 
 # ============================================================
