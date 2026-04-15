@@ -1,12 +1,13 @@
 """统一 CLI — subcommand 分发。
 
 Usage:
-    python -m gr_demo train       --model qwen3-0.6b --input_path ...
-    python -m gr_demo eval        --results_path ... --model_path ...
-    python -m gr_demo eval-all    --models qwen3-0.6b qwen3-4b --quick
-    python -m gr_demo compare     --eval_dir eval_results
-    python -m gr_demo hyperparam  --model qwen3-0.6b --skip_embedding
-    python -m gr_demo pack        --rkmeans_s3_path ... --upload
+    python -m gr_demo train           --model qwen3-0.6b --input_path ...
+    python -m gr_demo eval            --results_path ... --model_path ...
+    python -m gr_demo eval-all        --models qwen3-0.6b qwen3-4b --quick
+    python -m gr_demo compare         --eval_dir eval_results
+    python -m gr_demo hyperparam      --model qwen3-0.6b --skip_embedding
+    python -m gr_demo preprocess-sid  --model qwen3-0.6b --behavior_path auto
+    python -m gr_demo pack            --rkmeans_s3_path ... --upload
 """
 
 import sys
@@ -21,8 +22,9 @@ def main():
         print("  eval        Evaluate a single model")
         print("  eval-all    Batch evaluate all models")
         print("  compare     Compare multiple model evaluations")
-        print("  hyperparam  Hyperparameter grid search")
-        print("  pack        Pack model.tar.gz for deployment")
+        print("  hyperparam      Hyperparameter grid search")
+        print("  preprocess-sid  Train tokenizer + cache SID assignments")
+        print("  pack            Pack model.tar.gz for deployment")
         sys.exit(1)
 
     command = sys.argv[1]
@@ -44,12 +46,15 @@ def main():
     elif command == 'hyperparam':
         from gr_demo.eval.hyperparam import main as hyperparam_main
         hyperparam_main()
+    elif command == 'preprocess-sid':
+        from gr_demo.eval.preprocess_sid import main as preprocess_main
+        preprocess_main()
     elif command == 'pack':
         from gr_demo.model.pack import main as pack_main
         pack_main()
     else:
         print(f"Unknown command: {command}")
-        print("Available commands: train, eval, eval-all, compare, hyperparam, pack")
+        print("Available commands: train, eval, eval-all, compare, hyperparam, preprocess-sid, pack")
         sys.exit(1)
 
 

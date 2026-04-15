@@ -3,32 +3,32 @@ set -e
 
 # EXP-010: NTP Baseline — MLP-FSQ SID 端到端 Recall
 # Date: 2026-04-15
-# MLP-FSQ h=64 tokenizer + 2-layer NTP probe, single config baseline
+# Step 1: preprocess-sid (训练 tokenizer + 缓存 SID，一次性)
+# Step 2: hyperparam --sid_cache (加载缓存，只跑 NTP eval)
 
 echo "=========================================="
 echo "EXP-010: NTP Baseline — MLP-FSQ + Probe"
 echo "=========================================="
 
-BEHAVIOR_PATH="auto"
+SID_CACHE="experiments/sid_cache/qwen3-0.6b"
 
-# ── Phase 0: Smoke test ──
-echo ""
-echo ">>> Phase 0: Smoke test (eval_sample_size=100, 验证 pipeline 完整)"
-CUDA_VISIBLE_DEVICES=0 python run.py hyperparam --skip_embedding \
-    --quantizer rkmeans_fsq --clusters 1024 \
-    --fsq_levels 6d_4096 --fsq_projection mlp --fsq_mlp_hidden 64 \
-    --behavior_path "$BEHAVIOR_PATH" \
-    --run_ntp --recall_beam_size 50 --eval_sample_size 100 \
-    --name exp010-smoke
-echo ">>> Smoke test passed!"
+# ── Step 1: Preprocess SID (skip if already cached) ──
+if [ -f "$SID_CACHE/semantic_ids.npy" ]; then
+    echo ""
+    echo ">>> Step 1: SID cache found at $SID_CACHE, skipping tokenizer training"
+    cat "$SID_CACHE/config.json"
+else
+    echo ""
+    echo ">>> Step 1: Training tokenizer + caching SIDs"
+    CUDA_VISIBLE_DEVICES=0 python run.py preprocess-sid \
+        --model qwen3-0.6b --behavior_path auto
+fi
 
-# ── Phase 1: Full baseline ──
+# ── Step 2: NTP eval from cache ──
 echo ""
-echo ">>> Phase 1: Full NTP baseline (eval_sample_size=50000)"
+echo ">>> Step 2: NTP baseline (eval_sample_size=50000, beam=50)"
 CUDA_VISIBLE_DEVICES=0 python run.py hyperparam --skip_embedding \
-    --quantizer rkmeans_fsq --clusters 1024 \
-    --fsq_levels 6d_4096 --fsq_projection mlp --fsq_mlp_hidden 64 \
-    --behavior_path "$BEHAVIOR_PATH" \
+    --sid_cache "$SID_CACHE" \
     --run_ntp --recall_beam_size 50 --eval_sample_size 50000 \
     --name exp010-ntp-baseline
 

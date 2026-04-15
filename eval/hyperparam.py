@@ -797,8 +797,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description='RKMeans Hyperparameter Grid Search')
     parser.add_argument('--model', type=str, default='qwen3-0.6b',
                         choices=list(MODEL_CONFIGS.keys()))
-    parser.add_argument('--skip_embedding', action='store_true', required=True,
-                        help='Must use cached embeddings')
+    parser.add_argument('--skip_embedding', action='store_true',
+                        help='Must use cached embeddings (required unless --sid_cache)')
     parser.add_argument('--behavior_path', type=str, default=None,
                         help='S3 path to behavior data for exposed IID filtering')
     parser.add_argument('--name', type=str, default=None,
@@ -849,13 +849,139 @@ def parse_args():
                         help='Beam size for item recall in NTP eval (default: 50)')
     parser.add_argument('--eval_sample_size', type=int, default=50000,
                         help='Max eval samples for NTP (0=all, default: 50000)')
+    parser.add_argument('--sid_cache', type=str, default=None,
+                        help='Path to preprocess-sid cache dir (skip tokenizer training)')
     parser.add_argument('--device', type=str, default='cuda')
 
     return parser.parse_args()
 
 
+def run_from_sid_cache(args):
+    """Load cached SIDs from preprocess-sid, run eval only (skip tokenizer training)."""
+    from gr_demo.eval.behavior import BehaviorMetricsEvaluator
+    from gr_demo.eval.wrapper import load_model_wrapper
+
+    cache_dir = args.sid_cache
+    print(f"Loading SID cache from {cache_dir}")
+
+    # Load cached artifacts
+    config_path = os.path.join(cache_dir, 'config.json')
+    with open(config_path) as f:
+        cache_config = json.load(f)
+    print(f"  Tokenizer: clusters={cache_config['num_clusters']}, "
+          f"fsq={cache_config['fsq_levels_key']}, "
+          f"items={cache_config['n_items']:,}, "
+          f"collision={cache_config['collision_rate']:.4f}")
+
+    sid_dict = np.load(os.path.join(cache_dir, 'semantic_ids.npy'), allow_pickle=True).item()
+    content_ids = np.array(list(sid_dict.keys()))
+    semantic_ids = [sid_dict[cid] for cid in content_ids]
+    print(f"  Loaded {len(semantic_ids):,} SID assignments")
+
+    model_data = torch.load(os.path.join(cache_dir, 'quantizer.pt'), map_location='cpu', weights_only=False)
+    model_wrapper = load_model_wrapper(model_data, device=args.device)
+
+    # Load embeddings (still needed for evaluator)
+    model_key = args.model
+    _, embedding_dim, _, _ = MODEL_CONFIGS[model_key]
+    embedding_cache_dir = f'{EFS_EMBEDDING_CACHE}/{model_key}'
+    incremental_cache_path = f'{embedding_cache_dir}/incremental_cache.npy'
+    embedding_cache_path = f'{embedding_cache_dir}/embeddings.npy'
+    content_ids_cache_path = f'{embedding_cache_dir}/content_ids.npy'
+
+    if os.path.exists(incremental_cache_path):
+        emb_dict = np.load(incremental_cache_path, allow_pickle=True).item()
+        # Align embeddings to cached content_ids order
+        embeddings = np.array([emb_dict[cid] for cid in content_ids if cid in emb_dict], dtype=np.float32)
+        valid_mask = np.array([cid in emb_dict for cid in content_ids])
+        content_ids = content_ids[valid_mask]
+        semantic_ids = [sid for sid, v in zip(semantic_ids, valid_mask) if v]
+    elif os.path.exists(embedding_cache_path):
+        all_embeddings = np.load(embedding_cache_path, allow_pickle=True)
+        all_cids = np.load(content_ids_cache_path, allow_pickle=True)
+        cid_to_idx = {str(c): i for i, c in enumerate(all_cids)}
+        indices = [cid_to_idx[cid] for cid in content_ids if cid in cid_to_idx]
+        embeddings = all_embeddings[indices]
+    else:
+        raise FileNotFoundError(f"Embedding cache not found at {embedding_cache_dir}")
+
+    eval_tensor = torch.tensor(embeddings, dtype=torch.float32)
+    print(f"  Loaded {len(eval_tensor):,} embeddings")
+
+    # Load behavior data
+    from gr_demo.eval.batch import load_all_behavior_data
+    behavior_data = load_all_behavior_data()
+    print(f"  Behavior data: {len(behavior_data['uid']):,} interactions")
+
+    # Evaluate
+    evaluator = BehaviorMetricsEvaluator(
+        embeddings=eval_tensor,
+        content_ids=content_ids,
+        semantic_ids=semantic_ids,
+        model=model_wrapper,
+        behavior_data=behavior_data,
+        device=args.device,
+    )
+
+    run_ntp = args.run_ntp and not args.skip_ntp
+    if not args.only_sid:
+        evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
+    evaluator.register_metrics(['embedding_hit_rate'])
+    evaluator.register_metrics(['semantic_neighbor_hit_rate'])
+
+    sid_kwargs = {}
+    if run_ntp:
+        evaluator.register_metrics(['semantic_id_prediction'])
+        sid_kwargs['semantic_id_prediction'] = {
+            'device': args.device,
+            'recall_beam_size': args.recall_beam_size,
+            'eval_sample_size': args.eval_sample_size,
+        }
+
+    metric_results = evaluator.evaluate(metric_kwargs=sid_kwargs)
+
+    # Output results
+    exp_name = args.name or 'sid-cache'
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    exp_dir = os.path.join(repo_root, "experiments", "hyperparam", f"{date.today().isoformat()}_{exp_name}")
+    os.makedirs(exp_dir, exist_ok=True)
+
+    results = {}
+    for mr in metric_results.values():
+        results.update(mr.to_flat_dict())
+
+    result_entry = {
+        'quantizer_type': 'rkmeans_fsq',
+        'sid_cache': cache_dir,
+        'metrics': results,
+        **{k: v for k, v in cache_config.items() if k in ('num_clusters', 'fsq_levels_key', 'collision_rate', 'n_items')},
+    }
+
+    json_path = os.path.join(exp_dir, "results.json")
+    with open(json_path, 'w') as f:
+        json.dump([result_entry], f, indent=2, default=str)
+    print(f"\nResults saved to {json_path}")
+
+    # Print summary
+    print(f"\n{'='*60}")
+    print("Results Summary")
+    print(f"{'='*60}")
+    for key, val in sorted(results.items()):
+        if isinstance(val, float):
+            print(f"  {key}: {val:.6f}")
+        else:
+            print(f"  {key}: {val}")
+
+
 def main():
     args = parse_args()
+
+    # --sid_cache 快速路径: 跳过 tokenizer 训练，直接用缓存的 SID
+    if args.sid_cache:
+        return run_from_sid_cache(args)
+
+    if not args.skip_embedding:
+        raise ValueError("Grid search requires --skip_embedding (or use --sid_cache)")
 
     # 搜索空间
     clusters_list = args.clusters or GRID['num_clusters']
