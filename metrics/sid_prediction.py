@@ -58,7 +58,7 @@ class NTPProbe(nn.Module):
 
     def __init__(
         self,
-        n_clusters: int,
+        n_clusters_per_layer: list,
         n_sid_layers: int,
         n_items: int = 10,
         embed_dim: int = 256,
@@ -69,16 +69,17 @@ class NTPProbe(nn.Module):
         parallel: bool = False,
     ):
         super().__init__()
-        self.n_clusters = n_clusters
+        assert len(n_clusters_per_layer) == n_sid_layers
+        self.n_clusters_per_layer = n_clusters_per_layer
         self.n_sid_layers = n_sid_layers
         self.n_items = n_items
         self.embed_dim = embed_dim
         self.parallel = parallel
         self.seq_len = n_items * n_sid_layers
 
-        # Per-layer token embeddings (different codebooks per SID layer)
+        # Per-layer token embeddings (different codebook per SID layer)
         self.token_embs = nn.ModuleList([
-            nn.Embedding(n_clusters, embed_dim) for _ in range(n_sid_layers)
+            nn.Embedding(nc, embed_dim) for nc in n_clusters_per_layer
         ])
         max_len = self.seq_len + n_sid_layers
         self.pos_emb = nn.Embedding(max_len, embed_dim)
@@ -90,18 +91,10 @@ class NTPProbe(nn.Module):
         )
         self.decoder = nn.TransformerDecoder(layer, num_layers=n_transformer_layers)
 
-        if parallel:
-            # RPG-style: independent MLP head per SID token position
-            self.heads = nn.ModuleList([
-                nn.Sequential(
-                    nn.Linear(embed_dim, ffn_dim), nn.GELU(),
-                    nn.Linear(ffn_dim, n_clusters),
-                )
-                for _ in range(n_sid_layers)
-            ])
-        else:
-            # Shared output projection (autoregressive)
-            self.output_proj = nn.Linear(embed_dim, n_clusters)
+        # Per-layer output projections (different codebook sizes)
+        self.output_projs = nn.ModuleList([
+            nn.Linear(embed_dim, nc) for nc in n_clusters_per_layer
+        ])
 
     def _embed_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
         """Per-layer token embedding lookup. Position i uses token_embs[i % n_sid_layers]."""
@@ -122,17 +115,15 @@ class NTPProbe(nn.Module):
 
     def forward(self, input_tokens: torch.Tensor,
                 generated_tokens: Optional[torch.Tensor] = None,
-                return_last_n: int = 1) -> torch.Tensor:
+                return_last_n: int = 1):
         """
         Args:
             input_tokens: (B, seq_len) history SID tokens
             generated_tokens: (B, k) already-generated target tokens (AR mode only)
             return_last_n: number of trailing positions to return logits for.
-                           1 = last position only (inference), n_sid_layers = teacher-forced training.
         Returns:
-            logits: (B, n_clusters) if return_last_n=1,
-                    (B, return_last_n, n_clusters) if return_last_n>1,
-                    or (B, n_sid_layers, n_clusters) for parallel mode.
+            if return_last_n=1: (B, C_layer) single logit tensor
+            if return_last_n>1: list of n tensors [(B, C_l0), (B, C_l1), ...] per-layer logits
         """
         B = input_tokens.size(0)
         device = input_tokens.device
@@ -150,9 +141,8 @@ class NTPProbe(nn.Module):
             # Pool last position as sequence representation
             s = memory[:, -1, :]  # (B, D)
 
-            # Independent head per SID token
-            all_logits = torch.stack([head(s) for head in self.heads], dim=1)  # (B, L, C)
-            return all_logits
+            # Per-layer output projection (different codebook sizes)
+            return [self.output_projs[l](s) for l in range(self.n_sid_layers)]
         else:
             # Autoregressive: concatenate history + generated tokens
             if generated_tokens is not None and generated_tokens.size(1) > 0:
@@ -168,10 +158,17 @@ class NTPProbe(nn.Module):
             out = self.decoder(x, x, tgt_mask=causal_mask)
 
             if return_last_n == 1:
-                logits = self.output_proj(out[:, -1, :])  # (B, C)
+                # Position T-1 predicts next token at layer (T % n_sid_layers)
+                target_layer = T % self.n_sid_layers
+                return self.output_projs[target_layer](out[:, -1, :])  # (B, C_l)
             else:
-                logits = self.output_proj(out[:, -return_last_n:, :])  # (B, N, C)
-            return logits
+                # return_last_n positions, each with its own codebook size
+                logits_list = []
+                for i in range(return_last_n):
+                    pos = T - return_last_n + i
+                    target_layer = (pos + 1) % self.n_sid_layers
+                    logits_list.append(self.output_projs[target_layer](out[:, pos, :]))
+                return logits_list  # [(B, C_l0), (B, C_l1), ...]
 
     @torch.no_grad()
     def beam_search(self, input_tokens: torch.Tensor, beam_size: int = 5) -> torch.Tensor:
@@ -296,7 +293,7 @@ class SemanticIDPredictionMetric(BaseMetric):
 
         n_params = sum(p.numel() for p in probe.parameters())
         n_layers = probe_config['n_sid_layers']
-        n_clusters = probe_config['n_clusters']
+        n_clusters_per_layer = probe_config['n_clusters_per_layer']
         use_parallel = probe_config['parallel']
 
         if verbose:
@@ -352,48 +349,27 @@ class SemanticIDPredictionMetric(BaseMetric):
                 B = input_batch.size(0)
 
                 if use_parallel:
-                    logits = probe(input_batch)  # (B, L, C)
-                    loss = F.cross_entropy(
-                        logits.reshape(-1, n_clusters), target_batch.reshape(-1)
-                    )
-                    eval_losses.append(loss.item() * B)
-
-                    # Per-layer hit@10
-                    for i in range(n_layers):
-                        top10 = logits[:, i, :].topk(10, dim=-1).indices
-                        hit = (top10 == target_batch[:, i:i+1]).any(dim=-1)
-                        depth_hit_10[i] += hit.sum().item()
-
-                    # Item recall: take argmax per position as predicted SID
-                    pred_sids = logits.argmax(dim=-1)  # (B, L)
-                    prefix_match = torch.ones(B, dtype=torch.bool, device=device)
-                    for i in range(n_layers):
-                        prefix_match = prefix_match & (pred_sids[:, i] == target_batch[:, i])
-                        depth_correct[i] += prefix_match.sum().item()
-
-                    for j in range(B):
-                        sid_str = '_'.join(str(t.item()) for t in pred_sids[j])
-                        target_cid = eval_cids[eval_offset + j]
-                        candidates = list(sid_to_items.get(sid_str, set()))
-                        for k in recall_ks:
-                            if target_cid in set(candidates[:k]):
-                                item_recall[k] += 1
+                    logits_list = probe(input_batch)  # [(B, C_l), ...]
                 else:
-                    # AR eval: teacher-forced loss + hit@10 (single forward)
                     teacher_input = torch.cat([input_batch, target_batch[:, :-1]], dim=1)
-                    logits = probe(teacher_input, return_last_n=n_layers)  # (B, L, C)
-                    loss = F.cross_entropy(
-                        logits.reshape(-1, n_clusters), target_batch.reshape(-1)
-                    )
-                    eval_losses.append(loss.item() * B)
+                    logits_list = probe(teacher_input, return_last_n=n_layers)
 
-                    # Per-layer hit@10 (cumulative prefix)
-                    prefix_hit_10 = torch.ones(B, dtype=torch.bool, device=device)
-                    for i in range(n_layers):
-                        top10 = logits[:, i, :].topk(10, dim=-1).indices
-                        hit = (top10 == target_batch[:, i:i+1]).any(dim=-1)
-                        prefix_hit_10 = prefix_hit_10 & hit
-                        depth_hit_10[i] += prefix_hit_10.sum().item()
+                # Per-layer CE loss
+                loss = sum(
+                    F.cross_entropy(logits_list[l], target_batch[:, l])
+                    for l in range(n_layers)
+                ) / n_layers
+                eval_losses.append(loss.item() * B)
+
+                # Per-layer hit@10
+                prefix_hit_10 = torch.ones(B, dtype=torch.bool, device=device)
+                for i in range(n_layers):
+                    top10 = logits_list[i].topk(10, dim=-1).indices
+                    hit = (top10 == target_batch[:, i:i+1]).any(dim=-1)
+                    prefix_hit_10 = prefix_hit_10 & hit
+                    depth_hit_10[i] += prefix_hit_10.sum().item()
+
+                if not use_parallel:
 
                     # Beam search for recall
                     actual_beam = max(beam_size, recall_beam_size)

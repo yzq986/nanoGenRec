@@ -72,7 +72,7 @@ def build_sequences(sid_dict, behavior_data, n_items=10, verbose_fn=print):
         eval_cids:  list of target content_ids (aligned with eval_data)
         sid_to_items: dict {sid_string: set of content_ids}
         n_layers: int
-        n_clusters: int
+        n_clusters_per_layer: list of int (codebook size per SID layer)
     """
     # content_id -> token list
     content_to_tokens = {}
@@ -84,7 +84,11 @@ def build_sequences(sid_dict, behavior_data, n_items=10, verbose_fn=print):
             content_to_tokens[cid] = [int(t) for t in sid_str]
 
     n_layers = len(next(iter(content_to_tokens.values())))
-    n_clusters = max(max(t) for t in content_to_tokens.values()) + 1
+    # Per-layer codebook sizes (e.g. [1024, 1024, 4096])
+    n_clusters_per_layer = []
+    for l in range(n_layers):
+        max_token = max(tokens[l] for tokens in content_to_tokens.values())
+        n_clusters_per_layer.append(max_token + 1)
 
     # SID -> items reverse mapping (for recall eval)
     sid_to_items = defaultdict(set)
@@ -134,10 +138,10 @@ def build_sequences(sid_dict, behavior_data, n_items=10, verbose_fn=print):
 
     verbose_fn(f"  Total samples: {len(all_samples):,} "
                f"(train={len(train_data):,}, eval={len(eval_data):,})")
-    verbose_fn(f"  SID: {n_layers} layers x {n_clusters} clusters")
+    verbose_fn(f"  SID: {n_layers} layers, codebooks={n_clusters_per_layer}")
     verbose_fn(f"  Unique SIDs with items: {len(sid_to_items):,}")
 
-    return train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters
+    return train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer
 
 
 # ============================================================
@@ -146,7 +150,7 @@ def build_sequences(sid_dict, behavior_data, n_items=10, verbose_fn=print):
 
 def train_probe(
     train_data,
-    n_clusters,
+    n_clusters_per_layer,
     n_layers,
     n_items,
     local_rank,
@@ -165,7 +169,7 @@ def train_probe(
     use_parallel = n_layers >= 5
 
     probe = NTPProbe(
-        n_clusters=n_clusters,
+        n_clusters_per_layer=n_clusters_per_layer,
         n_sid_layers=n_layers,
         n_items=n_items,
         embed_dim=embed_dim,
@@ -212,16 +216,16 @@ def train_probe(
         target_batch = target_batch.to(device, non_blocking=True)
 
         if use_parallel:
-            logits = probe(input_batch)
-            loss = F.cross_entropy(
-                logits.reshape(-1, n_clusters), target_batch.reshape(-1)
-            )
+            logits_list = probe(input_batch)  # [(B, C_l), ...]
         else:
             teacher_input = torch.cat([input_batch, target_batch[:, :-1]], dim=1)
-            logits = probe(teacher_input, return_last_n=n_layers)
-            loss = F.cross_entropy(
-                logits.reshape(-1, n_clusters), target_batch.reshape(-1)
-            )
+            logits_list = probe(teacher_input, return_last_n=n_layers)  # [(B, C_l), ...]
+
+        # Per-layer CE loss (different codebook sizes)
+        loss = sum(
+            F.cross_entropy(logits_list[l], target_batch[:, l])
+            for l in range(n_layers)
+        ) / n_layers
 
         optimizer.zero_grad()
         loss.backward()
@@ -251,14 +255,14 @@ def train_probe(
 # ============================================================
 
 def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
-                    sid_to_items, n_clusters, n_layers, n_items,
+                    sid_to_items, n_clusters_per_layer, n_layers, n_items,
                     avg_loss, n_params, sid_cache_dir):
     """Save probe checkpoint + eval data (rank 0 only)."""
     os.makedirs(output_dir, exist_ok=True)
 
     # 1. Probe checkpoint
     probe_config = {
-        'n_clusters': n_clusters,
+        'n_clusters_per_layer': n_clusters_per_layer,
         'n_sid_layers': n_layers,
         'n_items': n_items,
         'embed_dim': probe.embed_dim,
@@ -283,7 +287,7 @@ def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
     meta = {
         'n_train': len(train_data),
         'n_eval': len(eval_data),
-        'n_clusters': n_clusters,
+        'n_clusters_per_layer': n_clusters_per_layer,
         'n_layers': n_layers,
         'n_items': n_items,
         'n_params': n_params,
@@ -351,7 +355,7 @@ def main():
     # ── Build sequences (all ranks do this identically) ──
     log(is_main, "\nStep 3: Building user sequences")
     verbose_fn = (lambda msg: print(msg)) if is_main else (lambda msg: None)
-    train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters = \
+    train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = \
         build_sequences(sid_dict, behavior_data, n_items=args.n_items,
                         verbose_fn=verbose_fn)
 
@@ -359,7 +363,7 @@ def main():
     log(is_main, f"\nStep 4: Training")
     probe, avg_loss, n_params = train_probe(
         train_data=train_data,
-        n_clusters=n_clusters,
+        n_clusters_per_layer=n_clusters_per_layer,
         n_layers=n_layers,
         n_items=args.n_items,
         local_rank=local_rank,
@@ -388,7 +392,7 @@ def main():
             eval_data=eval_data,
             eval_cids=eval_cids,
             sid_to_items=sid_to_items,
-            n_clusters=n_clusters,
+            n_clusters_per_layer=n_clusters_per_layer,
             n_layers=n_layers,
             n_items=args.n_items,
             avg_loss=avg_loss,
