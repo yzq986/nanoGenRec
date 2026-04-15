@@ -52,7 +52,7 @@ if [ "${N_GPUS}" -gt 1 ]; then
         --sid_cache "${SID_CACHE}" \
         --output_dir "${SMOKE_CKPT}" \
         --model s-tier \
-        --batch_size 512 \
+        --batch_size 64 \
         --date_start 2026-03-31 --date_end 2026-03-31 \
         --name exp013-smoke
 else
@@ -60,7 +60,7 @@ else
         --sid_cache "${SID_CACHE}" \
         --output_dir "${SMOKE_CKPT}" \
         --model s-tier \
-        --batch_size 512 \
+        --batch_size 64 \
         --date_start 2026-03-31 --date_end 2026-03-31 \
         --name exp013-smoke
 fi
@@ -121,7 +121,7 @@ train_and_eval() {
 train_and_eval "exp013-probe" "probe" "NTPProbe — 2L dense, ~5M params" 4096
 
 # ── Config B: S-tier (NTPModel, 6L MoE, packed sequences) ──
-train_and_eval "exp013-s-tier" "s-tier" "NTPModel — 6L MoE (8E top-2), packed training" 256
+train_and_eval "exp013-s-tier" "s-tier" "NTPModel — 6L MoE (8E top-2), packed training" 128
 
 # ── Commit results ──
 echo ""
