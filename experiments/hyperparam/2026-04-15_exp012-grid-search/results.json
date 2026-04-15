@@ -1,0 +1,927 @@
+[
+  {
+    "name": "1024-binary",
+    "metrics": {
+      "semantic_id_collision": 0.0788,
+      "codebook_utilization": 0.0004,
+      "cluster_balance": 0.0828,
+      "semantic_neighbor_hit_rate": 0.078,
+      "quantizer_type": "rkmeans_fsq",
+      "source": "exp-011",
+      "fsq_levels_key": "10d_1024",
+      "fsq_codebook_size": 1024
+    },
+    "source": "exp-011 (merged)"
+  },
+  {
+    "name": "1024-multi",
+    "metrics": {
+      "semantic_id_collision": 0.1463,
+      "codebook_utilization": 0.0004,
+      "cluster_balance": 0.1509,
+      "semantic_neighbor_hit_rate": 0.078,
+      "quantizer_type": "rkmeans_fsq",
+      "source": "exp-011",
+      "fsq_levels_key": "5d_1024",
+      "fsq_codebook_size": 1024
+    },
+    "source": "exp-011 (merged)"
+  },
+  {
+    "name": "2048-binary",
+    "description": "2048\u00d73 binary [2]\u00d711",
+    "quantizer_type": "rkmeans_fsq",
+    "num_clusters": 2048,
+    "fsq_levels_key": "11d_2048",
+    "fsq_levels": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "total_bits": 33,
+    "metrics": {
+      "semantic_id_collision": 0.0203,
+      "semantic_id_collision_depth": [
+        0.9958,
+        0.4762,
+        0.0223
+      ],
+      "semantic_id_collision_prefix_stats": [
+        {
+          "depth": 1,
+          "n_unique_prefix": 2048,
+          "collision_rate": 0.9958,
+          "conflict_rate": 0.9858,
+          "exclusivity": 0.0001,
+          "avg_items": 237.68,
+          "min": 1,
+          "max": 876,
+          "p50": 235,
+          "p90": 412,
+          "p99": 570,
+          "le_1": 29,
+          "le_2": 62,
+          "le_5": 120,
+          "le_10": 158,
+          "le_50": 225,
+          "le_100": 343,
+          "le_500": 1990,
+          "gt_500": 58
+        },
+        {
+          "depth": 2,
+          "n_unique_prefix": 254945,
+          "collision_rate": 0.4762,
+          "conflict_rate": 0.4178,
+          "exclusivity": 0.305,
+          "avg_items": 1.91,
+          "min": 1,
+          "max": 115,
+          "p50": 1,
+          "p90": 4,
+          "p99": 9,
+          "le_1": 148441,
+          "le_2": 202998,
+          "le_5": 245394,
+          "le_10": 253673,
+          "le_50": 254940,
+          "le_100": 254943,
+          "le_500": 254945,
+          "gt_500": 0
+        },
+        {
+          "depth": 3,
+          "n_unique_prefix": 475928,
+          "collision_rate": 0.0223,
+          "conflict_rate": 0.0203,
+          "exclusivity": 0.9579,
+          "avg_items": 1.02,
+          "min": 1,
+          "max": 17,
+          "p50": 1,
+          "p90": 1,
+          "p99": 2,
+          "le_1": 466257,
+          "le_2": 475129,
+          "le_5": 475889,
+          "le_10": 475920,
+          "le_50": 475928,
+          "le_100": 475928,
+          "le_500": 475928,
+          "gt_500": 0
+        }
+      ],
+      "semantic_id_collision_prefix_avg_items": [
+        237.68,
+        1.91,
+        1.02
+      ],
+      "codebook_utilization": 0.0001,
+      "codebook_utilization_depth": [
+        1.0,
+        0.0608,
+        0.0001
+      ],
+      "codebook_utilization_depth_stats": [
+        {
+          "depth": 1,
+          "n_unique": 2048,
+          "theoretical_space": 2048,
+          "utilization": 1.0
+        },
+        {
+          "depth": 2,
+          "n_unique": 254945,
+          "theoretical_space": 4194304,
+          "utilization": 0.06078362464904785
+        },
+        {
+          "depth": 3,
+          "n_unique": 475928,
+          "theoretical_space": 8589934592,
+          "utilization": 5.540531128644943e-05
+        }
+      ],
+      "codebook_utilization_space_utilization": 5.540531128644943e-05,
+      "cluster_balance": 0.0219,
+      "cluster_balance_depth": [
+        0.3255,
+        0.3536,
+        0.0219
+      ],
+      "cluster_balance_depth_stats": [
+        {
+          "depth": 1,
+          "gini": 0.3255,
+          "cv": 0.5752,
+          "n_unique_prefix": 2048,
+          "min_count": 1.0,
+          "max_count": 876.0,
+          "mean_count": 237.68
+        },
+        {
+          "depth": 2,
+          "gini": 0.3536,
+          "cv": 0.9028,
+          "n_unique_prefix": 254945,
+          "min_count": 1.0,
+          "max_count": 115.0,
+          "mean_count": 1.91
+        },
+        {
+          "depth": 3,
+          "gini": 0.0219,
+          "cv": 0.1731,
+          "n_unique_prefix": 475928,
+          "min_count": 1.0,
+          "max_count": 17.0,
+          "mean_count": 1.02
+        }
+      ],
+      "semantic_neighbor_hit_rate": 0.0825,
+      "neighbor_coverage": 0.7012,
+      "n_contents_evaluated": 3506,
+      "quantizer_type": "rkmeans_fsq",
+      "fsq_levels_key": "11d_2048",
+      "fsq_codebook_size": 2048,
+      "total_bits": 33
+    },
+    "kmeans_time": 403.7,
+    "fsq_time": 51.9
+  },
+  {
+    "name": "2048-multi",
+    "description": "2048\u00d73 mixed [4,4,4,4,4,2]",
+    "quantizer_type": "rkmeans_fsq",
+    "num_clusters": 2048,
+    "fsq_levels_key": "6d_2048",
+    "fsq_levels": [
+      4,
+      4,
+      4,
+      4,
+      4,
+      2
+    ],
+    "total_bits": 33,
+    "metrics": {
+      "semantic_id_collision": 0.0448,
+      "semantic_id_collision_depth": [
+        0.9958,
+        0.4762,
+        0.0489
+      ],
+      "semantic_id_collision_prefix_stats": [
+        {
+          "depth": 1,
+          "n_unique_prefix": 2048,
+          "collision_rate": 0.9958,
+          "conflict_rate": 0.9858,
+          "exclusivity": 0.0001,
+          "avg_items": 237.68,
+          "min": 1,
+          "max": 876,
+          "p50": 235,
+          "p90": 412,
+          "p99": 570,
+          "le_1": 29,
+          "le_2": 62,
+          "le_5": 120,
+          "le_10": 158,
+          "le_50": 225,
+          "le_100": 343,
+          "le_500": 1990,
+          "gt_500": 58
+        },
+        {
+          "depth": 2,
+          "n_unique_prefix": 254945,
+          "collision_rate": 0.4762,
+          "conflict_rate": 0.4178,
+          "exclusivity": 0.305,
+          "avg_items": 1.91,
+          "min": 1,
+          "max": 115,
+          "p50": 1,
+          "p90": 4,
+          "p99": 9,
+          "le_1": 148441,
+          "le_2": 202998,
+          "le_5": 245394,
+          "le_10": 253673,
+          "le_50": 254940,
+          "le_100": 254943,
+          "le_500": 254945,
+          "gt_500": 0
+        },
+        {
+          "depth": 3,
+          "n_unique_prefix": 462944,
+          "collision_rate": 0.0489,
+          "conflict_rate": 0.0448,
+          "exclusivity": 0.9085,
+          "avg_items": 1.05,
+          "min": 1,
+          "max": 39,
+          "p50": 1,
+          "p90": 1,
+          "p99": 2,
+          "le_1": 442218,
+          "le_2": 460724,
+          "le_5": 462875,
+          "le_10": 462931,
+          "le_50": 462944,
+          "le_100": 462944,
+          "le_500": 462944,
+          "gt_500": 0
+        }
+      ],
+      "semantic_id_collision_prefix_avg_items": [
+        237.68,
+        1.91,
+        1.05
+      ],
+      "codebook_utilization": 0.0001,
+      "codebook_utilization_depth": [
+        1.0,
+        0.0608,
+        0.0001
+      ],
+      "codebook_utilization_depth_stats": [
+        {
+          "depth": 1,
+          "n_unique": 2048,
+          "theoretical_space": 2048,
+          "utilization": 1.0
+        },
+        {
+          "depth": 2,
+          "n_unique": 254945,
+          "theoretical_space": 4194304,
+          "utilization": 0.06078362464904785
+        },
+        {
+          "depth": 3,
+          "n_unique": 462944,
+          "theoretical_space": 8136949760,
+          "utilization": 5.689404674412049e-05
+        }
+      ],
+      "codebook_utilization_space_utilization": 5.689404674412049e-05,
+      "cluster_balance": 0.047,
+      "cluster_balance_depth": [
+        0.3255,
+        0.3536,
+        0.047
+      ],
+      "cluster_balance_depth_stats": [
+        {
+          "depth": 1,
+          "gini": 0.3255,
+          "cv": 0.5752,
+          "n_unique_prefix": 2048,
+          "min_count": 1.0,
+          "max_count": 876.0,
+          "mean_count": 237.68
+        },
+        {
+          "depth": 2,
+          "gini": 0.3536,
+          "cv": 0.9028,
+          "n_unique_prefix": 254945,
+          "min_count": 1.0,
+          "max_count": 115.0,
+          "mean_count": 1.91
+        },
+        {
+          "depth": 3,
+          "gini": 0.047,
+          "cv": 0.2596,
+          "n_unique_prefix": 462944,
+          "min_count": 1.0,
+          "max_count": 39.0,
+          "mean_count": 1.05
+        }
+      ],
+      "semantic_neighbor_hit_rate": 0.0825,
+      "neighbor_coverage": 0.7012,
+      "n_contents_evaluated": 3506,
+      "quantizer_type": "rkmeans_fsq",
+      "fsq_levels_key": "6d_2048",
+      "fsq_codebook_size": 2048,
+      "total_bits": 33
+    },
+    "kmeans_time": 403.7,
+    "fsq_time": 62.7
+  },
+  {
+    "name": "4096-binary",
+    "metrics": {
+      "semantic_id_collision": 0.0089,
+      "codebook_utilization": 0.0,
+      "cluster_balance": 0.0095,
+      "semantic_neighbor_hit_rate": 0.0951,
+      "quantizer_type": "rkmeans_fsq",
+      "source": "exp-011",
+      "fsq_levels_key": "12d_4096",
+      "fsq_codebook_size": 4096
+    },
+    "source": "exp-011 (merged)"
+  },
+  {
+    "name": "4096-multi",
+    "metrics": {
+      "semantic_id_collision": 0.0084,
+      "codebook_utilization": 0.0,
+      "cluster_balance": 0.009,
+      "semantic_neighbor_hit_rate": 0.0951,
+      "quantizer_type": "rkmeans_fsq",
+      "source": "exp-011",
+      "fsq_levels_key": "6d_4096",
+      "fsq_codebook_size": 4096
+    },
+    "source": "exp-011 (merged)"
+  },
+  {
+    "name": "8192-binary",
+    "description": "8192\u00d73 binary [2]\u00d713",
+    "quantizer_type": "rkmeans_fsq",
+    "num_clusters": 8192,
+    "fsq_levels_key": "13d_8192",
+    "fsq_levels": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "total_bits": 39,
+    "metrics": {
+      "semantic_id_collision": 0.0035,
+      "semantic_id_collision_depth": [
+        0.9832,
+        0.1784,
+        0.0038
+      ],
+      "semantic_id_collision_prefix_stats": [
+        {
+          "depth": 1,
+          "n_unique_prefix": 8192,
+          "collision_rate": 0.9832,
+          "conflict_rate": 0.9326,
+          "exclusivity": 0.0011,
+          "avg_items": 59.42,
+          "min": 1,
+          "max": 384,
+          "p50": 50,
+          "p90": 133,
+          "p99": 207,
+          "le_1": 552,
+          "le_2": 965,
+          "le_5": 1736,
+          "le_10": 2275,
+          "le_50": 4096,
+          "le_100": 6355,
+          "le_500": 8192,
+          "gt_500": 0
+        },
+        {
+          "depth": 2,
+          "n_unique_prefix": 399937,
+          "collision_rate": 0.1784,
+          "conflict_rate": 0.1555,
+          "exclusivity": 0.6939,
+          "avg_items": 1.22,
+          "min": 1,
+          "max": 58,
+          "p50": 1,
+          "p90": 2,
+          "p99": 4,
+          "le_1": 337754,
+          "le_2": 384890,
+          "le_5": 398979,
+          "le_10": 399853,
+          "le_50": 399932,
+          "le_100": 399937,
+          "le_500": 399937,
+          "gt_500": 0
+        },
+        {
+          "depth": 3,
+          "n_unique_prefix": 484932,
+          "collision_rate": 0.0038,
+          "conflict_rate": 0.0035,
+          "exclusivity": 0.9927,
+          "avg_items": 1.0,
+          "min": 1,
+          "max": 12,
+          "p50": 1,
+          "p90": 1,
+          "p99": 1,
+          "le_1": 483234,
+          "le_2": 484835,
+          "le_5": 484929,
+          "le_10": 484931,
+          "le_50": 484932,
+          "le_100": 484932,
+          "le_500": 484932,
+          "gt_500": 0
+        }
+      ],
+      "semantic_id_collision_prefix_avg_items": [
+        59.42,
+        1.22,
+        1.0
+      ],
+      "codebook_utilization": 0.0,
+      "codebook_utilization_depth": [
+        1.0,
+        0.006,
+        0.0
+      ],
+      "codebook_utilization_depth_stats": [
+        {
+          "depth": 1,
+          "n_unique": 8192,
+          "theoretical_space": 8192,
+          "utilization": 1.0
+        },
+        {
+          "depth": 2,
+          "n_unique": 399937,
+          "theoretical_space": 67108864,
+          "utilization": 0.00595952570438385
+        },
+        {
+          "depth": 3,
+          "n_unique": 484932,
+          "theoretical_space": 549755813888,
+          "utilization": 8.820861694402993e-07
+        }
+      ],
+      "codebook_utilization_space_utilization": 8.820861694402993e-07,
+      "cluster_balance": 0.0038,
+      "cluster_balance_depth": [
+        0.498,
+        0.1572,
+        0.0038
+      ],
+      "cluster_balance_depth_stats": [
+        {
+          "depth": 1,
+          "gini": 0.498,
+          "cv": 0.9064,
+          "n_unique_prefix": 8192,
+          "min_count": 1.0,
+          "max_count": 384.0,
+          "mean_count": 59.42
+        },
+        {
+          "depth": 2,
+          "gini": 0.1572,
+          "cv": 0.5512,
+          "n_unique_prefix": 399937,
+          "min_count": 1.0,
+          "max_count": 58.0,
+          "mean_count": 1.22
+        },
+        {
+          "depth": 3,
+          "gini": 0.0038,
+          "cv": 0.0682,
+          "n_unique_prefix": 484932,
+          "min_count": 1.0,
+          "max_count": 12.0,
+          "mean_count": 1.0
+        }
+      ],
+      "semantic_neighbor_hit_rate": 0.1042,
+      "neighbor_coverage": 0.3112,
+      "n_contents_evaluated": 1556,
+      "quantizer_type": "rkmeans_fsq",
+      "fsq_levels_key": "13d_8192",
+      "fsq_codebook_size": 8192,
+      "total_bits": 39
+    },
+    "kmeans_time": 1324.5,
+    "fsq_time": 62.5
+  },
+  {
+    "name": "8192-multi",
+    "description": "8192\u00d73 mixed [4,4,4,4,4,4,2]",
+    "quantizer_type": "rkmeans_fsq",
+    "num_clusters": 8192,
+    "fsq_levels_key": "7d_8192",
+    "fsq_levels": [
+      4,
+      4,
+      4,
+      4,
+      4,
+      4,
+      2
+    ],
+    "total_bits": 39,
+    "metrics": {
+      "semantic_id_collision": 0.0135,
+      "semantic_id_collision_depth": [
+        0.9832,
+        0.1784,
+        0.0157
+      ],
+      "semantic_id_collision_prefix_stats": [
+        {
+          "depth": 1,
+          "n_unique_prefix": 8192,
+          "collision_rate": 0.9832,
+          "conflict_rate": 0.9326,
+          "exclusivity": 0.0011,
+          "avg_items": 59.42,
+          "min": 1,
+          "max": 384,
+          "p50": 50,
+          "p90": 133,
+          "p99": 207,
+          "le_1": 552,
+          "le_2": 965,
+          "le_5": 1736,
+          "le_10": 2275,
+          "le_50": 4096,
+          "le_100": 6355,
+          "le_500": 8192,
+          "gt_500": 0
+        },
+        {
+          "depth": 2,
+          "n_unique_prefix": 399937,
+          "collision_rate": 0.1784,
+          "conflict_rate": 0.1555,
+          "exclusivity": 0.6939,
+          "avg_items": 1.22,
+          "min": 1,
+          "max": 58,
+          "p50": 1,
+          "p90": 2,
+          "p99": 4,
+          "le_1": 337754,
+          "le_2": 384890,
+          "le_5": 398979,
+          "le_10": 399853,
+          "le_50": 399932,
+          "le_100": 399937,
+          "le_500": 399937,
+          "gt_500": 0
+        },
+        {
+          "depth": 3,
+          "n_unique_prefix": 479102,
+          "collision_rate": 0.0157,
+          "conflict_rate": 0.0135,
+          "exclusivity": 0.9709,
+          "avg_items": 1.02,
+          "min": 1,
+          "max": 38,
+          "p50": 1,
+          "p90": 1,
+          "p99": 2,
+          "le_1": 472624,
+          "le_2": 478560,
+          "le_5": 479044,
+          "le_10": 479078,
+          "le_50": 479102,
+          "le_100": 479102,
+          "le_500": 479102,
+          "gt_500": 0
+        }
+      ],
+      "semantic_id_collision_prefix_avg_items": [
+        59.42,
+        1.22,
+        1.02
+      ],
+      "codebook_utilization": 0.0,
+      "codebook_utilization_depth": [
+        1.0,
+        0.006,
+        0.0
+      ],
+      "codebook_utilization_depth_stats": [
+        {
+          "depth": 1,
+          "n_unique": 8192,
+          "theoretical_space": 8192,
+          "utilization": 1.0
+        },
+        {
+          "depth": 2,
+          "n_unique": 399937,
+          "theoretical_space": 67108864,
+          "utilization": 0.00595952570438385
+        },
+        {
+          "depth": 3,
+          "n_unique": 479102,
+          "theoretical_space": 478821744640,
+          "utilization": 1.0005853020735528e-06
+        }
+      ],
+      "codebook_utilization_space_utilization": 1.0005853020735528e-06,
+      "cluster_balance": 0.0156,
+      "cluster_balance_depth": [
+        0.498,
+        0.1572,
+        0.0156
+      ],
+      "cluster_balance_depth_stats": [
+        {
+          "depth": 1,
+          "gini": 0.498,
+          "cv": 0.9064,
+          "n_unique_prefix": 8192,
+          "min_count": 1.0,
+          "max_count": 384.0,
+          "mean_count": 59.42
+        },
+        {
+          "depth": 2,
+          "gini": 0.1572,
+          "cv": 0.5512,
+          "n_unique_prefix": 399937,
+          "min_count": 1.0,
+          "max_count": 58.0,
+          "mean_count": 1.22
+        },
+        {
+          "depth": 3,
+          "gini": 0.0156,
+          "cv": 0.1959,
+          "n_unique_prefix": 479102,
+          "min_count": 1.0,
+          "max_count": 38.0,
+          "mean_count": 1.02
+        }
+      ],
+      "semantic_neighbor_hit_rate": 0.1042,
+      "neighbor_coverage": 0.3112,
+      "n_contents_evaluated": 1556,
+      "quantizer_type": "rkmeans_fsq",
+      "fsq_levels_key": "7d_8192",
+      "fsq_codebook_size": 8192,
+      "total_bits": 39
+    },
+    "kmeans_time": 1324.5,
+    "fsq_time": 66.8
+  },
+  {
+    "name": "opq-4x256",
+    "description": "OPQ 4\u00d7256 (32 bit)",
+    "quantizer_type": "opq",
+    "n_subvectors": 4,
+    "n_clusters_per_sub": 256,
+    "total_bits": 32,
+    "metrics": {
+      "semantic_id_collision": 0.0351,
+      "semantic_id_collision_depth": [
+        0.9995,
+        0.9164,
+        0.2941,
+        0.0584
+      ],
+      "semantic_id_collision_prefix_stats": [
+        {
+          "depth": 1,
+          "n_unique_prefix": 256,
+          "collision_rate": 0.9995,
+          "conflict_rate": 0.9922,
+          "exclusivity": 0.0,
+          "avg_items": 1901.43,
+          "min": 1,
+          "max": 5111,
+          "p50": 1928,
+          "p90": 3431,
+          "p99": 4656,
+          "le_1": 2,
+          "le_2": 5,
+          "le_5": 8,
+          "le_10": 8,
+          "le_50": 9,
+          "le_100": 12,
+          "le_500": 45,
+          "gt_500": 211
+        },
+        {
+          "depth": 2,
+          "n_unique_prefix": 40689,
+          "collision_rate": 0.9164,
+          "conflict_rate": 0.8358,
+          "exclusivity": 0.0137,
+          "avg_items": 11.96,
+          "min": 1,
+          "max": 572,
+          "p50": 6,
+          "p90": 28,
+          "p99": 84,
+          "le_1": 6682,
+          "le_2": 11126,
+          "le_5": 19227,
+          "le_10": 26768,
+          "le_50": 39417,
+          "le_100": 40430,
+          "le_500": 40688,
+          "gt_500": 1
+        },
+        {
+          "depth": 3,
+          "n_unique_prefix": 343593,
+          "collision_rate": 0.2941,
+          "conflict_rate": 0.1958,
+          "exclusivity": 0.5676,
+          "avg_items": 1.42,
+          "min": 1,
+          "max": 386,
+          "p50": 1,
+          "p90": 2,
+          "p99": 7,
+          "le_1": 276301,
+          "le_2": 318439,
+          "le_5": 338308,
+          "le_10": 342087,
+          "le_50": 343554,
+          "le_100": 343581,
+          "le_500": 343593,
+          "gt_500": 0
+        },
+        {
+          "depth": 4,
+          "n_unique_prefix": 458338,
+          "collision_rate": 0.0584,
+          "conflict_rate": 0.0351,
+          "exclusivity": 0.9085,
+          "avg_items": 1.06,
+          "min": 1,
+          "max": 284,
+          "p50": 1,
+          "p90": 1,
+          "p99": 2,
+          "le_1": 442244,
+          "le_2": 454222,
+          "le_5": 457584,
+          "le_10": 458094,
+          "le_50": 458327,
+          "le_100": 458335,
+          "le_500": 458338,
+          "gt_500": 0
+        }
+      ],
+      "semantic_id_collision_prefix_avg_items": [
+        1901.43,
+        11.96,
+        1.42,
+        1.06
+      ],
+      "codebook_utilization": 0.0001,
+      "codebook_utilization_depth": [
+        1.0,
+        0.6209,
+        0.0205,
+        0.0001
+      ],
+      "codebook_utilization_depth_stats": [
+        {
+          "depth": 1,
+          "n_unique": 256,
+          "theoretical_space": 256,
+          "utilization": 1.0
+        },
+        {
+          "depth": 2,
+          "n_unique": 40689,
+          "theoretical_space": 65536,
+          "utilization": 0.6208648681640625
+        },
+        {
+          "depth": 3,
+          "n_unique": 343593,
+          "theoretical_space": 16777216,
+          "utilization": 0.02047973871231079
+        },
+        {
+          "depth": 4,
+          "n_unique": 458338,
+          "theoretical_space": 4294967296,
+          "utilization": 0.0001067151315510273
+        }
+      ],
+      "codebook_utilization_space_utilization": 0.0001067151315510273,
+      "cluster_balance": 0.0571,
+      "cluster_balance_depth": [
+        0.3642,
+        0.5922,
+        0.2615,
+        0.0571
+      ],
+      "cluster_balance_depth_stats": [
+        {
+          "depth": 1,
+          "gini": 0.3642,
+          "cv": 0.639,
+          "n_unique_prefix": 256,
+          "min_count": 1.0,
+          "max_count": 5111.0,
+          "mean_count": 1901.43
+        },
+        {
+          "depth": 2,
+          "gini": 0.5922,
+          "cv": 1.5735,
+          "n_unique_prefix": 40689,
+          "min_count": 1.0,
+          "max_count": 572.0,
+          "mean_count": 11.96
+        },
+        {
+          "depth": 3,
+          "gini": 0.2615,
+          "cv": 1.3692,
+          "n_unique_prefix": 343593,
+          "min_count": 1.0,
+          "max_count": 386.0,
+          "mean_count": 1.42
+        },
+        {
+          "depth": 4,
+          "gini": 0.0571,
+          "cv": 0.7577,
+          "n_unique_prefix": 458338,
+          "min_count": 1.0,
+          "max_count": 284.0,
+          "mean_count": 1.06
+        }
+      ],
+      "semantic_neighbor_hit_rate": 0.0502,
+      "neighbor_coverage": 0.9834,
+      "n_contents_evaluated": 4917,
+      "quantizer_type": "opq",
+      "n_subvectors": 4,
+      "n_clusters_per_sub": 256,
+      "total_bits": 32
+    },
+    "train_time": 290.3
+  }
+]

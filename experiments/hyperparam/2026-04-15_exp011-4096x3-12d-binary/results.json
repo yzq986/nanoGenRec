@@ -2,11 +2,11 @@
   {
     "quantizer_type": "rkmeans_fsq",
     "metrics": {
-      "reconstruction_loss": 0.3378,
+      "reconstruction_loss": 0.3374,
       "reconstruction_loss_depth": [
         0.3856,
         0.3448,
-        0.3378
+        0.3374
       ],
       "codebook_utilization": 0.0,
       "codebook_utilization_depth": [
@@ -29,13 +29,13 @@
         },
         {
           "depth": 3,
-          "n_unique": 482116,
-          "theoretical_space": 68652367872,
-          "utilization": 7.022569139915011e-06
+          "n_unique": 482771,
+          "theoretical_space": 68719476736,
+          "utilization": 7.025242666713893e-06
         }
       ],
-      "codebook_utilization_space_utilization": 7.022569139915011e-06,
-      "entropy": 0.9989,
+      "codebook_utilization_space_utilization": 7.025242666713893e-06,
+      "entropy": 0.9991,
       "entropy_depth": [
         0.9646,
         0.7524,
@@ -58,19 +58,19 @@
         },
         {
           "depth": 3,
-          "entropy": 18.8729,
-          "max_entropy": 35.9986,
+          "entropy": 18.8757,
+          "max_entropy": 36.0,
           "normalized": 0.5243,
-          "n_unique_prefix": 482116
+          "n_unique_prefix": 482771
         }
       ],
-      "cosine_similarity": 0.0907,
-      "effective_dimension": 0.6553,
-      "semantic_id_collision": 0.0089,
+      "cosine_similarity": 0.0904,
+      "effective_dimension": 0.6562,
+      "semantic_id_collision": 0.0076,
       "semantic_id_collision_depth": [
         0.9916,
         0.3343,
-        0.0096
+        0.0082
       ],
       "semantic_id_collision_prefix_stats": [
         {
@@ -117,23 +117,23 @@
         },
         {
           "depth": 3,
-          "n_unique_prefix": 482116,
-          "collision_rate": 0.0096,
-          "conflict_rate": 0.0089,
-          "exclusivity": 0.9817,
+          "n_unique_prefix": 482771,
+          "collision_rate": 0.0082,
+          "conflict_rate": 0.0076,
+          "exclusivity": 0.9843,
           "avg_items": 1.01,
           "min": 1,
-          "max": 13,
+          "max": 14,
           "p50": 1,
           "p90": 1,
           "p99": 1,
-          "le_1": 477842,
-          "le_2": 481884,
-          "le_5": 482099,
-          "le_10": 482111,
-          "le_50": 482116,
-          "le_100": 482116,
-          "le_500": 482116,
+          "le_1": 479117,
+          "le_2": 482555,
+          "le_5": 482756,
+          "le_10": 482766,
+          "le_50": 482771,
+          "le_100": 482771,
+          "le_500": 482771,
           "gt_500": 0
         }
       ],
@@ -142,11 +142,11 @@
         1.5,
         1.01
       ],
-      "cluster_balance": 0.0095,
+      "cluster_balance": 0.0082,
       "cluster_balance_depth": [
         0.4002,
         0.2673,
-        0.0095
+        0.0082
       ],
       "cluster_balance_depth_stats": [
         {
@@ -169,26 +169,26 @@
         },
         {
           "depth": 3,
-          "gini": 0.0095,
-          "cv": 0.1124,
-          "n_unique_prefix": 482116,
+          "gini": 0.0082,
+          "cv": 0.105,
+          "n_unique_prefix": 482771,
           "min_count": 1.0,
-          "max_count": 13.0,
+          "max_count": 14.0,
           "mean_count": 1.01
         }
       ],
       "embedding_hit_rate": 0.0047,
       "semantic_neighbor_hit_rate": 0.0951,
-      "space_utilization": 7.022569139915011e-06,
+      "space_utilization": 7.025242666713893e-06,
       "depth_codebook_util": [
         1.0,
         0.01931554079055786,
-        7.022569139915011e-06
+        7.025242666713893e-06
       ],
       "depth_unique_prefixes": [
         4096,
         324061,
-        482116
+        482771
       ],
       "prefix_avg_items": [
         118.84,
@@ -202,7 +202,7 @@
       "fsq_mlp_hidden": 64,
       "fsq_epochs": 50
     },
-    "train_time": 492.9183087348938,
+    "train_time": 747.1477444171906,
     "num_clusters": 4096,
     "niter": 25,
     "nredo": 3,
