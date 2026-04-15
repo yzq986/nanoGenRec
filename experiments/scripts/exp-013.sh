@@ -13,6 +13,13 @@
 # ============================================================
 set -euo pipefail
 
+SKIP_SMOKE=false
+for arg in "$@"; do
+    case "$arg" in
+        --no-smoke) SKIP_SMOKE=true ;;
+    esac
+done
+
 N_GPUS="${N_GPUS:-$(python -c 'import torch; print(max(1, torch.cuda.device_count()))')}"
 SID_CACHE="experiments/sid_cache/exp013-4096x3-12d-binary"
 
@@ -40,6 +47,10 @@ else
 fi
 
 # ── Phase 0: Smoke test (s-tier, small batch) ──
+if [ "${SKIP_SMOKE}" = true ]; then
+    echo ""
+    echo "[Phase 0] Skipping smoke test (--no-smoke)"
+else
 echo ""
 echo "============================================================"
 echo "[Phase 0] Smoke test — s-tier model quick sanity check"
@@ -71,6 +82,7 @@ if [ ! -f "${SMOKE_CKPT}/probe.pt" ]; then
 fi
 echo "[Phase 0] Smoke test passed!"
 rm -rf "${SMOKE_CKPT}"
+fi  # end SKIP_SMOKE
 
 # ── Helper: train + eval ──
 train_and_eval() {
