@@ -432,12 +432,8 @@ def load_data(args) -> Tuple[torch.Tensor, torch.Tensor, np.ndarray]:
 
     # 曝光过滤
     if args.behavior_path:
-        behavior_path = args.behavior_path
-        if behavior_path == "auto":
-            from gr_demo.config import S3_USER_BEHAVIOR, DEFAULT_DATE
-            behavior_path = f"{S3_USER_BEHAVIOR}/{DEFAULT_DATE}"
-        print(f"Filtering by exposed IIDs... ({behavior_path})")
-        exposed_iids = load_exposed_iids(behavior_path)
+        print("Filtering by exposed IIDs...")
+        exposed_iids = load_exposed_iids(args.behavior_path)
         cid_str = np.array([str(cid) for cid in content_ids])
         mask = np.isin(cid_str, list(exposed_iids))
         train_embeddings = embeddings[mask]

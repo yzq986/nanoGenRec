@@ -14,7 +14,8 @@ from gr_demo.eval.wrapper import RKMeansModelWrapper
 from gr_demo.eval.behavior import BehaviorMetricsEvaluator
 from gr_demo.eval.compare import load_model_results, generate_comparison_report
 
-from gr_demo.config import S3_RKMEANS_BASE, S3_USER_BEHAVIOR, DEFAULT_DATE
+from gr_demo.config import S3_RKMEANS_BASE, DEFAULT_DATE
+from gr_demo.data.loaders import resolve_behavior_paths
 
 
 # ============================================================
@@ -22,7 +23,6 @@ from gr_demo.config import S3_RKMEANS_BASE, S3_USER_BEHAVIOR, DEFAULT_DATE
 # ============================================================
 
 S3_BASE = S3_RKMEANS_BASE
-BEHAVIOR_PATH = f"{S3_USER_BEHAVIOR}/{DEFAULT_DATE}"
 DATE = DEFAULT_DATE
 
 OUTPUT_BASE = "experiments/eval"
@@ -163,7 +163,7 @@ def run_comparison():
 
 
 def load_all_behavior_data() -> Dict[str, np.ndarray]:
-    """加载全部行为数据"""
+    """加载全部行为数据 (DEFAULT_DATE_START ~ DEFAULT_DATE_END 增量表)"""
     import pandas as pd
     import s3fs
 
@@ -172,8 +172,11 @@ def load_all_behavior_data() -> Dict[str, np.ndarray]:
     print(f"{'='*60}")
 
     fs = s3fs.S3FileSystem()
-    path_clean = BEHAVIOR_PATH.replace('s3://', '')
-    files = fs.glob(f"{path_clean}/*.parquet")
+    paths = resolve_behavior_paths("auto")
+    files = []
+    for bp in paths:
+        path_clean = bp.replace('s3://', '')
+        files.extend(fs.glob(f"{path_clean}/*.parquet"))
     print(f"Found {len(files)} files")
 
     dfs = []
