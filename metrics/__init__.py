@@ -24,7 +24,6 @@ from .behavior import (
     PositiveNegativeSeparationMetric,
 )
 from .embedding_hitrate import EmbeddingHitRateMetric
-from .sid_prediction import SemanticIDPredictionMetric
 from .report import ReportGenerator
 
 # Intrinsic metrics (no behavior data needed)
@@ -45,7 +44,6 @@ BEHAVIOR_METRICS = {
     'embedding_behavior_correlation': EmbeddingBehaviorCorrelationMetric,
     'positive_negative_separation': PositiveNegativeSeparationMetric,
     'embedding_hit_rate': EmbeddingHitRateMetric,
-    'semantic_id_prediction': SemanticIDPredictionMetric,
 }
 
 # All available metrics
@@ -68,7 +66,6 @@ __all__ = [
     'EmbeddingBehaviorCorrelationMetric',
     'PositiveNegativeSeparationMetric',
     'EmbeddingHitRateMetric',
-    'SemanticIDPredictionMetric',
     # Utilities
     'ReportGenerator',
     'print_metric_result',

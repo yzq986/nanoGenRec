@@ -52,6 +52,15 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output directory (default: experiments/sid_cache/{model})')
     parser.add_argument('--device', type=str, default='cuda')
+    # Tokenizer config overrides (default: TOKENIZER_CONFIG)
+    parser.add_argument('--num_clusters', type=int, default=None,
+                        help='Override KMeans clusters per layer')
+    parser.add_argument('--fsq_levels', type=str, default=None,
+                        help='Override FSQ levels key (e.g. 12d_4096)')
+    parser.add_argument('--fsq_projection', type=str, default=None,
+                        choices=['pca', 'mlp'])
+    parser.add_argument('--fsq_mlp_hidden', type=int, default=None)
+    parser.add_argument('--fsq_epochs', type=int, default=None)
     return parser.parse_args()
 
 
@@ -59,6 +68,18 @@ def main():
     args = parse_args()
     model_key = args.model
     _, embedding_dim, _, _ = MODEL_CONFIGS[model_key]
+
+    # Apply CLI overrides to tokenizer config
+    cfg_overrides = {
+        'num_clusters': args.num_clusters,
+        'fsq_levels_key': args.fsq_levels,
+        'fsq_projection': args.fsq_projection,
+        'fsq_mlp_hidden': args.fsq_mlp_hidden,
+        'fsq_epochs': args.fsq_epochs,
+    }
+    for k, v in cfg_overrides.items():
+        if v is not None:
+            TOKENIZER_CONFIG[k] = v
 
     # ── Output dir ──
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

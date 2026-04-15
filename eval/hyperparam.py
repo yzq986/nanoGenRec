@@ -104,15 +104,7 @@ def run_single_experiment(
             evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
         evaluator.register_metrics(['embedding_hit_rate'])
         evaluator.register_metrics(['semantic_neighbor_hit_rate'])
-        sid_kwargs = {}
-        if run_ntp:
-            evaluator.register_metrics(['semantic_id_prediction'])
-            sid_kwargs['semantic_id_prediction'] = {
-                'device': device,
-                'recall_beam_size': recall_beam_size,
-                'eval_sample_size': eval_sample_size,
-            }
-        metric_results = evaluator.evaluate(metric_kwargs=sid_kwargs)
+        metric_results = evaluator.evaluate()
     else:
         evaluator = MetricsEvaluator(
             embeddings=eval_embeddings,
@@ -140,16 +132,6 @@ def run_single_experiment(
         col = metric_results['semantic_id_collision']
         prefix_stats = col.details.get('prefix_stats', [])
         results['prefix_avg_items'] = [s.get('avg_items', 0) for s in prefix_stats]
-
-    # SID prediction flat keys
-    if 'semantic_id_prediction' in metric_results:
-        sid = metric_results['semantic_id_prediction']
-        results['ntp_perplexity'] = round(sid.value, 4)
-        results['ntp_depth_acc'] = sid.layer_values
-        results['ntp_depth_hit@10'] = sid.details.get('depth_hit@10')
-        # Item recall (the key non-monotonic metric)
-        for k in (10, 50, 100, 500):
-            results[f'item_recall@{k}'] = sid.details.get(f'item_recall@{k}')
 
     return results, train_time
 
@@ -223,15 +205,7 @@ def run_single_experiment_fsq(
             evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
         evaluator.register_metrics(['embedding_hit_rate'])
         evaluator.register_metrics(['semantic_neighbor_hit_rate'])
-        sid_kwargs = {}
-        if run_ntp:
-            evaluator.register_metrics(['semantic_id_prediction'])
-            sid_kwargs['semantic_id_prediction'] = {
-                'device': device,
-                'recall_beam_size': recall_beam_size,
-                'eval_sample_size': eval_sample_size,
-            }
-        metric_results = evaluator.evaluate(metric_kwargs=sid_kwargs)
+        metric_results = evaluator.evaluate()
     else:
         evaluator = MetricsEvaluator(
             embeddings=eval_embeddings,
@@ -258,14 +232,6 @@ def run_single_experiment_fsq(
         col = metric_results['semantic_id_collision']
         prefix_stats = col.details.get('prefix_stats', [])
         results['prefix_avg_items'] = [s.get('avg_items', 0) for s in prefix_stats]
-
-    if 'semantic_id_prediction' in metric_results:
-        sid = metric_results['semantic_id_prediction']
-        results['ntp_perplexity'] = round(sid.value, 4)
-        results['ntp_depth_acc'] = sid.layer_values
-        results['ntp_depth_hit@10'] = sid.details.get('depth_hit@10')
-        for k in (10, 50, 100, 500):
-            results[f'item_recall@{k}'] = sid.details.get(f'item_recall@{k}')
 
     # Add FSQ-specific fields
     results['quantizer_type'] = 'rkmeans_fsq'
@@ -343,16 +309,7 @@ def run_single_experiment_opq(
             evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
         evaluator.register_metrics(['embedding_hit_rate'])
         evaluator.register_metrics(['semantic_neighbor_hit_rate'])
-        sid_kwargs = {}
-        if run_ntp:
-            evaluator.register_metrics(['semantic_id_prediction'])
-            sid_kwargs['semantic_id_prediction'] = {
-                'device': device,
-                'recall_beam_size': recall_beam_size,
-                'eval_sample_size': eval_sample_size,
-                'force_autoregressive': force_autoregressive,
-            }
-        metric_results = evaluator.evaluate(metric_kwargs=sid_kwargs)
+        metric_results = evaluator.evaluate()
     else:
         evaluator = MetricsEvaluator(
             embeddings=eval_embeddings,
@@ -380,14 +337,6 @@ def run_single_experiment_opq(
         col = metric_results['semantic_id_collision']
         prefix_stats = col.details.get('prefix_stats', [])
         results['prefix_avg_items'] = [s.get('avg_items', 0) for s in prefix_stats]
-
-    if 'semantic_id_prediction' in metric_results:
-        sid = metric_results['semantic_id_prediction']
-        results['ntp_perplexity'] = round(sid.value, 4)
-        results['ntp_depth_acc'] = sid.layer_values
-        results['ntp_depth_hit@10'] = sid.details.get('depth_hit@10')
-        for k in (10, 50, 100, 500):
-            results[f'item_recall@{k}'] = sid.details.get(f'item_recall@{k}')
 
     # OPQ-specific fields
     results['quantizer_type'] = 'opq'
@@ -869,7 +818,7 @@ def run_from_sid_cache(args):
     # ── NTP-only fast path: checkpoint has everything, skip heavy loading ──
     if run_ntp and args.ntp_checkpoint:
         print(f"NTP eval from checkpoint: {args.ntp_checkpoint}")
-        from gr_demo.metrics.sid_prediction import SemanticIDPredictionMetric
+        from gr_demo.ntp.eval import SemanticIDPredictionMetric
         metric = SemanticIDPredictionMetric()
         metric_result = metric.compute(
             embeddings=None,

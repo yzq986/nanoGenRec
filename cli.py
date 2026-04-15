@@ -52,7 +52,7 @@ def main():
         from gr_demo.eval.preprocess_sid import main as preprocess_main
         preprocess_main()
     elif command == 'train-ntp':
-        from gr_demo.eval.train_ntp import main as train_ntp_main
+        from gr_demo.ntp.train import main as train_ntp_main
         train_ntp_main()
     elif command == 'pack':
         from gr_demo.model.pack import main as pack_main

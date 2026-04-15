@@ -31,7 +31,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from gr_demo.config import MODEL_CONFIGS, EFS_EMBEDDING_CACHE
-from gr_demo.metrics.sid_prediction import NTPProbe, SIDSequenceDataset
+from gr_demo.ntp.model import NTPProbe, SIDSequenceDataset
 
 
 # ============================================================
