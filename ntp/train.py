@@ -346,18 +346,27 @@ def main():
     ).item()
     log(is_main, f"  SID assignments: {len(sid_dict):,}")
 
-    # ── Load behavior data ──
-    log(is_main, "\nStep 2: Loading behavior data")
-    from gr_demo.eval.batch import load_all_behavior_data
-    behavior_data = load_all_behavior_data()
-    log(is_main, f"  Interactions: {len(behavior_data['uid']):,}")
+    # ── Load behavior data + build sequences (rank 0 only, then broadcast) ──
+    if is_main:
+        log(is_main, "\nStep 2: Loading behavior data")
+        from gr_demo.eval.batch import load_all_behavior_data
+        behavior_data = load_all_behavior_data()
+        log(is_main, f"  Interactions: {len(behavior_data['uid']):,}")
 
-    # ── Build sequences (all ranks do this identically) ──
-    log(is_main, "\nStep 3: Building user sequences")
-    verbose_fn = (lambda msg: print(msg)) if is_main else (lambda msg: None)
-    train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = \
-        build_sequences(sid_dict, behavior_data, n_items=args.n_items,
-                        verbose_fn=verbose_fn)
+        log(is_main, "\nStep 3: Building user sequences")
+        train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = \
+            build_sequences(sid_dict, behavior_data, n_items=args.n_items)
+        seq_data = (train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer)
+    else:
+        seq_data = None
+
+    if world_size > 1:
+        obj_list = [seq_data]
+        dist.broadcast_object_list(obj_list, src=0)
+        seq_data = obj_list[0]
+
+    train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = seq_data
+    log(is_main, f"  Train: {len(train_data):,}, Eval: {len(eval_data):,}, Layers: {n_layers}")
 
     # ── Train ──
     log(is_main, f"\nStep 4: Training")
