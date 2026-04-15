@@ -163,8 +163,13 @@ def run_comparison():
     generate_comparison_report(results, COMPARISON_OUTPUT)
 
 
-def load_all_behavior_data() -> Dict[str, np.ndarray]:
-    """加载全部行为数据 (DEFAULT_DATE_START ~ DEFAULT_DATE_END 增量表)"""
+def load_all_behavior_data(date_start: str = None, date_end: str = None) -> Dict[str, np.ndarray]:
+    """加载全部行为数据。
+
+    Args:
+        date_start: 起始日期 (YYYY-MM-DD)，默认 DEFAULT_DATE_START
+        date_end: 结束日期 (YYYY-MM-DD)，默认 DEFAULT_DATE_END
+    """
     import pandas as pd
     import s3fs
 
@@ -173,7 +178,7 @@ def load_all_behavior_data() -> Dict[str, np.ndarray]:
     print(f"{'='*60}")
 
     fs = s3fs.S3FileSystem()
-    paths = resolve_behavior_paths("auto")
+    paths = resolve_behavior_paths("auto", date_start=date_start, date_end=date_end)
     files = []
     for bp in paths:
         path_clean = bp.replace('s3://', '')

@@ -43,7 +43,8 @@ def setup_ddp():
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     if world_size > 1:
-        dist.init_process_group('nccl')
+        from datetime import timedelta
+        dist.init_process_group('nccl', timeout=timedelta(minutes=30))
         torch.cuda.set_device(local_rank)
     device = torch.device(f'cuda:{local_rank}')
     is_main = (local_rank == 0)
@@ -361,6 +362,10 @@ def parse_args():
     parser.add_argument('--model', type=str, default='probe',
                         choices=['probe', 's-tier'],
                         help='Model: probe (2L dense, ~5M) or s-tier (6L MoE, ~39.5M)')
+    parser.add_argument('--date_start', type=str, default=None,
+                        help='Behavior data start date (YYYY-MM-DD). Default: config DEFAULT_DATE_START')
+    parser.add_argument('--date_end', type=str, default=None,
+                        help='Behavior data end date (YYYY-MM-DD). Default: config DEFAULT_DATE_END')
     return parser.parse_args()
 
 
@@ -387,7 +392,8 @@ def main():
     if is_main:
         log(is_main, "\nStep 2: Loading behavior data")
         from gr_demo.eval.batch import load_all_behavior_data
-        behavior_data = load_all_behavior_data()
+        behavior_data = load_all_behavior_data(
+            date_start=args.date_start, date_end=args.date_end)
         log(is_main, f"  Interactions: {len(behavior_data['uid']):,}")
 
         log(is_main, "\nStep 3: Building user sequences")

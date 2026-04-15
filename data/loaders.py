@@ -135,23 +135,25 @@ def load_old_embeddings_from_s3(s3_path: str, max_partitions: int = 0) -> Tuple[
     return content_ids, embeddings
 
 
-def resolve_behavior_paths(behavior_path: str) -> list:
+def resolve_behavior_paths(behavior_path: str, date_start: str = None, date_end: str = None) -> list:
     """将 behavior_path 解析为 S3 路径列表。
-    - "auto": DEFAULT_DATE_START ~ DEFAULT_DATE_END 每日增量路径
+    - "auto": date_start ~ date_end 每日增量路径 (默认用 config 中的 DEFAULT_DATE_START/END)
     - 具体 S3 路径: 原样返回
     """
     if behavior_path == "auto":
         from gr_demo.config import S3_USER_BEHAVIOR
         from gr_demo.config import DEFAULT_DATE_START, DEFAULT_DATE_END
         from datetime import datetime, timedelta
-        start = datetime.strptime(DEFAULT_DATE_START, "%Y-%m-%d")
-        end = datetime.strptime(DEFAULT_DATE_END, "%Y-%m-%d")
+        ds = date_start or DEFAULT_DATE_START
+        de = date_end or DEFAULT_DATE_END
+        start = datetime.strptime(ds, "%Y-%m-%d")
+        end = datetime.strptime(de, "%Y-%m-%d")
         paths = []
         d = start
         while d <= end:
             paths.append(f"{S3_USER_BEHAVIOR}/{d.strftime('%Y-%m-%d')}")
             d += timedelta(days=1)
-        print(f"  Resolved behavior_path='auto' → {len(paths)} days ({DEFAULT_DATE_START} ~ {DEFAULT_DATE_END})")
+        print(f"  Resolved behavior_path='auto' → {len(paths)} days ({ds} ~ {de})")
         return paths
     return [behavior_path]
 

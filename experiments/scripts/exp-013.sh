@@ -53,6 +53,7 @@ if [ "${N_GPUS}" -gt 1 ]; then
         --output_dir "${SMOKE_CKPT}" \
         --model s-tier \
         --batch_size 512 \
+        --date_start 2026-03-31 --date_end 2026-03-31 \
         --name exp013-smoke
 else
     python run.py train-ntp \
@@ -60,6 +61,7 @@ else
         --output_dir "${SMOKE_CKPT}" \
         --model s-tier \
         --batch_size 512 \
+        --date_start 2026-03-31 --date_end 2026-03-31 \
         --name exp013-smoke
 fi
 
