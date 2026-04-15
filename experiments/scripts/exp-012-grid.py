@@ -26,9 +26,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-# Add project root to path
+# Add project root's parent to path so `from gr_demo.xxx` works
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, os.path.dirname(REPO_ROOT))
 
 
 # ============================================================
