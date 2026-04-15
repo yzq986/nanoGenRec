@@ -11,10 +11,10 @@
 Tokenizer 阶段 ✅ → NTP Baseline 阶段 ← (当前)
 ```
 
-- **Tokenizer**: MLP-FSQ h=64 确认为赢家 (EXP-008, semantic_neighbor_HR=0.078)
+- **Tokenizer**: 4096×3 binary MLP-FSQ `[2]×12` 确认为赢家 (EXP-012, snHR=0.095, collision=0.89%)
 - **Embedding**: 原始 Qwen3-0.6B 不做 fine-tune (EXP-007/009 证明 I2I contrastive 路线无效)
-- **NTP**: EXP-010 进行中 — 2 层 Transformer + MoE probe 端到端 Recall baseline
-- **Ideas**: 62 个可实验想法已归档, 来源 39 篇工业论文
+- **NTP**: Per-layer output head 已修复，准备重跑 baseline
+- **Ideas**: 63 个可实验想法已归档, 来源 39 篇工业论文
 
 ## 流程总览
 
@@ -155,6 +155,22 @@ python -m gr_demo hyperparam --model qwen3-0.6b --skip_embedding \
 python -m gr_demo hyperparam --model qwen3-0.6b --skip_embedding --append
 ```
 
+#### 5c. Tokenizer Grid Search (多 GPU)
+
+KMeans cluster × FSQ type × OPQ 全量搜索，自动缓存 KMeans、只跑关键 metrics。
+换 embedding 模型时重跑即可确定最优 tokenizer 配置。
+
+```bash
+# 4 GPU 并行 (每个 cluster size 占一张卡)
+python experiments/scripts/tokenizer_grid_search.py --gpus 0,1,2,3
+
+# 单 GPU
+python experiments/scripts/tokenizer_grid_search.py --gpus 0
+
+# 跳过 OPQ 对照
+python experiments/scripts/tokenizer_grid_search.py --gpus 0,1,2,3 --skip_opq
+```
+
 ---
 
 ### Step 6. 打包部署
@@ -219,8 +235,11 @@ gr_demo/
 │   ├── similarity.py      # 相似度指标
 │   └── report.py          # 报告生成
 ├── experiments/
-│   ├── log.md             # 实验日志 (EXP-001 ~ EXP-010)
-│   ├── scripts/           # 实验执行脚本
+│   ├── log.md             # 实验日志 (EXP-001 ~ EXP-012)
+│   ├── scripts/
+│   │   ├── tokenizer_grid_search.py  # 多 GPU tokenizer 搜索 (通用, 可复用)
+│   │   ├── exp-011.py     # EXP-011 codebook ablation
+│   │   └── exp-011.sh     # EXP-011 shell 版
 │   └── hyperparam/        # 超参搜索结果
 ├── ideas/
 │   ├── README.md          # 索引 + 优先级总览 (62 ideas, 39 papers)
@@ -245,15 +264,19 @@ gr_demo/
 | EXP-007 | 完成 | I2I contrastive fine-tune 无效 (全量/LoRA, HR@50 卡在 ~0.02) |
 | EXP-008 | 完成 | **MLP-FSQ h=64 胜出** (semantic_neighbor_HR=0.078, 赢 OPQ 2.4x) |
 | EXP-009 | 完成 | QFormer tokenizer 未突破 0.02 天花板, 关闭 embedding fine-tune 路线 |
-| EXP-010 | **进行中** | NTP Baseline: 2 层 Transformer + MoE on MLP-FSQ SID |
+| EXP-010 | 完成 | NTP Baseline 效果极差 — 根因: 单一 4027-dim vocab 跨 3 层 + 仅 1 epoch |
+| EXP-011 | 完成 | 等大 codebook 消融: 4096×3 snHR=0.095 (+22% vs 1024×3) |
+| EXP-012 | 完成 | **Tokenizer Grid Search**: 4096×3 binary 确认为最优 (snHR=0.095, collision=0.89%) |
 
 详见 [experiments/log.md](experiments/log.md)。
 
 ## 关键结论
 
 1. **Tokenizer 结构比 collision rate 更重要**: MLP-FSQ collision 10.7% 但 semantic_neighbor_HR 赢 OPQ (collision 0.06%) 2.4 倍
-2. **Embedding fine-tune 路线已关闭**: I2I contrastive 信号不足以弥补 semantic→behavior embedding gap
-3. **当前 pipeline**: Qwen3-0.6B (冻结) → MLP-FSQ h=64 → 3-token SID → NTP 模型
+2. **KMeans cluster size 主导语义质量**: snHR 随 cluster 递增但边际递减 (1024→0.078, 4096→0.095, 8192→0.104)
+3. **Binary FSQ 全面优于 multi-level**: collision 更低, Gini 更均匀, 尤其大 cluster 下优势显著
+4. **Embedding fine-tune 路线已关闭**: I2I contrastive 信号不足以弥补 semantic→behavior embedding gap
+5. **当前 pipeline**: Qwen3-0.6B (冻结) → 4096×3 binary MLP-FSQ `[2]×12` → 3-token SID → NTP 模型
 
 ## NTP 模型架构 (S 档)
 
@@ -267,7 +290,7 @@ gr_demo/
 | MoE experts | 8, top-2 |
 | expert FFN | SwiGLU, dim=1024 |
 | 总参数 | ~39.5M (激活 ~11M) |
-| SID | 3 tokens (L1=1024, L2=1024, L3=4096) |
+| SID | 3 tokens, 4096×3 binary `[2]×12` (36 bit) |
 
 详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
