@@ -1,0 +1,219 @@
+[
+  {
+    "quantizer_type": "rkmeans_fsq",
+    "metrics": {
+      "reconstruction_loss": 0.3677,
+      "reconstruction_loss_depth": [
+        0.4126,
+        0.3716,
+        0.3677
+      ],
+      "codebook_utilization": 0.0004,
+      "codebook_utilization_depth": [
+        1.0,
+        0.1506,
+        0.0004
+      ],
+      "codebook_utilization_depth_stats": [
+        {
+          "depth": 1,
+          "n_unique": 1024,
+          "theoretical_space": 1024,
+          "utilization": 1.0
+        },
+        {
+          "depth": 2,
+          "n_unique": 157906,
+          "theoretical_space": 1048576,
+          "utilization": 0.1505908966064453
+        },
+        {
+          "depth": 3,
+          "n_unique": 404066,
+          "theoretical_space": 1069547520,
+          "utilization": 0.0003777915356205959
+        }
+      ],
+      "codebook_utilization_space_utilization": 0.0003777915356205959,
+      "entropy": 0.9792,
+      "entropy_depth": [
+        0.9739,
+        0.8352,
+        0.6168
+      ],
+      "entropy_depth_stats": [
+        {
+          "depth": 1,
+          "entropy": 9.7389,
+          "max_entropy": 10.0,
+          "normalized": 0.9739,
+          "n_unique_prefix": 1024
+        },
+        {
+          "depth": 2,
+          "entropy": 16.7048,
+          "max_entropy": 20.0,
+          "normalized": 0.8352,
+          "n_unique_prefix": 157906
+        },
+        {
+          "depth": 3,
+          "entropy": 18.5008,
+          "max_entropy": 29.9944,
+          "normalized": 0.6168,
+          "n_unique_prefix": 404066
+        }
+      ],
+      "cosine_similarity": 0.0876,
+      "effective_dimension": 0.6562,
+      "semantic_id_collision": 0.1463,
+      "semantic_id_collision_depth": [
+        0.9979,
+        0.6756,
+        0.1699
+      ],
+      "semantic_id_collision_prefix_stats": [
+        {
+          "depth": 1,
+          "n_unique_prefix": 1024,
+          "collision_rate": 0.9979,
+          "conflict_rate": 0.9883,
+          "exclusivity": 0.0,
+          "avg_items": 475.36,
+          "min": 1,
+          "max": 1391,
+          "p50": 475,
+          "p90": 799,
+          "p99": 1092,
+          "le_1": 12,
+          "le_2": 26,
+          "le_5": 54,
+          "le_10": 63,
+          "le_50": 79,
+          "le_100": 92,
+          "le_500": 552,
+          "gt_500": 472
+        },
+        {
+          "depth": 2,
+          "n_unique_prefix": 157906,
+          "collision_rate": 0.6756,
+          "conflict_rate": 0.5993,
+          "exclusivity": 0.13,
+          "avg_items": 3.08,
+          "min": 1,
+          "max": 122,
+          "p50": 2,
+          "p90": 7,
+          "p99": 17,
+          "le_1": 63280,
+          "le_2": 95702,
+          "le_5": 136136,
+          "le_10": 152308,
+          "le_50": 157879,
+          "le_100": 157904,
+          "le_500": 157906,
+          "gt_500": 0
+        },
+        {
+          "depth": 3,
+          "n_unique_prefix": 404066,
+          "collision_rate": 0.1699,
+          "conflict_rate": 0.1463,
+          "exclusivity": 0.7086,
+          "avg_items": 1.2,
+          "min": 1,
+          "max": 44,
+          "p50": 1,
+          "p90": 2,
+          "p99": 4,
+          "le_1": 344936,
+          "le_2": 389527,
+          "le_5": 403130,
+          "le_10": 403993,
+          "le_50": 404066,
+          "le_100": 404066,
+          "le_500": 404066,
+          "gt_500": 0
+        }
+      ],
+      "semantic_id_collision_prefix_avg_items": [
+        475.36,
+        3.08,
+        1.2
+      ],
+      "cluster_balance": 0.1509,
+      "cluster_balance_depth": [
+        0.3117,
+        0.4588,
+        0.1509
+      ],
+      "cluster_balance_depth_stats": [
+        {
+          "depth": 1,
+          "gini": 0.3117,
+          "cv": 0.5502,
+          "n_unique_prefix": 1024,
+          "min_count": 1.0,
+          "max_count": 1391.0,
+          "mean_count": 475.36
+        },
+        {
+          "depth": 2,
+          "gini": 0.4588,
+          "cv": 1.1156,
+          "n_unique_prefix": 157906,
+          "min_count": 1.0,
+          "max_count": 122.0,
+          "mean_count": 3.08
+        },
+        {
+          "depth": 3,
+          "gini": 0.1509,
+          "cv": 0.5161,
+          "n_unique_prefix": 404066,
+          "min_count": 1.0,
+          "max_count": 44.0,
+          "mean_count": 1.2
+        }
+      ],
+      "embedding_hit_rate": 0.0047,
+      "semantic_neighbor_hit_rate": 0.078,
+      "space_utilization": 0.0003777915356205959,
+      "depth_codebook_util": [
+        1.0,
+        0.1505908966064453,
+        0.0003777915356205959
+      ],
+      "depth_unique_prefixes": [
+        1024,
+        157906,
+        404066
+      ],
+      "prefix_avg_items": [
+        475.36,
+        3.08,
+        1.2
+      ],
+      "quantizer_type": "rkmeans_fsq",
+      "fsq_levels_key": "5d_1024",
+      "fsq_codebook_size": 1024,
+      "fsq_projection": "mlp",
+      "fsq_mlp_hidden": 64,
+      "fsq_epochs": 50
+    },
+    "train_time": 97.36081337928772,
+    "num_clusters": 1024,
+    "niter": 25,
+    "nredo": 3,
+    "fsq_levels_key": "5d_1024",
+    "fsq_levels": [
+      4,
+      4,
+      4,
+      4,
+      4
+    ],
+    "fsq_codebook_size": 1024
+  }
+]
