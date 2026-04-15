@@ -295,6 +295,7 @@ class SemanticNeighborHitRateMetric(BaseMetric):
             valid_contents = random.sample(valid_contents, max_items)
 
         # 计算命中率
+        n_total_evaluated = len(valid_contents)
         hit_rates = []
         for cid in valid_contents:
             idx = content_id_to_idx[cid]
@@ -338,6 +339,8 @@ class SemanticNeighborHitRateMetric(BaseMetric):
                 'mean_hit_rate': mean_hit_rate,
                 'std_hit_rate': np.std(hit_rates),
                 'n_contents_evaluated': len(hit_rates),
+                'n_total_sampled': n_total_evaluated,
+                'neighbor_coverage': len(hit_rates) / n_total_evaluated if n_total_evaluated > 0 else 0.0,
                 'prefix_layers': prefix_layers,
             },
             status=status,
