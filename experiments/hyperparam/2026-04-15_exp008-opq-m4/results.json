@@ -1,0 +1,258 @@
+[
+  {
+    "quantizer_type": "opq",
+    "metrics": {
+      "reconstruction_loss": 0.376,
+      "reconstruction_loss_depth": [
+        0.8528,
+        0.7772,
+        0.655,
+        0.376
+      ],
+      "codebook_utilization": 0.0001,
+      "codebook_utilization_depth": [
+        1.0,
+        0.6209,
+        0.0205,
+        0.0001
+      ],
+      "codebook_utilization_depth_stats": [
+        {
+          "depth": 1,
+          "n_unique": 256,
+          "theoretical_space": 256,
+          "utilization": 1.0
+        },
+        {
+          "depth": 2,
+          "n_unique": 40689,
+          "theoretical_space": 65536,
+          "utilization": 0.6208648681640625
+        },
+        {
+          "depth": 3,
+          "n_unique": 343593,
+          "theoretical_space": 16777216,
+          "utilization": 0.02047973871231079
+        },
+        {
+          "depth": 4,
+          "n_unique": 458338,
+          "theoretical_space": 4294967296,
+          "utilization": 0.0001067151315510273
+        }
+      ],
+      "codebook_utilization_space_utilization": 0.0001067151315510273,
+      "entropy": 0.9912,
+      "entropy_depth": [
+        0.9576,
+        0.8976,
+        0.7509,
+        0.5852
+      ],
+      "entropy_depth_stats": [
+        {
+          "depth": 1,
+          "entropy": 7.6609,
+          "max_entropy": 8.0,
+          "normalized": 0.9576,
+          "n_unique_prefix": 256
+        },
+        {
+          "depth": 2,
+          "entropy": 14.3611,
+          "max_entropy": 16.0,
+          "normalized": 0.8976,
+          "n_unique_prefix": 40689
+        },
+        {
+          "depth": 3,
+          "entropy": 18.0215,
+          "max_entropy": 24.0,
+          "normalized": 0.7509,
+          "n_unique_prefix": 343593
+        },
+        {
+          "depth": 4,
+          "entropy": 18.7259,
+          "max_entropy": 32.0,
+          "normalized": 0.5852,
+          "n_unique_prefix": 458338
+        }
+      ],
+      "cosine_similarity": 0.0886,
+      "effective_dimension": 0.6562,
+      "semantic_id_collision": 0.0351,
+      "semantic_id_collision_depth": [
+        0.9995,
+        0.9164,
+        0.2941,
+        0.0584
+      ],
+      "semantic_id_collision_prefix_stats": [
+        {
+          "depth": 1,
+          "n_unique_prefix": 256,
+          "collision_rate": 0.9995,
+          "conflict_rate": 0.9922,
+          "exclusivity": 0.0,
+          "avg_items": 1901.43,
+          "min": 1,
+          "max": 5111,
+          "p50": 1928,
+          "p90": 3431,
+          "p99": 4656,
+          "le_1": 2,
+          "le_2": 5,
+          "le_5": 8,
+          "le_10": 8,
+          "le_50": 9,
+          "le_100": 12,
+          "le_500": 45,
+          "gt_500": 211
+        },
+        {
+          "depth": 2,
+          "n_unique_prefix": 40689,
+          "collision_rate": 0.9164,
+          "conflict_rate": 0.8358,
+          "exclusivity": 0.0137,
+          "avg_items": 11.96,
+          "min": 1,
+          "max": 572,
+          "p50": 6,
+          "p90": 28,
+          "p99": 84,
+          "le_1": 6682,
+          "le_2": 11126,
+          "le_5": 19227,
+          "le_10": 26768,
+          "le_50": 39417,
+          "le_100": 40430,
+          "le_500": 40688,
+          "gt_500": 1
+        },
+        {
+          "depth": 3,
+          "n_unique_prefix": 343593,
+          "collision_rate": 0.2941,
+          "conflict_rate": 0.1958,
+          "exclusivity": 0.5676,
+          "avg_items": 1.42,
+          "min": 1,
+          "max": 386,
+          "p50": 1,
+          "p90": 2,
+          "p99": 7,
+          "le_1": 276301,
+          "le_2": 318439,
+          "le_5": 338308,
+          "le_10": 342087,
+          "le_50": 343554,
+          "le_100": 343581,
+          "le_500": 343593,
+          "gt_500": 0
+        },
+        {
+          "depth": 4,
+          "n_unique_prefix": 458338,
+          "collision_rate": 0.0584,
+          "conflict_rate": 0.0351,
+          "exclusivity": 0.9085,
+          "avg_items": 1.06,
+          "min": 1,
+          "max": 284,
+          "p50": 1,
+          "p90": 1,
+          "p99": 2,
+          "le_1": 442244,
+          "le_2": 454222,
+          "le_5": 457584,
+          "le_10": 458094,
+          "le_50": 458327,
+          "le_100": 458335,
+          "le_500": 458338,
+          "gt_500": 0
+        }
+      ],
+      "semantic_id_collision_prefix_avg_items": [
+        1901.43,
+        11.96,
+        1.42,
+        1.06
+      ],
+      "cluster_balance": 0.0571,
+      "cluster_balance_depth": [
+        0.3642,
+        0.5922,
+        0.2615,
+        0.0571
+      ],
+      "cluster_balance_depth_stats": [
+        {
+          "depth": 1,
+          "gini": 0.3642,
+          "cv": 0.639,
+          "n_unique_prefix": 256,
+          "min_count": 1.0,
+          "max_count": 5111.0,
+          "mean_count": 1901.43
+        },
+        {
+          "depth": 2,
+          "gini": 0.5922,
+          "cv": 1.5735,
+          "n_unique_prefix": 40689,
+          "min_count": 1.0,
+          "max_count": 572.0,
+          "mean_count": 11.96
+        },
+        {
+          "depth": 3,
+          "gini": 0.2615,
+          "cv": 1.3692,
+          "n_unique_prefix": 343593,
+          "min_count": 1.0,
+          "max_count": 386.0,
+          "mean_count": 1.42
+        },
+        {
+          "depth": 4,
+          "gini": 0.0571,
+          "cv": 0.7577,
+          "n_unique_prefix": 458338,
+          "min_count": 1.0,
+          "max_count": 284.0,
+          "mean_count": 1.06
+        }
+      ],
+      "embedding_hit_rate": 0.0047,
+      "semantic_neighbor_hit_rate": 0.0502,
+      "space_utilization": 0.0001067151315510273,
+      "depth_codebook_util": [
+        1.0,
+        0.6208648681640625,
+        0.02047973871231079,
+        0.0001067151315510273
+      ],
+      "depth_unique_prefixes": [
+        256,
+        40689,
+        343593,
+        458338
+      ],
+      "prefix_avg_items": [
+        1901.43,
+        11.96,
+        1.42,
+        1.06
+      ],
+      "quantizer_type": "opq",
+      "n_subvectors": 4,
+      "n_clusters_per_sub": 256
+    },
+    "train_time": 73.24397158622742,
+    "n_subvectors": 4,
+    "n_clusters_per_sub": 256
+  }
+]
