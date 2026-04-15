@@ -41,10 +41,10 @@
 
 ## EXP-009: QFormer Tokenizer — 冻结 Qwen3 + Cross-Attention 压缩
 
-**Date**: 2026-04-14
-**Status**: planned
+**Date**: 2026-04-14 ~ 2026-04-15
+**Status**: completed
 **IDEA**: IDEA-onerec-3
-**Results**: TBD
+**Results**: [./hyperparam/2026-04-14_exp009-qformer/](./hyperparam/2026-04-14_exp009-qformer/)
 
 ### Background
 
@@ -80,13 +80,45 @@ OneRec 的核心方案: 冻结底座，在上面加一个可训练的 QFormer (c
 `bash experiments/scripts/exp-009.sh`
 
 ### Results
-TBD
+
+| Config | QFormer Layers | Queries (M) | lr | Final HR@50 | Final Loss | 训练时间 |
+|--------|---------------|-------------|------|------------|-----------|---------|
+| BL (raw Qwen3) | — | — | — | 0.0106 | — | — |
+| EXP-007 best (全量FT) | — | — | 1e-5 | 0.0197 | 2.90 | 6756s |
+| A | 2 | 4 | 1e-4 | 0.0211 | 4.46 | 4460s |
+| B | 2 | 4 | 5e-4 | 0.0214 | 4.41 | 4458s |
+| **C (best)** | **4** | **4** | **1e-4** | **0.0216** | **4.42** | **4549s** |
+
+实际训练数据: 3,074,342 pairs (max_pairs=5M, swing 实际产出 ~3M), 12,000 steps/epoch, effective batch 2048。
 
 ### Analysis
-TBD
+
+**1. QFormer 未突破 0.02 天花板:**
+- 最佳 Config C: HR@50 = 0.0216，仅比 EXP-007 best (0.0197) 高 10%，远未达到 hypothesis 预期的 >0.05
+- 三组 config 差异极小 (0.0211 ~ 0.0216)，QFormer depth/lr 不是瓶颈
+
+**2. Hypothesis 验证:**
+- ✅ H1 (梯度流动): loss 从 5.5 降到 ~4.4，确实在下降（EXP-007 cap_loss 纹丝不动），证明梯度可以流过 QFormer
+- ❌ H2 (HR@50 突破): 0.0216 vs 预期 >0.05，差距巨大
+- ❌ H3 (信息压缩): QFormer 的 4 query tokens 并未迫使模型学到更好的协同表示
+
+**3. HR@50 曲线特征:**
+- 全程缓慢单调上升，未见明显 plateau
+- 但斜率持续递减 (step 0~4000: +0.006, step 4000~8000: +0.003, step 8000~12000: +0.002)
+- 更多 epoch 可能有微小提升，但趋势已极平，不可能突破 0.03
+
+**4. 根因重新判断:**
+- EXP-007 结论 "梯度稀释" 被部分推翻——QFormer 集中梯度后 loss 确实在降，但 HR@50 仍卡住
+- **真正瓶颈不在模型结构，而在 I2I contrastive 信号本身**: in-batch negatives + 行为共现正样本的监督信号强度不足以将 embedding 推到行为空间中有意义的位置
+- 或者说: **Qwen3 的 semantic embedding 空间与行为空间的 gap 远大于 contrastive learning 能弥补的程度**
 
 ### Next Steps
-TBD
+
+EXP-007 + EXP-009 两轮实验证明: **I2I contrastive fine-tune (无论全量/LoRA/QFormer) 都无法有效改善 embedding 的行为质量**。需要重新审视 embedding 端的策略:
+
+1. **放弃 embedding fine-tune 路线**, 回归 "好的 tokenizer 比好的 embedding 更重要" 的架构哲学
+2. 聚焦 **EXP-008 (FORGE proxy 对比)** — 用现有 Qwen3 embedding 对比 MLP-FSQ vs OPQ 的行为质量，决定 tokenizer 路线
+3. 如果仍需改善 embedding，考虑完全不同的方案: multi-task learning、graph embedding、或直接用行为 embedding (collaborative filtering) 替代文本 embedding
 
 ---
 
