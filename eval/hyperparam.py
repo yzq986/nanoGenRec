@@ -913,7 +913,7 @@ def run_from_sid_cache(args):
     behavior_data = load_all_behavior_data()
     print(f"  Behavior data: {len(behavior_data['uid']):,} interactions")
 
-    # Evaluate
+    # Evaluate — sid_cache path: only run NTP, skip all tokenizer metrics
     evaluator = BehaviorMetricsEvaluator(
         embeddings=eval_tensor,
         content_ids=content_ids,
@@ -924,12 +924,8 @@ def run_from_sid_cache(args):
     )
 
     run_ntp = args.run_ntp and not args.skip_ntp
-    if not args.only_sid:
-        evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
-    evaluator.register_metrics(['embedding_hit_rate'])
-    evaluator.register_metrics(['semantic_neighbor_hit_rate'])
-
     sid_kwargs = {}
+
     if run_ntp:
         evaluator.register_metrics(['semantic_id_prediction'])
         sid_kwargs['semantic_id_prediction'] = {
@@ -937,6 +933,12 @@ def run_from_sid_cache(args):
             'recall_beam_size': args.recall_beam_size,
             'eval_sample_size': args.eval_sample_size,
         }
+    else:
+        # If not running NTP from cache, still provide basic metrics
+        if not args.only_sid:
+            evaluator.register_metrics(list(INTRINSIC_METRICS.keys()))
+        evaluator.register_metrics(['embedding_hit_rate'])
+        evaluator.register_metrics(['semantic_neighbor_hit_rate'])
 
     metric_results = evaluator.evaluate(metric_kwargs=sid_kwargs)
 
