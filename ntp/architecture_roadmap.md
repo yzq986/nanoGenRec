@@ -8,7 +8,7 @@
 
 ## 当前起点
 
-`ntp/model.py` — **NTPProbe**
+`ntp/baseline.py` — **NTPProbe** (原始 baseline)
 
 | 项目 | 现状 |
 |------|------|
@@ -19,44 +19,185 @@
 | 用户表示 | 无 (行为序列隐式编码) |
 | 输入 | 10 items × 3 SID tokens = 30 tokens |
 | 解码 | Beam search (beam=5 训练, 50 eval) |
-| 训练 | per-layer CE, DDP, 1 epoch |
-
-`sid_prediction_old.py` 中有完整 S-tier 实现 (6L, MoE 8E top-2, ~39.5M) 但未迁移到新 DDP pipeline。
+| 训练 | 滑动窗口 (input_30→target_3), per-layer CE, DDP, 1 epoch |
 
 ---
 
-## Stage 1: S-tier Decoder + Loss-Free MoE
+## Stage 1: S-tier Decoder + Loss-Free MoE ✅
 
-**目标**: 建立强 decoder baseline，后续所有改进在此基础上对比
+**状态**: 已完成（模型 + 训练 + 评估全链路）
 
-**来源**: `sid_prediction_old.py` 迁移 + IDEA-onemall-4
+**来源**: `sid_prediction_old.py` 迁移 + IDEA-onemall-4 + IDEA-mtgr-0
 
-**改动**: `ntp/model.py`
+### 1a — S-tier Model (`ntp/model.py`)
 
-| 项目 | 现状 → 目标 |
-|------|-------------|
+| 项目 | NTPProbe → NTPModel |
+|------|---------------------|
 | 层数 | 2 → 6 |
 | Heads | 4 → 8 |
 | FFN | Dense 512 → SwiGLU MoE (8E, top-2, expert_dim=1024) |
 | Load balancing | N/A → Loss-Free dynamic bias (替代 Switch aux loss) |
-| KV Cache | 无 → 增量解码, beam search 复用 |
 | 参数量 | 5M → ~39.5M total / ~11M active |
 
-Loss-Free MoE (IDEA-onemall-4) 改动极小:
+Loss-Free MoE (DeepSeek-V2 / IDEA-onemall-4):
 ```python
-# 每个 expert 维护一个不参与梯度的 bias
-expert_bias = torch.zeros(n_experts)  # requires_grad=False
-router_score = linear(x) + expert_bias
-# 每步统计频率，动态调整 bias
-expert_bias[i] -= lr_bias * (freq_i - 1/n_experts)
+# register_buffer: 不参与梯度, 不参与 optimizer, 随 checkpoint 保存
+self.register_buffer('expert_bias', torch.zeros(n_experts))
+
+# Forward: bias 注入 router logits
+router_logits = self.router(x_flat) + self.expert_bias
+router_probs = F.softmax(router_logits, dim=-1)
+
+# Training: 统计频率, 动态调整 bias 推向均匀分布
+freq = expert_mask.sum(dim=1).mean(dim=0)  # (n_experts,)
+self.expert_bias.add_(-bias_lr * (freq - 1.0 / self.n_experts))
 ```
 
-**验收**:
-- PPL 下降幅度 (预期 > 30%)
-- Recall@50 / Recall@500 对比 NTPProbe
-- Expert 利用率分布 (loss-free vs aux loss)
+关键设计:
+- `register_buffer` 而非 `nn.Parameter` — bias 不参与梯度回传，不干扰主任务 loss
+- 不返回 aux_loss — 彻底消除 Switch Transformer 的梯度冲突问题
+- 与 DDP `broadcast_object_list` 兼容，buffer 随 state_dict 自动同步
 
-**风险**: 低。核心代码已在 `sid_prediction_old.py` 中验证。
+### 1b — Packed Sequence Training (`ntp/train.py`)
+
+**来源**: IDEA-mtgr-0 (Meituan MTGR, CIKM 2025)
+
+旧方案 (滑动窗口):
+```
+用户 [A, B, C, D, E] → 切出: [A,B,C]→D, [B,C,D]→E, ...
+问题: Python for-loop over ~100M interactions → ~45M 样本, ~40-60 GB RAM
+```
+
+新方案 (Packed sequences + causal mask):
+```
+用户 [A, B, C, D, E] → 一条序列: [tokA, tokB, tokC, tokD, tokE]
+每个 position 预测下一个 token (标准 LM 训练)
+因果掩码确保每个位置只看到过去
+```
+
+| 对比 | 滑动窗口 | Packed |
+|------|----------|--------|
+| 样本数 | ~45M | ~2M (每用户 1 条) |
+| 内存 | ~40-60 GB | ~3-4 GB |
+| 数据构建 | Python for-loop (慢) | numpy vectorized (快) |
+| 训练信号 | 每条只有 3 个 target token | 每个 position 都产生梯度 |
+
+数据构建优化:
+```python
+# Vectorized user grouping (替代 defaultdict for-loop)
+sort_idx = np.lexsort((ts_f, uids_f))       # numpy 排序
+boundaries = np.where(uids_s[1:] != uids_s[:-1])[0] + 1  # 边界检测
+# pandas isin() 替代 set membership check
+iid_mask = pd.Index(iids_f).isin(valid_iids)
+```
+
+Right-padding + causal mask:
+```python
+# 变长序列 batch: right-pad to max length
+# 因果注意力自然阻止 real tokens attend to padding (在末尾)
+# Loss mask 排除 padding 位置
+target_mask = arange < (lengths.unsqueeze(1) - 1)
+loss = model(input_tokens, packed_targets=target_tokens, packed_mask=target_mask)
+```
+
+### 1c — Full-History Eval Context (`ntp/train.py` + `ntp/eval.py`)
+
+旧方案:
+```
+训练: 模型看完整用户历史 (up to 512 tokens)
+评估: 只喂最近 10 items (30 tokens) 做 beam search
+问题: train-eval mismatch, 浪费模型学到的长距离依赖能力
+```
+
+新方案:
+```
+评估: 用户完整行为历史作为 context (up to max_seq_len tokens)
+匹配训练分布, 充分利用长距离信息
+```
+
+变长 eval 流水线:
+- `EvalSequenceDataset` + `eval_collate_fn`: 变长 input right-pad, 固定 target stack
+- Teacher-forced loss: 每样本独立 forward (避免 padding 在 context 和 target 之间)
+- Beam search: 每样本 strip padding 后独立 constrained beam search
+
+### 1d — Trie-Constrained Beam Search (`ntp/model.py` + `ntp/eval.py`)
+
+**问题分析**:
+
+旧 beam search (unconstrained):
+```
+SID 空间: 4096^3 ≈ 68B 可能组合
+实际 item: ~1M (对应 ~500K 唯一 SID)
+beam_size=500: 大部分 beam 打到不存在的 SID → 空炮, 浪费 capacity
+
+结果: 500 个 beam 中可能只有 10-50 个映射到真实 item
+```
+
+Trie-constrained beam search:
+```
+构建 SID prefix trie → 每步只保留 trie 中存在的 token
+beam_size=500: 每个 beam 都保证命中真实 SID → 零浪费
+
+结果: 500 个 beam 全部映射到真实 item, recall 大幅提升
+```
+
+`SIDTrie` 数据结构:
+```python
+class SIDTrie:
+    # children[layer] = {prefix_tuple → set of valid next tokens}
+    # 例: children[0] = {() → {0, 1, 2, ...}}          # layer 0: 所有有效首 token
+    #     children[1] = {(0,) → {10, 11}, (1,) → {20}}  # layer 1: 按首 token 分组
+    #     children[2] = {(0,10) → {100,101}, ...}        # layer 2: 按前两 token 分组
+```
+
+Constrained beam search 核心:
+```python
+for step in range(n_layers):
+    logits = model.forward(input_exp, gen_exp)
+    log_probs = F.log_softmax(logits, dim=-1)
+
+    # 构建 trie mask: 按 prefix 分组查询, 减少冗余 dict lookup
+    for each beam:
+        valid_tokens = trie.valid_tokens(step, beam_prefix)
+        mask[beam_idx, valid_tokens] = True
+
+    # 无效 token → -inf, topk 自然只选有效候选
+    log_probs.masked_fill_(~mask, float('-inf'))
+    topk_scores, topk_idx = flat_scores.topk(beam_size)
+```
+
+Item 回找:
+```python
+# 旧: 遍历 500 beams, 很多 sid_to_items.get(sid) 返回空
+# 新: 每个 beam 都保证存在 → 每次查询必中, 按 score 顺序填充 candidate list
+candidates = []
+for beam in sorted_beams:
+    for item in sid_to_items[beam.sid]:
+        candidates.append(item)  # 按 beam score 排序, 高分 SID 的 item 优先
+```
+
+### 验收指标
+
+| 指标 | NTPProbe (baseline) | NTPModel (预期) |
+|------|--------------------|--------------------|
+| PPL | baseline | 下降 > 30% |
+| Recall@50 | baseline | 显著提升 (trie constraint) |
+| Recall@500 | baseline | 大幅提升 (全量有效 beam) |
+| Expert 利用率 | N/A | 均匀 (loss-free bias) |
+| Eval context | 30 tokens | up to 512 tokens |
+| Beam 有效率 | ~10-20% | 100% |
+
+### 文件清单
+
+| 文件 | 改动 |
+|------|------|
+| `ntp/model.py` | ExpertFFN, SparseMoEBlock, TransformerLayer, NTPModel, SIDTrie, constrained_beam_search |
+| `ntp/baseline.py` | 不变 (NTPProbe 保留向后兼容) |
+| `ntp/train.py` | build_packed_sequences, PackedSequenceDataset, train_packed, EvalSequenceDataset, eval_collate_fn |
+| `ntp/eval.py` | varlen eval path, SIDTrie 构建, constrained_beam_search 调用 |
+| `ntp/__init__.py` | 导出 SIDTrie, constrained_beam_search |
+
+**风险**: 低。各组件独立可测，向后兼容。
 
 ---
 
@@ -327,14 +468,19 @@ Fuse(m, s) = W_f[m * sigmoid(W_g @ s); s]
 ## 总览
 
 ```
-Stage 1          Stage 2          Stage 3a         Stage 3b          Stage 4          Stage 5          Stage 6
+Stage 1 ✅       Stage 2          Stage 3a         Stage 3b          Stage 4          Stage 5          Stage 6
 S-tier           Soft             Lazy             Full              Query-           Reasoning        RL
 Decoder          Prompt           Dec-Only         Enc-Dec           Former           / CoA            对齐
 + MoE                                                                                Prefix
++ Packed Train
++ Full-History
+  Eval
++ Trie Beam
    │                │                │                │                │                │                │
    ▼                ▼                ▼                ▼                ▼                ▼                ▼
  强baseline       验证用户          推理加速          多尺度           500+序列         解码质量          线上
  39.5M           表示价值          beam共享KV        行为建模          FLOP↓3-4x        精度↑             指标
+ packed+trie
 ```
 
 **关键决策点**:
