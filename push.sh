@@ -54,6 +54,14 @@ push_main() {
 
     cd "$SCRIPT_DIR"
 
+    # Safety: recover from detached HEAD (e.g. interrupted rebase from previous run)
+    if ! git symbolic-ref HEAD >/dev/null 2>&1; then
+        echo "  WARNING: detached HEAD detected! Likely from a previous interrupted push."
+        echo "  Recovering: switching back to master..."
+        git rebase --abort --quiet 2>/dev/null || true
+        git checkout master --quiet
+    fi
+
     local BRANCH
     BRANCH="$(git branch --show-current)"
 
@@ -90,11 +98,16 @@ push_main() {
     local BASE
     BASE="$(git merge-base "company/${BRANCH}" "$BRANCH" 2>/dev/null || echo "")"
 
-    # Ensure cleanup on interrupt or failure — always return to original branch
+    # Robust cleanup: abort rebase, force-checkout back to original branch, delete temp
     cleanup_mirror() {
         git rebase --abort --quiet 2>/dev/null || true
-        git checkout "$BRANCH" --quiet 2>/dev/null || true
+        # Force checkout even if working tree is dirty from failed rebase
+        git checkout -f "$BRANCH" --quiet 2>/dev/null || true
         git branch -D "$TEMP_BRANCH" --quiet 2>/dev/null || true
+        # Final paranoia: if still detached, force back to master
+        if ! git symbolic-ref HEAD >/dev/null 2>&1; then
+            git checkout -f master --quiet 2>/dev/null || true
+        fi
     }
     trap 'cleanup_mirror; trap - INT TERM; return 1' INT TERM
 
@@ -123,6 +136,14 @@ push_main() {
     # Cleanup — always return to original branch
     trap - INT TERM
     cleanup_mirror
+
+    # Post-cleanup verification
+    local FINAL_BRANCH
+    FINAL_BRANCH="$(git branch --show-current 2>/dev/null || echo "")"
+    if [ "$FINAL_BRANCH" != "$BRANCH" ]; then
+        echo "  ERROR: expected to be on '$BRANCH' but on '${FINAL_BRANCH:-DETACHED HEAD}'. Force recovering..."
+        git checkout -f "$BRANCH" --quiet 2>/dev/null || git checkout -f master --quiet
+    fi
     echo "  Company mirror complete."
 
     echo "Main repo push complete."
