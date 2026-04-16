@@ -333,32 +333,54 @@ def train_packed(
     n_heads=8,
     n_transformer_layers=6,
     max_seq_len=512,
+    model_type='s-tier',
+    ffn_dim=512,
+    pre_sharded=False,
 ):
-    """Train NTPModel with packed user sequences (causal LM style)."""
+    """Train NTPModel or NTPProbe with packed user sequences (causal LM style).
 
-    model = NTPModel(
-        n_clusters_per_layer=n_clusters_per_layer,
-        n_sid_layers=n_layers,
-        n_items=n_items,
-        embed_dim=embed_dim,
-        n_heads=n_heads,
-        n_transformer_layers=n_transformer_layers,
-        use_moe=True,
-        n_experts=8,
-        top_k=2,
-        expert_dim=1024,
-        parallel=False,  # packed = always causal AR
-        max_seq_len=max_seq_len,
-    ).to(device)
+    Args:
+        pre_sharded: if True, train_seqs is already this rank's shard (from preprocess-ntp).
+    """
+
+    if model_type == 's-tier':
+        model = NTPModel(
+            n_clusters_per_layer=n_clusters_per_layer,
+            n_sid_layers=n_layers,
+            n_items=n_items,
+            embed_dim=embed_dim,
+            n_heads=n_heads,
+            n_transformer_layers=n_transformer_layers,
+            use_moe=True,
+            n_experts=8,
+            top_k=2,
+            expert_dim=1024,
+            parallel=False,  # packed = always causal AR
+            max_seq_len=max_seq_len,
+        ).to(device)
+    else:
+        model = NTPProbe(
+            n_clusters_per_layer=n_clusters_per_layer,
+            n_sid_layers=n_layers,
+            n_items=n_items,
+            embed_dim=embed_dim,
+            n_heads=n_heads,
+            n_transformer_layers=n_transformer_layers,
+            ffn_dim=ffn_dim,
+            parallel=False,  # packed = always causal AR
+            max_seq_len=max_seq_len,
+        ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
-    log(is_main, f"  s-tier (packed): {n_params / 1e6:.1f}M params, max_seq={max_seq_len}")
+    log(is_main, f"  {model_type} (packed): {n_params / 1e6:.1f}M params, max_seq={max_seq_len}")
 
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank])
 
     # Shard data per rank to save memory (each rank only holds 1/N)
-    if world_size > 1:
+    if pre_sharded:
+        train_seqs_shard = train_seqs  # already per-rank from preprocess-ntp
+    elif world_size > 1:
         n_total = len(train_seqs)
         shard_size = n_total // world_size
         shard_start = local_rank * shard_size
@@ -429,7 +451,7 @@ def train_packed(
     log(is_main, f"  Train done: loss={avg_loss:.4f} ({elapsed:.1f}s)")
 
     raw_model = model.module if isinstance(model, DDP) else model
-    return raw_model.cpu(), avg_loss, n_params, 's-tier'
+    return raw_model.cpu(), avg_loss, n_params, model_type
 
 
 def format_eta(seconds):
@@ -577,7 +599,8 @@ def train_probe(
 
 def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
                     sid_to_items, n_clusters_per_layer, n_layers, n_items,
-                    avg_loss, n_params, sid_cache_dir, model_type='probe'):
+                    avg_loss, n_params, sid_cache_dir, model_type='probe',
+                    n_train_total=None):
     """Save probe checkpoint + eval data (rank 0 only)."""
     os.makedirs(output_dir, exist_ok=True)
 
@@ -609,6 +632,7 @@ def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
             'n_transformer_layers': len(probe.decoder.layers),
             'ffn_dim': probe.decoder.layers[0].linear1.out_features,
             'parallel': probe.parallel,
+            'max_seq_len': probe.max_seq_len,
         }
     torch.save({
         'model_state_dict': probe.state_dict(),
@@ -624,7 +648,7 @@ def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
 
     # 3. Train metadata
     meta = {
-        'n_train': len(train_data),
+        'n_train': n_train_total if n_train_total else len(train_data),
         'n_eval': len(eval_data),
         'n_clusters_per_layer': n_clusters_per_layer,
         'n_layers': n_layers,
@@ -649,8 +673,8 @@ def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train NTP Probe (DDP)')
-    parser.add_argument('--sid_cache', type=str, required=True,
-                        help='Path to preprocess-sid cache dir')
+    parser.add_argument('--sid_cache', type=str, default=None,
+                        help='Path to preprocess-sid cache dir (required unless --preprocessed_dir)')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output dir (default: experiments/ntp_checkpoints/{name})')
     parser.add_argument('--name', type=str, default='default',
@@ -672,6 +696,9 @@ def parse_args():
                         help='Behavior data start date (YYYY-MM-DD). Default: config DEFAULT_DATE_START')
     parser.add_argument('--date_end', type=str, default=None,
                         help='Behavior data end date (YYYY-MM-DD). Default: config DEFAULT_DATE_END')
+    parser.add_argument('--preprocessed_dir', type=str, default=None,
+                        help='Pre-cached shard directory from preprocess-ntp. '
+                             'If set, skips data building and loads per-rank shard directly.')
     return parser.parse_args()
 
 
@@ -680,106 +707,126 @@ def main():
     local_rank, world_size, device, is_main = setup_ddp()
     model_type = args.model
 
+    if not args.preprocessed_dir and not args.sid_cache:
+        raise ValueError("Either --sid_cache or --preprocessed_dir is required")
+
     log(is_main, "=" * 60)
     log(is_main, f"NTP Training — {model_type}" +
                  (f" (DDP x{world_size})" if world_size > 1 else ""))
     log(is_main, "=" * 60)
 
-    # ── Load SID cache (rank 0 only, others wait) ──
-    log(is_main, f"\nStep 1: Loading SID cache from {args.sid_cache}")
-    cache_config_path = os.path.join(args.sid_cache, 'config.json')
-    with open(cache_config_path) as f:
-        cache_config = json.load(f)
+    # ── Fast path: load pre-cached shards from preprocess-ntp ──
+    if args.preprocessed_dir:
+        log(is_main, f"\nLoading pre-cached data from {args.preprocessed_dir}")
+        meta_path = os.path.join(args.preprocessed_dir, 'meta.json')
+        with open(meta_path) as f:
+            prep_meta = json.load(f)
 
-    # ── Build sequences (rank 0 only) ──
-    if is_main:
-        sid_dict = np.load(
-            os.path.join(args.sid_cache, 'semantic_ids.npy'), allow_pickle=True
-        ).item()
-        log(is_main, f"  SID assignments: {len(sid_dict):,}")
+        n_layers = prep_meta['n_layers']
+        n_clusters_per_layer = prep_meta['n_clusters_per_layer']
+        n_items = prep_meta['n_items']
+        max_seq_len = prep_meta['max_seq_len']
+        sid_cache_dir = prep_meta['sid_cache']
 
-        log(is_main, "\nStep 2: Loading behavior data")
-        from gr_demo.eval.batch import load_all_behavior_data
-        behavior_data = load_all_behavior_data(
-            date_start=args.date_start, date_end=args.date_end)
-        log(is_main, f"  Interactions: {len(behavior_data['uid']):,}")
+        # Each rank loads only its own shard
+        shard_path = os.path.join(args.preprocessed_dir, f'train_shard_{local_rank}.npz')
+        if not os.path.exists(shard_path):
+            raise FileNotFoundError(
+                f"Shard {shard_path} not found. "
+                f"Expected {prep_meta['n_shards']} shards but world_size={world_size}. "
+                f"Re-run preprocess-ntp with --n_shards {world_size}.")
+        from gr_demo.ntp.preprocess import load_shard
+        train_data = load_shard(shard_path)
+        log(is_main, f"  Rank {local_rank}: loaded {len(train_data):,} seqs from shard")
+        log(is_main, f"  Layers: {n_layers}, n_items: {n_items}, max_seq_len: {max_seq_len}")
 
-        log(is_main, "\nStep 3: Building sequences")
-        if model_type == 's-tier':
+        # Eval data only needed on rank 0 for saving
+        if is_main:
+            eval_ckpt = torch.load(
+                os.path.join(args.preprocessed_dir, 'eval_data.pt'),
+                map_location='cpu', weights_only=False)
+            eval_data = eval_ckpt['eval_data']
+            eval_cids = eval_ckpt['eval_cids']
+            sid_to_items = eval_ckpt['sid_to_items']
+            n_eval = len(eval_data)
+        else:
+            eval_data = eval_cids = sid_to_items = None
+            n_eval = prep_meta['n_eval']
+
+    # ── Slow path: build data on rank 0, share to other ranks ──
+    else:
+        log(is_main, f"\nStep 1: Loading SID cache from {args.sid_cache}")
+        cache_config_path = os.path.join(args.sid_cache, 'config.json')
+        with open(cache_config_path) as f:
+            cache_config = json.load(f)
+
+        sid_cache_dir = args.sid_cache
+        n_items = args.n_items
+        max_seq_len = args.max_seq_len
+
+        if is_main:
+            sid_dict = np.load(
+                os.path.join(args.sid_cache, 'semantic_ids.npy'), allow_pickle=True
+            ).item()
+            log(is_main, f"  SID assignments: {len(sid_dict):,}")
+
+            log(is_main, "\nStep 2: Loading behavior data")
+            from gr_demo.eval.batch import load_all_behavior_data
+            behavior_data = load_all_behavior_data(
+                date_start=args.date_start, date_end=args.date_end)
+            log(is_main, f"  Interactions: {len(behavior_data['uid']):,}")
+
+            log(is_main, "\nStep 3: Building packed sequences")
             train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = \
                 build_packed_sequences(
                     sid_dict, behavior_data,
-                    n_items=args.n_items, max_seq_len=args.max_seq_len)
+                    n_items=n_items, max_seq_len=max_seq_len)
+
+            del sid_dict, behavior_data
+
+            if world_size > 1:
+                shared_dir = os.path.join(args.sid_cache, '_train_tmp')
+                os.makedirs(shared_dir, exist_ok=True)
+                np.save(os.path.join(shared_dir, 'train_data.npy'),
+                        train_data, allow_pickle=True)
+            meta = (n_layers, n_clusters_per_layer, len(train_data), len(eval_data))
         else:
-            train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = \
-                build_sequences(sid_dict, behavior_data, n_items=args.n_items)
+            train_data = eval_data = eval_cids = sid_to_items = None
+            meta = None
 
-        # Free large objects no longer needed
-        del sid_dict, behavior_data
-
-        # Save train data to shared filesystem for other ranks
         if world_size > 1:
-            import tempfile
-            shared_dir = os.path.join(args.sid_cache, '_train_tmp')
-            os.makedirs(shared_dir, exist_ok=True)
-            np.save(os.path.join(shared_dir, 'train_data.npy'), train_data, allow_pickle=True)
-            meta = (n_layers, n_clusters_per_layer, len(train_data), len(eval_data))
-        else:
-            shared_dir = None
-            meta = (n_layers, n_clusters_per_layer, len(train_data), len(eval_data))
-    else:
-        train_data = eval_data = eval_cids = sid_to_items = None
-        shared_dir = None
-        meta = None
+            meta_list = [meta]
+            dist.broadcast_object_list(meta_list, src=0)
+            meta = meta_list[0]
 
-    # Broadcast only lightweight metadata, not the full dataset
-    if world_size > 1:
-        meta_list = [meta]
-        dist.broadcast_object_list(meta_list, src=0)
-        meta = meta_list[0]
+            if is_main:
+                shared_path_list = [os.path.join(args.sid_cache, '_train_tmp')]
+            else:
+                shared_path_list = [None]
+            dist.broadcast_object_list(shared_path_list, src=0)
+            shared_dir = shared_path_list[0]
 
-        if is_main:
-            shared_path_list = [shared_dir]
-        else:
-            shared_path_list = [None]
-        dist.broadcast_object_list(shared_path_list, src=0)
-        shared_dir = shared_path_list[0]
+            if not is_main:
+                train_data = np.load(
+                    os.path.join(shared_dir, 'train_data.npy'),
+                    allow_pickle=True).tolist()
 
-        # Non-rank-0: load train data from shared filesystem
-        if not is_main:
-            train_data = np.load(
-                os.path.join(shared_dir, 'train_data.npy'), allow_pickle=True).tolist()
+            dist.barrier()
+            if is_main:
+                os.remove(os.path.join(shared_dir, 'train_data.npy'))
+                try:
+                    os.rmdir(shared_dir)
+                except OSError:
+                    pass
 
-        dist.barrier()  # ensure all ranks loaded before cleanup
-        if is_main:
-            os.remove(os.path.join(shared_dir, 'train_data.npy'))
-            try:
-                os.rmdir(shared_dir)
-            except OSError:
-                pass
+        n_layers, n_clusters_per_layer, n_train, n_eval = meta
+        log(is_main, f"  Train: {len(train_data):,}, Eval: {n_eval:,}, Layers: {n_layers}")
 
-    n_layers, n_clusters_per_layer, n_train, n_eval = meta
-    log(is_main, f"  Train: {len(train_data):,}, Eval: {n_eval:,}, Layers: {n_layers}")
-
-    # ── Train ──
+    # ── Train (both probe and s-tier use packed sequences) ──
     if model_type == 's-tier':
-        log(is_main, f"\nStep 4: Training (s-tier, packed)")
-        probe, avg_loss, n_params, model_type = train_packed(
-            train_seqs=train_data,
-            n_clusters_per_layer=n_clusters_per_layer,
-            n_layers=n_layers,
-            n_items=args.n_items,
-            local_rank=local_rank,
-            world_size=world_size,
-            device=device,
-            is_main=is_main,
-            batch_size=args.batch_size,
-            lr=1e-3,
-            embed_dim=256,
-            n_heads=8,
-            n_transformer_layers=6,
-            max_seq_len=args.max_seq_len,
-        )
+        embed_dim, n_heads, n_transformer_layers = 256, 8, 6
+        lr = 1e-3
+        ffn_dim = 512
     else:
         embed_dim = args.embed_dim
         n_heads = args.n_heads
@@ -787,24 +834,26 @@ def main():
         ffn_dim = args.ffn_dim
         lr = args.lr
 
-        log(is_main, f"\nStep 4: Training (probe)")
-        probe, avg_loss, n_params, model_type = train_probe(
-            train_data=train_data,
-            n_clusters_per_layer=n_clusters_per_layer,
-            n_layers=n_layers,
-            n_items=args.n_items,
-            local_rank=local_rank,
-            world_size=world_size,
-            device=device,
-            is_main=is_main,
-            batch_size=args.batch_size,
-            lr=lr,
-            embed_dim=embed_dim,
-            n_heads=n_heads,
-            n_transformer_layers=n_transformer_layers,
-            ffn_dim=ffn_dim,
-            model_type='probe',
-        )
+    log(is_main, f"\nStep 4: Training ({model_type}, packed)")
+    probe, avg_loss, n_params, model_type = train_packed(
+        train_seqs=train_data,
+        n_clusters_per_layer=n_clusters_per_layer,
+        n_layers=n_layers,
+        n_items=n_items,
+        local_rank=local_rank,
+        world_size=world_size,
+        device=device,
+        is_main=is_main,
+        batch_size=args.batch_size,
+        lr=lr,
+        embed_dim=embed_dim,
+        n_heads=n_heads,
+        n_transformer_layers=n_transformer_layers,
+        max_seq_len=max_seq_len,
+        model_type=model_type,
+        ffn_dim=ffn_dim,
+        pre_sharded=bool(args.preprocessed_dir),
+    )
 
     # ── Save (rank 0 only) ──
     if is_main:
@@ -813,6 +862,7 @@ def main():
             repo_root, 'experiments', 'ntp_checkpoints', args.name)
 
         log(is_main, f"\nStep 5: Saving checkpoint")
+        n_train_total = prep_meta['n_train'] if args.preprocessed_dir else None
         save_checkpoint(
             output_dir=output_dir,
             probe=probe,
@@ -822,17 +872,18 @@ def main():
             sid_to_items=sid_to_items,
             n_clusters_per_layer=n_clusters_per_layer,
             n_layers=n_layers,
-            n_items=args.n_items,
+            n_items=n_items,
             avg_loss=avg_loss,
             n_params=n_params,
-            sid_cache_dir=args.sid_cache,
+            sid_cache_dir=sid_cache_dir,
             model_type=model_type,
+            n_train_total=n_train_total,
         )
 
         log(is_main, f"\n{'=' * 60}")
         log(is_main, "Training complete!")
         log(is_main, f"{'=' * 60}")
-        log(is_main, f"\nNext: python run.py hyperparam --sid_cache {args.sid_cache} "
+        log(is_main, f"\nNext: python run.py hyperparam --sid_cache {sid_cache_dir} "
                       f"--ntp_checkpoint {output_dir} --run_ntp")
 
     cleanup_ddp()

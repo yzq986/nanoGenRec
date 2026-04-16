@@ -11,10 +11,12 @@ Usage:
 import json
 import os
 import random
+import time
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
@@ -22,6 +24,89 @@ from gr_demo.metrics.base import BaseMetric, MetricResult
 from gr_demo.ntp.baseline import NTPProbe, SIDSequenceDataset
 from gr_demo.ntp.model import NTPModel, SIDTrie, constrained_beam_search
 from gr_demo.ntp.train import EvalSequenceDataset, eval_collate_fn
+
+
+def _batched_varlen_teacher_forced(probe, input_batch, target_batch, lengths, n_layers, device):
+    """Batched teacher-forced eval for variable-length inputs.
+
+    Instead of per-sample forward, constructs a padded teacher batch
+    (ctx + tgt[:-1] per sample, right-padded) and does ONE forward pass.
+    Then gathers per-sample logits at the correct positions.
+
+    Returns:
+        batch_loss: float, sum of per-sample average losses
+        depth_hit_10: list of per-layer hit@10 counts for this batch
+    """
+    B = input_batch.size(0)
+
+    # Build teacher sequences: ctx[:L] + tgt[:-1] for each sample, right-padded
+    teacher_lens = lengths + (n_layers - 1)  # (B,)
+    max_tlen = teacher_lens.max().item()
+
+    teacher_batch = torch.zeros(B, max_tlen, dtype=torch.long, device=device)
+    for bi in range(B):
+        L = lengths[bi].item()
+        teacher_batch[bi, :L] = input_batch[bi, :L]
+        teacher_batch[bi, L:L + n_layers - 1] = target_batch[bi, :-1]
+
+    # Single batched forward through probe internals
+    positions = torch.arange(max_tlen, device=device).unsqueeze(0)
+    x = probe._embed_tokens(teacher_batch) + probe.pos_emb(positions)
+
+    if hasattr(probe, 'decoder'):
+        # NTPProbe: nn.TransformerDecoder (needs explicit causal mask)
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(max_tlen, device=device)
+        hidden = probe.decoder(x, x, tgt_mask=causal_mask)
+    else:
+        # NTPModel: TransformerLayers generate their own causal masks
+        hidden = probe._transformer_forward(x)
+
+    # Extract per-sample, per-layer logits
+    # For sample bi with context length L:
+    #   position L-1 predicts target[0] at layer L % n_layers
+    #   position L   predicts target[1] at layer (L+1) % n_layers
+    #   position L+1 predicts target[2] at layer (L+2) % n_layers
+    # Generically: position (L - 1 + li) predicts target[li] at layer (L + li) % n_layers
+
+    batch_loss = 0.0
+    depth_hit_10 = [0] * n_layers
+
+    # Gather all positions we need: for each sample, n_layers positions
+    # pos[bi, li] = lengths[bi] - 1 + li
+    li_range = torch.arange(n_layers, device=device)  # (n_layers,)
+    gather_pos = (lengths.unsqueeze(1) - 1 + li_range.unsqueeze(0))  # (B, n_layers)
+
+    for li in range(n_layers):
+        pos = gather_pos[:, li]  # (B,)
+        target_layer_ids = (lengths + li) % n_layers  # (B,) — which output_proj to use
+
+        # Group by target_layer for efficient projection
+        h_at_pos = hidden[torch.arange(B, device=device), pos]  # (B, D)
+
+        layer_losses = torch.zeros(B, device=device)
+        layer_logits_topk = torch.zeros(B, 10, dtype=torch.long, device=device)
+
+        for tl in range(n_layers):
+            mask = (target_layer_ids == tl)
+            if not mask.any():
+                continue
+            logits = probe.output_projs[tl](h_at_pos[mask])  # (N, C_tl)
+            targets_l = target_batch[mask, li]
+            layer_losses[mask] = F.cross_entropy(logits, targets_l, reduction='none')
+            topk_vals = min(10, logits.size(-1))
+            layer_logits_topk[mask, :topk_vals] = logits.topk(topk_vals, dim=-1).indices
+
+        batch_loss += layer_losses.sum().item() / n_layers
+
+        # Depth hit@10 (prefix-based: must hit at all preceding layers too)
+        hit = (layer_logits_topk == target_batch[:, li:li + 1]).any(dim=-1)  # (B,)
+        if li == 0:
+            prefix_hit = hit
+        else:
+            prefix_hit = prefix_hit & hit
+        depth_hit_10[li] = prefix_hit.sum().item()
+
+    return batch_loss, depth_hit_10
 
 
 # ============================================================
@@ -145,8 +230,13 @@ class SemanticIDPredictionMetric(BaseMetric):
             n_train = train_meta.get('n_train', 0)
 
         # ── Eval ──
-        # s-tier uses full user history (variable-length), probe uses fixed-length windows
-        varlen_eval = (model_type == 's-tier') and len(eval_data) > 0
+        # Both probe and s-tier now use packed training with variable-length eval data.
+        # Detect varlen by checking if input lengths vary (new format) vs fixed (legacy ckpt).
+        if len(eval_data) > 0:
+            input_lens = set(len(d[0]) for d in eval_data[:100])
+            varlen_eval = len(input_lens) > 1
+        else:
+            varlen_eval = False
 
         if varlen_eval:
             eval_loader = DataLoader(
@@ -171,6 +261,7 @@ class SemanticIDPredictionMetric(BaseMetric):
         recall_ks = [10, 50, 100, 500]
         item_recall = {k: 0 for k in recall_ks}
         eval_offset = 0
+        eval_t0 = time.time()
 
         with torch.no_grad():
             for batch in eval_loader:
@@ -185,17 +276,16 @@ class SemanticIDPredictionMetric(BaseMetric):
                 target_batch = target_batch.to(device, non_blocking=True)
                 B = input_batch.size(0)
 
+                # ── Teacher-forced metrics (loss + hit@10) ──
                 if use_parallel:
                     logits_list = probe(input_batch)  # [(B, C_l), ...]
 
-                    # Per-layer CE loss
                     loss = sum(
                         F.cross_entropy(logits_list[l], target_batch[:, l])
                         for l in range(n_layers)
                     ) / n_layers
                     eval_losses.append(loss.item() * B)
 
-                    # Per-layer hit@10
                     prefix_hit_10 = torch.ones(B, dtype=torch.bool, device=device)
                     for i in range(n_layers):
                         top10 = logits_list[i].topk(10, dim=-1).indices
@@ -204,43 +294,24 @@ class SemanticIDPredictionMetric(BaseMetric):
                         depth_hit_10[i] += prefix_hit_10.sum().item()
 
                 elif varlen_eval:
-                    # Variable-length: process each sample for teacher-forced metrics
-                    batch_loss = 0.0
-                    for bi in range(B):
-                        L_ctx = lengths[bi].item()
-                        ctx = input_batch[bi, :L_ctx].unsqueeze(0)
-                        tgt = target_batch[bi].unsqueeze(0)
-                        teacher = torch.cat([ctx, tgt[:, :-1]], dim=1)
-                        logits_list_i = probe(teacher, return_last_n=n_layers)
-
-                        batch_loss += sum(
-                            F.cross_entropy(logits_list_i[l], tgt[:, l])
-                            for l in range(n_layers)
-                        ).item() / n_layers
-
-                        prefix_ok = True
-                        for li in range(n_layers):
-                            top10 = logits_list_i[li].topk(10, dim=-1).indices
-                            hit = (top10 == tgt[:, li:li+1]).any(dim=-1).item()
-                            prefix_ok = prefix_ok and hit
-                            if prefix_ok:
-                                depth_hit_10[li] += 1
-                            else:
-                                break
+                    # Batched teacher-forced for variable-length inputs
+                    batch_loss, batch_dh10 = _batched_varlen_teacher_forced(
+                        probe, input_batch, target_batch, lengths,
+                        n_layers, device)
                     eval_losses.append(batch_loss)
+                    for li in range(n_layers):
+                        depth_hit_10[li] += batch_dh10[li]
 
                 else:
                     teacher_input = torch.cat([input_batch, target_batch[:, :-1]], dim=1)
                     logits_list = probe(teacher_input, return_last_n=n_layers)
 
-                    # Per-layer CE loss
                     loss = sum(
                         F.cross_entropy(logits_list[l], target_batch[:, l])
                         for l in range(n_layers)
                     ) / n_layers
                     eval_losses.append(loss.item() * B)
 
-                    # Per-layer hit@10
                     prefix_hit_10 = torch.ones(B, dtype=torch.bool, device=device)
                     for i in range(n_layers):
                         top10 = logits_list[i].topk(10, dim=-1).indices
@@ -248,12 +319,10 @@ class SemanticIDPredictionMetric(BaseMetric):
                         prefix_hit_10 = prefix_hit_10 & hit
                         depth_hit_10[i] += prefix_hit_10.sum().item()
 
+                # ── Beam search + recall (per-sample, with progress) ──
                 if not use_parallel:
-
-                    # Trie-constrained beam search — every beam is a real SID
                     actual_beam = max(beam_size, recall_beam_size)
 
-                    # Process each sample individually (constrained search + varlen)
                     for bi in range(B):
                         if varlen_eval:
                             L_ctx = lengths[bi].item()
@@ -263,10 +332,9 @@ class SemanticIDPredictionMetric(BaseMetric):
 
                         sample_beams, _ = constrained_beam_search(
                             probe, sample, sid_trie, beam_size=actual_beam)
-                        # sample_beams: (1, n_beams, n_layers)
 
                         # Depth accuracy (top-1 beam)
-                        pred_top1 = sample_beams[0, 0]  # (n_layers,)
+                        pred_top1 = sample_beams[0, 0]
                         prefix_ok = True
                         for li in range(n_layers):
                             prefix_ok = prefix_ok and (pred_top1[li] == target_batch[bi, li]).item()
@@ -275,7 +343,7 @@ class SemanticIDPredictionMetric(BaseMetric):
                             else:
                                 break
 
-                        # Item recall — every beam maps to real SID → items
+                        # Item recall
                         target_cid = eval_cids[eval_offset + bi]
                         candidates = []
                         seen = set()
@@ -289,11 +357,21 @@ class SemanticIDPredictionMetric(BaseMetric):
                             if target_cid in set(candidates[:k]):
                                 item_recall[k] += 1
 
+                        # Progress every 500 samples
+                        global_idx = eval_offset + bi + 1
+                        if verbose and global_idx % 500 == 0:
+                            elapsed = time.time() - eval_t0
+                            rate = global_idx / elapsed
+                            remaining = (len(eval_data) - global_idx) / rate
+                            eta_m, eta_s = divmod(int(remaining), 60)
+                            r10 = item_recall[10] / global_idx if global_idx > 0 else 0
+                            r500 = item_recall[500] / global_idx if global_idx > 0 else 0
+                            print(f"    eval {global_idx:,}/{len(eval_data):,} "
+                                  f"({rate:.1f} samples/s, ETA {eta_m}m{eta_s:02d}s) "
+                                  f"R@10={r10:.4f} R@500={r500:.4f}")
+
                 eval_offset += B
                 total_eval += B
-
-                if verbose and eval_offset % (batch_size * 10) == 0:
-                    print(f"    eval {eval_offset:,}/{len(eval_data):,}")
 
         if total_eval == 0:
             return MetricResult(name=self.name, value=0.0,

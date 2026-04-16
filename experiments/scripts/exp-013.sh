@@ -8,8 +8,9 @@
 #
 # Pipeline:
 #   1. preprocess-sid  — generate 4096×3-12d SID cache (skip if found)
-#   2. train-ntp       — DDP training (8 GPUs)
-#   3. hyperparam      — eval NTP from checkpoint
+#   2. preprocess-ntp  — build packed sequences + save 8 shards
+#   3. train-ntp       — DDP training (8 GPUs, each rank loads 1 shard)
+#   4. hyperparam      — eval NTP from checkpoint
 # ============================================================
 set -euo pipefail
 
@@ -22,12 +23,14 @@ done
 
 N_GPUS="${N_GPUS:-$(python -c 'import torch; print(max(1, torch.cuda.device_count()))')}"
 SID_CACHE="experiments/sid_cache/exp013-4096x3-12d-binary"
+NTP_DATA="experiments/ntp_data/exp013"
 
 echo "============================================================"
 echo "EXP-013: S-tier NTP Model — 6L MoE + Loss-Free Balancing"
 echo "  SID:       4096×3 + FSQ [2]×12 binary"
 echo "  GPUs:      ${N_GPUS}"
 echo "  SID cache: ${SID_CACHE}"
+echo "  NTP data:  ${NTP_DATA}"
 echo "============================================================"
 
 # ── Step 1: preprocess-sid (4096×3 + FSQ 12d_4096 binary) ──
@@ -44,6 +47,18 @@ else
         --fsq_projection mlp \
         --fsq_mlp_hidden 64 \
         --fsq_epochs 50
+fi
+
+# ── Step 2: preprocess-ntp (build shards, single process) ──
+if [ -f "${NTP_DATA}/meta.json" ]; then
+    echo "[Step 2] NTP data shards found, skipping preprocess-ntp"
+else
+    echo "[Step 2] Running preprocess-ntp (${N_GPUS} shards)..."
+    python run.py preprocess-ntp \
+        --sid_cache "${SID_CACHE}" \
+        --output_dir "${NTP_DATA}" \
+        --n_shards "${N_GPUS}" \
+        --date_start 2026-03-24 --date_end 2026-03-31
 fi
 
 # ── Phase 0: Smoke test (s-tier, small batch) ──
@@ -100,22 +115,22 @@ train_and_eval() {
     if [ -f "${NTP_CKPT}/probe.pt" ]; then
         echo "[${NAME}] Checkpoint found, skipping training"
     else
-        echo "[${NAME}] Training (${N_GPUS} GPUs)..."
+        echo "[${NAME}] Training (${N_GPUS} GPUs, pre-cached shards)..."
         if [ "${N_GPUS}" -gt 1 ]; then
             torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
                 --sid_cache "${SID_CACHE}" \
+                --preprocessed_dir "${NTP_DATA}" \
                 --output_dir "${NTP_CKPT}" \
                 --model "${MODEL}" \
                 --batch_size "${BATCH}" \
-                --date_start 2026-03-24 --date_end 2026-03-31 \
                 --name "${NAME}"
         else
             python run.py train-ntp \
                 --sid_cache "${SID_CACHE}" \
+                --preprocessed_dir "${NTP_DATA}" \
                 --output_dir "${NTP_CKPT}" \
                 --model "${MODEL}" \
                 --batch_size "${BATCH}" \
-                --date_start 2026-03-24 --date_end 2026-03-31 \
                 --name "${NAME}"
         fi
     fi
@@ -131,8 +146,8 @@ train_and_eval() {
         --name "${NAME}"
 }
 
-# ── Config A: Baseline (NTPProbe, 2L dense, sliding window) ──
-train_and_eval "exp013-probe" "probe" "NTPProbe — 2L dense, ~5M params" 4096
+# ── Config A: Baseline (NTPProbe, 2L dense, packed training) ──
+train_and_eval "exp013-probe" "probe" "NTPProbe — 2L dense, ~5M params, packed training" 4096
 
 # ── Config B: S-tier (NTPModel, 6L MoE, packed sequences) ──
 train_and_eval "exp013-s-tier" "s-tier" "NTPModel — 6L MoE (8E top-2), packed training" 128

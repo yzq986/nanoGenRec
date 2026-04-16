@@ -61,6 +61,7 @@ class NTPProbe(nn.Module):
         ffn_dim: int = 512,
         dropout: float = 0.1,
         parallel: bool = False,
+        max_seq_len: int = 0,
     ):
         super().__init__()
         assert len(n_clusters_per_layer) == n_sid_layers
@@ -75,8 +76,9 @@ class NTPProbe(nn.Module):
         self.token_embs = nn.ModuleList([
             nn.Embedding(nc, embed_dim) for nc in n_clusters_per_layer
         ])
-        max_len = self.seq_len + n_sid_layers
-        self.pos_emb = nn.Embedding(max_len, embed_dim)
+        default_len = self.seq_len + n_sid_layers
+        self.max_seq_len = max(max_seq_len, default_len)
+        self.pos_emb = nn.Embedding(self.max_seq_len, embed_dim)
 
         # Transformer layers
         layer = nn.TransformerDecoderLayer(
@@ -109,16 +111,24 @@ class NTPProbe(nn.Module):
 
     def forward(self, input_tokens: torch.Tensor,
                 generated_tokens: Optional[torch.Tensor] = None,
-                return_last_n: int = 1):
+                return_last_n: int = 1,
+                packed_targets: Optional[torch.Tensor] = None,
+                packed_mask: Optional[torch.Tensor] = None):
         """
         Args:
             input_tokens: (B, seq_len) history SID tokens
             generated_tokens: (B, k) already-generated target tokens (AR mode only)
             return_last_n: number of trailing positions to return logits for.
+            packed_targets: (B, S) shifted targets for packed mode.
+            packed_mask: (B, S) bool mask of valid target positions.
         Returns:
-            if return_last_n=1: (B, C_layer) single logit tensor
-            if return_last_n>1: list of n tensors [(B, C_l0), (B, C_l1), ...] per-layer logits
+            Packed mode: scalar loss.
+            Legacy mode, return_last_n=1: (B, C_layer) single logit tensor
+            Legacy mode, return_last_n>1: list of n tensors [(B, C_l0), (B, C_l1), ...]
         """
+        if packed_targets is not None:
+            return self._forward_packed(input_tokens, packed_targets, packed_mask)
+
         B = input_tokens.size(0)
         device = input_tokens.device
 
@@ -163,6 +173,56 @@ class NTPProbe(nn.Module):
                     target_layer = (pos + 1) % self.n_sid_layers
                     logits_list.append(self.output_projs[target_layer](out[:, pos, :]))
                 return logits_list  # [(B, C_l0), (B, C_l1), ...]
+
+    def _forward_packed(
+        self,
+        input_tokens: torch.Tensor,
+        targets: torch.Tensor,
+        target_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """LM-style forward on packed user sequences. Returns scalar loss.
+
+        Each position i predicts targets[i] = tokens[i+1], using
+        output_projs[(i+1) % n_sid_layers]. Loss is averaged per-layer
+        then across layers (matching legacy training).
+
+        Args:
+            input_tokens: (B, S) — packed tokens (right-padded with 0)
+            targets: (B, S) — shifted targets (right-padded, ignored via mask)
+            target_mask: (B, S) — True for valid target positions
+        Returns:
+            loss: scalar
+        """
+        B, S = input_tokens.size()
+        device = input_tokens.device
+        L = self.n_sid_layers
+
+        positions = torch.arange(S, device=device).unsqueeze(0)
+        x = self._embed_tokens(input_tokens) + self.pos_emb(positions)
+
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(S, device=device)
+        hidden = self.decoder(x, x, tgt_mask=causal_mask)  # (B, S, D)
+
+        # Flatten for efficient per-layer gather
+        hidden_flat = hidden.reshape(-1, self.embed_dim)  # (B*S, D)
+        target_flat = targets.reshape(-1)                  # (B*S,)
+        mask_flat = target_mask.reshape(-1)                 # (B*S,)
+
+        # Position i in hidden predicts target at layer (i+1) % L
+        pos_layer = ((torch.arange(S, device=device) + 1) % L)
+        pos_layer_flat = pos_layer.unsqueeze(0).expand(B, -1).reshape(-1)
+
+        total_loss = 0.0
+        n_active_layers = 0
+        for l in range(L):
+            layer_mask = mask_flat & (pos_layer_flat == l)
+            if not layer_mask.any():
+                continue
+            logits = self.output_projs[l](hidden_flat[layer_mask])  # (N_l, C_l)
+            total_loss += F.cross_entropy(logits, target_flat[layer_mask])
+            n_active_layers += 1
+
+        return total_loss / max(n_active_layers, 1)
 
     @torch.no_grad()
     def beam_search(self, input_tokens: torch.Tensor, beam_size: int = 5) -> torch.Tensor:
