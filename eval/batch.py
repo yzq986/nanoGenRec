@@ -191,6 +191,57 @@ def resolve_exposure_files(date_start: str = None, date_end: str = None) -> List
     return files
 
 
+def load_exposure_neg_data(date_start: str = None, date_end: str = None) -> Dict:
+    """Load compact ENTP negative-sample parquet (PySpark 产出).
+
+    Schema: uid STRING, iid STRING, first_ts LONG, neg_iids ARRAY<STRING>
+    ~30M rows (only positives with attached negatives).
+
+    Returns:
+        dict with uid, iid, first_ts (np arrays) and neg_iids (list of lists).
+    """
+    import pandas as pd
+    import s3fs
+
+    from gr_demo.config import S3_USER_BEHAVIOR
+    from gr_demo.config import DEFAULT_DATE_START, DEFAULT_DATE_END
+
+    ds = date_start or DEFAULT_DATE_START
+    de = date_end or DEFAULT_DATE_END
+
+    s3_neg_base = S3_USER_BEHAVIOR.rsplit("/", 1)[0] + "/feed_user_exposure_neg"
+    neg_path = f"{s3_neg_base}/{ds}_{de}".replace('s3://', '')
+
+    print(f"\n{'='*60}")
+    print("Loading ENTP Negative Data")
+    print(f"{'='*60}")
+    print(f"  Path: {neg_path}")
+
+    fs = s3fs.S3FileSystem()
+    files = fs.glob(f"{neg_path}/*.parquet")
+    print(f"  Found {len(files)} parquet files")
+
+    dfs = []
+    for i, f in enumerate(files):
+        with fs.open(f, 'rb') as fh:
+            dfs.append(pd.read_parquet(fh))
+        if (i + 1) % 5 == 0:
+            print(f"  Loaded {i + 1}/{len(files)}")
+
+    df = pd.concat(dfs, ignore_index=True)
+    print(f"  Total: {len(df):,} positive interactions with negatives")
+
+    first_ts = df['first_ts'].fillna(0).values.astype(np.int64)
+    neg_iids = df['neg_iids'].tolist()  # list of lists of str
+
+    return {
+        'uid': df['uid'].values,
+        'iid': df['iid'].values,
+        'first_ts': first_ts,
+        'neg_iids': neg_iids,
+    }
+
+
 def load_all_behavior_data(date_start: str = None, date_end: str = None) -> Dict[str, np.ndarray]:
     """加载全部行为数据。
 
