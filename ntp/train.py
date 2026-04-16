@@ -128,65 +128,77 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
     return uids_s, iids_s, ts_s, starts, ends
 
 
-def _build_user_neg_index(exposure_data, content_to_tokens, verbose_fn=print):
-    """Build per-user index of unclicked exposure L0 tokens, sorted by timestamp.
+def _build_exposure_index(exposure_data, verbose_fn=print):
+    """Build per-user offset index into the exposure data arrays.
+
+    Exposure data is already sorted by (uid, exposure_ts) from export_exposure.py.
+    We just find the boundaries between users.
 
     Returns:
-        user_neg_index: dict {uid: np.ndarray of shape (N, 2)} where
-            col 0 = exposure_ts, col 1 = L0 token.
-            Sorted by exposure_ts. Only includes iids in content_to_tokens.
+        user_exposure_offsets: dict {uid: (start, end)} — slices into the
+            exposure_data arrays (uid, iid, action_bitmap, exposure_ts).
     """
     uids = exposure_data['uid']
-    iids = exposure_data['iid']
-    ts = exposure_data['exposure_ts']
+    verbose_fn(f"  ENTP: {len(uids):,} total exposures")
 
-    verbose_fn(f"  ENTP: {len(uids):,} unclicked exposures")
-
-    # Build iid → L0 token lookup array for vectorized mapping.
-    # iids are strings, so we build a dict and vectorize via np.frompyfunc.
     t0 = time.time()
-    iid_to_l0 = {}
-    for iid, tokens in content_to_tokens.items():
-        iid_to_l0[iid] = tokens[0]
-    verbose_fn(f"  ENTP: iid→L0 lookup built ({len(iid_to_l0):,} items, {time.time()-t0:.1f}s)")
+    # Data is already sorted by (uid, ts). Find user boundaries.
+    boundaries = np.where(uids[1:] != uids[:-1])[0] + 1
+    starts = np.concatenate([[0], boundaries])
+    ends = np.concatenate([boundaries, [len(uids)]])
+    unique_uids = uids[starts]
 
-    # Vectorized lookup: map iid → L0 token (or -1 if not in SID dict)
-    t0 = time.time()
-    _lookup = np.frompyfunc(lambda x: iid_to_l0.get(x, -1), 1, 1)
-    l0_all = _lookup(iids).astype(np.int32)
-    valid_mask = l0_all >= 0
-    n_valid = valid_mask.sum()
-    verbose_fn(f"  ENTP: {n_valid:,} with valid SID ({time.time()-t0:.1f}s)")
+    user_exposure_offsets = {uid: (int(s), int(e))
+                            for uid, s, e in zip(unique_uids, starts, ends)}
+    verbose_fn(f"  ENTP: {len(user_exposure_offsets):,} users with exposures "
+               f"({time.time()-t0:.1f}s)")
+    return user_exposure_offsets
 
-    # Filter to valid only
-    uids_f = uids[valid_mask]
-    ts_f = ts[valid_mask]
-    l0_f = l0_all[valid_mask]
-    del l0_all, valid_mask
 
-    # Sort by (uid, ts) — lexsort is fast on numeric arrays
-    t0 = time.time()
-    sort_idx = np.lexsort((ts_f, uids_f))
-    uids_s = uids_f[sort_idx]
-    ts_s = ts_f[sort_idx]
-    l0_s = l0_f[sort_idx]
-    del uids_f, ts_f, l0_f, sort_idx
-    verbose_fn(f"  ENTP: sorted ({time.time()-t0:.1f}s)")
+def _walk_user_exposure_negs(exp_iids, exp_actions, content_to_tokens, entp_k):
+    """Walk one user's exposure sequence and extract negatives for each positive.
 
-    # Group by uid — pre-stack into single (N, 2) array, then split
-    t0 = time.time()
-    boundaries = np.where(uids_s[1:] != uids_s[:-1])[0] + 1
-    stacked = np.column_stack([ts_s, l0_s])
-    del ts_s, l0_s
+    The exposure sequence is sorted by timestamp (from export_exposure.py).
+    We walk linearly: for each positive item (action_bitmap > 0), collect up to K
+    preceding non-positive items (action_bitmap <= 0, both unclicked and disliked)
+    as negatives, mapping only those K iids → L0 tokens.
 
-    # Split into per-user arrays
-    splits = np.split(stacked, boundaries)
-    unique_uids = uids_s[np.concatenate([[0], boundaries])]
-    del uids_s, stacked, boundaries
+    Args:
+        exp_iids: np.ndarray of iids for this user (sorted by ts).
+        exp_actions: np.ndarray of action_bitmap for this user.
+        content_to_tokens: dict {iid: [L0, L1, L2, ...]}
+        entp_k: max negatives per positive item.
 
-    user_neg_index = dict(zip(unique_uids, splits))
-    verbose_fn(f"  ENTP: {len(user_neg_index):,} users with unclicked exposures ({time.time()-t0:.1f}s)")
-    return user_neg_index
+    Returns:
+        pos_to_negs: dict {iid: List[int]} — for each positive iid,
+            a list of up to K negative L0 tokens (no -1 padding here).
+            Only positives that have at least one valid negative are included.
+    """
+    pos_to_negs = {}
+    # Collect non-positive iids as we scan left-to-right
+    neg_buffer = []  # recent non-positive iids (ring buffer of last K)
+
+    for i in range(len(exp_iids)):
+        if exp_actions[i] <= 0:
+            # Non-positive: add to ring buffer
+            neg_buffer.append(exp_iids[i])
+            if len(neg_buffer) > entp_k:
+                neg_buffer.pop(0)
+        else:
+            # Positive: take up to K preceding negatives
+            if neg_buffer:
+                # Map iids → L0 tokens (only these K lookups per positive)
+                neg_l0 = []
+                for neg_iid in neg_buffer:
+                    toks = content_to_tokens.get(neg_iid)
+                    if toks is not None:
+                        neg_l0.append(int(toks[0]))
+                if neg_l0:
+                    pos_to_negs[exp_iids[i]] = neg_l0[-entp_k:]
+            # Reset buffer after each positive
+            neg_buffer.clear()
+
+    return pos_to_negs
 
 
 def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512,
@@ -201,8 +213,12 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
     all users is approximately n_eval_target.
 
     Args:
-        exposure_data: if provided, builds per-position negative L0 tokens for
-            ENTP-Loss (DualGR). Must be the output of load_all_exposure_data().
+        exposure_data: if provided (from load_all_exposure_data), builds per-position
+            negative L0 tokens for ENTP-Loss (DualGR). The exposure data contains the
+            full exposure sequence sorted by (uid, ts), including both clicked
+            (action_bitmap > 0) and non-positive (action_bitmap <= 0) items.
+            For each positive item in the behavior sequence, we take K preceding
+            non-positive exposure items as negatives.
         entp_k: max negatives per item position.
 
     Returns:
@@ -223,11 +239,13 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
     uids_s, iids_s, ts_s, starts, ends = \
         _build_user_items(behavior_data, content_to_tokens, verbose_fn)
 
-    # Build per-user negative index (ENTP)
-    user_neg_index = None
+    # Build per-user exposure offset index (ENTP)
+    user_exp_offsets = None
+    exp_iids = exp_actions = None
     if exposure_data is not None:
-        user_neg_index = _build_user_neg_index(
-            exposure_data, content_to_tokens, verbose_fn)
+        user_exp_offsets = _build_exposure_index(exposure_data, verbose_fn)
+        exp_iids = exposure_data['iid']
+        exp_actions = exposure_data['action_bitmap']
 
     # Find split_ts so that total eval items ≈ n_eval_target
     # Items with ts > split_ts become eval items
@@ -247,6 +265,7 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
     n_eval_only = 0
     n_both = 0
     n_neg_total = 0
+    n_users_with_negs = 0
 
     for u in range(len(starts)):
         s, e = starts[u], ends[u]
@@ -290,29 +309,33 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
         }
 
         # ── Per-item negative L0 tokens (ENTP) ──
-        if user_neg_index is not None:
+        if user_exp_offsets is not None:
             uid = uids_s[s]
-            neg_arr = user_neg_index.get(uid)  # (M, 2): [ts, l0_token] sorted
+            offsets = user_exp_offsets.get(uid)
+            if offsets is not None:
+                es, ee = offsets
+                pos_to_negs = _walk_user_exposure_negs(
+                    exp_iids[es:ee], exp_actions[es:ee],
+                    content_to_tokens, entp_k)
+            else:
+                pos_to_negs = {}
+
             neg_l0_per_item = []
+            user_has_negs = False
             for i in range(n):
-                item_negs = [-1] * entp_k
-                if neg_arr is not None and len(neg_arr) > 0:
-                    t_lo = float(user_ts[i - 1]) if i > 0 else 0.0
-                    t_hi = float(user_ts[i])
-                    # Binary search for window (t_lo, t_hi]
-                    lo = np.searchsorted(neg_arr[:, 0], t_lo, side='right')
-                    hi = np.searchsorted(neg_arr[:, 0], t_hi, side='right')
-                    candidates = neg_arr[lo:hi, 1]
-                    if len(candidates) > 0:
-                        if len(candidates) > entp_k:
-                            chosen = np.random.choice(candidates, entp_k, replace=False)
-                        else:
-                            chosen = candidates
-                        for j, tok in enumerate(chosen):
-                            item_negs[j] = int(tok)
-                        n_neg_total += len(chosen)
-                neg_l0_per_item.append(item_negs)
+                iid = user_iids[i]
+                negs = pos_to_negs.get(iid)
+                if negs:
+                    # Pad to entp_k with -1
+                    padded = negs + [-1] * (entp_k - len(negs))
+                    neg_l0_per_item.append(padded[:entp_k])
+                    n_neg_total += len(negs)
+                    user_has_negs = True
+                else:
+                    neg_l0_per_item.append([-1] * entp_k)
             seq_dict['neg_l0'] = neg_l0_per_item
+            if user_has_negs:
+                n_users_with_negs += 1
 
         sequences.append(seq_dict)
 
@@ -335,10 +358,11 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
     verbose_fn(f"  Split: {n_both:,} train+eval, "
                f"{n_train_only:,} train-only, {n_eval_only:,} eval-only")
     verbose_fn(f"  Eval items: {n_eval_items:,}")
-    if user_neg_index is not None:
+    if user_exp_offsets is not None:
         avg_neg = n_neg_total / max(len(sequences), 1)
         verbose_fn(f"  ENTP negatives: {n_neg_total:,} total, "
-                   f"avg {avg_neg:.1f}/seq (K={entp_k})")
+                   f"avg {avg_neg:.1f}/seq (K={entp_k}), "
+                   f"{n_users_with_negs:,}/{len(sequences):,} users with negs")
 
     return sequences, n_layers, n_clusters_per_layer, split_ts
 
