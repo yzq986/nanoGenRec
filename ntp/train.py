@@ -323,7 +323,20 @@ def train_packed(
         ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
+
+    # Auto micro-batch: keep effective batch_size, split into GPU-friendly micro-batches.
+    # Attention is O(B × S²); cap micro-batch so B × S² fits in ~30GB.
+    # Heuristic: micro_batch ≤ 30GB / (max_seq_len² × 4 bytes × n_heads × n_layers × 3)
+    # Simplified: cap at ~512 for seq_len=512, scale up for shorter seqs.
+    max_micro = max(64, min(batch_size, 40_000_000 // (max_seq_len * max_seq_len)))
+    micro_batch = min(batch_size, max_micro)
+    accum_steps = max(1, batch_size // micro_batch)
+    effective_batch = micro_batch * accum_steps
+
     log(is_main, f"  {model_type} (packed): {n_params / 1e6:.1f}M params, max_seq={max_seq_len}")
+    if accum_steps > 1:
+        log(is_main, f"  Gradient accumulation: micro_batch={micro_batch}, "
+                      f"accum_steps={accum_steps}, effective_batch={effective_batch}")
 
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank])
@@ -349,7 +362,7 @@ def train_packed(
     dataset = UnifiedSequenceDataset(tokens_shard, split_pos_shard)
     train_loader = DataLoader(
         dataset,
-        batch_size=batch_size,
+        batch_size=micro_batch,
         shuffle=True,
         num_workers=2,
         pin_memory=True,
@@ -358,16 +371,18 @@ def train_packed(
     )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader))
     n_batches = len(train_loader)
+    n_optim_steps = n_batches // accum_steps
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_optim_steps)
 
     log(is_main, f"  Training: {len(tokens_shard):,} seqs/rank, "
-                 f"{n_batches} batches/epoch, batch_size={batch_size}, "
+                 f"{n_batches} micro-batches/epoch, {n_optim_steps} optim steps, "
                  f"world_size={world_size}")
 
     model.train()
     total_loss = 0.0
     t0 = time.time()
+    optimizer.zero_grad()
 
     for step, (padded, lengths, split_positions) in enumerate(train_loader):
         padded = padded.to(device, non_blocking=True)
@@ -388,22 +403,25 @@ def train_packed(
         train_mask = valid_mask & (arange < (split_positions.unsqueeze(1) - 1))
 
         loss = model(input_tokens, packed_targets=target_tokens, packed_mask=train_mask)
-
-        optimizer.zero_grad()
+        loss = loss / accum_steps
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        scheduler.step()
-        total_loss += loss.item()
+        total_loss += loss.item() * accum_steps
 
-        if is_main and (step + 1) % 100 == 0:
-            elapsed = time.time() - t0
-            seqs_per_sec = (step + 1) * batch_size * world_size / elapsed
-            remaining = (n_batches - step - 1) / ((step + 1) / elapsed)
-            eta = format_eta(remaining)
-            print(f"    step {step+1}/{n_batches}: "
-                  f"loss={total_loss/(step+1):.4f}, "
-                  f"{seqs_per_sec:.0f} seqs/s, ETA {eta}")
+        if (step + 1) % accum_steps == 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+
+            optim_step = (step + 1) // accum_steps
+            if is_main and optim_step % 50 == 0:
+                elapsed = time.time() - t0
+                seqs_per_sec = (step + 1) * micro_batch * world_size / elapsed
+                remaining = (n_batches - step - 1) / ((step + 1) / elapsed)
+                eta = format_eta(remaining)
+                print(f"    step {optim_step}/{n_optim_steps}: "
+                      f"loss={total_loss/(step+1):.4f}, "
+                      f"{seqs_per_sec:.0f} seqs/s, ETA {eta}")
 
     avg_loss = total_loss / n_batches
     elapsed = time.time() - t0
