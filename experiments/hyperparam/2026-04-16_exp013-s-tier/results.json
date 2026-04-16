@@ -1,0 +1,18 @@
+[
+  {
+    "quantizer_type": "rkmeans_fsq",
+    "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+    "metrics": {
+      "semantic_id_prediction": 786.4392,
+      "semantic_id_prediction_depth": [
+        0.01,
+        0.01,
+        0.01
+      ]
+    },
+    "num_clusters": 4096,
+    "fsq_levels_key": "12d_4096",
+    "n_items": 2645736,
+    "collision_rate": 0.004982
+  }
+]
