@@ -357,13 +357,24 @@ def train_packed(
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank])
 
-    dataset = PackedSequenceDataset(train_seqs)
-    sampler = DistributedSampler(dataset, shuffle=True) if world_size > 1 else None
+    # Shard data per rank to save memory (each rank only holds 1/N)
+    if world_size > 1:
+        n_total = len(train_seqs)
+        shard_size = n_total // world_size
+        shard_start = local_rank * shard_size
+        shard_end = shard_start + shard_size if local_rank < world_size - 1 else n_total
+        train_seqs_shard = train_seqs[shard_start:shard_end]
+        del train_seqs  # free full copy
+        log(is_main, f"  Rank {local_rank}: shard {shard_start}..{shard_end} "
+                      f"({len(train_seqs_shard):,} seqs)")
+    else:
+        train_seqs_shard = train_seqs
+
+    dataset = PackedSequenceDataset(train_seqs_shard)
     train_loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=(sampler is None),
-        sampler=sampler,
+        shuffle=True,
         num_workers=2,
         pin_memory=True,
         drop_last=True,
@@ -374,7 +385,7 @@ def train_packed(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader))
     n_batches = len(train_loader)
 
-    log(is_main, f"  Training: {len(train_seqs):,} seqs, "
+    log(is_main, f"  Training: {len(train_seqs_shard):,} seqs/rank, "
                  f"{n_batches} batches/epoch, batch_size={batch_size}, "
                  f"world_size={world_size}")
 
@@ -488,13 +499,22 @@ def train_probe(
     if world_size > 1:
         probe = DDP(probe, device_ids=[local_rank])
 
-    dataset = SIDSequenceDataset(train_data)
-    sampler = DistributedSampler(dataset, shuffle=True) if world_size > 1 else None
+    # Shard data per rank to save memory
+    if world_size > 1:
+        n_total = len(train_data)
+        shard_size = n_total // world_size
+        shard_start = local_rank * shard_size
+        shard_end = shard_start + shard_size if local_rank < world_size - 1 else n_total
+        train_shard = train_data[shard_start:shard_end]
+        del train_data
+    else:
+        train_shard = train_data
+
+    dataset = SIDSequenceDataset(train_shard)
     train_loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=(sampler is None),
-        sampler=sampler,
+        shuffle=True,
         num_workers=2,
         pin_memory=True,
         drop_last=True,
@@ -504,7 +524,7 @@ def train_probe(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=len(train_loader))
     n_batches = len(train_loader)
 
-    log(is_main, f"  Training: {len(train_data):,} samples, "
+    log(is_main, f"  Training: {len(train_shard):,} samples/rank, "
                  f"{n_batches} batches/epoch, batch_size={batch_size}, "
                  f"world_size={world_size}")
 
@@ -665,19 +685,19 @@ def main():
                  (f" (DDP x{world_size})" if world_size > 1 else ""))
     log(is_main, "=" * 60)
 
-    # ── Load SID cache ──
+    # ── Load SID cache (rank 0 only, others wait) ──
     log(is_main, f"\nStep 1: Loading SID cache from {args.sid_cache}")
     cache_config_path = os.path.join(args.sid_cache, 'config.json')
     with open(cache_config_path) as f:
         cache_config = json.load(f)
 
-    sid_dict = np.load(
-        os.path.join(args.sid_cache, 'semantic_ids.npy'), allow_pickle=True
-    ).item()
-    log(is_main, f"  SID assignments: {len(sid_dict):,}")
-
-    # ── Load behavior data + build sequences (rank 0 only, then broadcast) ──
+    # ── Build sequences (rank 0 only) ──
     if is_main:
+        sid_dict = np.load(
+            os.path.join(args.sid_cache, 'semantic_ids.npy'), allow_pickle=True
+        ).item()
+        log(is_main, f"  SID assignments: {len(sid_dict):,}")
+
         log(is_main, "\nStep 2: Loading behavior data")
         from gr_demo.eval.batch import load_all_behavior_data
         behavior_data = load_all_behavior_data(
@@ -693,17 +713,53 @@ def main():
         else:
             train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = \
                 build_sequences(sid_dict, behavior_data, n_items=args.n_items)
-        seq_data = (train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer)
+
+        # Free large objects no longer needed
+        del sid_dict, behavior_data
+
+        # Save train data to shared filesystem for other ranks
+        if world_size > 1:
+            import tempfile
+            shared_dir = os.path.join(args.sid_cache, '_train_tmp')
+            os.makedirs(shared_dir, exist_ok=True)
+            np.save(os.path.join(shared_dir, 'train_data.npy'), train_data, allow_pickle=True)
+            meta = (n_layers, n_clusters_per_layer, len(train_data), len(eval_data))
+        else:
+            shared_dir = None
+            meta = (n_layers, n_clusters_per_layer, len(train_data), len(eval_data))
     else:
-        seq_data = None
+        train_data = eval_data = eval_cids = sid_to_items = None
+        shared_dir = None
+        meta = None
 
+    # Broadcast only lightweight metadata, not the full dataset
     if world_size > 1:
-        obj_list = [seq_data]
-        dist.broadcast_object_list(obj_list, src=0)
-        seq_data = obj_list[0]
+        meta_list = [meta]
+        dist.broadcast_object_list(meta_list, src=0)
+        meta = meta_list[0]
 
-    train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = seq_data
-    log(is_main, f"  Train: {len(train_data):,}, Eval: {len(eval_data):,}, Layers: {n_layers}")
+        if is_main:
+            shared_path_list = [shared_dir]
+        else:
+            shared_path_list = [None]
+        dist.broadcast_object_list(shared_path_list, src=0)
+        shared_dir = shared_path_list[0]
+
+        # Non-rank-0: load train data from shared filesystem
+        if not is_main:
+            train_data = np.load(
+                os.path.join(shared_dir, 'train_data.npy'), allow_pickle=True).tolist()
+
+        dist.barrier()  # ensure all ranks loaded before cleanup
+        if is_main:
+            os.remove(os.path.join(shared_dir, 'train_data.npy'))
+            try:
+                os.rmdir(shared_dir)
+            except OSError:
+                pass
+
+    n_layers, n_clusters_per_layer, n_train, n_eval = meta
+    log(is_main, f"  Train: {len(train_data):,}, Eval: {n_eval:,}, Layers: {n_layers}")
 
     # ── Train ──
     if model_type == 's-tier':
