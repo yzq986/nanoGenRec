@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 
 from gr_demo.model.rkmeans import FaissKMeansLayer
-from gr_demo.model.fsq import FSQLayer, LearnedFSQLayer
+from gr_demo.model.fsq import FSQLayer, LearnedFSQLayer, fsq_layer_from_state
 
 
 class ResKmeansFSQ:
@@ -113,6 +113,35 @@ class ResKmeansFSQ:
         print(f"\n{'='*60}")
         print("Training completed!")
         print(f"{'='*60}")
+
+    @classmethod
+    def load(cls, path: str, device: str = 'cpu') -> 'ResKmeansFSQ':
+        """Load a trained quantizer from .pt file (predict-only, no retrain)."""
+        model_data = torch.load(path, map_location=device, weights_only=False)
+
+        obj = cls.__new__(cls)
+        obj.normalize_residuals = model_data['normalize_residuals']
+        obj.n_layers = model_data['n_layers']
+        obj.n_kmeans_clusters = model_data['n_kmeans_clusters']
+        obj.fsq_levels = model_data['fsq_levels']
+        obj.n_features = model_data['n_features']
+        obj.num_gpus = 0
+        obj.primary_device = device
+        obj.gpu = False
+
+        # Rebuild KMeans layers from saved centroids
+        obj.kmeans_layers = []
+        for centroids in model_data['centroids_list']:
+            layer = FaissKMeansLayer(centroids.shape[0], centroids.shape[1], gpu=False)
+            layer.centroids = centroids.to(device)
+            obj.kmeans_layers.append(layer)
+
+        # Rebuild FSQ layer from saved state
+        obj.fsq_layer = fsq_layer_from_state(model_data['fsq_state'])
+
+        print(f"Loaded quantizer from {path} "
+              f"(KMeans {obj.n_kmeans_clusters}x2 + FSQ {obj.fsq_levels})")
+        return obj
 
     def save(self, path: str):
         model_data = {
