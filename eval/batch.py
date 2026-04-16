@@ -209,6 +209,11 @@ def load_all_exposure_data(date_start: str = None, date_end: str = None) -> Dict
             print(f"  Loaded {i + 1}/{len(files)}")
 
     df = pd.concat(dfs, ignore_index=True)
+
+    # sortWithinPartitions 只保证分片内有序，跨分片同一 uid 可能不连续，需全局排序
+    print(f"  Sorting by (uid, exposure_ts)...")
+    df = df.sort_values(['uid', 'exposure_ts'], kind='mergesort').reset_index(drop=True)
+
     n_clicked = (df['action_bitmap'] > 0).sum()
     n_unclicked = (df['action_bitmap'] == 0).sum()
     n_negative = (df['action_bitmap'] < 0).sum()
