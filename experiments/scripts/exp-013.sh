@@ -135,15 +135,8 @@ train_and_eval() {
         fi
     fi
 
-    echo "[${NAME}] Running eval..."
-    python run.py hyperparam \
-        --skip_embedding \
-        --sid_cache "${SID_CACHE}" \
-        --ntp_checkpoint "${NTP_CKPT}" \
-        --run_ntp \
-        --recall_beam_size 500 \
-        --eval_sample_size 50000 \
-        --name "${NAME}"
+    # Inline eval already runs at end of training (PPL + beam search recall).
+    # No need for a separate hyperparam eval pass.
 }
 
 # ── Config A: Baseline (NTPProbe, 2L dense, packed training) ──
