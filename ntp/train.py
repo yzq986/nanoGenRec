@@ -849,41 +849,36 @@ def main():
                       f"(train: {split_pos_arr.sum():,}, "
                       f"eval: {(seq_lens - split_pos_arr).sum():,})")
 
-        # Sample sequences for inspection
+        # Sample sequences for inspection (only items <= 10 for mask verification)
         if is_main:
             import random as _rng
             _rng.seed(0)
-            sample_idxs = _rng.sample(range(len(tokens_list)), min(5, len(tokens_list)))
-            print(f"\n  Sample sequences ({len(sample_idxs)} of {len(tokens_list):,}):")
-            for si, idx in enumerate(sample_idxs):
-                toks = tokens_list[idx]
-                sp = split_pos_list[idx]
-                n_tok = len(toks)
-                n_user_items = n_tok // n_layers
-                split_item = sp // n_layers
-                L = n_layers
-                print(f"    [{si}] {n_user_items} items, split@item{split_item}")
-                # Per-item breakdown: SID, role, what each position predicts
-                max_show = min(n_user_items, 8)
-                show_idxs = list(range(max_show)) if n_user_items <= 8 else \
-                    list(range(4)) + [-1] + list(range(n_user_items - 3, n_user_items))
-                for ii in show_idxs:
-                    if ii == -1:
-                        print(f"         ... ({n_user_items - 7} more items) ...")
-                        continue
-                    sid = '_'.join(str(toks[ii * L + li]) for li in range(L))
-                    role = 'TRAIN' if ii < split_item else 'EVAL '
-                    # What does the last token of this item predict?
-                    last_pos = ii * L + (L - 1)  # last position of this item
-                    if last_pos < n_tok - 1:
-                        # Predicts first token of next item (cross-item)
-                        next_tok = toks[last_pos + 1]
-                        cross = f"→ pred item{ii+1}.L0={next_tok}"
-                    else:
-                        cross = "(last token, no target)"
-                    # Context: causal mask means this item sees items 0..ii
-                    ctx = f"sees items[0..{ii}]"
-                    print(f"         item{ii:>3} [{role}] {sid}  {ctx}  {cross}")
+            short_idxs = [i for i in range(len(tokens_list))
+                          if len(tokens_list[i]) // n_layers <= 10]
+            if short_idxs:
+                sample_idxs = _rng.sample(short_idxs, min(5, len(short_idxs)))
+                print(f"\n  Sample sequences (items<=10, {len(sample_idxs)} of "
+                      f"{len(short_idxs):,} short / {len(tokens_list):,} total):")
+                for si, idx in enumerate(sample_idxs):
+                    toks = tokens_list[idx]
+                    sp = split_pos_list[idx]
+                    n_tok = len(toks)
+                    n_user_items = n_tok // n_layers
+                    split_item = sp // n_layers
+                    L = n_layers
+                    print(f"    [{si}] {n_user_items} items, split@item{split_item}")
+                    # Causal attention matrix
+                    hdr = '         ' + ''.join(f'{ii:>4}' for ii in range(n_user_items))
+                    print(hdr)
+                    for ii in range(n_user_items):
+                        sid = '_'.join(str(toks[ii*L+li]) for li in range(L))
+                        role = 'T' if ii < split_item else 'E'
+                        cells = ''
+                        for jj in range(n_user_items):
+                            cells += '   ■' if jj <= ii else '   ·'
+                        print(f"    {role} {ii:>2} {cells}  {sid}")
+            else:
+                print(f"\n  No sequences with <=10 items to sample.")
 
     # ── Train (both probe and s-tier use packed sequences) ──
     if model_type == 's-tier':
