@@ -865,24 +865,33 @@ def main():
                 items_str = []
                 for ii in range(n_user_items):
                     sid = '_'.join(str(toks[ii * n_layers + li]) for li in range(n_layers))
-                    marker = '|' if ii == split_item else ''
-                    items_str.append(f"{marker}{sid}")
-                train_part = ' '.join(items_str[:split_item])
-                eval_part = ' '.join(items_str[split_item:])
-                print(f"    [{si}] {n_user_items} items, split@{split_item} "
-                      f"(train={split_item}, eval={n_user_items - split_item})")
-                # Show first/last few items to keep output compact
-                if n_user_items <= 8:
-                    print(f"         train: {train_part}")
-                    print(f"         eval:  {eval_part}")
+                    items_str.append(sid)
+                print(f"    [{si}] {n_user_items} items, split_pos={sp} (item {split_item})")
+                # Show SIDs with train/eval labels
+                train_sids = items_str[:split_item]
+                eval_sids = items_str[split_item:]
+                def _compact(sids, max_show=4):
+                    if len(sids) <= max_show:
+                        return ' '.join(sids)
+                    return ' '.join(sids[:2]) + ' ... ' + ' '.join(sids[-2:])
+                print(f"         train({len(train_sids)}): {_compact(train_sids)}")
+                print(f"         eval({len(eval_sids)}):  {_compact(eval_sids)}")
+                # Token-level mask visualization (T=train loss, E=eval loss, .=padding)
+                # Position i predicts token[i+1]: train when i+1 < sp, eval when i+1 >= sp
+                mask_chars = []
+                for pos in range(n_tok - 1):
+                    mask_chars.append('T' if pos + 1 < sp else 'E')
+                # Group by item (n_layers chars per item)
+                mask_items = []
+                for ii in range(n_user_items):
+                    start = ii * n_layers
+                    end = min(start + n_layers, len(mask_chars))
+                    mask_items.append(''.join(mask_chars[start:end]))
+                if len(mask_items) <= 8:
+                    mask_str = ' '.join(mask_items)
                 else:
-                    train_sids = items_str[:split_item]
-                    eval_sids = items_str[split_item:]
-                    t_show = ' '.join(train_sids[:3]) + ' ... ' + ' '.join(train_sids[-2:]) \
-                        if len(train_sids) > 5 else ' '.join(train_sids)
-                    e_show = ' '.join(eval_sids[:3]) + (' ...' if len(eval_sids) > 3 else '')
-                    print(f"         train: {t_show}")
-                    print(f"         eval:  {e_show}")
+                    mask_str = ' '.join(mask_items[:3]) + ' ... ' + ' '.join(mask_items[-3:])
+                print(f"         mask:  {mask_str}  (T=train, E=eval)")
 
     # ── Train (both probe and s-tier use packed sequences) ──
     if model_type == 's-tier':
