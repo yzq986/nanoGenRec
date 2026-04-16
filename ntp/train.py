@@ -12,7 +12,7 @@ Usage:
 
 输出目录: {output_dir}/
     - probe.pt          model state_dict + config
-    - train_meta.json   训练元信息 (loss, n_train, n_eval, etc.)
+    - train_meta.json   训练元信息 (loss, eval PPL/recall, etc.)
 """
 
 import argparse
@@ -531,6 +531,74 @@ def parse_args():
     return parser.parse_args()
 
 
+def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
+                     n_clusters_per_layer, device, batch_size=2048):
+    """Run eval immediately after training — model + data already in memory.
+
+    Returns dict with PPL, depth_hit@10, recall@K, etc.
+    """
+    from gr_demo.ntp.eval import (
+        _batched_teacher_forced_eval, _beam_search_recall,
+        _build_sid_to_items, _load_eval_sequences,
+    )
+    from gr_demo.ntp.model import SIDTrie
+
+    # Load eval sequences from preprocessed shards (all shards, with eval_cids)
+    if preprocessed_dir and os.path.isdir(preprocessed_dir):
+        prep_meta_path = os.path.join(preprocessed_dir, 'meta.json')
+        with open(prep_meta_path) as f:
+            prep_meta = json.load(f)
+        eval_sequences = _load_eval_sequences(preprocessed_dir, prep_meta['n_shards'])
+    else:
+        print("  Warning: no preprocessed_dir, skipping inline eval")
+        return {}
+
+    print(f"  Eval sequences: {len(eval_sequences):,}")
+
+    probe = probe.to(device)
+    probe.eval()
+
+    # Teacher-forced (PPL + hit@10)
+    print("  Running teacher-forced eval...")
+    with torch.no_grad():
+        tf_results = _batched_teacher_forced_eval(
+            probe, eval_sequences, n_layers, device,
+            batch_size=batch_size, verbose=True)
+
+    print(f"  PPL: {tf_results['ppl']:.2f}")
+    print(f"  Depth hit@10: {[f'{h:.3f}' for h in tf_results['depth_hit_10']]}")
+
+    # Beam search recall (5K subsample)
+    print(f"  Building sid_to_items from {sid_cache_dir}")
+    sid_to_items = _build_sid_to_items(sid_cache_dir)
+    sid_trie = SIDTrie(sid_to_items, n_layers)
+
+    print("  Running beam search recall (5K)...")
+    with torch.no_grad():
+        beam_results = _beam_search_recall(
+            probe, eval_sequences, sid_trie, sid_to_items, n_layers,
+            device, recall_beam_size=500, n_recall_samples=5000, verbose=True)
+
+    # Move probe back to CPU for checkpoint saving
+    probe.cpu()
+
+    # Combine results
+    results = {
+        'ppl': round(tf_results['ppl'], 4),
+        'avg_loss': round(tf_results['avg_loss'], 6),
+        'depth_hit@10': [round(h, 4) for h in tf_results['depth_hit_10']],
+        'n_eval_positions': tf_results['n_eval_positions'],
+        'n_eval_sequences': len(eval_sequences),
+    }
+    results.update(beam_results)
+
+    for k in ['item_recall@10', 'item_recall@50', 'item_recall@100', 'item_recall@500']:
+        if k in results:
+            print(f"  {k}: {results[k]:.4f}")
+
+    return results
+
+
 def main():
     args = parse_args()
     local_rank, world_size, device, is_main = setup_ddp()
@@ -685,7 +753,7 @@ def main():
         pre_sharded=bool(args.preprocessed_dir),
     )
 
-    # ── Save (rank 0 only) ──
+    # ── Save + Eval (rank 0 only) ──
     if is_main:
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         output_dir = args.output_dir or os.path.join(
@@ -707,11 +775,28 @@ def main():
             n_eval=n_eval,
         )
 
+        # ── Inline eval on eval positions ──
+        log(is_main, f"\nStep 6: Eval (teacher-forced + beam search)")
+        eval_results = _run_inline_eval(
+            probe, sid_cache_dir, preprocessed_dir, n_layers,
+            n_clusters_per_layer, device, args.batch_size)
+
+        # Append eval results to train_meta.json
+        meta_path = os.path.join(output_dir, 'train_meta.json')
+        with open(meta_path) as f:
+            meta = json.load(f)
+        meta['eval'] = eval_results
+        with open(meta_path, 'w') as f:
+            json.dump(meta, f, indent=2)
+
         log(is_main, f"\n{'=' * 60}")
-        log(is_main, "Training complete!")
+        log(is_main, "Training + eval complete!")
+        log(is_main, f"  Checkpoint: {output_dir}/")
+        log(is_main, f"  PPL: {eval_results.get('ppl', 'N/A')}")
+        for k in ['item_recall@10', 'item_recall@50', 'item_recall@100', 'item_recall@500']:
+            if k in eval_results:
+                log(is_main, f"  {k}: {eval_results[k]:.4f}")
         log(is_main, f"{'=' * 60}")
-        log(is_main, f"\nNext: python run.py hyperparam --sid_cache {sid_cache_dir} "
-                      f"--ntp_checkpoint {output_dir} --run_ntp")
 
     cleanup_ddp()
 
