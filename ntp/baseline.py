@@ -85,7 +85,8 @@ class NTPProbe(nn.Module):
             d_model=embed_dim, nhead=n_heads, dim_feedforward=ffn_dim,
             dropout=dropout, batch_first=True, norm_first=True,
         )
-        self.encoder = nn.TransformerEncoder(layer, num_layers=n_transformer_layers)
+        self.encoder = nn.TransformerEncoder(
+            layer, num_layers=n_transformer_layers, enable_nested_tensor=False)
 
         # Per-layer output projections (different codebook sizes)
         self.output_projs = nn.ModuleList([
@@ -137,7 +138,9 @@ class NTPProbe(nn.Module):
             positions = torch.arange(self.seq_len, device=device).unsqueeze(0)
             x = self._embed_tokens(input_tokens) + self.pos_emb(positions)
 
-            hidden = self.encoder(x, is_causal=True)
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(
+                self.seq_len, device=device)
+            hidden = self.encoder(x, mask=causal_mask, is_causal=True)
 
             # Pool last position as sequence representation
             s = hidden[:, -1, :]  # (B, D)
@@ -155,7 +158,8 @@ class NTPProbe(nn.Module):
             positions = torch.arange(T, device=device).unsqueeze(0)
             x = self._embed_tokens(tokens) + self.pos_emb(positions)
 
-            out = self.encoder(x, is_causal=True)
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
+            out = self.encoder(x, mask=causal_mask, is_causal=True)
 
             if return_last_n == 1:
                 # Position T-1 predicts next token at layer (T % n_sid_layers)
@@ -196,7 +200,8 @@ class NTPProbe(nn.Module):
         positions = torch.arange(S, device=device).unsqueeze(0)
         x = self._embed_tokens(input_tokens) + self.pos_emb(positions)
 
-        hidden = self.encoder(x, is_causal=True)  # (B, S, D)
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(S, device=device)
+        hidden = self.encoder(x, mask=causal_mask, is_causal=True)  # (B, S, D)
 
         # Flatten for efficient per-layer gather
         hidden_flat = hidden.reshape(-1, self.embed_dim)  # (B*S, D)
