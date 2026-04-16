@@ -42,8 +42,8 @@
 ## EXP-013: S-tier NTP Model — 6L MoE + Loss-Free Balancing
 
 **Date**: 2026-04-15
-**Status**: planned
-**Results**: TBD
+**Status**: completed
+**Results**: [experiments/results/ntp/](experiments/results/ntp/)
 
 ### Background
 
@@ -64,7 +64,7 @@ EXP-010 baseline (2L dense probe, ~5M params) 效果极差 (item_recall@50=0.000
 - **Variable**: 模型架构 (probe vs s-tier)
 - **Fixed**: SID 4096×3 + FSQ [2]×12 binary (EXP-011-H/012 best), n_items=10, batch_size=4096, 1 epoch, recall_beam_size=500
 - **Metric**: Perplexity, Depth Hit@10, Item Recall@{10,50,100,500}, Expert utilization
-- **Data**: 30 天行为数据, 时间 80/20 split
+- **Data**: 31 天行为数据 (03-01~03-31), eval ~50K items by timestamp split
 
 | Config | Model | Layers | FFN | Params | 说明 |
 |--------|-------|--------|-----|--------|------|
@@ -76,13 +76,39 @@ EXP-010 baseline (2L dense probe, ~5M params) 效果极差 (item_recall@50=0.000
 `bash experiments/scripts/exp-013.sh`
 
 ### Results
-TBD
+
+| Metric | Probe (7.5M) | S-tier (45.8M) | 提升 |
+|--------|-------------|----------------|------|
+| PPL | 70.0 | **29.6** | -58% |
+| L0 PPL (cross-item) | 429.1 | **344.8** | -20% |
+| L1 PPL | 41.8 | **13.3** | -68% |
+| L2 PPL | 19.2 | **5.7** | -70% |
+| hit@10 (indep L0) | 16.7% | **20.0%** | +20% |
+| hit@10 (indep L1) | 62.2% | **78.9%** | +27% |
+| hit@10 (indep L2) | 71.5% | **84.0%** | +17% |
+| recall@10 | 5.1% | **10.2%** | 2x |
+| recall@50 | 14.6% | **25.0%** | 1.7x |
+| recall@100 | 20.1% | **34.6%** | 1.7x |
+| recall@500 | 37.2% | **59.5%** | 1.6x |
+| SID found rate | 37.3% | **59.5%** | 1.6x |
+
+Beam search: 1000 samples, beam_size=500. Eval items: 49,383.
 
 ### Analysis
-TBD
+
+1. **S-tier 全面碾压 probe**: recall@500 从 37%→60%，PPL 降 58%。模型容量 6x (45.8M vs 7.5M) 带来显著收益。
+2. **L0 (cross-item) 仍是瓶颈**: L0 PPL 344.8，即预测下一个 item 的粗粒度 cluster 仍然很难。L1/L2 intra-item 预测已接近饱和 (hit@10 79%/84%)。
+3. **Hypothesis 验证**:
+   - H1 ✅ S-tier recall@50 = 25% vs probe 14.6%，显著提升
+   - H2 ✅ PPL 下降 58% (超预期的 30%)
+   - H3 待验证 (未记录 expert utilization)
+4. **关键修复**: 本轮训练修复了 TransformerDecoder 非 causal cross-attention bug（旧模型通过 cross-attention 作弊看到未来 token）。所有结果均基于正确的 TransformerEncoder causal 实现。
 
 ### Next Steps
-TBD
+
+1. L0 cross-item 预测是主要瓶颈 → 考虑增大 context window (n_items > 10) 或增加 epoch 数
+2. 尝试更大 batch size / learning rate schedule 优化
+3. 记录 MoE expert utilization，验证 Loss-Free balancing 效果
 
 ---
 
