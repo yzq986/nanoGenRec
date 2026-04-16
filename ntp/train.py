@@ -978,13 +978,19 @@ def main():
             if world_size > 1:
                 shared_dir = os.path.join(args.sid_cache, '_train_tmp')
                 os.makedirs(shared_dir, exist_ok=True)
+                # Ragged lists → must wrap in object array to avoid
+                # "inhomogeneous shape" error from np.asanyarray.
+                tok_arr = np.empty(len(tokens_list), dtype=object)
+                tok_arr[:] = tokens_list
                 np.save(os.path.join(shared_dir, 'tokens_list.npy'),
-                        tokens_list, allow_pickle=True)
+                        tok_arr, allow_pickle=True)
                 np.save(os.path.join(shared_dir, 'split_pos_list.npy'),
-                        split_pos_list, allow_pickle=True)
+                        np.array(split_pos_list), allow_pickle=True)
                 if neg_l0_list is not None:
+                    neg_arr = np.empty(len(neg_l0_list), dtype=object)
+                    neg_arr[:] = neg_l0_list
                     np.save(os.path.join(shared_dir, 'neg_l0_list.npy'),
-                            neg_l0_list, allow_pickle=True)
+                            neg_arr, allow_pickle=True)
             meta = (n_layers, n_clusters_per_layer, n_train, n_eval,
                     neg_l0_list is not None)
         else:
