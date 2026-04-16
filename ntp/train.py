@@ -867,11 +867,15 @@ def main():
                     split_item = sp // n_layers
                     L = n_layers
                     print(f"    [{si}] {n_user_items} items, split@item{split_item}")
-                    # Causal attention matrix: T=visible, F=masked
+                    # Causal attention matrix
+                    # T=visible+has_train_loss, -=visible+no_train_loss, F=masked
                     row = ['  '] + [f'{jj:>2}' for jj in range(n_user_items)]
                     print('      ' + ' '.join(row))
                     for ii in range(n_user_items):
-                        cells = [f'{ii:>2}'] + ['T ' if jj <= ii else 'F ' for jj in range(n_user_items)]
+                        # Row has train loss if next item is in train range
+                        has_loss = ii < split_item - 1 and ii < n_user_items - 1
+                        vis = 'T ' if has_loss else '- '
+                        cells = [f'{ii:>2}'] + [vis if jj <= ii else 'F ' for jj in range(n_user_items)]
                         role = 'T' if ii < split_item else 'E'
                         sid = '_'.join(str(toks[ii*L+li]) for li in range(L))
                         print(f"    {role} {' '.join(cells)}  {sid}")
