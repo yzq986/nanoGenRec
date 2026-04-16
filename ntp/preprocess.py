@@ -185,21 +185,13 @@ def main():
 
     # ── Load data ──
     exposure_data = None
+    behavior_data = None
     if args.entp_weight > 0:
-        # ENTP mode: exposure 表包含正样本+负样本，一份数据搞定
-        print("\nStep 2: Loading exposure data (ENTP mode — skipping behavior)")
+        # ENTP mode: exposure 表包含正样本+负样本，一份数据 + 一次遍历搞定
+        print("\nStep 2: Loading exposure data (ENTP mode)")
         from gr_demo.eval.batch import load_all_exposure_data
         exposure_data = load_all_exposure_data(
             date_start=args.date_start, date_end=args.date_end)
-        # Derive behavior_data from exposure (action_bitmap > 0 = positive interactions)
-        mask = exposure_data['action_bitmap'] > 0
-        behavior_data = {
-            'uid': exposure_data['uid'][mask],
-            'iid': exposure_data['iid'][mask],
-            'action_bitmap': exposure_data['action_bitmap'][mask],
-            'first_ts': exposure_data['first_ts'][mask],
-        }
-        print(f"  Positive interactions: {len(behavior_data['uid']):,}")
     else:
         print("\nStep 2: Loading behavior data")
         from gr_demo.eval.batch import load_all_behavior_data
@@ -211,7 +203,7 @@ def main():
     print("\nStep 3: Building unified sequences")
     sequences, n_layers, n_clusters_per_layer, split_ts = \
         build_unified_sequences(
-            sid_dict, behavior_data,
+            sid_dict, behavior_data=behavior_data,
             n_items=args.n_items, max_seq_len=args.max_seq_len,
             n_eval_target=args.n_eval_target,
             exposure_data=exposure_data, entp_k=args.entp_k)
