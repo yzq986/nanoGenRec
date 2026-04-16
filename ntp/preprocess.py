@@ -78,65 +78,28 @@ def load_shard(path):
     return sequences
 
 
-def save_eval_data(output_dir, eval_data, eval_cids, sid_to_items):
-    """Save eval data + sid_to_items as numpy arrays (fast, avoids slow pickle).
-
-    Creates:
-        {output_dir}/eval_sequences.npz  — eval inputs/targets/cids
-        {output_dir}/sid_to_items.npz    — SID→items mapping
-        {output_dir}/eval_data.pt        — v2 pointer for backward compat
-    """
-    import torch
-
-    # eval sequences
+def save_eval_data(output_dir, eval_data, eval_cids):
+    """Save eval sequences as numpy arrays. No sid_to_items — rebuilt from SID cache at eval."""
     eval_inputs_flat, eval_inputs_offsets = [], [0]
     eval_targets = []
     for inp, tgt in eval_data:
         eval_inputs_flat.extend(inp)
         eval_inputs_offsets.append(eval_inputs_offsets[-1] + len(inp))
         eval_targets.append(tgt)
+    path = os.path.join(output_dir, 'eval_sequences.npz')
     np.savez_compressed(
-        os.path.join(output_dir, 'eval_sequences.npz'),
+        path,
         inputs=np.array(eval_inputs_flat, dtype=np.int32),
         offsets=np.array(eval_inputs_offsets, dtype=np.int64),
         targets=np.array(eval_targets, dtype=np.int32),
         cids=np.array(eval_cids),
     )
-
-    # sid_to_items
-    s2i = dict(sid_to_items)
-    sid_keys = list(s2i.keys())
-    item_offsets = [0]
-    item_values = []
-    for k in sid_keys:
-        items = list(s2i[k])
-        item_values.extend(items)
-        item_offsets.append(item_offsets[-1] + len(items))
-    np.savez_compressed(
-        os.path.join(output_dir, 'sid_to_items.npz'),
-        sid_keys=np.array(sid_keys),
-        item_offsets=np.array(item_offsets, dtype=np.int64),
-        item_values=np.array(item_values),
-    )
-
-    # v2 pointer
-    torch.save({
-        'format': 'v2',
-        'preprocessed_dir': output_dir,
-    }, os.path.join(output_dir, 'eval_data.pt'))
-
-    print(f"  eval: {len(eval_data):,} samples, {len(sid_keys):,} SIDs")
+    size = os.path.getsize(path) / 1e6
+    print(f"  eval_sequences.npz: {len(eval_data):,} samples ({size:.1f}MB)")
 
 
-def load_eval_data(prep_dir):
-    """Load eval data + sid_to_items from preprocessed numpy files.
-
-    Returns:
-        eval_data: list of (input_tokens, target_tokens)
-        eval_cids: list of content IDs
-        sid_to_items: dict of sid_str → set of item IDs
-    """
-    # eval sequences
+def load_eval_sequences(prep_dir):
+    """Load eval sequences from numpy. Returns (eval_data, eval_cids)."""
     seq_data = np.load(os.path.join(prep_dir, 'eval_sequences.npz'), allow_pickle=True)
     inputs_flat = seq_data['inputs']
     offsets = seq_data['offsets']
@@ -149,19 +112,7 @@ def load_eval_data(prep_dir):
         tgt = targets[i].tolist()
         eval_data.append((inp, tgt))
 
-    # sid_to_items
-    s2i_data = np.load(os.path.join(prep_dir, 'sid_to_items.npz'), allow_pickle=True)
-    sid_keys = s2i_data['sid_keys']
-    item_offsets = s2i_data['item_offsets']
-    item_values = s2i_data['item_values']
-
-    sid_to_items = {}
-    for i in range(len(sid_keys)):
-        items = set(item_values[item_offsets[i]:item_offsets[i + 1]].tolist())
-        sid_to_items[str(sid_keys[i])] = items
-
-    print(f"  Loaded eval: {len(eval_data):,} samples, {len(sid_to_items):,} SIDs")
-    return eval_data, cids, sid_to_items
+    return eval_data, cids
 
 
 def main():
@@ -212,9 +163,9 @@ def main():
 
     del train_seqs
 
-    # ── Save eval data ──
-    print("\nStep 5: Saving eval data (numpy format)")
-    save_eval_data(args.output_dir, eval_data, eval_cids, sid_to_items)
+    # ── Save eval data (sequences only; sid_to_items rebuilt from SID cache at eval) ──
+    print("\nStep 5: Saving eval data")
+    save_eval_data(args.output_dir, eval_data, eval_cids)
 
     # ── Save metadata ──
     meta = {

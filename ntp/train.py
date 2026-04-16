@@ -598,10 +598,11 @@ def train_probe(
 # ============================================================
 
 def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
-                    sid_to_items, n_clusters_per_layer, n_layers, n_items,
+                    n_clusters_per_layer, n_layers, n_items,
                     avg_loss, n_params, sid_cache_dir, model_type='probe',
                     n_train_total=None):
-    """Save probe checkpoint + eval data (rank 0 only)."""
+    """Save probe checkpoint + eval data (rank 0 only).
+    sid_to_items is NOT saved — rebuilt from SID cache at eval time."""
     os.makedirs(output_dir, exist_ok=True)
 
     # 1. Model checkpoint — config varies by model_type
@@ -639,9 +640,9 @@ def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
         'config': probe_config,
     }, os.path.join(output_dir, 'probe.pt'))
 
-    # 2. Eval data — save as numpy arrays (fast) + v2 pointer
+    # 2. Eval data — sequences only, no sid_to_items (rebuilt from SID cache at eval)
     from gr_demo.ntp.preprocess import save_eval_data
-    save_eval_data(output_dir, eval_data, eval_cids, sid_to_items)
+    save_eval_data(output_dir, eval_data, eval_cids)
 
     # 3. Train metadata
     meta = {
@@ -738,11 +739,12 @@ def main():
 
         # Eval data only needed on rank 0 for saving checkpoint
         if is_main:
-            from gr_demo.ntp.preprocess import load_eval_data
-            eval_data, eval_cids, sid_to_items = load_eval_data(args.preprocessed_dir)
+            from gr_demo.ntp.preprocess import load_eval_sequences
+            eval_data, eval_cids = load_eval_sequences(args.preprocessed_dir)
             n_eval = len(eval_data)
+            log(is_main, f"  Eval: {n_eval:,} samples")
         else:
-            eval_data = eval_cids = sid_to_items = None
+            eval_data = eval_cids = None
             n_eval = prep_meta['n_eval']
 
     # ── Slow path: build data on rank 0, share to other ranks ──
@@ -769,12 +771,12 @@ def main():
             log(is_main, f"  Interactions: {len(behavior_data['uid']):,}")
 
             log(is_main, "\nStep 3: Building packed sequences")
-            train_data, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = \
+            train_data, eval_data, eval_cids, _sid_to_items, n_layers, n_clusters_per_layer = \
                 build_packed_sequences(
                     sid_dict, behavior_data,
                     n_items=n_items, max_seq_len=max_seq_len)
 
-            del sid_dict, behavior_data
+            del sid_dict, behavior_data, _sid_to_items
 
             if world_size > 1:
                 shared_dir = os.path.join(args.sid_cache, '_train_tmp')
@@ -783,7 +785,7 @@ def main():
                         train_data, allow_pickle=True)
             meta = (n_layers, n_clusters_per_layer, len(train_data), len(eval_data))
         else:
-            train_data = eval_data = eval_cids = sid_to_items = None
+            train_data = eval_data = eval_cids = None
             meta = None
 
         if world_size > 1:
@@ -861,7 +863,6 @@ def main():
             train_data=train_data,
             eval_data=eval_data,
             eval_cids=eval_cids,
-            sid_to_items=sid_to_items,
             n_clusters_per_layer=n_clusters_per_layer,
             n_layers=n_layers,
             n_items=n_items,

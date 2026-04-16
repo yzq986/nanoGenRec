@@ -109,10 +109,19 @@ def _batched_varlen_teacher_forced(probe, input_batch, target_batch, lengths, n_
     return batch_loss, depth_hit_10
 
 
-def _load_eval_v2(prep_dir, verbose=True):
-    """Load eval data from v2 numpy format (fast, avoids pickle on large dicts)."""
-    from gr_demo.ntp.preprocess import load_eval_data
-    return load_eval_data(prep_dir)
+def _build_sid_to_items(sid_cache_dir):
+    """Rebuild sid_to_items from SID cache (semantic_ids.npy)."""
+    from collections import defaultdict
+    sid_dict = np.load(
+        os.path.join(sid_cache_dir, 'semantic_ids.npy'), allow_pickle=True
+    ).item()
+    sid_to_items = defaultdict(set)
+    for cid, sid_str in sid_dict.items():
+        if isinstance(sid_str, str):
+            sid_to_items[sid_str].add(cid)
+        else:
+            sid_to_items['_'.join(str(t) for t in sid_str)].add(cid)
+    return dict(sid_to_items)
 
 
 # ============================================================
@@ -202,21 +211,29 @@ class SemanticIDPredictionMetric(BaseMetric):
             print(f"  {model_type}: {n_params / 1e6:.1f}M params, {mode_str}")
 
         # ── Load eval data ──
-        eval_ckpt = torch.load(
-            os.path.join(ntp_checkpoint, 'eval_data.pt'),
-            map_location='cpu', weights_only=False,
-        )
-        if eval_ckpt.get('format') == 'v2':
-            # v2: load from numpy files (fast)
-            prep_dir = eval_ckpt['preprocessed_dir']
-            eval_data, eval_cids, sid_to_items = _load_eval_v2(prep_dir, verbose)
+        eval_seq_path = os.path.join(ntp_checkpoint, 'eval_sequences.npz')
+        if os.path.exists(eval_seq_path):
+            # v2: numpy format (eval sequences only, sid_to_items from SID cache)
+            from gr_demo.ntp.preprocess import load_eval_sequences
+            eval_data, eval_cids = load_eval_sequences(ntp_checkpoint)
         else:
-            # v1: inline pickle (legacy checkpoints)
+            # v1: legacy pickle (includes sid_to_items inline)
+            eval_ckpt = torch.load(
+                os.path.join(ntp_checkpoint, 'eval_data.pt'),
+                map_location='cpu', weights_only=False,
+            )
             eval_data = eval_ckpt['eval_data']
             eval_cids = eval_ckpt['eval_cids']
-            sid_to_items = eval_ckpt['sid_to_items']
 
-        # Build SID trie for constrained beam search
+        # Build sid_to_items from SID cache (always rebuild, never load from checkpoint)
+        meta_path = os.path.join(ntp_checkpoint, 'train_meta.json')
+        with open(meta_path) as f:
+            train_meta_tmp = json.load(f)
+        sid_cache_dir = train_meta_tmp['sid_cache']
+        if verbose:
+            print(f"  Building sid_to_items from {sid_cache_dir}")
+        sid_to_items = _build_sid_to_items(sid_cache_dir)
+
         sid_trie = SIDTrie(sid_to_items, n_layers)
         if verbose:
             n_sids = sum(len(v) for v in sid_trie.children[0].values())
