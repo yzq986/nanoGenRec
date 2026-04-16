@@ -193,6 +193,35 @@ def main():
         exposure_neg_data = load_exposure_neg_data(
             date_start=args.date_start, date_end=args.date_end)
         print(f"  Positives with negatives: {len(exposure_neg_data['uid']):,}")
+
+        # Filter out negatives that share L0 with their positive (gradient conflict).
+        # Same-session items often cluster to the same L0 → ENTP and NTP push
+        # the same L0 probability in opposite directions, hurting training.
+        print("\n  Filtering neg_iids sharing L0 with positive...")
+        content_to_tokens = {}
+        for cid, sid_str in sid_dict.items():
+            if isinstance(sid_str, str):
+                content_to_tokens[cid] = [int(t) for t in sid_str.split('_')]
+            else:
+                content_to_tokens[cid] = [int(t) for t in sid_str]
+        n_before = 0
+        n_after = 0
+        iids = exposure_neg_data['iid']
+        neg_iids_list = exposure_neg_data['neg_iids']
+        for i in range(len(iids)):
+            pos_toks = content_to_tokens.get(iids[i])
+            if pos_toks is None:
+                continue
+            pos_l0 = pos_toks[0]
+            old_negs = neg_iids_list[i]
+            n_before += len(old_negs)
+            filtered = [nid for nid in old_negs
+                        if content_to_tokens.get(nid, (None,))[0] != pos_l0]
+            neg_iids_list[i] = filtered
+            n_after += len(filtered)
+        drop_pct = (1 - n_after / max(n_before, 1)) * 100
+        print(f"  Neg items: {n_before:,} → {n_after:,} ({drop_pct:.1f}% dropped, same-L0)")
+        del content_to_tokens
     else:
         print("\nStep 2: Loading behavior data")
         from gr_demo.eval.batch import load_all_behavior_data
