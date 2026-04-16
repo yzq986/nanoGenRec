@@ -122,11 +122,11 @@ def constrained_beam_search(
         candidate_scores = scores.unsqueeze(-1) + log_probs  # (B, n_beams, C)
         flat_scores = candidate_scores.view(B, -1)
 
-        # Top-k — cap at number of valid candidates
-        n_valid_total = mask.view(B, -1).any(dim=-1).sum().item()
-        if n_valid_total == 0:
+        # Top-k — cap at number of valid candidates (trie subtree count)
+        n_valid = int(mask.sum().item())
+        if n_valid == 0:
             break  # no valid continuations
-        k = min(beam_size, flat_scores.size(1))
+        k = min(beam_size, n_valid, flat_scores.size(1))
         topk_scores, topk_idx = flat_scores.topk(k, dim=-1)
 
         beam_idx = topk_idx // C
