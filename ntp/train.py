@@ -729,6 +729,35 @@ def main():
         n_layers, n_clusters_per_layer, n_train, n_eval = meta
         log(is_main, f"  Seqs: {len(tokens_list):,}, Eval items: {n_eval:,}, Layers: {n_layers}")
 
+    # ── Data statistics ──
+    if is_main:
+        seq_lens = np.array([len(t) for t in tokens_list])
+        split_pos_arr = np.array(split_pos_list)
+        n_items_per_user = seq_lens // n_layers
+        train_items = split_pos_arr // n_layers
+        eval_items = n_items_per_user - train_items
+
+        def _pct_str(arr):
+            p = np.percentile(arr, [25, 50, 75, 90, 95, 99])
+            return (f"p25={p[0]:.0f} p50={p[1]:.0f} p75={p[2]:.0f} "
+                    f"p90={p[3]:.0f} p95={p[4]:.0f} p99={p[5]:.0f}")
+
+        log(is_main, f"\n  Data stats (rank 0, {len(seq_lens):,} seqs):")
+        log(is_main, f"    seq_len (tokens):  min={seq_lens.min()} mean={seq_lens.mean():.0f} "
+                      f"max={seq_lens.max()}")
+        log(is_main, f"      {_pct_str(seq_lens)}")
+        log(is_main, f"    items/user:        min={n_items_per_user.min()} "
+                      f"mean={n_items_per_user.mean():.1f} max={n_items_per_user.max()}")
+        log(is_main, f"      {_pct_str(n_items_per_user)}")
+        log(is_main, f"    train items/user:  mean={train_items.mean():.1f} "
+                      f"| eval items/user: mean={eval_items.mean():.1f}")
+        log(is_main, f"    train-only users:  {(eval_items == 0).sum():,} "
+                      f"| eval-only users: {(train_items == 0).sum():,} "
+                      f"| both: {((train_items > 0) & (eval_items > 0)).sum():,}")
+        log(is_main, f"    total tokens: {seq_lens.sum():,} "
+                      f"(train: {split_pos_arr.sum():,}, "
+                      f"eval: {(seq_lens - split_pos_arr).sum():,})")
+
     # ── Train (both probe and s-tier use packed sequences) ──
     if model_type == 's-tier':
         embed_dim, n_heads, n_transformer_layers = 256, 8, 6
