@@ -639,12 +639,9 @@ def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
         'config': probe_config,
     }, os.path.join(output_dir, 'probe.pt'))
 
-    # 2. Eval data
-    torch.save({
-        'eval_data': eval_data,
-        'eval_cids': eval_cids,
-        'sid_to_items': dict(sid_to_items),  # defaultdict -> dict for serialization
-    }, os.path.join(output_dir, 'eval_data.pt'))
+    # 2. Eval data — save as numpy arrays (fast) + v2 pointer
+    from gr_demo.ntp.preprocess import save_eval_data
+    save_eval_data(output_dir, eval_data, eval_cids, sid_to_items)
 
     # 3. Train metadata
     meta = {
@@ -663,7 +660,6 @@ def save_checkpoint(output_dir, probe, train_data, eval_data, eval_cids,
 
     print(f"  Saved to {output_dir}/")
     print(f"    probe.pt      ({os.path.getsize(os.path.join(output_dir, 'probe.pt')) / 1e6:.1f}MB)")
-    print(f"    eval_data.pt  ({os.path.getsize(os.path.join(output_dir, 'eval_data.pt')) / 1e6:.1f}MB)")
     print(f"    train_meta.json")
 
 
@@ -740,14 +736,10 @@ def main():
         log(is_main, f"  Rank {local_rank}: loaded {len(train_data):,} seqs from shard")
         log(is_main, f"  Layers: {n_layers}, n_items: {n_items}, max_seq_len: {max_seq_len}")
 
-        # Eval data only needed on rank 0 for saving
+        # Eval data only needed on rank 0 for saving checkpoint
         if is_main:
-            eval_ckpt = torch.load(
-                os.path.join(args.preprocessed_dir, 'eval_data.pt'),
-                map_location='cpu', weights_only=False)
-            eval_data = eval_ckpt['eval_data']
-            eval_cids = eval_ckpt['eval_cids']
-            sid_to_items = eval_ckpt['sid_to_items']
+            from gr_demo.ntp.preprocess import load_eval_data
+            eval_data, eval_cids, sid_to_items = load_eval_data(args.preprocessed_dir)
             n_eval = len(eval_data)
         else:
             eval_data = eval_cids = sid_to_items = None

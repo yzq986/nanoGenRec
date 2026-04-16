@@ -109,6 +109,12 @@ def _batched_varlen_teacher_forced(probe, input_batch, target_batch, lengths, n_
     return batch_loss, depth_hit_10
 
 
+def _load_eval_v2(prep_dir, verbose=True):
+    """Load eval data from v2 numpy format (fast, avoids pickle on large dicts)."""
+    from gr_demo.ntp.preprocess import load_eval_data
+    return load_eval_data(prep_dir)
+
+
 # ============================================================
 # Metric class
 # ============================================================
@@ -200,9 +206,15 @@ class SemanticIDPredictionMetric(BaseMetric):
             os.path.join(ntp_checkpoint, 'eval_data.pt'),
             map_location='cpu', weights_only=False,
         )
-        eval_data = eval_ckpt['eval_data']
-        eval_cids = eval_ckpt['eval_cids']
-        sid_to_items = eval_ckpt['sid_to_items']
+        if eval_ckpt.get('format') == 'v2':
+            # v2: load from numpy files (fast)
+            prep_dir = eval_ckpt['preprocessed_dir']
+            eval_data, eval_cids, sid_to_items = _load_eval_v2(prep_dir, verbose)
+        else:
+            # v1: inline pickle (legacy checkpoints)
+            eval_data = eval_ckpt['eval_data']
+            eval_cids = eval_ckpt['eval_cids']
+            sid_to_items = eval_ckpt['sid_to_items']
 
         # Build SID trie for constrained beam search
         sid_trie = SIDTrie(sid_to_items, n_layers)
