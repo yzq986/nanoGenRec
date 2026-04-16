@@ -876,17 +876,21 @@ def main():
                     return ' '.join(sids[:2]) + ' ... ' + ' '.join(sids[-2:])
                 print(f"         train({len(train_sids)}): {_compact(train_sids)}")
                 print(f"         eval({len(eval_sids)}):  {_compact(eval_sids)}")
-                # Token-level mask visualization (T=train loss, E=eval loss, .=padding)
-                # Position i predicts token[i+1]: train when i+1 < sp, eval when i+1 >= sp
+                # Token-level mask: pos i predicts token[i+1]
+                # T=train loss, E=eval loss, .=last token (no target)
                 mask_chars = []
-                for pos in range(n_tok - 1):
-                    mask_chars.append('T' if pos + 1 < sp else 'E')
+                for pos in range(n_tok):
+                    if pos == n_tok - 1:
+                        mask_chars.append('.')
+                    elif pos + 1 < sp:
+                        mask_chars.append('T')
+                    else:
+                        mask_chars.append('E')
                 # Group by item (n_layers chars per item)
                 mask_items = []
                 for ii in range(n_user_items):
                     start = ii * n_layers
-                    end = min(start + n_layers, len(mask_chars))
-                    mask_items.append(''.join(mask_chars[start:end]))
+                    mask_items.append(''.join(mask_chars[start:start + n_layers]))
                 if len(mask_items) <= 8:
                     mask_str = ' '.join(mask_items)
                 else:
