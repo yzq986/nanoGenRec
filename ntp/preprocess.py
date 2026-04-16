@@ -225,10 +225,10 @@ def main():
         file_size = os.path.getsize(shard_path) / 1e6
         print(f"  shard {i}: {end - start:,} seqs -> {shard_path} ({file_size:.1f}MB)")
 
+    has_neg = args.entp_weight > 0
     del sequences
 
     # ── Save metadata ──
-    has_neg = len(sequences) > 0 and 'neg_l0' in sequences[0]
     meta = {
         'n_layers': n_layers,
         'n_clusters_per_layer': n_clusters_per_layer,

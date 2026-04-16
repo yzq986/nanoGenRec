@@ -164,7 +164,12 @@ def run_comparison():
 
 
 def load_all_exposure_data(date_start: str = None, date_end: str = None) -> Dict[str, np.ndarray]:
-    """加载全部曝光数据 (含未点击项，用于 ENTP-Loss 负样本).
+    """加载全部曝光数据 (含点击+未点击，用于 ENTP-Loss 负样本).
+
+    返回完整曝光序列（已按 uid + exposure_ts 排序，来自 export_exposure.py）。
+    正样本 = action_bitmap > 0，负样本 = action_bitmap == 0。
+    build_unified_sequences() 遍历每个用户的曝光序列，为每个正样本取前面的
+    K 个未点击项作为负样本。
 
     Args:
         date_start: 起始日期 (YYYY-MM-DD)，默认 DEFAULT_DATE_START
@@ -204,14 +209,15 @@ def load_all_exposure_data(date_start: str = None, date_end: str = None) -> Dict
             print(f"  Loaded {i + 1}/{len(files)}")
 
     df = pd.concat(dfs, ignore_index=True)
-    total = len(df)
-    # Only keep unclicked exposures (action_bitmap == 0)
-    df = df[df['action_bitmap'] == 0].reset_index(drop=True)
-    print(f"  Total: {total:,} exposures, {len(df):,} unclicked ({100*len(df)/total:.1f}%)")
+    n_clicked = (df['action_bitmap'] > 0).sum()
+    n_unclicked = (df['action_bitmap'] == 0).sum()
+    print(f"  Total: {len(df):,} exposures "
+          f"(clicked={n_clicked:,}, unclicked={n_unclicked:,})")
 
     return {
         'uid': df['uid'].values,
         'iid': df['iid'].values,
+        'action_bitmap': df['action_bitmap'].values.astype(np.int32),
         'exposure_ts': df['exposure_ts'].fillna(0).values.astype(np.int64),
     }
 
