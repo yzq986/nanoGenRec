@@ -152,13 +152,12 @@ train_and_eval "exp013-s-tier" "s-tier" "NTPModel — 6L MoE (8E top-2), packed 
 # ── Commit results ──
 echo ""
 echo ">>> Committing results..."
-git add experiments/
+git add experiments/results/
 git commit -m "EXP-013 results: S-tier NTP (6L MoE) vs Probe (2L dense)" || echo "Nothing to commit"
 ./push.sh
 
 echo ""
 echo "============================================================"
 echo "EXP-013 complete!"
-echo "  Probe results:  experiments/hyperparam/*exp013-probe/"
-echo "  S-tier results: experiments/hyperparam/*exp013-s-tier/"
+echo "  Results: experiments/results/ntp/exp013-*.json"
 echo "============================================================"

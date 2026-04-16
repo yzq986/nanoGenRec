@@ -964,6 +964,21 @@ def main():
         with open(meta_path, 'w') as f:
             json.dump(meta, f, indent=2)
 
+        # Save to experiments/results/ntp/ (git-tracked)
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        results_dir = os.path.join(repo_root, 'experiments', 'results', 'ntp')
+        os.makedirs(results_dir, exist_ok=True)
+        results_path = os.path.join(results_dir, f'{args.name}.json')
+        with open(results_path, 'w') as f:
+            json.dump({
+                'name': args.name,
+                'model_type': model_type,
+                'n_params': n_params,
+                'sid_cache': sid_cache_dir,
+                'eval': eval_results,
+            }, f, indent=2)
+        log(is_main, f"\n  Results saved to {results_path}")
+
         log(is_main, f"\n{'=' * 60}")
         log(is_main, "Training + eval complete!")
         log(is_main, f"  Checkpoint: {output_dir}/")
