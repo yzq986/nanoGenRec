@@ -85,6 +85,9 @@ def _parse_sid_dict(sid_dict):
     return content_to_tokens, n_layers, n_clusters_per_layer, sid_to_items
 
 
+_VIEW_EXIT_BIT = 4096  # bit 12: view_exit is not a positive signal
+
+
 def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
     """Vectorized user interaction grouping using numpy. Returns sorted per-user item lists."""
     import pandas as pd
@@ -98,8 +101,8 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
 
     verbose_fn(f"  Total interactions: {len(uids):,}")
 
-    # Vectorized filter: action > 0
-    action_mask = actions > 0
+    # Vectorized filter: strip view_exit bit, then check for real positive actions
+    action_mask = (actions & ~_VIEW_EXIT_BIT) > 0
     uids_f = uids[action_mask]
     iids_f = iids[action_mask]
     ts_f = timestamps[action_mask]
