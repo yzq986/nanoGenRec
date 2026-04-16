@@ -626,6 +626,7 @@ def train_packed(
 
     model.train()
     total_loss = 0.0
+    loss_history = []  # per-step loss for scaling law analysis
     t0 = time.time()
 
     for step, batch in enumerate(train_loader):
@@ -669,7 +670,9 @@ def train_packed(
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         scheduler.step()
-        total_loss += loss.item()
+        step_loss = loss.item()
+        total_loss += step_loss
+        loss_history.append(round(step_loss, 6))
 
         if is_main and (step + 1) % 100 == 0:
             elapsed = time.time() - t0
@@ -685,7 +688,7 @@ def train_packed(
     log(is_main, f"  Train done: loss={avg_loss:.4f} ({elapsed:.1f}s)")
 
     raw_model = model.module if isinstance(model, DDP) else model
-    return raw_model.cpu(), avg_loss, n_params, model_type
+    return raw_model.cpu(), avg_loss, n_params, model_type, loss_history
 
 
 def format_eta(seconds):
@@ -707,7 +710,8 @@ def format_eta(seconds):
 
 def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
                     avg_loss, n_params, sid_cache_dir, preprocessed_dir,
-                    model_type='probe', n_train=0, n_eval=0):
+                    model_type='probe', n_train=0, n_eval=0,
+                    loss_history=None):
     """Save probe checkpoint + train_meta.json (rank 0 only).
 
     Eval data lives in preprocessed shards — not duplicated here.
@@ -766,9 +770,17 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
     with open(os.path.join(output_dir, 'train_meta.json'), 'w') as f:
         json.dump(meta, f, indent=2)
 
+    # 3. Per-step loss curve (for scaling law analysis)
+    if loss_history:
+        loss_path = os.path.join(output_dir, 'loss_curve.json')
+        with open(loss_path, 'w') as f:
+            json.dump(loss_history, f)
+
     print(f"  Saved to {output_dir}/")
     print(f"    probe.pt      ({os.path.getsize(os.path.join(output_dir, 'probe.pt')) / 1e6:.1f}MB)")
     print(f"    train_meta.json")
+    if loss_history:
+        print(f"    loss_curve.json ({len(loss_history)} steps)")
 
 
 # ============================================================
@@ -1113,7 +1125,7 @@ def main():
             lr = args.lr
 
         log(is_main, f"\nStep 4: Training ({model_type}, packed)")
-        probe, avg_loss, n_params, model_type = train_packed(
+        probe, avg_loss, n_params, model_type, loss_history = train_packed(
             tokens_list=tokens_list,
             split_pos_list=split_pos_list,
             n_clusters_per_layer=n_clusters_per_layer,
@@ -1151,6 +1163,7 @@ def main():
                 model_type=model_type,
                 n_train=n_train,
                 n_eval=n_eval,
+                loss_history=loss_history,
             )
 
     # ── Inline eval (ALL ranks participate, all-reduce results) ──
