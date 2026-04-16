@@ -861,41 +861,29 @@ def main():
                 n_tok = len(toks)
                 n_user_items = n_tok // n_layers
                 split_item = sp // n_layers
-                # Show items as SID tuples
-                items_str = []
-                for ii in range(n_user_items):
-                    sid = '_'.join(str(toks[ii * n_layers + li]) for li in range(n_layers))
-                    items_str.append(sid)
-                print(f"    [{si}] {n_user_items} items, split_pos={sp} (item {split_item})")
-                # Show SIDs with train/eval labels
-                train_sids = items_str[:split_item]
-                eval_sids = items_str[split_item:]
-                def _compact(sids, max_show=4):
-                    if len(sids) <= max_show:
-                        return ' '.join(sids)
-                    return ' '.join(sids[:2]) + ' ... ' + ' '.join(sids[-2:])
-                print(f"         train({len(train_sids)}): {_compact(train_sids)}")
-                print(f"         eval({len(eval_sids)}):  {_compact(eval_sids)}")
-                # Token-level mask: pos i predicts token[i+1]
-                # T=train loss, E=eval loss, .=last token (no target)
-                mask_chars = []
-                for pos in range(n_tok):
-                    if pos == n_tok - 1:
-                        mask_chars.append('.')
-                    elif pos + 1 < sp:
-                        mask_chars.append('T')
+                L = n_layers
+                print(f"    [{si}] {n_user_items} items, split@item{split_item}")
+                # Per-item breakdown: SID, role, what each position predicts
+                max_show = min(n_user_items, 8)
+                show_idxs = list(range(max_show)) if n_user_items <= 8 else \
+                    list(range(4)) + [-1] + list(range(n_user_items - 3, n_user_items))
+                for ii in show_idxs:
+                    if ii == -1:
+                        print(f"         ... ({n_user_items - 7} more items) ...")
+                        continue
+                    sid = '_'.join(str(toks[ii * L + li]) for li in range(L))
+                    role = 'TRAIN' if ii < split_item else 'EVAL '
+                    # What does the last token of this item predict?
+                    last_pos = ii * L + (L - 1)  # last position of this item
+                    if last_pos < n_tok - 1:
+                        # Predicts first token of next item (cross-item)
+                        next_tok = toks[last_pos + 1]
+                        cross = f"→ pred item{ii+1}.L0={next_tok}"
                     else:
-                        mask_chars.append('E')
-                # Group by item (n_layers chars per item)
-                mask_items = []
-                for ii in range(n_user_items):
-                    start = ii * n_layers
-                    mask_items.append(''.join(mask_chars[start:start + n_layers]))
-                if len(mask_items) <= 8:
-                    mask_str = ' '.join(mask_items)
-                else:
-                    mask_str = ' '.join(mask_items[:3]) + ' ... ' + ' '.join(mask_items[-3:])
-                print(f"         mask:  {mask_str}  (T=train, E=eval)")
+                        cross = "(last token, no target)"
+                    # Context: causal mask means this item sees items 0..ii
+                    ctx = f"sees items[0..{ii}]"
+                    print(f"         item{ii:>3} [{role}] {sid}  {ctx}  {cross}")
 
     # ── Train (both probe and s-tier use packed sequences) ──
     if model_type == 's-tier':
