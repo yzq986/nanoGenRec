@@ -126,8 +126,7 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
         x = probe._embed_tokens(input_tokens) + probe.pos_emb(positions)
 
         if hasattr(probe, 'encoder'):
-            causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
-            hidden = probe.encoder(x, mask=causal_mask)
+            hidden = probe.encoder(x, is_causal=True)
         else:
             hidden = probe._transformer_forward(x)
 

@@ -137,10 +137,7 @@ class NTPProbe(nn.Module):
             positions = torch.arange(self.seq_len, device=device).unsqueeze(0)
             x = self._embed_tokens(input_tokens) + self.pos_emb(positions)
 
-            causal_mask = nn.Transformer.generate_square_subsequent_mask(
-                self.seq_len, device=device
-            )
-            hidden = self.encoder(x, mask=causal_mask)
+            hidden = self.encoder(x, is_causal=True)
 
             # Pool last position as sequence representation
             s = hidden[:, -1, :]  # (B, D)
@@ -158,8 +155,7 @@ class NTPProbe(nn.Module):
             positions = torch.arange(T, device=device).unsqueeze(0)
             x = self._embed_tokens(tokens) + self.pos_emb(positions)
 
-            causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
-            out = self.encoder(x, mask=causal_mask)
+            out = self.encoder(x, is_causal=True)
 
             if return_last_n == 1:
                 # Position T-1 predicts next token at layer (T % n_sid_layers)
@@ -200,8 +196,7 @@ class NTPProbe(nn.Module):
         positions = torch.arange(S, device=device).unsqueeze(0)
         x = self._embed_tokens(input_tokens) + self.pos_emb(positions)
 
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(S, device=device)
-        hidden = self.encoder(x, mask=causal_mask)  # (B, S, D)
+        hidden = self.encoder(x, is_causal=True)  # (B, S, D)
 
         # Flatten for efficient per-layer gather
         hidden_flat = hidden.reshape(-1, self.embed_dim)  # (B*S, D)
