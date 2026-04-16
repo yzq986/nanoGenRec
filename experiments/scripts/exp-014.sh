@@ -9,14 +9,14 @@
 # Variable: alpha in {0, 0.05, 0.1, 0.2}, K=5 negatives/position
 # Fixed: S-tier 6L MoE (EXP-013 config), 4096x3 binary SID
 #
-# Pipeline per config:
+# Pipeline:
 #   1. preprocess-sid  — reuse EXP-013 SID cache
-#   2. train-ntp       — DDP training (8 GPUs) with --entp_weight
-#   3. inline eval     — PPL + beam search recall
+#   2. preprocess-ntp  — build shards with neg_l0 data (once)
+#   3. train-ntp x4    — DDP training from shards, vary --entp_weight
 #
-# NOTE: Cannot use preprocessed shards for ENTP configs because
-# neg_l0 data must be built per entp_weight. Config A (baseline)
-# uses slow path with entp_weight=0 for fair comparison.
+# neg_l0 data is baked into shards (independent of alpha).
+# Alpha only controls loss weight at training time.
+# So: preprocess once → 4 configs share the same shards.
 # ============================================================
 set -euo pipefail
 
@@ -33,6 +33,8 @@ done
 
 N_GPUS="${N_GPUS:-$(python -c 'import torch; print(max(1, torch.cuda.device_count()))')}"
 SID_CACHE="experiments/sid_cache/exp013-4096x3-12d-binary"
+NTP_DATA="experiments/ntp_data/exp014"
+NTP_DATA_SMOKE="experiments/ntp_data/exp014-smoke"
 DATE_START="2026-03-01"
 DATE_END="2026-03-31"
 
@@ -41,6 +43,7 @@ echo "EXP-014: ENTP-Loss — Exposure-Aware Hard Negatives for L0"
 echo "  SID:       4096x3 + FSQ [2]x12 binary (reuse EXP-013)"
 echo "  GPUs:      ${N_GPUS}"
 echo "  SID cache: ${SID_CACHE}"
+echo "  NTP data:  ${NTP_DATA}"
 echo "  Data:      ${DATE_START} ~ ${DATE_END}"
 echo "============================================================"
 
@@ -51,35 +54,42 @@ if [ ! -f "${SID_CACHE}/semantic_ids.npy" ]; then
     exit 1
 fi
 
-# ── Phase 0: Smoke test (ENTP with 1 day of data) ──
+# ── Phase 0: Smoke test (preprocess 1 day + train from shard) ──
 if [ "${SKIP_SMOKE}" = true ]; then
     echo ""
     echo "[Phase 0] Skipping smoke test (--no-smoke)"
 else
 echo ""
 echo "============================================================"
-echo "[Phase 0] Smoke test — ENTP pipeline end-to-end"
+echo "[Phase 0] Smoke test — preprocess + train end-to-end"
 echo "============================================================"
 SMOKE_CKPT="experiments/ntp_checkpoints/exp014-smoke"
-rm -rf "${SMOKE_CKPT}"
+rm -rf "${SMOKE_CKPT}" "${NTP_DATA_SMOKE}"
 
+echo "[Phase 0a] Preprocess smoke data (1 day, ${N_GPUS} shards, with ENTP neg)..."
+python run.py preprocess-ntp \
+    --sid_cache "${SID_CACHE}" \
+    --output_dir "${NTP_DATA_SMOKE}" \
+    --n_shards "${N_GPUS}" \
+    --date_start 2026-03-31 --date_end 2026-03-31 \
+    --entp_weight 0.1 --entp_k 5
+
+echo "[Phase 0b] Train from smoke shards..."
 if [ "${N_GPUS}" -gt 1 ]; then
     torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
-        --sid_cache "${SID_CACHE}" \
+        --preprocessed_dir "${NTP_DATA_SMOKE}" \
         --output_dir "${SMOKE_CKPT}" \
         --model s-tier \
         --batch_size 64 \
-        --date_start 2026-03-31 --date_end 2026-03-31 \
-        --entp_weight 0.1 --entp_k 5 \
+        --entp_weight 0.1 \
         --name exp014-smoke
 else
     python run.py train-ntp \
-        --sid_cache "${SID_CACHE}" \
+        --preprocessed_dir "${NTP_DATA_SMOKE}" \
         --output_dir "${SMOKE_CKPT}" \
         --model s-tier \
         --batch_size 64 \
-        --date_start 2026-03-31 --date_end 2026-03-31 \
-        --entp_weight 0.1 --entp_k 5 \
+        --entp_weight 0.1 \
         --name exp014-smoke
 fi
 
@@ -88,27 +98,39 @@ if [ ! -f "${SMOKE_CKPT}/probe.pt" ]; then
     exit 1
 fi
 echo "[Phase 0] Smoke test passed!"
-rm -rf "${SMOKE_CKPT}"
+rm -rf "${SMOKE_CKPT}" "${NTP_DATA_SMOKE}"
 fi  # end SKIP_SMOKE
 
-# ── Helper: train + eval for a single ENTP config ──
+# ── Step 1: Preprocess full data (once, with ENTP neg) ──
+if [ "${FORCE}" = true ]; then rm -rf "${NTP_DATA}"; fi
+if [ -f "${NTP_DATA}/meta.json" ]; then
+    echo ""
+    echo "[Step 1] NTP data found at ${NTP_DATA}, skipping preprocess (use --force to rebuild)"
+else
+    echo ""
+    echo "============================================================"
+    echo "[Step 1] Preprocess NTP data (${N_GPUS} shards, with ENTP neg K=5)"
+    echo "============================================================"
+    python run.py preprocess-ntp \
+        --sid_cache "${SID_CACHE}" \
+        --output_dir "${NTP_DATA}" \
+        --n_shards "${N_GPUS}" \
+        --date_start "${DATE_START}" --date_end "${DATE_END}" \
+        --entp_weight 0.1 --entp_k 5
+fi
+
+# ── Helper: train + eval from preprocessed shards ──
 train_entp_config() {
     local NAME=$1
     local ALPHA=$2
-    local K=$3
-    local DESC=$4
+    local DESC=$3
     local NTP_CKPT="experiments/ntp_checkpoints/${NAME}"
     local EXTRA_FLAGS=""
-    local ENTP_FLAGS=""
-
-    if [ "$(echo "${ALPHA} > 0" | bc -l)" -eq 1 ]; then
-        ENTP_FLAGS="--entp_weight ${ALPHA} --entp_k ${K}"
-    fi
 
     echo ""
     echo "============================================================"
     echo "[${NAME}] ${DESC}"
-    echo "  alpha=${ALPHA}, K=${K}"
+    echo "  alpha=${ALPHA}"
     echo "============================================================"
 
     if [ "${EVAL_ONLY}" = true ]; then
@@ -122,28 +144,26 @@ train_entp_config() {
         echo "[${NAME}] Checkpoint found, skipping training (use --force to retrain)"
         return 0
     else
-        echo "[${NAME}] Training (${N_GPUS} GPUs, slow path)..."
+        echo "[${NAME}] Training (${N_GPUS} GPUs, preprocessed shards)..."
     fi
 
     if [ "${N_GPUS}" -gt 1 ]; then
         torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
-            --sid_cache "${SID_CACHE}" \
+            --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${NTP_CKPT}" \
             --model s-tier \
             --batch_size 128 \
-            --date_start "${DATE_START}" --date_end "${DATE_END}" \
+            --entp_weight "${ALPHA}" \
             --name "${NAME}" \
-            ${ENTP_FLAGS} \
             ${EXTRA_FLAGS}
     else
         python run.py train-ntp \
-            --sid_cache "${SID_CACHE}" \
+            --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${NTP_CKPT}" \
             --model s-tier \
             --batch_size 128 \
-            --date_start "${DATE_START}" --date_end "${DATE_END}" \
+            --entp_weight "${ALPHA}" \
             --name "${NAME}" \
-            ${ENTP_FLAGS} \
             ${EXTRA_FLAGS}
     fi
 
@@ -159,19 +179,19 @@ train_entp_config() {
 }
 
 # ── Config A: Baseline (alpha=0, EXP-013 reproduction) ──
-train_entp_config "exp014-A-baseline" 0 0 \
-    "Baseline (alpha=0) — EXP-013 reproduction, no ENTP"
+train_entp_config "exp014-A-baseline" 0 \
+    "Baseline (alpha=0) — EXP-013 reproduction, neg data loaded but ignored"
 
 # ── Config B: Conservative (alpha=0.05) ──
-train_entp_config "exp014-B-a005" 0.05 5 \
+train_entp_config "exp014-B-a005" 0.05 \
     "ENTP alpha=0.05, K=5 — conservative"
 
 # ── Config C: Paper default (alpha=0.1) ──
-train_entp_config "exp014-C-a010" 0.1 5 \
+train_entp_config "exp014-C-a010" 0.1 \
     "ENTP alpha=0.1, K=5 — DualGR paper default"
 
 # ── Config D: Aggressive (alpha=0.2) ──
-train_entp_config "exp014-D-a020" 0.2 5 \
+train_entp_config "exp014-D-a020" 0.2 \
     "ENTP alpha=0.2, K=5 — aggressive"
 
 # ── Final commit ──
