@@ -554,12 +554,14 @@ def parse_args():
     parser.add_argument('--preprocessed_dir', type=str, default=None,
                         help='Pre-cached shard directory from preprocess-ntp. '
                              'If set, skips data building and loads per-rank shard directly.')
+    parser.add_argument('--eval_only', action='store_true',
+                        help='Skip training, load checkpoint and run eval only')
     return parser.parse_args()
 
 
 def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
                      n_clusters_per_layer, local_rank, world_size, device,
-                     is_main, batch_size=2048, n_recall_total=200):
+                     is_main, batch_size=2048, n_recall_total=1000):
     """Run eval on ALL ranks in parallel, all-reduce results.
 
     Each rank loads its own shard's eval data. Teacher-forced and beam search
@@ -888,65 +890,100 @@ def main():
             else:
                 print(f"\n  No sequences with <=10 items to sample.")
 
-    # ── Train (both probe and s-tier use packed sequences) ──
-    if model_type == 's-tier':
-        embed_dim, n_heads, n_transformer_layers = 256, 8, 6
-        lr = 1e-3
-        ffn_dim = 512
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output_dir = args.output_dir or os.path.join(
+        repo_root, 'experiments', 'ntp_checkpoints', args.name)
+
+    if args.eval_only:
+        # ── Eval-only: load checkpoint, skip training ──
+        ckpt_path = os.path.join(output_dir, 'probe.pt')
+        log(is_main, f"\n--eval_only: loading checkpoint from {output_dir}")
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        cfg = ckpt['config']
+        model_type = cfg.get('model_type', 'probe')
+
+        if model_type == 's-tier':
+            from gr_demo.ntp.model import NTPModel
+            probe = NTPModel(
+                n_clusters_per_layer=cfg['n_clusters_per_layer'],
+                n_sid_layers=cfg['n_sid_layers'],
+                n_items=cfg.get('n_items', n_items),
+                embed_dim=cfg.get('embed_dim', 256),
+                n_heads=cfg.get('n_heads', 8),
+                n_transformer_layers=cfg.get('n_transformer_layers', 6),
+                n_experts=cfg.get('n_experts', 8),
+                top_k=cfg.get('top_k', 2),
+                expert_dim=cfg.get('expert_dim', 1024),
+                max_seq_len=cfg.get('max_seq_len', max_seq_len),
+            )
+        else:
+            probe = NTPProbe(
+                n_clusters_per_layer=cfg['n_clusters_per_layer'],
+                n_sid_layers=cfg['n_sid_layers'],
+                n_items=cfg.get('n_items', n_items),
+                embed_dim=cfg.get('embed_dim', 256),
+                n_heads=cfg.get('n_heads', 4),
+                n_transformer_layers=cfg.get('n_transformer_layers', 2),
+                ffn_dim=cfg.get('ffn_dim', 512),
+                max_seq_len=cfg.get('max_seq_len', max_seq_len),
+            )
+        probe.load_state_dict(ckpt['model_state_dict'])
+        probe.to(device)
+        n_params = sum(p.numel() for p in probe.parameters())
+        avg_loss = 0.0
+        log(is_main, f"  {model_type}: {n_params / 1e6:.1f}M params")
     else:
-        embed_dim = args.embed_dim
-        n_heads = args.n_heads
-        n_transformer_layers = args.n_transformer_layers
-        ffn_dim = args.ffn_dim
-        lr = args.lr
+        # ── Train (both probe and s-tier use packed sequences) ──
+        if model_type == 's-tier':
+            embed_dim, n_heads, n_transformer_layers = 256, 8, 6
+            lr = 1e-3
+            ffn_dim = 512
+        else:
+            embed_dim = args.embed_dim
+            n_heads = args.n_heads
+            n_transformer_layers = args.n_transformer_layers
+            ffn_dim = args.ffn_dim
+            lr = args.lr
 
-    log(is_main, f"\nStep 4: Training ({model_type}, packed)")
-    probe, avg_loss, n_params, model_type = train_packed(
-        tokens_list=tokens_list,
-        split_pos_list=split_pos_list,
-        n_clusters_per_layer=n_clusters_per_layer,
-        n_layers=n_layers,
-        n_items=n_items,
-        local_rank=local_rank,
-        world_size=world_size,
-        device=device,
-        is_main=is_main,
-        batch_size=args.batch_size,
-        lr=lr,
-        embed_dim=embed_dim,
-        n_heads=n_heads,
-        n_transformer_layers=n_transformer_layers,
-        max_seq_len=max_seq_len,
-        model_type=model_type,
-        ffn_dim=ffn_dim,
-        pre_sharded=bool(args.preprocessed_dir),
-    )
-
-    # ── Save checkpoint (rank 0 only) ──
-    if is_main:
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        output_dir = args.output_dir or os.path.join(
-            repo_root, 'experiments', 'ntp_checkpoints', args.name)
-
-        log(is_main, f"\nStep 5: Saving checkpoint")
-        save_checkpoint(
-            output_dir=output_dir,
-            probe=probe,
+        log(is_main, f"\nStep 4: Training ({model_type}, packed)")
+        probe, avg_loss, n_params, model_type = train_packed(
+            tokens_list=tokens_list,
+            split_pos_list=split_pos_list,
             n_clusters_per_layer=n_clusters_per_layer,
             n_layers=n_layers,
             n_items=n_items,
-            avg_loss=avg_loss,
-            n_params=n_params,
-            sid_cache_dir=sid_cache_dir,
-            preprocessed_dir=preprocessed_dir or '',
+            local_rank=local_rank,
+            world_size=world_size,
+            device=device,
+            is_main=is_main,
+            batch_size=args.batch_size,
+            lr=lr,
+            embed_dim=embed_dim,
+            n_heads=n_heads,
+            n_transformer_layers=n_transformer_layers,
+            max_seq_len=max_seq_len,
             model_type=model_type,
-            n_train=n_train,
-            n_eval=n_eval,
+            ffn_dim=ffn_dim,
+            pre_sharded=bool(args.preprocessed_dir),
         )
-    else:
-        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        output_dir = args.output_dir or os.path.join(
-            repo_root, 'experiments', 'ntp_checkpoints', args.name)
+
+        # ── Save checkpoint (rank 0 only) ──
+        if is_main:
+            log(is_main, f"\nStep 5: Saving checkpoint")
+            save_checkpoint(
+                output_dir=output_dir,
+                probe=probe,
+                n_clusters_per_layer=n_clusters_per_layer,
+                n_layers=n_layers,
+                n_items=n_items,
+                avg_loss=avg_loss,
+                n_params=n_params,
+                sid_cache_dir=sid_cache_dir,
+                preprocessed_dir=preprocessed_dir or '',
+                model_type=model_type,
+                n_train=n_train,
+                n_eval=n_eval,
+            )
 
     # ── Inline eval (ALL ranks participate, all-reduce results) ──
     log(is_main, f"\nStep 6: Eval (teacher-forced + beam search, {world_size} GPUs)")

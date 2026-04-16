@@ -16,10 +16,12 @@ set -euo pipefail
 
 SKIP_SMOKE=false
 FORCE=false
+EVAL_ONLY=false
 for arg in "$@"; do
     case "$arg" in
         --no-smoke) SKIP_SMOKE=true ;;
         --force) FORCE=true ;;
+        --eval-only) EVAL_ONLY=true; SKIP_SMOKE=true ;;
     esac
 done
 
@@ -110,37 +112,46 @@ train_and_eval() {
     local DESC=$3
     local BATCH=$4
     local NTP_CKPT="experiments/ntp_checkpoints/${NAME}"
+    local EXTRA_FLAGS=""
 
     echo ""
     echo "============================================================"
     echo "[${NAME}] ${DESC}"
     echo "============================================================"
 
-    if [ -f "${NTP_CKPT}/probe.pt" ]; then
+    if [ "${EVAL_ONLY}" = true ]; then
+        if [ ! -f "${NTP_CKPT}/probe.pt" ]; then
+            echo "[${NAME}] ERROR: --eval-only but no checkpoint at ${NTP_CKPT}"
+            return 1
+        fi
+        echo "[${NAME}] Eval only (loading checkpoint)..."
+        EXTRA_FLAGS="--eval_only"
+    elif [ -f "${NTP_CKPT}/probe.pt" ]; then
         echo "[${NAME}] Checkpoint found, skipping training"
+        return 0
     else
         echo "[${NAME}] Training (${N_GPUS} GPUs, pre-cached shards)..."
-        if [ "${N_GPUS}" -gt 1 ]; then
-            torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
-                --sid_cache "${SID_CACHE}" \
-                --preprocessed_dir "${NTP_DATA}" \
-                --output_dir "${NTP_CKPT}" \
-                --model "${MODEL}" \
-                --batch_size "${BATCH}" \
-                --name "${NAME}"
-        else
-            python run.py train-ntp \
-                --sid_cache "${SID_CACHE}" \
-                --preprocessed_dir "${NTP_DATA}" \
-                --output_dir "${NTP_CKPT}" \
-                --model "${MODEL}" \
-                --batch_size "${BATCH}" \
-                --name "${NAME}"
-        fi
     fi
 
-    # Inline eval already runs at end of training (PPL + beam search recall).
-    # No need for a separate hyperparam eval pass.
+    if [ "${N_GPUS}" -gt 1 ]; then
+        torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
+            --sid_cache "${SID_CACHE}" \
+            --preprocessed_dir "${NTP_DATA}" \
+            --output_dir "${NTP_CKPT}" \
+            --model "${MODEL}" \
+            --batch_size "${BATCH}" \
+            --name "${NAME}" \
+            ${EXTRA_FLAGS}
+    else
+        python run.py train-ntp \
+            --sid_cache "${SID_CACHE}" \
+            --preprocessed_dir "${NTP_DATA}" \
+            --output_dir "${NTP_CKPT}" \
+            --model "${MODEL}" \
+            --batch_size "${BATCH}" \
+            --name "${NAME}" \
+            ${EXTRA_FLAGS}
+    fi
 }
 
 # ── Config A: Baseline (NTPProbe, 2L dense, packed training) ──
