@@ -187,15 +187,15 @@ def _walk_user_exposure(exp_iids, exp_actions, exp_ts, content_to_tokens, entp_k
 
 def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_len=512,
                             n_eval_target=50000, verbose_fn=print,
-                            exposure_data=None, entp_k=5):
+                            exposure_files=None, entp_k=5):
     """Build unified per-user sequences with split_pos for train/eval masking.
 
     Each user → one complete SID token sequence. split_pos marks the boundary
     between train positions (< split_pos) and eval positions (>= split_pos).
 
     Two modes:
-    - **exposure_data provided** (ENTP mode): walk each user's exposure sequence
-      once to extract positives + per-item negatives in a single pass.
+    - **exposure_files provided** (ENTP mode): stream exposure parquet files,
+      per-file walk extracts positives + negatives, global merge by uid.
       behavior_data is ignored.
     - **behavior_data only** (legacy mode): build positive sequences from behavior
       data. No ENTP negatives.
@@ -216,69 +216,113 @@ def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_le
     verbose_fn(f"  SID: {n_layers} layers, codebooks={n_clusters_per_layer}")
     verbose_fn(f"  Unique SIDs: {len(_sid_to_items):,}")
 
-    use_exposure = exposure_data is not None
-    if use_exposure:
-        # ── ENTP mode: single pass over exposure data ──
+    if exposure_files is not None:
+        # ── ENTP mode: stream exposure files ──
         return _build_sequences_from_exposure(
-            exposure_data, content_to_tokens, n_layers, n_clusters_per_layer,
+            exposure_files, content_to_tokens, n_layers, n_clusters_per_layer,
             entp_k, max_seq_len, n_eval_target, verbose_fn)
     else:
         # ── Legacy mode: behavior data only ──
         if behavior_data is None:
-            raise ValueError("Either behavior_data or exposure_data must be provided")
+            raise ValueError("Either behavior_data or exposure_files must be provided")
         return _build_sequences_from_behavior(
             behavior_data, content_to_tokens, n_layers, n_clusters_per_layer,
             max_seq_len, n_eval_target, verbose_fn)
 
 
-def _build_sequences_from_exposure(exposure_data, content_to_tokens,
+def _build_sequences_from_exposure(exposure_files, content_to_tokens,
                                    n_layers, n_clusters_per_layer,
                                    entp_k, max_seq_len, n_eval_target,
                                    verbose_fn):
-    """Build sequences from exposure data in one pass per user.
+    """Build sequences by streaming exposure parquet files.
 
-    Walk each user's exposure sequence (sorted by ts): positives become
-    the behavior sequence, preceding non-positives become ENTP negatives.
+    Phase 1: read each parquet (already sorted by uid+ts within partition),
+             walk per-user to extract positives + negatives, discard raw rows.
+    Phase 2: groupby uid across all partial results, merge + per-user sort,
+             build final sequences.
     """
-    exp_uids = exposure_data['uid']
-    exp_iids = exposure_data['iid']
-    exp_actions = exposure_data['action_bitmap']
-    exp_ts = exposure_data['first_ts']
+    import pandas as pd
+    import s3fs
 
-    verbose_fn(f"  Exposure data: {len(exp_uids):,} total rows")
-
-    # Find user boundaries (data already sorted by uid, ts)
-    t0 = time.time()
-    boundaries = np.where(exp_uids[1:] != exp_uids[:-1])[0] + 1
-    starts = np.concatenate([[0], boundaries])
-    ends = np.concatenate([boundaries, [len(exp_uids)]])
-    verbose_fn(f"  Users: {len(starts):,} ({time.time()-t0:.1f}s)")
-
-    # First pass: walk all users to collect positive timestamps for split_ts.
-    # Also build per-user results to avoid walking twice.
-    t0 = time.time()
+    fs = s3fs.S3FileSystem()
     max_items = max_seq_len // n_layers
-    all_user_results = []  # (pos_iids, pos_ts, pos_tokens, pos_neg_l0)
+    cols = ['uid', 'iid', 'action_bitmap', 'exposure_ts', 'first_ts']
+
+    # ── Phase 1: per-file walk, accumulate partial positives ──
+    # Each positive → (uid, iid, ts, tokens, neg_l0)
+    # Stored as flat lists to minimize memory
+    t0 = time.time()
+    partial_uid = []
+    partial_iid = []
+    partial_ts = []
+    partial_tokens = []
+    partial_neg_l0 = []
+    n_total_rows = 0
+
+    for fi, fpath in enumerate(exposure_files):
+        with fs.open(fpath, 'rb') as fp:
+            df = pd.read_parquet(fp, columns=cols)
+        n_total_rows += len(df)
+
+        # Within-partition data is sorted by (uid, exposure_ts).
+        # Walk per user within this partition.
+        for uid, group in df.groupby('uid', sort=False):
+            # Already sorted within partition, no need to re-sort
+            pos_iids, pos_ts, pos_tokens, pos_neg_l0 = _walk_user_exposure(
+                group['iid'].values, group['action_bitmap'].values,
+                group['first_ts'].values, content_to_tokens, entp_k)
+            for j in range(len(pos_iids)):
+                partial_uid.append(uid)
+                partial_iid.append(pos_iids[j])
+                partial_ts.append(pos_ts[j])
+                partial_tokens.append(pos_tokens[j])
+                partial_neg_l0.append(pos_neg_l0[j])
+
+        del df
+        if (fi + 1) % 20 == 0:
+            verbose_fn(f"    file {fi+1}/{len(exposure_files)}: "
+                       f"{len(partial_uid):,} positives so far")
+
+    verbose_fn(f"  Phase 1 done: {n_total_rows:,} rows → "
+               f"{len(partial_uid):,} positives ({time.time()-t0:.1f}s)")
+
+    # ── Phase 2: global groupby uid, merge per-user, sort by ts ──
+    t0 = time.time()
+    result_df = pd.DataFrame({
+        'uid': partial_uid,
+        'ts': partial_ts,
+    })
+    # Add index column to preserve correspondence with tokens/neg lists
+    result_df['idx'] = np.arange(len(result_df))
+
+    all_user_results = []
     all_pos_ts = []
 
-    for u in range(len(starts)):
-        s, e = starts[u], ends[u]
-        pos_iids, pos_ts, pos_tokens, pos_neg_l0 = _walk_user_exposure(
-            exp_iids[s:e], exp_actions[s:e], exp_ts[s:e],
-            content_to_tokens, entp_k)
-        if len(pos_iids) >= 2:
-            # Truncate to most recent max_items
-            if len(pos_iids) > max_items:
-                offset = len(pos_iids) - max_items
-                pos_iids = pos_iids[offset:]
-                pos_ts = pos_ts[offset:]
-                pos_tokens = pos_tokens[offset:]
-                pos_neg_l0 = pos_neg_l0[offset:]
-            all_user_results.append((pos_iids, pos_ts, pos_tokens, pos_neg_l0))
-            all_pos_ts.extend(pos_ts)
+    for uid, group in result_df.groupby('uid', sort=False):
+        group = group.sort_values('ts')
+        indices = group['idx'].values
+        n = len(indices)
+        if n < 2:
+            continue
 
-        if (u + 1) % 500_000 == 0:
-            verbose_fn(f"    walked {u+1:,}/{len(starts):,} users...")
+        pos_iids = [partial_iid[i] for i in indices]
+        pos_ts = [partial_ts[i] for i in indices]
+        pos_tokens = [partial_tokens[i] for i in indices]
+        pos_neg_l0 = [partial_neg_l0[i] for i in indices]
+
+        if n > max_items:
+            offset = n - max_items
+            pos_iids = pos_iids[offset:]
+            pos_ts = pos_ts[offset:]
+            pos_tokens = pos_tokens[offset:]
+            pos_neg_l0 = pos_neg_l0[offset:]
+
+        all_user_results.append((pos_iids, pos_ts, pos_tokens, pos_neg_l0))
+        all_pos_ts.extend(pos_ts)
+
+    del partial_uid, partial_iid, partial_ts, partial_tokens, partial_neg_l0, result_df
+    verbose_fn(f"  Phase 2 done: {len(all_user_results):,} users with ≥2 items, "
+               f"{len(all_pos_ts):,} total items ({time.time()-t0:.1f}s)")
 
     verbose_fn(f"  Exposure walk: {len(all_user_results):,} users with ≥2 items, "
                f"{len(all_pos_ts):,} total items ({time.time()-t0:.1f}s)")

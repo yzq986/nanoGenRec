@@ -163,24 +163,12 @@ def run_comparison():
     generate_comparison_report(results, COMPARISON_OUTPUT)
 
 
-def load_all_exposure_data(date_start: str = None, date_end: str = None) -> Dict[str, np.ndarray]:
-    """加载全部曝光数据 (含点击+未点击，用于 ENTP-Loss 负样本).
+def resolve_exposure_files(date_start: str = None, date_end: str = None) -> List[str]:
+    """Resolve S3 exposure parquet file paths for date range.
 
-    返回完整曝光序列（已按 uid + exposure_ts 排序，来自 export_exposure.py）。
-    正样本 = action_bitmap > 0，负样本 = action_bitmap == 0。
-    build_unified_sequences() 遍历每个用户的曝光序列，为每个正样本取前面的
-    K 个未点击项作为负样本。
-
-    Args:
-        date_start: 起始日期 (YYYY-MM-DD)，默认 DEFAULT_DATE_START
-        date_end: 结束日期 (YYYY-MM-DD)，默认 DEFAULT_DATE_END
+    Returns list of S3 paths (without s3:// prefix, for use with s3fs).
     """
-    import pandas as pd
     import s3fs
-
-    print(f"\n{'='*60}")
-    print("Loading Exposure Data (for ENTP negatives)")
-    print(f"{'='*60}")
 
     from gr_demo.config import S3_USER_BEHAVIOR
     from gr_demo.config import DEFAULT_DATE_START, DEFAULT_DATE_END
@@ -200,33 +188,7 @@ def load_all_exposure_data(date_start: str = None, date_end: str = None) -> Dict
         files.extend(fs.glob(f"{path_clean}/*.parquet"))
         d += timedelta(days=1)
     print(f"  Resolved {ds} ~ {de} → {len(files)} exposure files")
-
-    dfs = []
-    for i, f in enumerate(files):
-        with fs.open(f, 'rb') as file:
-            dfs.append(pd.read_parquet(file, columns=['uid', 'iid', 'action_bitmap', 'exposure_ts', 'first_ts']))
-        if (i + 1) % 10 == 0:
-            print(f"  Loaded {i + 1}/{len(files)}")
-
-    df = pd.concat(dfs, ignore_index=True)
-
-    # sortWithinPartitions 只保证分片内有序，跨分片同一 uid 可能不连续，需全局排序
-    print(f"  Sorting by (uid, exposure_ts)...")
-    df = df.sort_values(['uid', 'exposure_ts'], kind='mergesort').reset_index(drop=True)
-
-    n_clicked = (df['action_bitmap'] > 0).sum()
-    n_unclicked = (df['action_bitmap'] == 0).sum()
-    n_negative = (df['action_bitmap'] < 0).sum()
-    print(f"  Total: {len(df):,} exposures "
-          f"(clicked={n_clicked:,}, unclicked={n_unclicked:,}, negative={n_negative:,})")
-
-    return {
-        'uid': df['uid'].values,
-        'iid': df['iid'].values,
-        'action_bitmap': df['action_bitmap'].values.astype(np.int32),
-        'exposure_ts': df['exposure_ts'].fillna(0).values.astype(np.int64),
-        'first_ts': df['first_ts'].fillna(0).values.astype(np.int64),
-    }
+    return files
 
 
 def load_all_behavior_data(date_start: str = None, date_end: str = None) -> Dict[str, np.ndarray]:

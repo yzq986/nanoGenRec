@@ -184,13 +184,13 @@ def main():
     print(f"  SID assignments: {len(sid_dict):,}")
 
     # ── Load data ──
-    exposure_data = None
+    exposure_files = None
     behavior_data = None
     if args.entp_weight > 0:
-        # ENTP mode: exposure 表包含正样本+负样本，一份数据 + 一次遍历搞定
-        print("\nStep 2: Loading exposure data (ENTP mode)")
-        from gr_demo.eval.batch import load_all_exposure_data
-        exposure_data = load_all_exposure_data(
+        # ENTP mode: resolve exposure file paths, stream per-file during build
+        print("\nStep 2: Resolving exposure files (ENTP mode)")
+        from gr_demo.eval.batch import resolve_exposure_files
+        exposure_files = resolve_exposure_files(
             date_start=args.date_start, date_end=args.date_end)
     else:
         print("\nStep 2: Loading behavior data")
@@ -206,9 +206,9 @@ def main():
             sid_dict, behavior_data=behavior_data,
             n_items=args.n_items, max_seq_len=args.max_seq_len,
             n_eval_target=args.n_eval_target,
-            exposure_data=exposure_data, entp_k=args.entp_k)
+            exposure_files=exposure_files, entp_k=args.entp_k)
 
-    del sid_dict, behavior_data, exposure_data  # free memory
+    del sid_dict, behavior_data  # free memory
 
     # ── Save shards ──
     n_total = len(sequences)
