@@ -58,7 +58,7 @@ else
         --sid_cache "${SID_CACHE}" \
         --output_dir "${NTP_DATA}" \
         --n_shards "${N_GPUS}" \
-        --date_start 2026-03-24 --date_end 2026-03-31
+        --date_start 2026-03-01 --date_end 2026-03-31
 fi
 
 # ── Phase 0: Smoke test (s-tier, small batch) ──
