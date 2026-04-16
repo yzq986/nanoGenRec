@@ -3,12 +3,14 @@
 Each user → one complete SID token sequence with split_pos (global 80th-pctl ts).
 Training loss computed on positions before split_pos; eval on positions after.
 
-Usage:
-    # 单卡 (builds data on the fly)
-    python run.py train-ntp --sid_cache experiments/sid_cache/qwen3-0.6b
+Requires pre-cached shards from `python run.py preprocess-ntp`.
 
-    # 8卡 DDP with pre-cached shards
+Usage:
+    # 8卡 DDP
     torchrun --nproc_per_node=8 run.py train-ntp --preprocessed_dir experiments/ntp_data/exp013
+
+    # 单卡
+    python run.py train-ntp --preprocessed_dir experiments/ntp_data/exp013
 
 输出目录: {output_dir}/
     - probe.pt          model state_dict + config
@@ -438,7 +440,6 @@ def train_packed(
     max_seq_len=512,
     model_type='s-tier',
     ffn_dim=512,
-    pre_sharded=False,
     neg_l0_list=None,
     entp_weight=0.0,
 ):
@@ -449,7 +450,6 @@ def train_packed(
     Args:
         tokens_list: list of 1D token lists (variable length per user)
         split_pos_list: list of int split positions per sequence
-        pre_sharded: if True, data is already this rank's shard (from preprocess-ntp).
         neg_l0_list: optional list of 2D lists (n_items, K) neg L0 tokens for ENTP.
         entp_weight: α weight for ENTP loss (0 = disabled).
     """
@@ -504,28 +504,8 @@ def train_packed(
             warnings.filterwarnings('ignore', message='.*find_unused_parameters.*')
         model = DDP(model, device_ids=[local_rank], **ddp_kwargs)
 
-    # Shard data per rank to save memory (each rank only holds 1/N)
-    neg_shard = neg_l0_list
-    if pre_sharded:
-        tokens_shard = tokens_list
-        split_pos_shard = split_pos_list
-    elif world_size > 1:
-        n_total = len(tokens_list)
-        shard_size = n_total // world_size
-        shard_start = local_rank * shard_size
-        shard_end = shard_start + shard_size if local_rank < world_size - 1 else n_total
-        tokens_shard = tokens_list[shard_start:shard_end]
-        split_pos_shard = split_pos_list[shard_start:shard_end]
-        if neg_l0_list is not None:
-            neg_shard = neg_l0_list[shard_start:shard_end]
-        del tokens_list, split_pos_list, neg_l0_list
-        log(is_main, f"  Rank {local_rank}: shard {shard_start}..{shard_end} "
-                      f"({len(tokens_shard):,} seqs)")
-    else:
-        tokens_shard = tokens_list
-        split_pos_shard = split_pos_list
-
-    dataset = UnifiedSequenceDataset(tokens_shard, split_pos_shard, neg_shard)
+    # Data is already pre-sharded (one shard per rank from preprocess-ntp)
+    dataset = UnifiedSequenceDataset(tokens_list, split_pos_list, neg_l0_list)
     train_loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -540,11 +520,11 @@ def train_packed(
     n_batches = len(train_loader)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_batches)
 
-    log(is_main, f"  Training: {len(tokens_shard):,} seqs/rank, "
+    log(is_main, f"  Training: {len(tokens_list):,} seqs/rank, "
                  f"{n_batches} batches/epoch, batch_size={batch_size}, "
                  f"world_size={world_size}")
 
-    use_entp = entp_weight > 0 and neg_shard is not None
+    use_entp = entp_weight > 0 and neg_l0_list is not None
     if use_entp:
         log(is_main, f"  ENTP-Loss enabled: α={entp_weight}")
 
@@ -701,14 +681,12 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train NTP Probe (DDP)')
-    parser.add_argument('--sid_cache', type=str, default=None,
-                        help='Path to preprocess-sid cache dir (required unless --preprocessed_dir)')
+    parser.add_argument('--preprocessed_dir', type=str, required=True,
+                        help='Pre-cached shard directory from preprocess-ntp.')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Output dir (default: experiments/ntp_checkpoints/{name})')
     parser.add_argument('--name', type=str, default='default',
                         help='Experiment name for output subdir')
-    parser.add_argument('--n_items', type=int, default=10,
-                        help='Number of history items per sequence')
     parser.add_argument('--batch_size', type=int, default=4096)
     parser.add_argument('--lr', type=float, default=3e-3)
     parser.add_argument('--embed_dim', type=int, default=256)
@@ -718,22 +696,11 @@ def parse_args():
     parser.add_argument('--model', type=str, default='probe',
                         choices=['probe', 's-tier'],
                         help='Model: probe (2L dense, ~5M) or s-tier (6L MoE, ~39.5M)')
-    parser.add_argument('--max_seq_len', type=int, default=512,
-                        help='Max packed sequence length in tokens (s-tier only)')
-    parser.add_argument('--date_start', type=str, default=None,
-                        help='Behavior data start date (YYYY-MM-DD). Default: config DEFAULT_DATE_START')
-    parser.add_argument('--date_end', type=str, default=None,
-                        help='Behavior data end date (YYYY-MM-DD). Default: config DEFAULT_DATE_END')
-    parser.add_argument('--preprocessed_dir', type=str, default=None,
-                        help='Pre-cached shard directory from preprocess-ntp. '
-                             'If set, skips data building and loads per-rank shard directly.')
     parser.add_argument('--eval_only', action='store_true',
                         help='Skip training, load checkpoint and run eval only')
     # ENTP-Loss (DualGR, WWW 2026)
     parser.add_argument('--entp_weight', type=float, default=0.0,
                         help='ENTP-Loss weight α (0=disabled). Paper default: 0.1')
-    parser.add_argument('--entp_k', type=int, default=5,
-                        help='Max negative L0 tokens per item position for ENTP')
     return parser.parse_args()
 
 
@@ -891,149 +858,46 @@ def main():
     local_rank, world_size, device, is_main = setup_ddp()
     model_type = args.model
 
-    if not args.preprocessed_dir and not args.sid_cache:
-        raise ValueError("Either --sid_cache or --preprocessed_dir is required")
+    if not args.preprocessed_dir:
+        raise ValueError(
+            "--preprocessed_dir is required. "
+            "Run `python run.py preprocess-ntp` first to build shards.")
 
     log(is_main, "=" * 60)
     log(is_main, f"NTP Training — {model_type}" +
                  (f" (DDP x{world_size})" if world_size > 1 else ""))
     log(is_main, "=" * 60)
 
-    # ── Fast path: load pre-cached shards from preprocess-ntp ──
-    if args.preprocessed_dir:
-        log(is_main, f"\nLoading pre-cached data from {args.preprocessed_dir}")
-        meta_path = os.path.join(args.preprocessed_dir, 'meta.json')
-        with open(meta_path) as f:
-            prep_meta = json.load(f)
+    # ── Load pre-cached shards from preprocess-ntp ──
+    log(is_main, f"\nLoading pre-cached data from {args.preprocessed_dir}")
+    meta_path = os.path.join(args.preprocessed_dir, 'meta.json')
+    with open(meta_path) as f:
+        prep_meta = json.load(f)
 
-        n_layers = prep_meta['n_layers']
-        n_clusters_per_layer = prep_meta['n_clusters_per_layer']
-        n_items = prep_meta['n_items']
-        max_seq_len = prep_meta['max_seq_len']
-        sid_cache_dir = prep_meta['sid_cache']
-        preprocessed_dir = args.preprocessed_dir
+    n_layers = prep_meta['n_layers']
+    n_clusters_per_layer = prep_meta['n_clusters_per_layer']
+    n_items = prep_meta['n_items']
+    max_seq_len = prep_meta['max_seq_len']
+    sid_cache_dir = prep_meta['sid_cache']
+    preprocessed_dir = args.preprocessed_dir
 
-        # Each rank loads only its own shard
-        shard_path = os.path.join(args.preprocessed_dir, f'train_shard_{local_rank}.npz')
-        if not os.path.exists(shard_path):
-            raise FileNotFoundError(
-                f"Shard {shard_path} not found. "
-                f"Expected {prep_meta['n_shards']} shards but world_size={world_size}. "
-                f"Re-run preprocess-ntp with --n_shards {world_size}.")
-        from gr_demo.ntp.preprocess import load_shard
-        shard_data = load_shard(shard_path)
-        tokens_list, split_pos_list = shard_data[0], shard_data[1]
-        neg_l0_list = shard_data[2] if len(shard_data) > 2 else None
-        log(is_main, f"  Rank {local_rank}: loaded {len(tokens_list):,} seqs from shard"
-                     + (f" (with ENTP neg data)" if neg_l0_list is not None else ""))
-        log(is_main, f"  Layers: {n_layers}, n_items: {n_items}, max_seq_len: {max_seq_len}")
+    # Each rank loads only its own shard
+    shard_path = os.path.join(args.preprocessed_dir, f'train_shard_{local_rank}.npz')
+    if not os.path.exists(shard_path):
+        raise FileNotFoundError(
+            f"Shard {shard_path} not found. "
+            f"Expected {prep_meta['n_shards']} shards but world_size={world_size}. "
+            f"Re-run preprocess-ntp with --n_shards {world_size}.")
+    from gr_demo.ntp.preprocess import load_shard
+    shard_data = load_shard(shard_path)
+    tokens_list, split_pos_list = shard_data[0], shard_data[1]
+    neg_l0_list = shard_data[2] if len(shard_data) > 2 else None
+    log(is_main, f"  Rank {local_rank}: loaded {len(tokens_list):,} seqs from shard"
+                 + (f" (with ENTP neg data)" if neg_l0_list is not None else ""))
+    log(is_main, f"  Layers: {n_layers}, n_items: {n_items}, max_seq_len: {max_seq_len}")
 
-        n_train = prep_meta['n_seqs']
-        n_eval = prep_meta['n_eval_items']
-
-    # ── Slow path: build data on rank 0, share to other ranks ──
-    else:
-        log(is_main, f"\nStep 1: Loading SID cache from {args.sid_cache}")
-        sid_cache_dir = args.sid_cache
-        n_items = args.n_items
-        max_seq_len = args.max_seq_len
-        preprocessed_dir = None
-
-        if is_main:
-            sid_dict = np.load(
-                os.path.join(args.sid_cache, 'semantic_ids.npy'), allow_pickle=True
-            ).item()
-            log(is_main, f"  SID assignments: {len(sid_dict):,}")
-
-            log(is_main, "\nStep 2: Loading behavior data")
-            from gr_demo.eval.batch import load_all_behavior_data
-            behavior_data = load_all_behavior_data(
-                date_start=args.date_start, date_end=args.date_end)
-            log(is_main, f"  Interactions: {len(behavior_data['uid']):,}")
-
-            # ENTP: load exposure data if enabled
-            exposure_data = None
-            if args.entp_weight > 0:
-                log(is_main, "\nStep 2b: Loading exposure data (ENTP)")
-                from gr_demo.eval.batch import load_all_exposure_data
-                exposure_data = load_all_exposure_data(
-                    date_start=args.date_start, date_end=args.date_end)
-
-            log(is_main, "\nStep 3: Building unified sequences")
-            sequences, n_layers, n_clusters_per_layer, _split_ts = \
-                build_unified_sequences(
-                    sid_dict, behavior_data,
-                    n_items=n_items, max_seq_len=max_seq_len,
-                    exposure_data=exposure_data, entp_k=args.entp_k)
-
-            del sid_dict, behavior_data, exposure_data
-
-            tokens_list = [s['tokens'] for s in sequences]
-            split_pos_list = [s['split_pos'] for s in sequences]
-            neg_l0_list = [s['neg_l0'] for s in sequences] if 'neg_l0' in sequences[0] else None
-            n_eval = sum(len(s['eval_cids']) for s in sequences)
-            n_train = len(sequences)
-            del sequences
-
-            if world_size > 1:
-                shared_dir = os.path.join(args.sid_cache, '_train_tmp')
-                os.makedirs(shared_dir, exist_ok=True)
-                # Ragged lists → must wrap in object array to avoid
-                # "inhomogeneous shape" error from np.asanyarray.
-                tok_arr = np.empty(len(tokens_list), dtype=object)
-                tok_arr[:] = tokens_list
-                np.save(os.path.join(shared_dir, 'tokens_list.npy'),
-                        tok_arr, allow_pickle=True)
-                np.save(os.path.join(shared_dir, 'split_pos_list.npy'),
-                        np.array(split_pos_list), allow_pickle=True)
-                if neg_l0_list is not None:
-                    neg_arr = np.empty(len(neg_l0_list), dtype=object)
-                    neg_arr[:] = neg_l0_list
-                    np.save(os.path.join(shared_dir, 'neg_l0_list.npy'),
-                            neg_arr, allow_pickle=True)
-            meta = (n_layers, n_clusters_per_layer, n_train, n_eval,
-                    neg_l0_list is not None)
-        else:
-            tokens_list = split_pos_list = neg_l0_list = None
-            meta = None
-
-        if world_size > 1:
-            meta_list = [meta]
-            dist.broadcast_object_list(meta_list, src=0)
-            meta = meta_list[0]
-
-            if is_main:
-                shared_path_list = [os.path.join(args.sid_cache, '_train_tmp')]
-            else:
-                shared_path_list = [None]
-            dist.broadcast_object_list(shared_path_list, src=0)
-            shared_dir = shared_path_list[0]
-
-            if not is_main:
-                tokens_list = np.load(
-                    os.path.join(shared_dir, 'tokens_list.npy'),
-                    allow_pickle=True).tolist()
-                split_pos_list = np.load(
-                    os.path.join(shared_dir, 'split_pos_list.npy'),
-                    allow_pickle=True).tolist()
-                neg_l0_path = os.path.join(shared_dir, 'neg_l0_list.npy')
-                if os.path.exists(neg_l0_path):
-                    neg_l0_list = np.load(neg_l0_path, allow_pickle=True).tolist()
-
-            dist.barrier()
-            if is_main:
-                os.remove(os.path.join(shared_dir, 'tokens_list.npy'))
-                os.remove(os.path.join(shared_dir, 'split_pos_list.npy'))
-                neg_l0_path = os.path.join(shared_dir, 'neg_l0_list.npy')
-                if os.path.exists(neg_l0_path):
-                    os.remove(neg_l0_path)
-                try:
-                    os.rmdir(shared_dir)
-                except OSError:
-                    pass
-
-        n_layers, n_clusters_per_layer, n_train, n_eval, _has_neg = meta
-        log(is_main, f"  Seqs: {len(tokens_list):,}, Eval items: {n_eval:,}, Layers: {n_layers}")
+    n_train = prep_meta['n_seqs']
+    n_eval = prep_meta['n_eval_items']
 
     # ── Data statistics ──
     if is_main:
@@ -1171,7 +1035,6 @@ def main():
             max_seq_len=max_seq_len,
             model_type=model_type,
             ffn_dim=ffn_dim,
-            pre_sharded=bool(args.preprocessed_dir),
             neg_l0_list=neg_l0_list,
             entp_weight=args.entp_weight,
         )
