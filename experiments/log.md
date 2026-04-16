@@ -42,7 +42,7 @@
 ## EXP-014: ENTP-Loss — Exposure-Aware Hard Negatives for L0
 
 **Date**: 2026-04-16
-**Status**: planned
+**Status**: running
 **IDEA**: IDEA-dualgr-0
 **Results**: TBD
 
@@ -113,13 +113,44 @@ L_ENTP = −(1/N) Σ log(1 − p_i^(L0))   (对 unclicked exposure 的 L0 token)
 
 31% row 级有负样本合理：Feed 场景用户常连续点击（同页多 item），连续 positive 之间无 non-positive → 后者拿不到 neg。
 
-训练待跑。
+**训练结果 B/C (旧代码, 无 L0 collision 过滤)**:
+
+| Metric | A (α=0, baseline) | B (α=0.05) | C (α=0.1) | B Δ | C Δ |
+|---|---|---|---|---|---|
+| PPL | 29.60 | 31.67 | 31.67 | +7.0% | +7.0% |
+| L0 PPL | 344.76 | 363.78 | 361.41 | +5.5% | +4.8% |
+| L1 PPL | 13.28 | 15.23 | 15.23 | +14.7% | +14.7% |
+| L2 PPL | 5.72 | 5.79 | 5.83 | +1.2% | +1.9% |
+| L0 hit@10_indep | 0.2004 | 0.1919 | 0.1902 | -4.2% | -5.1% |
+| recall@10 | 0.102 | 0.086 | 0.089 | -15.7% | -12.7% |
+| recall@50 | 0.250 | 0.230 | 0.234 | -8.0% | -6.4% |
+| recall@100 | 0.346 | 0.305 | 0.304 | -11.8% | -12.1% |
+| recall@500 | 0.595 | 0.525 | 0.529 | -11.8% | -11.1% |
+
+B/C 全面退步。根因分析见 Analysis。
 
 ### Analysis
-TBD
+
+**根因: L0 token collision 导致梯度冲突。**
+
+同 session 的 item 因为话题相似被推荐系统一起展示，经 SID 量化后大量落入同一个 L0 cluster（4096 clusters, avg 122 items/cluster）。当负样本与正样本共享同一个 L0 token 时：
+- NTP loss 推高 p(L0=k)（正样本的 L0）
+- ENTP loss 压低 p(L0=k)（负样本的 L0，恰好相同）
+- 梯度直接对冲 → L0 PPL 反而上升 (344→363)
+- 冲突通过 shared transformer backbone 传播 → L1 PPL 也大幅退步 (+14.7%)
+
+DualGR 论文用 8192 L0 clusters 且有 10B exposures/day，collision 率天然更低。论文还提到 probability clipping `[ε, 1-ε]` 但未说明 ε 值。
+
+**修复**: preprocess 阶段过滤掉与 positive 共享 L0 的负样本。已实现，待重跑。
 
 ### Next Steps
-TBD
+
+1. 用新代码重跑 B (α=0.05) / C (α=0.1)，包含:
+   - L0 collision 过滤
+   - view_exit 排除
+   - neg 优先级 (negative_feedback/view_exit 优先入 neg 池)
+2. 观察 drop_pct — 如果 >30% 则验证 collision 假设
+3. 如果修复后仍无提升，考虑 detach ENTP 梯度不回传 backbone
 
 ---
 
