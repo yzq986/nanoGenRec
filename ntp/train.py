@@ -867,16 +867,14 @@ def main():
                     split_item = sp // n_layers
                     L = n_layers
                     print(f"    [{si}] {n_user_items} items, split@item{split_item}")
-                    # Causal attention matrix
-                    hdr = '         ' + ''.join(f'{ii:>4}' for ii in range(n_user_items))
-                    print(hdr)
+                    # Causal attention matrix: T=visible, F=masked
+                    row = ['  '] + [f'{jj:>2}' for jj in range(n_user_items)]
+                    print('      ' + ' '.join(row))
                     for ii in range(n_user_items):
-                        sid = '_'.join(str(toks[ii*L+li]) for li in range(L))
+                        cells = [f'{ii:>2}'] + ['T ' if jj <= ii else 'F ' for jj in range(n_user_items)]
                         role = 'T' if ii < split_item else 'E'
-                        cells = ''
-                        for jj in range(n_user_items):
-                            cells += '   ■' if jj <= ii else '   ·'
-                        print(f"    {role} {ii:>2} {cells}  {sid}")
+                        sid = '_'.join(str(toks[ii*L+li]) for li in range(L))
+                        print(f"    {role} {' '.join(cells)}  {sid}")
             else:
                 print(f"\n  No sequences with <=10 items to sample.")
 
