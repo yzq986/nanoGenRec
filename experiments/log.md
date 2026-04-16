@@ -89,7 +89,7 @@ L_ENTP = −(1/N) Σ log(1 − p_i^(L0))   (对 unclicked exposure 的 L0 token)
 
 | Config | α | K | 说明 |
 |--------|------|---|------|
-| A (baseline) | 0 | — | EXP-013 复现 |
+| A (baseline) | 0 | — | 直接复用 EXP-013 s-tier 结果 |
 | B | 0.05 | 5 | 保守 |
 | C | 0.1 | 5 | DualGR 论文默认 |
 | D | 0.2 | 5 | 激进 |

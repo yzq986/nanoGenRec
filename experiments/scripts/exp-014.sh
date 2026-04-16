@@ -178,9 +178,10 @@ train_entp_config() {
     ) 200>/tmp/exp014-git.lock
 }
 
-# ── Config A: Baseline (alpha=0, EXP-013 reproduction) ──
-train_entp_config "exp014-A-baseline" 0 \
-    "Baseline (alpha=0) — EXP-013 reproduction, neg data loaded but ignored"
+# ── Config A: Baseline (alpha=0) — skip, reuse EXP-013 s-tier results ──
+echo ""
+echo "[exp014-A-baseline] Skipped — reuse EXP-013 s-tier results as baseline"
+echo "  PPL=29.6, L0=344.8, L1=13.3, L2=5.7, recall@500=59.5%"
 
 # ── Config B: Conservative (alpha=0.05) ──
 train_entp_config "exp014-B-a005" 0.05 \
