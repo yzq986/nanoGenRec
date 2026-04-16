@@ -1123,12 +1123,12 @@ def main():
     wandb_run = None
     if is_main:
         try:
-            import wandb.sdk  # noqa: avoid shadowing by local wandb/ dir
             import wandb
-            log(is_main, f"  W&B version={wandb.__version__}, file={wandb.__file__}")
+            os.environ.setdefault('WANDB_DIR', os.path.join(repo_root, 'experiments'))
             wandb_run = wandb.init(
                 project="gr-demo-ntp",
                 name=args.name,
+                dir=os.path.join(repo_root, 'experiments'),
                 config={
                     'model_type': model_type,
                     'n_layers': n_layers,

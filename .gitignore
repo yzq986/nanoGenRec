@@ -31,6 +31,10 @@ experiments/hyperparam/**/smoke_test/
 *.bin
 *.safetensors
 
+# W&B logs
+wandb/
+experiments/wandb/
+
 # Eval output (generated at runtime)
 eval_results/
 eval_results_with_behavior/
