@@ -44,8 +44,6 @@ def parse_args():
                         help='Behavior data start date (YYYY-MM-DD)')
     parser.add_argument('--date_end', type=str, default=None,
                         help='Behavior data end date (YYYY-MM-DD)')
-    parser.add_argument('--force', action='store_true',
-                        help='Delete existing output_dir and rebuild from scratch')
     return parser.parse_args()
 
 
@@ -137,11 +135,6 @@ def main():
     print("=" * 60)
     print("NTP Data Preprocessing")
     print("=" * 60)
-
-    if args.force and os.path.exists(args.output_dir):
-        import shutil
-        print(f"\n  --force: removing existing {args.output_dir}")
-        shutil.rmtree(args.output_dir)
 
     # ── Load SID cache ──
     print(f"\nStep 1: Loading SID cache from {args.sid_cache}")

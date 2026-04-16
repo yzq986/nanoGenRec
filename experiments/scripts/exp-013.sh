@@ -50,13 +50,13 @@ else
 fi
 
 # ── Step 2: preprocess-ntp (build shards, single process) ──
+rm -rf "${NTP_DATA}"
 echo "[Step 2] Running preprocess-ntp (${N_GPUS} shards)..."
 python run.py preprocess-ntp \
     --sid_cache "${SID_CACHE}" \
     --output_dir "${NTP_DATA}" \
     --n_shards "${N_GPUS}" \
-    --date_start 2026-03-01 --date_end 2026-03-31 \
-    --force
+    --date_start 2026-03-01 --date_end 2026-03-31
 
 # ── Phase 0: Smoke test (s-tier, small batch) ──
 if [ "${SKIP_SMOKE}" = true ]; then
