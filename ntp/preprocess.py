@@ -38,6 +38,8 @@ def parse_args():
                         help='Number of history items per sequence')
     parser.add_argument('--max_seq_len', type=int, default=512,
                         help='Max packed sequence length in tokens')
+    parser.add_argument('--n_eval_target', type=int, default=50000,
+                        help='Target number of eval items (determines time split)')
     parser.add_argument('--date_start', type=str, default=None,
                         help='Behavior data start date (YYYY-MM-DD)')
     parser.add_argument('--date_end', type=str, default=None,
@@ -153,7 +155,8 @@ def main():
     sequences, n_layers, n_clusters_per_layer, split_ts = \
         build_unified_sequences(
             sid_dict, behavior_data,
-            n_items=args.n_items, max_seq_len=args.max_seq_len)
+            n_items=args.n_items, max_seq_len=args.max_seq_len,
+            n_eval_target=args.n_eval_target)
 
     del sid_dict, behavior_data  # free memory
 

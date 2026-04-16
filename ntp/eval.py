@@ -528,7 +528,7 @@ class SemanticIDPredictionMetric(BaseMetric):
         sid_to_items = _build_sid_to_items(sid_cache_dir)
         sid_trie = SIDTrie(sid_to_items, n_layers)
 
-        n_recall_samples = min(5000, eval_sample_size) if eval_sample_size > 0 else 5000
+        n_recall_samples = min(200, eval_sample_size) if eval_sample_size > 0 else 200
 
         with torch.no_grad():
             beam_results = _beam_search_recall(

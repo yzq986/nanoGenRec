@@ -127,12 +127,14 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
 
 
 def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512,
-                            verbose_fn=print):
+                            n_eval_target=50000, verbose_fn=print):
     """Build unified per-user sequences with split_pos for train/eval masking.
 
     Each user → one complete SID token sequence. split_pos marks the boundary
-    between train positions (< split_pos) and eval positions (>= split_pos),
-    derived from global 80th-percentile timestamp.
+    between train positions (< split_pos) and eval positions (>= split_pos).
+
+    The split timestamp is chosen so that the total number of eval items across
+    all users is approximately n_eval_target.
 
     Returns:
         sequences: list of dicts with keys:
@@ -150,9 +152,17 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
     uids_s, iids_s, ts_s, starts, ends = \
         _build_user_items(behavior_data, content_to_tokens, verbose_fn)
 
-    # Global 80th percentile timestamp for train/eval split
-    split_ts = np.percentile(ts_s, 80)
-    verbose_fn(f"  Time split at 80th percentile: {split_ts}")
+    # Find split_ts so that total eval items ≈ n_eval_target
+    # Items with ts > split_ts become eval items
+    sorted_ts = np.sort(ts_s)
+    total_items = len(sorted_ts)
+    # We want n_eval_target items after the split, so split at (total - n_eval_target)
+    split_idx = max(0, min(total_items - 1, total_items - n_eval_target))
+    split_ts = float(sorted_ts[split_idx])
+    actual_eval = int((sorted_ts > split_ts).sum())
+    pct = 100.0 * split_idx / total_items if total_items > 0 else 0
+    verbose_fn(f"  Time split: {actual_eval:,} eval items targeted "
+               f"(~{pct:.1f}th percentile, split_ts={split_ts:.0f})")
 
     max_items = max_seq_len // n_layers
     sequences = []
@@ -546,7 +556,7 @@ def parse_args():
 
 def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
                      n_clusters_per_layer, local_rank, world_size, device,
-                     is_main, batch_size=2048, n_recall_total=5000):
+                     is_main, batch_size=2048, n_recall_total=200):
     """Run eval on ALL ranks in parallel, all-reduce results.
 
     Each rank loads its own shard's eval data. Teacher-forced and beam search
