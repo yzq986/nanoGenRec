@@ -61,11 +61,140 @@ def parse_args():
                         choices=['pca', 'mlp'])
     parser.add_argument('--fsq_mlp_hidden', type=int, default=None)
     parser.add_argument('--fsq_epochs', type=int, default=None)
+    parser.add_argument('--incremental', action='store_true',
+                        help='Incremental mode: load existing quantizer, predict SIDs for new items only')
     return parser.parse_args()
+
+
+def _load_embedding_cache(model_key):
+    """Load embedding cache, return (cache_dict, embedding_dim)."""
+    embedding_cache_dir = f'{EFS_EMBEDDING_CACHE}/{model_key}'
+    incremental_cache_path = f'{embedding_cache_dir}/incremental_cache.npy'
+    embedding_cache_path = f'{embedding_cache_dir}/embeddings.npy'
+    content_ids_cache_path = f'{embedding_cache_dir}/content_ids.npy'
+
+    if os.path.exists(incremental_cache_path):
+        cache_dict = np.load(incremental_cache_path, allow_pickle=True).item()
+        dim = next(iter(cache_dict.values())).shape[0]
+        print(f"  Loaded {len(cache_dict):,} embeddings from incremental_cache, dim={dim}")
+        return cache_dict, dim
+    elif os.path.exists(embedding_cache_path) and os.path.exists(content_ids_cache_path):
+        embeddings = np.load(embedding_cache_path, allow_pickle=True)
+        content_ids = np.load(content_ids_cache_path, allow_pickle=True)
+        cache_dict = {cid: emb for cid, emb in zip(content_ids, embeddings)}
+        dim = embeddings.shape[1]
+        print(f"  Loaded {len(cache_dict):,} embeddings from cache, dim={dim}")
+        return cache_dict, dim
+    else:
+        raise FileNotFoundError(f"Cache not found at {embedding_cache_dir}. Run encode first.")
+
+
+def main_incremental(args):
+    """Incremental mode: load existing quantizer, predict SIDs for new items only."""
+    model_key = args.model
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output_dir = args.output_dir or os.path.join(repo_root, 'experiments', 'sid_cache', model_key)
+
+    quantizer_path = os.path.join(output_dir, 'quantizer.pt')
+    sid_path = os.path.join(output_dir, 'semantic_ids.npy')
+    config_path = os.path.join(output_dir, 'config.json')
+
+    if not os.path.exists(quantizer_path) or not os.path.exists(sid_path):
+        raise FileNotFoundError(
+            f"Incremental mode requires existing quantizer.pt and semantic_ids.npy in {output_dir}. "
+            "Run full preprocess-sid first.")
+
+    print("=" * 60)
+    print("SID Preprocessing (INCREMENTAL)")
+    print("=" * 60)
+    t0 = time.time()
+
+    # ── Step 1: Load existing SID cache ──
+    print("\nStep 1: Loading existing SID cache...")
+    existing_sid_dict = np.load(sid_path, allow_pickle=True).item()
+    existing_keys = set(existing_sid_dict.keys())
+    print(f"  Existing SIDs: {len(existing_keys):,}")
+
+    # ── Step 2: Load embedding cache & diff ──
+    print("\nStep 2: Loading embedding cache...")
+    cache_dict, _ = _load_embedding_cache(model_key)
+    all_keys = set(str(k) for k in cache_dict.keys())
+
+    # Optional exposure filter
+    if args.behavior_path:
+        print("  Filtering by exposed IIDs...")
+        exposed_iids = load_exposed_iids(args.behavior_path)
+        all_keys = all_keys & exposed_iids
+        print(f"  Exposed items in embedding cache: {len(all_keys):,}")
+
+    new_keys = all_keys - existing_keys
+    print(f"  New items to process: {len(new_keys):,}")
+
+    if not new_keys:
+        print("\nNo new items — SID cache is up to date.")
+        return
+
+    # ── Step 3: Load quantizer ──
+    print("\nStep 3: Loading trained quantizer...")
+    model = ResKmeansFSQ.load(quantizer_path, device=args.device)
+
+    # ── Step 4: Predict SIDs for new items ──
+    print(f"\nStep 4: Generating SIDs for {len(new_keys):,} new items...")
+    t1 = time.time()
+
+    new_keys_list = sorted(new_keys)
+    new_embeddings = np.array([cache_dict[k] if k in cache_dict
+                               else cache_dict[int(k)] for k in new_keys_list],
+                              dtype=np.float32)
+    new_embed_tensor = torch.tensor(new_embeddings, dtype=torch.float32)
+
+    new_sids = generate_semantic_ids_fsq(model, new_embed_tensor, model.normalize_residuals)
+    gen_time = time.time() - t1
+    print(f"  Generated {len(new_sids):,} SIDs ({gen_time:.1f}s)")
+
+    # ── Step 5: Merge & save ──
+    print(f"\nStep 5: Merging and saving...")
+    for key, sid in zip(new_keys_list, new_sids):
+        existing_sid_dict[key] = sid
+
+    np.save(sid_path, existing_sid_dict)
+    print(f"  Saved {len(existing_sid_dict):,} total SID assignments "
+          f"(+{len(new_keys):,} new)")
+
+    # Update config
+    all_sids = list(existing_sid_dict.values())
+    unique_sids = len(set(all_sids))
+    collision = 1.0 - unique_sids / len(all_sids)
+    print(f"  Unique SIDs: {unique_sids:,} / {len(all_sids):,} (collision={collision:.4f})")
+
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            config = json.load(f)
+    else:
+        config = {}
+    config.update({
+        'n_items': len(existing_sid_dict),
+        'n_unique_sids': unique_sids,
+        'collision_rate': round(collision, 6),
+        'incremental_update': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'incremental_new_items': len(new_keys),
+    })
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
+
+    total_time = time.time() - t0
+    print(f"\n{'='*60}")
+    print(f"Incremental SID update complete! ({total_time:.1f}s)")
+    print(f"  +{len(new_keys):,} new items → {len(existing_sid_dict):,} total")
+    print(f"{'='*60}")
 
 
 def main():
     args = parse_args()
+
+    if args.incremental:
+        return main_incremental(args)
+
     model_key = args.model
     _, embedding_dim, _, _ = MODEL_CONFIGS[model_key]
 
@@ -98,22 +227,9 @@ def main():
     print("Step 1: Loading embeddings...")
     t0 = time.time()
 
-    embedding_cache_dir = f'{EFS_EMBEDDING_CACHE}/{model_key}'
-    incremental_cache_path = f'{embedding_cache_dir}/incremental_cache.npy'
-    embedding_cache_path = f'{embedding_cache_dir}/embeddings.npy'
-    content_ids_cache_path = f'{embedding_cache_dir}/content_ids.npy'
-
-    if os.path.exists(incremental_cache_path):
-        cache_dict = np.load(incremental_cache_path, allow_pickle=True).item()
-        content_ids = np.array(list(cache_dict.keys()))
-        embeddings = np.array(list(cache_dict.values()), dtype=np.float32)
-        print(f"  Loaded {len(content_ids):,} embeddings from incremental_cache, dim={embeddings.shape[1]}")
-    elif os.path.exists(embedding_cache_path) and os.path.exists(content_ids_cache_path):
-        embeddings = np.load(embedding_cache_path, allow_pickle=True)
-        content_ids = np.load(content_ids_cache_path, allow_pickle=True)
-        print(f"  Loaded {len(content_ids):,} embeddings from cache, dim={embeddings.shape[1]}")
-    else:
-        raise FileNotFoundError(f"Cache not found at {embedding_cache_dir}. Run encode first.")
+    cache_dict, _ = _load_embedding_cache(model_key)
+    content_ids = np.array(list(cache_dict.keys()))
+    embeddings = np.array(list(cache_dict.values()), dtype=np.float32)
 
     # ── Step 2: Exposure filter ──
     if args.behavior_path:
