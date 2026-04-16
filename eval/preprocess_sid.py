@@ -89,11 +89,48 @@ def _load_embedding_cache(model_key):
         raise FileNotFoundError(f"Cache not found at {embedding_cache_dir}. Run encode first.")
 
 
+def _find_sid_cache_dir(repo_root, model_key, explicit_output_dir):
+    """Resolve SID cache directory: explicit > default > auto-scan.
+
+    Auto-scan looks for the most recent directory under experiments/sid_cache/
+    that contains both quantizer.pt and semantic_ids.npy.
+    """
+    if explicit_output_dir:
+        return explicit_output_dir
+
+    # Try default path first
+    default_dir = os.path.join(repo_root, 'experiments', 'sid_cache', model_key)
+    if (os.path.exists(os.path.join(default_dir, 'quantizer.pt'))
+            and os.path.exists(os.path.join(default_dir, 'semantic_ids.npy'))):
+        return default_dir
+
+    # Auto-scan: find directories with both required files, pick newest
+    base = os.path.join(repo_root, 'experiments', 'sid_cache')
+    if not os.path.isdir(base):
+        return default_dir  # will fail later with clear error
+
+    candidates = []
+    for name in os.listdir(base):
+        d = os.path.join(base, name)
+        qp = os.path.join(d, 'quantizer.pt')
+        sp = os.path.join(d, 'semantic_ids.npy')
+        if os.path.isfile(qp) and os.path.isfile(sp):
+            candidates.append((os.path.getmtime(sp), d))
+
+    if candidates:
+        candidates.sort(reverse=True)
+        found = candidates[0][1]
+        print(f"  Auto-detected SID cache: {found}")
+        return found
+
+    return default_dir  # will fail later with clear error
+
+
 def main_incremental(args):
     """Incremental mode: load existing quantizer, predict SIDs for new items only."""
     model_key = args.model
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    output_dir = args.output_dir or os.path.join(repo_root, 'experiments', 'sid_cache', model_key)
+    output_dir = _find_sid_cache_dir(repo_root, model_key, args.output_dir)
 
     quantizer_path = os.path.join(output_dir, 'quantizer.pt')
     sid_path = os.path.join(output_dir, 'semantic_ids.npy')
