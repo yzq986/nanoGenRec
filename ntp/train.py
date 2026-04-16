@@ -346,7 +346,9 @@ def train_packed(
                  f"max_seq={max_seq_len}, batch_size={batch_size}")
 
     if world_size > 1:
-        model = DDP(model, device_ids=[local_rank])
+        # MoE: not all experts active every batch → unused params expected
+        model = DDP(model, device_ids=[local_rank],
+                    find_unused_parameters=(model_type == 's-tier'))
 
     # Shard data per rank to save memory (each rank only holds 1/N)
     if pre_sharded:
