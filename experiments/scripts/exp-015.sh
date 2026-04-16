@@ -85,7 +85,6 @@ train_config() {
     rm -rf "${NTP_CKPT}"
 
     local CMD_ARGS=(
-        --sid_cache "${SID_CACHE}"
         --preprocessed_dir "${NTP_DATA}"
         --output_dir "${NTP_CKPT}"
         --model "${MODEL}"
@@ -113,31 +112,29 @@ train_config() {
     echo "[${NAME}] Done!"
 }
 
-# ── Smoke test ──
+# ── Smoke test (uses preprocessed exp013 data, tiny model) ──
 if [ "${SKIP_SMOKE}" != true ] && [ "${START_FROM}" -le 1 ]; then
     echo ""
-    echo "[Smoke] Quick sanity check — smallest config, 1 day data"
+    echo "[Smoke] Quick sanity check — dense 64d 2L, small batch"
     SMOKE_CKPT="experiments/ntp_checkpoints/exp015-smoke"
     rm -rf "${SMOKE_CKPT}"
     if [ "${N_GPUS}" -gt 1 ]; then
         torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
-            --sid_cache "${SID_CACHE}" \
+            --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${SMOKE_CKPT}" \
             --model s-tier \
             --batch_size 64 \
             --embed_dim 64 --n_heads 2 --n_transformer_layers 2 \
             --n_experts 0 --top_k 1 --expert_dim 256 \
-            --date_start 2026-03-31 --date_end 2026-03-31 \
             --name exp015-smoke
     else
         python run.py train-ntp \
-            --sid_cache "${SID_CACHE}" \
+            --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${SMOKE_CKPT}" \
             --model s-tier \
             --batch_size 64 \
             --embed_dim 64 --n_heads 2 --n_transformer_layers 2 \
             --n_experts 0 --top_k 1 --expert_dim 256 \
-            --date_start 2026-03-31 --date_end 2026-03-31 \
             --name exp015-smoke
     fi
     if [ -f "${SMOKE_CKPT}/probe.pt" ]; then
