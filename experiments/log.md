@@ -63,7 +63,7 @@ EXP-013 S-tier model recall@500=59.5%，但 **L0 PPL=344.8 是明确瓶颈**（L
 ### Design
 
 - **Variable**: ENTP weight α ∈ {0, 0.05, 0.1, 0.2}
-- **Fixed**: S-tier 6L MoE (EXP-013 配置), K=5 negatives/position, 4096×3 binary SID, batch_size=4096, 1 epoch, beam_size=500
+- **Fixed**: S-tier 6L MoE (EXP-013 配置), K=5 negatives/position, 4096×3 binary SID, batch_size=128, 1 epoch, beam_size=500
 - **Metric**: L0/L1/L2 PPL, hit@10 per layer, recall@{10,50,100,500}
 - **Data**: 31 天行为数据 (03-01~03-31) + 31 天曝光数据 (同期)
 
@@ -89,12 +89,14 @@ L_ENTP = −(1/N) Σ log(1 − p_i^(L0))   (对 unclicked exposure 的 L0 token)
 
 **可插拔设计**: `--entp_weight 0`（默认）= 完全等价于 EXP-013 代码路径。
 
-| Config | α | K | 说明 |
-|--------|------|---|------|
-| A (baseline) | 0 | — | 直接复用 EXP-013 s-tier 结果 |
-| B | 0.05 | 5 | 保守 |
-| C | 0.1 | 5 | DualGR 论文默认 |
-| D | 0.2 | 5 | 激进 |
+| Config | α | K | L0 filter | 说明 |
+|--------|------|---|-----------|------|
+| A (baseline) | 0 | — | — | 直接复用 EXP-013 s-tier 结果 |
+| B | 0.05 | 5 | ✗ | 保守 (round 1, 已退步) |
+| C | 0.1 | 5 | ✗ | DualGR 论文默认 (round 1, 已退步) |
+| E | 0.05 | 5 | ✓ | 保守 (round 2, L0 collision 过滤) |
+| F | 0.1 | 5 | ✓ | 论文默认 (round 2) |
+| G | 0.2 | 5 | ✓ | 激进 (round 2) |
 
 ### Run
 
