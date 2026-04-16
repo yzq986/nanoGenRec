@@ -72,7 +72,7 @@ content_df = spark.sql(content_query)
 # %%
 from pyspark.sql.functions import col
 
-content_df.repartition(16) \
+content_df.repartition(24) \
     .sortWithinPartitions(col("create_date").desc()) \
     .write \
     .mode("overwrite") \
