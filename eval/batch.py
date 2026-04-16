@@ -163,6 +163,59 @@ def run_comparison():
     generate_comparison_report(results, COMPARISON_OUTPUT)
 
 
+def load_all_exposure_data(date_start: str = None, date_end: str = None) -> Dict[str, np.ndarray]:
+    """加载全部曝光数据 (含未点击项，用于 ENTP-Loss 负样本).
+
+    Args:
+        date_start: 起始日期 (YYYY-MM-DD)，默认 DEFAULT_DATE_START
+        date_end: 结束日期 (YYYY-MM-DD)，默认 DEFAULT_DATE_END
+    """
+    import pandas as pd
+    import s3fs
+
+    print(f"\n{'='*60}")
+    print("Loading Exposure Data (for ENTP negatives)")
+    print(f"{'='*60}")
+
+    from gr_demo.config import S3_USER_BEHAVIOR
+    from gr_demo.config import DEFAULT_DATE_START, DEFAULT_DATE_END
+    from datetime import datetime, timedelta
+
+    s3_exposure_base = S3_USER_BEHAVIOR.rsplit("/", 1)[0] + "/feed_user_exposure"
+    ds = date_start or DEFAULT_DATE_START
+    de = date_end or DEFAULT_DATE_END
+    start = datetime.strptime(ds, "%Y-%m-%d")
+    end = datetime.strptime(de, "%Y-%m-%d")
+
+    fs = s3fs.S3FileSystem()
+    files = []
+    d = start
+    while d <= end:
+        path_clean = f"{s3_exposure_base}/{d.strftime('%Y-%m-%d')}".replace('s3://', '')
+        files.extend(fs.glob(f"{path_clean}/*.parquet"))
+        d += timedelta(days=1)
+    print(f"  Resolved {ds} ~ {de} → {len(files)} exposure files")
+
+    dfs = []
+    for i, f in enumerate(files):
+        with fs.open(f, 'rb') as file:
+            dfs.append(pd.read_parquet(file, columns=['uid', 'iid', 'action_bitmap', 'exposure_ts']))
+        if (i + 1) % 10 == 0:
+            print(f"  Loaded {i + 1}/{len(files)}")
+
+    df = pd.concat(dfs, ignore_index=True)
+    total = len(df)
+    # Only keep unclicked exposures (action_bitmap == 0)
+    df = df[df['action_bitmap'] == 0].reset_index(drop=True)
+    print(f"  Total: {total:,} exposures, {len(df):,} unclicked ({100*len(df)/total:.1f}%)")
+
+    return {
+        'uid': df['uid'].values,
+        'iid': df['iid'].values,
+        'exposure_ts': df['exposure_ts'].fillna(0).values.astype(np.int64),
+    }
+
+
 def load_all_behavior_data(date_start: str = None, date_end: str = None) -> Dict[str, np.ndarray]:
     """加载全部行为数据。
 

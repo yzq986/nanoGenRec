@@ -39,6 +39,76 @@
 
 ---
 
+## EXP-014: ENTP-Loss — Exposure-Aware Hard Negatives for L0
+
+**Date**: 2026-04-16
+**Status**: planned
+**IDEA**: IDEA-dualgr-0
+**Results**: TBD
+
+### Background
+
+EXP-013 S-tier model recall@500=59.5%，但 **L0 PPL=344.8 是明确瓶颈**（L1=13.3, L2=5.7 已接近饱和）。L0 hit@10 仅 20%，模型在 4096 个 coarse cluster 上的区分能力很弱。
+
+当前 NTP loss 只有正样本（用户点击了的 item），完全没有利用"用户看了但没点"的负信号。DualGR (快手, WWW 2026, arxiv 2511.12518) 提出 ENTP-Loss：将曝光未点击的 item 作为 L0 层 hard negative，通过 `−α·log(1 − p_L0)` 惩罚项直接增强 L0 监督信号。
+
+数据侧 `export_exposure.py` 已就绪，每天 ~1.1GB 曝光数据（含 action_bitmap=0 的未点击项），与行为数据 ~85MB/天 约 13:1。
+
+### Hypothesis
+
+1. ENTP-Loss (α=0.1) 使 L0 PPL 下降 >10%（从 344.8 降至 <310），因为 L0 获得了额外的 per-position 时间对齐负样本监督
+2. L1/L2 PPL 不受影响（ENTP 只作用在 L0 层的 output_proj）
+3. recall@500 提升（L0 更准 → beam search 在 coarse level 筛选更好 → 下游 fine-level 受益）
+
+### Design
+
+- **Variable**: ENTP weight α ∈ {0, 0.05, 0.1, 0.2}
+- **Fixed**: S-tier 6L MoE (EXP-013 配置), K=5 negatives/position, 4096×3 binary SID, batch_size=4096, 1 epoch, beam_size=500
+- **Metric**: L0/L1/L2 PPL, hit@10 per layer, recall@{10,50,100,500}
+- **Data**: 31 天行为数据 (03-01~03-31) + 31 天曝光数据 (同期)
+
+**ENTP 负样本构造**:
+- 对每个用户的 packed sequence 中每个 clicked item（时间 t_i），取 `(t_{i-1}, t_i]` 窗口内曝光未点击的 item
+- 映射到 L0 token，随机采样 K=5 个
+- 时间对齐确保捕捉 "timely interest fade-out"
+
+**Loss**:
+```
+L = L_NTP(L0+L1+L2 三层 CE, 不变) + α * L_ENTP(仅 L0 负样本惩罚)
+L_ENTP = −(1/N) Σ log(1 − p_i^(L0))   (对 unclicked exposure 的 L0 token)
+```
+
+**改动文件**:
+1. `eval/batch.py` — 新增 `load_all_exposure_data()`
+2. `ntp/train.py` — `build_unified_sequences()` 增加 exposure 负样本构建, 训练循环传递 neg 数据
+3. `ntp/model.py` — `_forward_packed()` 增加 ENTP loss 项
+4. `ntp/baseline.py` — `NTPProbe._forward_packed()` 同步 ENTP 扩展
+5. `ntp/preprocess.py` — shard 格式扩展存储 neg_l0_tokens
+
+**可插拔设计**: `--entp_weight 0`（默认）= 完全等价于 EXP-013 代码路径。
+
+| Config | α | K | 说明 |
+|--------|------|---|------|
+| A (baseline) | 0 | — | EXP-013 复现 |
+| B | 0.05 | 5 | 保守 |
+| C | 0.1 | 5 | DualGR 论文默认 |
+| D | 0.2 | 5 | 激进 |
+
+### Run
+
+`bash experiments/scripts/exp-014.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-013: S-tier NTP Model — 6L MoE + Loss-Free Balancing
 
 **Date**: 2026-04-15
