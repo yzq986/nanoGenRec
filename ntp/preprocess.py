@@ -184,14 +184,15 @@ def main():
     print(f"  SID assignments: {len(sid_dict):,}")
 
     # ── Load data ──
-    exposure_files = None
+    exposure_neg_data = None
     behavior_data = None
     if args.entp_weight > 0:
-        # ENTP mode: resolve exposure file paths, stream per-file during build
-        print("\nStep 2: Resolving exposure files (ENTP mode)")
-        from gr_demo.eval.batch import resolve_exposure_files
-        exposure_files = resolve_exposure_files(
+        # ENTP mode: load compact positive+neg_iids from PySpark export
+        print("\nStep 2: Loading ENTP negative data")
+        from gr_demo.eval.batch import load_exposure_neg_data
+        exposure_neg_data = load_exposure_neg_data(
             date_start=args.date_start, date_end=args.date_end)
+        print(f"  Positives with negatives: {len(exposure_neg_data['uid']):,}")
     else:
         print("\nStep 2: Loading behavior data")
         from gr_demo.eval.batch import load_all_behavior_data
@@ -206,9 +207,9 @@ def main():
             sid_dict, behavior_data=behavior_data,
             n_items=args.n_items, max_seq_len=args.max_seq_len,
             n_eval_target=args.n_eval_target,
-            exposure_files=exposure_files, entp_k=args.entp_k)
+            exposure_neg_data=exposure_neg_data, entp_k=args.entp_k)
 
-    del sid_dict, behavior_data  # free memory
+    del sid_dict, behavior_data, exposure_neg_data  # free memory
 
     # ── Save shards ──
     n_total = len(sequences)

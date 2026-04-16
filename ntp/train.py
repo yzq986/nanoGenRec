@@ -131,16 +131,16 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
 
 def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_len=512,
                             n_eval_target=50000, verbose_fn=print,
-                            exposure_files=None, entp_k=5):
+                            exposure_neg_data=None, entp_k=5):
     """Build unified per-user sequences with split_pos for train/eval masking.
 
     Each user → one complete SID token sequence. split_pos marks the boundary
     between train positions (< split_pos) and eval positions (>= split_pos).
 
     Two modes:
-    - **exposure_files provided** (ENTP mode): stream exposure parquet files,
-      per-file walk extracts positives + negatives, global merge by uid.
-      behavior_data is ignored.
+    - **exposure_neg_data provided** (ENTP mode): compact positive interactions
+      with pre-attached neg_iids from PySpark export. Each row has uid, iid,
+      first_ts, neg_iids (list of K iid strings).
     - **behavior_data only** (legacy mode): build positive sequences from behavior
       data. No ENTP negatives.
 
@@ -160,152 +160,87 @@ def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_le
     verbose_fn(f"  SID: {n_layers} layers, codebooks={n_clusters_per_layer}")
     verbose_fn(f"  Unique SIDs: {len(_sid_to_items):,}")
 
-    if exposure_files is not None:
-        # ── ENTP mode: stream exposure files ──
+    if exposure_neg_data is not None:
+        # ── ENTP mode: compact positive + neg_iids from PySpark ──
         return _build_sequences_from_exposure(
-            exposure_files, content_to_tokens, n_layers, n_clusters_per_layer,
+            exposure_neg_data, content_to_tokens, n_layers, n_clusters_per_layer,
             entp_k, max_seq_len, n_eval_target, verbose_fn)
     else:
         # ── Legacy mode: behavior data only ──
         if behavior_data is None:
-            raise ValueError("Either behavior_data or exposure_files must be provided")
+            raise ValueError("Either behavior_data or exposure_neg_data must be provided")
         return _build_sequences_from_behavior(
             behavior_data, content_to_tokens, n_layers, n_clusters_per_layer,
             max_seq_len, n_eval_target, verbose_fn)
 
 
-def _build_sequences_from_exposure(exposure_files, content_to_tokens,
+def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
                                    n_layers, n_clusters_per_layer,
                                    entp_k, max_seq_len, n_eval_target,
                                    verbose_fn):
-    """Build sequences by streaming exposure parquet files.
+    """Build sequences from compact ENTP negative data (PySpark output).
 
-    Phase 1: read each parquet (already sorted by uid+ts within partition),
-             walk per-user to extract positives + negatives, discard raw rows.
-    Phase 2: groupby uid across all partial results, merge + per-user sort,
-             build final sequences.
+    Input: exposure_neg_data dict with uid, iid, first_ts, neg_iids.
+    Each row is a positive interaction with pre-attached negative iids.
+    Reuses _build_user_items() for vectorized groupby + sort.
     """
-    import pandas as pd
-    import s3fs
-
-    fs = s3fs.S3FileSystem()
+    t0 = time.time()
     max_items = max_seq_len // n_layers
-    cols = ['uid', 'iid', 'action_bitmap', 'exposure_ts', 'first_ts']
 
-    # ── Phase 1: per-file walk, accumulate partial positives ──
-    # Each positive → (uid, iid, ts, tokens, neg_l0)
-    # Stored as flat lists to minimize memory.
-    # Within each parquet partition, data is sorted by (uid, exposure_ts).
-    # Single pass per file: detect uid changes inline, no pandas groupby.
-    t0 = time.time()
-    partial_uid = []
-    partial_iid = []
-    partial_ts = []
-    partial_tokens = []
-    partial_neg_l0 = []
-    n_total_rows = 0
+    # ── Phase 1: vectorized user grouping (reuse _build_user_items) ──
+    # _build_user_items expects action_bitmap > 0; our data is already all positives.
+    # Fake action_bitmap = 1 so the filter passes.
+    fake_behavior = {
+        'uid': exposure_neg_data['uid'],
+        'iid': exposure_neg_data['iid'],
+        'action_bitmap': np.ones(len(exposure_neg_data['uid']), dtype=np.int32),
+        'first_ts': exposure_neg_data['first_ts'],
+    }
+    uids_s, iids_s, ts_s, starts, ends = \
+        _build_user_items(fake_behavior, content_to_tokens, verbose_fn)
 
-    for fi, fpath in enumerate(exposure_files):
-        with fs.open(fpath, 'rb') as fp:
-            df = pd.read_parquet(fp, columns=cols)
-        n_total_rows += len(df)
+    # Build iid → index mapping for neg_iids lookup
+    # _build_user_items sorts and filters; we need to map each sorted row back
+    # to the original index in exposure_neg_data to fetch neg_iids.
+    # Instead, pre-build iid→neg_iids lookup keyed by (uid, iid, ts).
+    # Simpler: build a global row-index mapping.
+    # Since _build_user_items filters + sorts internally, we rebuild the lookup
+    # from the original data: for each (uid, iid, ts) triple, store neg_iids.
+    orig_uids = exposure_neg_data['uid']
+    orig_iids = exposure_neg_data['iid']
+    orig_ts = exposure_neg_data['first_ts']
+    orig_neg_iids = exposure_neg_data['neg_iids']
 
-        # Extract numpy arrays (one-time cost, avoids per-group DataFrame overhead)
-        f_uids = df['uid'].values
-        f_iids = df['iid'].values
-        f_actions = df['action_bitmap'].values
-        f_ts = df['first_ts'].fillna(0).values.astype(np.int64)
-        del df
+    # Build lookup: (uid, iid, ts) → neg_iids list
+    # For ~30M rows this dict takes ~5GB worst case but keys are references.
+    # Use a flat array approach: index by original row idx.
+    # Re-derive the sort to get original indices.
+    verbose_fn(f"  Building neg_iids index...")
+    t1 = time.time()
 
-        # Single pass: walk the sorted file, detect uid changes inline
-        neg_buffer = []
-        prev_uid = None
-        for i in range(len(f_uids)):
-            uid = f_uids[i]
-            if uid != prev_uid:
-                # New user — reset buffer
-                neg_buffer.clear()
-                prev_uid = uid
+    # Faster approach: since _build_user_items does action>0 filter + iid∈SID filter
+    # + sort, we replicate the filter to get the original indices, then sort them.
+    import pandas as pd
 
-            if f_actions[i] <= 0:
-                neg_buffer.append(f_iids[i])
-                if len(neg_buffer) > entp_k:
-                    neg_buffer.pop(0)
-            else:
-                # Positive — check SID
-                iid = f_iids[i]
-                toks = content_to_tokens.get(iid)
-                if toks is not None:
-                    # Map neg buffer → L0 tokens
-                    neg_l0 = [-1] * entp_k
-                    j = 0
-                    for neg_iid in neg_buffer:
-                        neg_toks = content_to_tokens.get(neg_iid)
-                        if neg_toks is not None:
-                            neg_l0[j] = int(neg_toks[0])
-                            j += 1
-                            if j >= entp_k:
-                                break
-                    partial_uid.append(uid)
-                    partial_iid.append(iid)
-                    partial_ts.append(int(f_ts[i]))
-                    partial_tokens.append(toks)
-                    partial_neg_l0.append(neg_l0)
-                # Reset buffer after each positive
-                neg_buffer.clear()
+    valid_iids = set(content_to_tokens.keys())
+    iid_mask = pd.Index(orig_iids).isin(valid_iids)
+    # All rows have action>0 (our fake), so only iid filter matters
+    orig_indices = np.where(iid_mask)[0]
+    filtered_uids = orig_uids[orig_indices]
+    filtered_ts = orig_ts[orig_indices]
 
-        del f_uids, f_iids, f_actions, f_ts
-        if (fi + 1) % 20 == 0:
-            verbose_fn(f"    file {fi+1}/{len(exposure_files)}: "
-                       f"{len(partial_uid):,} positives so far")
+    sort_idx = np.lexsort((filtered_ts, filtered_uids))
+    # sorted_orig_indices[i] = original row index for sorted position i
+    sorted_orig_indices = orig_indices[sort_idx]
 
-    verbose_fn(f"  Phase 1 done: {n_total_rows:,} rows → "
-               f"{len(partial_uid):,} positives ({time.time()-t0:.1f}s)")
+    verbose_fn(f"  neg_iids index built ({time.time()-t1:.1f}s)")
 
-    # ── Phase 2: global groupby uid, merge per-user, sort by ts ──
-    t0 = time.time()
-    result_df = pd.DataFrame({
-        'uid': partial_uid,
-        'ts': partial_ts,
-    })
-    # Add index column to preserve correspondence with tokens/neg lists
-    result_df['idx'] = np.arange(len(result_df))
+    # Now sorted_orig_indices is aligned with uids_s/iids_s/ts_s.
+    # For user u with items starts[u]:ends[u], the original row index is
+    # sorted_orig_indices[starts[u]:ends[u]].
 
-    all_user_results = []
-    all_pos_ts = []
-
-    for uid, group in result_df.groupby('uid', sort=False):
-        group = group.sort_values('ts')
-        indices = group['idx'].values
-        n = len(indices)
-        if n < 2:
-            continue
-
-        pos_iids = [partial_iid[i] for i in indices]
-        pos_ts = [partial_ts[i] for i in indices]
-        pos_tokens = [partial_tokens[i] for i in indices]
-        pos_neg_l0 = [partial_neg_l0[i] for i in indices]
-
-        if n > max_items:
-            offset = n - max_items
-            pos_iids = pos_iids[offset:]
-            pos_ts = pos_ts[offset:]
-            pos_tokens = pos_tokens[offset:]
-            pos_neg_l0 = pos_neg_l0[offset:]
-
-        all_user_results.append((pos_iids, pos_ts, pos_tokens, pos_neg_l0))
-        all_pos_ts.extend(pos_ts)
-
-    del partial_uid, partial_iid, partial_ts, partial_tokens, partial_neg_l0, result_df
-    verbose_fn(f"  Phase 2 done: {len(all_user_results):,} users with ≥2 items, "
-               f"{len(all_pos_ts):,} total items ({time.time()-t0:.1f}s)")
-
-    verbose_fn(f"  Exposure walk: {len(all_user_results):,} users with ≥2 items, "
-               f"{len(all_pos_ts):,} total items ({time.time()-t0:.1f}s)")
-
-    # Compute split_ts
-    all_pos_ts_arr = np.array(all_pos_ts)
-    sorted_ts = np.sort(all_pos_ts_arr)
+    # ── Phase 2: compute split_ts ──
+    sorted_ts = np.sort(ts_s)
     total_items = len(sorted_ts)
     split_idx = max(0, min(total_items - 1, total_items - n_eval_target))
     split_ts = float(sorted_ts[split_idx])
@@ -314,7 +249,7 @@ def _build_sequences_from_exposure(exposure_files, content_to_tokens,
     verbose_fn(f"  Time split: {actual_eval:,} eval items targeted "
                f"(~{pct:.1f}th percentile, split_ts={split_ts:.0f})")
 
-    # Build sequences
+    # ── Phase 3: build sequences ──
     sequences = []
     n_train_only = 0
     n_eval_only = 0
@@ -322,42 +257,67 @@ def _build_sequences_from_exposure(exposure_files, content_to_tokens,
     n_neg_total = 0
     n_users_with_negs = 0
 
-    for pos_iids, pos_ts, pos_tokens, pos_neg_l0 in all_user_results:
-        n = len(pos_iids)
+    for u in range(len(starts)):
+        s, e = starts[u], ends[u]
+        n = e - s
+        if n < 2:
+            continue
+
+        user_iids = iids_s[s:e]
+        user_ts = ts_s[s:e]
+        user_orig_idx = sorted_orig_indices[s:e]
+
+        if n > max_items:
+            offset = n - max_items
+            user_iids = user_iids[offset:]
+            user_ts = user_ts[offset:]
+            user_orig_idx = user_orig_idx[offset:]
+            n = max_items
+
+        # Map iid → SID tokens, neg_iids → L0 tokens
+        user_tokens = [content_to_tokens[iid] for iid in user_iids]
+        user_neg_l0 = []
+        user_has_negs = False
+        for oi in user_orig_idx:
+            neg_iid_list = orig_neg_iids[oi]
+            neg_l0 = [-1] * entp_k
+            j = 0
+            for neg_iid in neg_iid_list:
+                neg_toks = content_to_tokens.get(neg_iid)
+                if neg_toks is not None:
+                    neg_l0[j] = int(neg_toks[0])
+                    j += 1
+                    if j >= entp_k:
+                        break
+            n_valid = j
+            if n_valid > 0:
+                n_neg_total += n_valid
+                user_has_negs = True
+            user_neg_l0.append(neg_l0)
+
+        if user_has_negs:
+            n_users_with_negs += 1
 
         # Find split_item_idx
         split_item_idx = n
         for i in range(n):
-            if pos_ts[i] > split_ts:
+            if user_ts[i] > split_ts:
                 split_item_idx = i
                 break
 
         split_token_pos = split_item_idx * n_layers
-        eval_cids = list(pos_iids[split_item_idx:]) if split_item_idx < n else []
+        eval_cids = list(user_iids[split_item_idx:]) if split_item_idx < n else []
 
-        # Flatten tokens
         flat = []
-        for toks in pos_tokens:
+        for toks in user_tokens:
             flat.extend(toks)
 
-        seq_dict = {
+        sequences.append({
             'tokens': flat,
             'split_pos': split_token_pos,
             'eval_cids': eval_cids,
-            'neg_l0': pos_neg_l0,
-        }
-
-        # Count negatives
-        user_has_negs = False
-        for neg_list in pos_neg_l0:
-            n_valid = sum(1 for v in neg_list if v >= 0)
-            if n_valid > 0:
-                n_neg_total += n_valid
-                user_has_negs = True
-        if user_has_negs:
-            n_users_with_negs += 1
-
-        sequences.append(seq_dict)
+            'neg_l0': user_neg_l0,
+        })
 
         if split_item_idx == n:
             n_train_only += 1
@@ -372,8 +332,9 @@ def _build_sequences_from_exposure(exposure_files, content_to_tokens,
     total_tokens = sum(len(s['tokens']) for s in sequences)
     avg_len = total_tokens / len(sequences)
     n_eval_items = sum(len(s['eval_cids']) for s in sequences)
+    elapsed = time.time() - t0
     verbose_fn(f"  Unified sequences: {len(sequences):,}, "
-               f"{total_tokens:,} tokens, avg {avg_len:.0f} tok/seq")
+               f"{total_tokens:,} tokens, avg {avg_len:.0f} tok/seq ({elapsed:.1f}s)")
     verbose_fn(f"  Split: {n_both:,} train+eval, "
                f"{n_train_only:,} train-only, {n_eval_only:,} eval-only")
     verbose_fn(f"  Eval items: {n_eval_items:,}")
