@@ -128,62 +128,6 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
     return uids_s, iids_s, ts_s, starts, ends
 
 
-def _walk_user_exposure(exp_iids, exp_actions, exp_ts, content_to_tokens, entp_k):
-    """Walk one user's exposure sequence, extract positives + per-item negatives in one pass.
-
-    The exposure sequence is sorted by timestamp (from export_exposure.py).
-    Positives = action_bitmap > 0, negatives = action_bitmap <= 0.
-    For each positive, take up to K preceding non-positive items as negatives,
-    mapping only those K iids → L0 tokens.
-
-    Args:
-        exp_iids: np.ndarray of iids for this user (sorted by ts).
-        exp_actions: np.ndarray of action_bitmap for this user.
-        exp_ts: np.ndarray of first_ts for this user.
-        content_to_tokens: dict {iid: [L0, L1, L2, ...]}
-        entp_k: max negatives per positive item.
-
-    Returns:
-        pos_iids: list of positive iids (in order, filtered to SID-valid)
-        pos_ts: list of timestamps for each positive
-        pos_tokens: list of SID token lists for each positive
-        pos_neg_l0: list of neg L0 token lists (up to K each, padded with -1)
-    """
-    pos_iids = []
-    pos_ts = []
-    pos_tokens = []
-    pos_neg_l0 = []
-    neg_buffer = []  # recent non-positive iids (ring buffer of last K)
-
-    for i in range(len(exp_iids)):
-        if exp_actions[i] <= 0:
-            neg_buffer.append(exp_iids[i])
-            if len(neg_buffer) > entp_k:
-                neg_buffer.pop(0)
-        else:
-            # Positive — check if it has a valid SID
-            iid = exp_iids[i]
-            toks = content_to_tokens.get(iid)
-            if toks is not None:
-                pos_iids.append(iid)
-                pos_ts.append(int(exp_ts[i]))
-                pos_tokens.append(toks)
-                # Map neg buffer iids → L0 tokens
-                neg_l0 = [-1] * entp_k
-                j = 0
-                for neg_iid in neg_buffer:
-                    neg_toks = content_to_tokens.get(neg_iid)
-                    if neg_toks is not None:
-                        neg_l0[j] = int(neg_toks[0])
-                        j += 1
-                        if j >= entp_k:
-                            break
-                pos_neg_l0.append(neg_l0)
-            # Reset buffer after each positive
-            neg_buffer.clear()
-
-    return pos_iids, pos_ts, pos_tokens, pos_neg_l0
-
 
 def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_len=512,
                             n_eval_target=50000, verbose_fn=print,
@@ -250,7 +194,9 @@ def _build_sequences_from_exposure(exposure_files, content_to_tokens,
 
     # ── Phase 1: per-file walk, accumulate partial positives ──
     # Each positive → (uid, iid, ts, tokens, neg_l0)
-    # Stored as flat lists to minimize memory
+    # Stored as flat lists to minimize memory.
+    # Within each parquet partition, data is sorted by (uid, exposure_ts).
+    # Single pass per file: detect uid changes inline, no pandas groupby.
     t0 = time.time()
     partial_uid = []
     partial_iid = []
@@ -264,21 +210,51 @@ def _build_sequences_from_exposure(exposure_files, content_to_tokens,
             df = pd.read_parquet(fp, columns=cols)
         n_total_rows += len(df)
 
-        # Within-partition data is sorted by (uid, exposure_ts).
-        # Walk per user within this partition.
-        for uid, group in df.groupby('uid', sort=False):
-            # Already sorted within partition, no need to re-sort
-            pos_iids, pos_ts, pos_tokens, pos_neg_l0 = _walk_user_exposure(
-                group['iid'].values, group['action_bitmap'].values,
-                group['first_ts'].values, content_to_tokens, entp_k)
-            for j in range(len(pos_iids)):
-                partial_uid.append(uid)
-                partial_iid.append(pos_iids[j])
-                partial_ts.append(pos_ts[j])
-                partial_tokens.append(pos_tokens[j])
-                partial_neg_l0.append(pos_neg_l0[j])
-
+        # Extract numpy arrays (one-time cost, avoids per-group DataFrame overhead)
+        f_uids = df['uid'].values
+        f_iids = df['iid'].values
+        f_actions = df['action_bitmap'].values
+        f_ts = df['first_ts'].fillna(0).values.astype(np.int64)
         del df
+
+        # Single pass: walk the sorted file, detect uid changes inline
+        neg_buffer = []
+        prev_uid = None
+        for i in range(len(f_uids)):
+            uid = f_uids[i]
+            if uid != prev_uid:
+                # New user — reset buffer
+                neg_buffer.clear()
+                prev_uid = uid
+
+            if f_actions[i] <= 0:
+                neg_buffer.append(f_iids[i])
+                if len(neg_buffer) > entp_k:
+                    neg_buffer.pop(0)
+            else:
+                # Positive — check SID
+                iid = f_iids[i]
+                toks = content_to_tokens.get(iid)
+                if toks is not None:
+                    # Map neg buffer → L0 tokens
+                    neg_l0 = [-1] * entp_k
+                    j = 0
+                    for neg_iid in neg_buffer:
+                        neg_toks = content_to_tokens.get(neg_iid)
+                        if neg_toks is not None:
+                            neg_l0[j] = int(neg_toks[0])
+                            j += 1
+                            if j >= entp_k:
+                                break
+                    partial_uid.append(uid)
+                    partial_iid.append(iid)
+                    partial_ts.append(int(f_ts[i]))
+                    partial_tokens.append(toks)
+                    partial_neg_l0.append(neg_l0)
+                # Reset buffer after each positive
+                neg_buffer.clear()
+
+        del f_uids, f_iids, f_actions, f_ts
         if (fi + 1) % 20 == 0:
             verbose_fn(f"    file {fi+1}/{len(exposure_files)}: "
                        f"{len(partial_uid):,} positives so far")
