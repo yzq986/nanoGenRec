@@ -80,12 +80,12 @@ class NTPProbe(nn.Module):
         self.max_seq_len = max(max_seq_len, default_len)
         self.pos_emb = nn.Embedding(self.max_seq_len, embed_dim)
 
-        # Transformer layers
-        layer = nn.TransformerDecoderLayer(
+        # Transformer layers (causal self-attention only, no cross-attention)
+        layer = nn.TransformerEncoderLayer(
             d_model=embed_dim, nhead=n_heads, dim_feedforward=ffn_dim,
             dropout=dropout, batch_first=True, norm_first=True,
         )
-        self.decoder = nn.TransformerDecoder(layer, num_layers=n_transformer_layers)
+        self.encoder = nn.TransformerEncoder(layer, num_layers=n_transformer_layers)
 
         # Per-layer output projections (different codebook sizes)
         self.output_projs = nn.ModuleList([
@@ -140,10 +140,10 @@ class NTPProbe(nn.Module):
             causal_mask = nn.Transformer.generate_square_subsequent_mask(
                 self.seq_len, device=device
             )
-            memory = self.decoder(x, x, tgt_mask=causal_mask)
+            hidden = self.encoder(x, mask=causal_mask)
 
             # Pool last position as sequence representation
-            s = memory[:, -1, :]  # (B, D)
+            s = hidden[:, -1, :]  # (B, D)
 
             # Per-layer output projection (different codebook sizes)
             return [self.output_projs[l](s) for l in range(self.n_sid_layers)]
@@ -159,7 +159,7 @@ class NTPProbe(nn.Module):
             x = self._embed_tokens(tokens) + self.pos_emb(positions)
 
             causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
-            out = self.decoder(x, x, tgt_mask=causal_mask)
+            out = self.encoder(x, mask=causal_mask)
 
             if return_last_n == 1:
                 # Position T-1 predicts next token at layer (T % n_sid_layers)
@@ -201,7 +201,7 @@ class NTPProbe(nn.Module):
         x = self._embed_tokens(input_tokens) + self.pos_emb(positions)
 
         causal_mask = nn.Transformer.generate_square_subsequent_mask(S, device=device)
-        hidden = self.decoder(x, x, tgt_mask=causal_mask)  # (B, S, D)
+        hidden = self.encoder(x, mask=causal_mask)  # (B, S, D)
 
         # Flatten for efficient per-layer gather
         hidden_flat = hidden.reshape(-1, self.embed_dim)  # (B*S, D)

@@ -125,9 +125,9 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
         positions = torch.arange(T, device=device).unsqueeze(0)
         x = probe._embed_tokens(input_tokens) + probe.pos_emb(positions)
 
-        if hasattr(probe, 'decoder'):
+        if hasattr(probe, 'encoder'):
             causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
-            hidden = probe.decoder(x, x, tgt_mask=causal_mask)
+            hidden = probe.encoder(x, mask=causal_mask)
         else:
             hidden = probe._transformer_forward(x)
 
@@ -446,7 +446,20 @@ class SemanticIDPredictionMetric(BaseMetric):
             probe = NTPModel(**probe_config).to(device)
         else:
             probe = NTPProbe(**probe_config).to(device)
-        probe.load_state_dict(ckpt['model_state_dict'])
+        state_dict = ckpt['model_state_dict']
+        # Migrate old checkpoints: decoder → encoder (fix non-causal cross-attn bug)
+        if model_type != 's-tier' and any(k.startswith('decoder.') for k in state_dict):
+            new_sd = {}
+            for k, v in state_dict.items():
+                new_k = k.replace('decoder.', 'encoder.', 1) if k.startswith('decoder.') else k
+                # Drop cross-attention weights (DecoderLayer has multihead_attn, EncoderLayer doesn't)
+                if '.multihead_attn.' in new_k:
+                    continue
+                new_sd[new_k] = v
+            state_dict = new_sd
+            if verbose:
+                print(f"  Migrated old decoder checkpoint → encoder (dropped cross-attn weights)")
+        probe.load_state_dict(state_dict)
         probe.eval()
 
         n_params = sum(p.numel() for p in probe.parameters())
