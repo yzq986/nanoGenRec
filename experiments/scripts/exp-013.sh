@@ -107,6 +107,7 @@ train_and_eval() {
                 --output_dir "${NTP_CKPT}" \
                 --model "${MODEL}" \
                 --batch_size "${BATCH}" \
+                --date_start 2026-03-24 --date_end 2026-03-31 \
                 --name "${NAME}"
         else
             python run.py train-ntp \
@@ -114,6 +115,7 @@ train_and_eval() {
                 --output_dir "${NTP_CKPT}" \
                 --model "${MODEL}" \
                 --batch_size "${BATCH}" \
+                --date_start 2026-03-24 --date_end 2026-03-31 \
                 --name "${NAME}"
         fi
     fi
