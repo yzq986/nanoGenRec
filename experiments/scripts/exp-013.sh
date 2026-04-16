@@ -34,20 +34,17 @@ echo "  NTP data:  ${NTP_DATA}"
 echo "============================================================"
 
 # ── Step 1: preprocess-sid (4096×3 + FSQ 12d_4096 binary) ──
-if [ -f "${SID_CACHE}/semantic_ids.npy" ]; then
-    echo "[Step 1] SID cache found, skipping preprocess-sid"
-else
-    echo "[Step 1] Running preprocess-sid (4096×3, FSQ [2]×12 binary)..."
-    python run.py preprocess-sid \
-        --model qwen3-0.6b \
-        --behavior_path auto \
-        --output_dir "${SID_CACHE}" \
-        --num_clusters 4096 \
-        --fsq_levels 12d_4096 \
-        --fsq_projection mlp \
-        --fsq_mlp_hidden 64 \
-        --fsq_epochs 50
-fi
+rm -rf "${SID_CACHE}"
+echo "[Step 1] Running preprocess-sid (4096×3, FSQ [2]×12 binary)..."
+python run.py preprocess-sid \
+    --model qwen3-0.6b \
+    --behavior_path auto \
+    --output_dir "${SID_CACHE}" \
+    --num_clusters 4096 \
+    --fsq_levels 12d_4096 \
+    --fsq_projection mlp \
+    --fsq_mlp_hidden 64 \
+    --fsq_epochs 50
 
 # ── Step 2: preprocess-ntp (build shards, single process) ──
 rm -rf "${NTP_DATA}"
