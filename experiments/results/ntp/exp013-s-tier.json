@@ -1,0 +1,38 @@
+{
+  "name": "exp013-s-tier",
+  "model_type": "s-tier",
+  "n_params": 45781504,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "eval": {
+    "ppl": 29.5971,
+    "layer_ppl": [
+      344.7646,
+      13.2772,
+      5.7183
+    ],
+    "avg_loss": 3.387677,
+    "depth_hit@10": [
+      0.201,
+      0.1682,
+      0.1661
+    ],
+    "depth_hit@10_indep": [
+      0.2004,
+      0.7886,
+      0.8397
+    ],
+    "depth_acc_beam": [
+      0.022,
+      0.011,
+      0.011
+    ],
+    "target_sid_found_rate": 0.595,
+    "n_eval_positions": 148533,
+    "n_eval_items": 49383,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.102,
+    "item_recall@50": 0.25,
+    "item_recall@100": 0.346,
+    "item_recall@500": 0.595
+  }
+}
