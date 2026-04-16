@@ -542,69 +542,122 @@ def parse_args():
 
 
 def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
-                     n_clusters_per_layer, device, batch_size=2048):
-    """Run eval immediately after training — model + data already in memory.
+                     n_clusters_per_layer, local_rank, world_size, device,
+                     is_main, batch_size=2048, n_recall_total=5000):
+    """Run eval on ALL ranks in parallel, all-reduce results.
 
-    Returns dict with PPL, depth_hit@10, recall@K, etc.
+    Each rank loads its own shard's eval data. Teacher-forced and beam search
+    run in parallel across GPUs. Results are reduced to rank 0.
+
+    Returns dict with PPL, depth_hit@10, recall@K, etc. (meaningful only on rank 0).
     """
     from gr_demo.ntp.eval import (
         _batched_teacher_forced_eval, _beam_search_recall,
-        _build_sid_to_items, _load_eval_sequences,
+        _build_sid_to_items,
     )
+    from gr_demo.ntp.preprocess import load_shard_full
     from gr_demo.ntp.model import SIDTrie
 
-    # Load eval sequences from preprocessed shards (all shards, with eval_cids)
-    if preprocessed_dir and os.path.isdir(preprocessed_dir):
-        prep_meta_path = os.path.join(preprocessed_dir, 'meta.json')
-        with open(prep_meta_path) as f:
-            prep_meta = json.load(f)
-        eval_sequences = _load_eval_sequences(preprocessed_dir, prep_meta['n_shards'])
-    else:
-        print("  Warning: no preprocessed_dir, skipping inline eval")
+    if not (preprocessed_dir and os.path.isdir(preprocessed_dir)):
+        log(is_main, "  Warning: no preprocessed_dir, skipping inline eval")
         return {}
 
-    print(f"  Eval sequences: {len(eval_sequences):,}")
+    # Each rank loads its own shard's eval sequences
+    shard_path = os.path.join(preprocessed_dir, f'train_shard_{local_rank}.npz')
+    all_seqs = load_shard_full(shard_path)
+    eval_sequences = [s for s in all_seqs
+                      if s['split_pos'] < len(s['tokens']) and len(s['eval_cids']) > 0]
+    del all_seqs
+
+    log(is_main, f"  Eval sequences per rank: {len(eval_sequences):,} (rank {local_rank})")
 
     probe = probe.to(device)
     probe.eval()
 
-    # Teacher-forced (PPL + hit@10)
-    print("  Running teacher-forced eval...")
+    # ── Teacher-forced (each rank on its own shard) ──
+    log(is_main, "  Running teacher-forced eval (all ranks)...")
     with torch.no_grad():
         tf_results = _batched_teacher_forced_eval(
             probe, eval_sequences, n_layers, device,
-            batch_size=batch_size, verbose=True)
+            batch_size=batch_size, verbose=is_main)
 
-    print(f"  PPL: {tf_results['ppl']:.2f}")
-    print(f"  Depth hit@10: {[f'{h:.3f}' for h in tf_results['depth_hit_10']]}")
+    # All-reduce teacher-forced stats
+    local_stats = torch.tensor([
+        tf_results['avg_loss'] * tf_results['n_eval_positions'],  # total loss
+        tf_results['n_eval_positions'],                            # total positions
+    ] + [h * (tf_results['n_eval_positions'] / n_layers)           # hit counts per layer
+         for h in tf_results['depth_hit_10']],
+        device=device)
 
-    # Beam search recall (5K subsample)
-    print(f"  Building sid_to_items from {sid_cache_dir}")
+    if world_size > 1:
+        dist.all_reduce(local_stats, op=dist.ReduceOp.SUM)
+
+    total_loss = local_stats[0].item()
+    total_positions = local_stats[1].item()
+    n_per_layer = total_positions / n_layers if n_layers > 0 else 1
+
+    global_avg_loss = total_loss / max(total_positions, 1)
+    global_ppl = np.exp(global_avg_loss)
+    global_depth_h10 = [local_stats[2 + li].item() / max(n_per_layer, 1)
+                        for li in range(n_layers)]
+
+    if is_main:
+        print(f"  PPL: {global_ppl:.2f}")
+        print(f"  Depth hit@10: {[f'{h:.3f}' for h in global_depth_h10]}")
+        print(f"  Eval positions: {int(total_positions):,} (across {world_size} ranks)")
+
+    # ── Beam search recall (split 5K across ranks) ──
+    log(is_main, f"  Building sid_to_items from {sid_cache_dir}")
     sid_to_items = _build_sid_to_items(sid_cache_dir)
     sid_trie = SIDTrie(sid_to_items, n_layers)
 
-    print("  Running beam search recall (5K)...")
+    n_recall_per_rank = max(1, n_recall_total // world_size)
+    log(is_main, f"  Beam search: {n_recall_per_rank} items/rank × {world_size} ranks "
+                 f"= {n_recall_per_rank * world_size} total")
+
     with torch.no_grad():
         beam_results = _beam_search_recall(
             probe, eval_sequences, sid_trie, sid_to_items, n_layers,
-            device, recall_beam_size=500, n_recall_samples=5000, verbose=True)
+            device, recall_beam_size=500, n_recall_samples=n_recall_per_rank,
+            verbose=is_main)
 
-    # Move probe back to CPU for checkpoint saving
+    # All-reduce beam search recall counts
+    recall_ks = [10, 50, 100, 500]
+    n_local = beam_results.get('n_recall_samples', 0)
+    local_beam_stats = torch.tensor(
+        [n_local] +
+        [beam_results.get(f'item_recall@{k}', 0) * n_local for k in recall_ks] +
+        [beam_results.get('depth_acc_beam', [0] * n_layers)[li] * n_local
+         for li in range(n_layers)],
+        device=device)
+
+    if world_size > 1:
+        dist.all_reduce(local_beam_stats, op=dist.ReduceOp.SUM)
+
+    total_recall_n = local_beam_stats[0].item()
+    global_recall = {}
+    for ki, k in enumerate(recall_ks):
+        global_recall[f'item_recall@{k}'] = (
+            local_beam_stats[1 + ki].item() / max(total_recall_n, 1))
+    global_depth_acc = [local_beam_stats[1 + len(recall_ks) + li].item() / max(total_recall_n, 1)
+                        for li in range(n_layers)]
+
     probe.cpu()
 
-    # Combine results
+    # Combine results (meaningful on rank 0)
     results = {
-        'ppl': round(tf_results['ppl'], 4),
-        'avg_loss': round(tf_results['avg_loss'], 6),
-        'depth_hit@10': [round(h, 4) for h in tf_results['depth_hit_10']],
-        'n_eval_positions': tf_results['n_eval_positions'],
-        'n_eval_sequences': len(eval_sequences),
+        'ppl': round(global_ppl, 4),
+        'avg_loss': round(global_avg_loss, 6),
+        'depth_hit@10': [round(h, 4) for h in global_depth_h10],
+        'depth_acc_beam': [round(a, 4) for a in global_depth_acc],
+        'n_eval_positions': int(total_positions),
+        'n_recall_samples': int(total_recall_n),
     }
-    results.update(beam_results)
+    results.update(global_recall)
 
-    for k in ['item_recall@10', 'item_recall@50', 'item_recall@100', 'item_recall@500']:
-        if k in results:
-            print(f"  {k}: {results[k]:.4f}")
+    if is_main:
+        for k in recall_ks:
+            print(f"  item_recall@{k}: {results[f'item_recall@{k}']:.4f}")
 
     return results
 
@@ -792,7 +845,7 @@ def main():
         pre_sharded=bool(args.preprocessed_dir),
     )
 
-    # ── Save + Eval (rank 0 only) ──
+    # ── Save checkpoint (rank 0 only) ──
     if is_main:
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         output_dir = args.output_dir or os.path.join(
@@ -813,14 +866,20 @@ def main():
             n_train=n_train,
             n_eval=n_eval,
         )
+    else:
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        output_dir = args.output_dir or os.path.join(
+            repo_root, 'experiments', 'ntp_checkpoints', args.name)
 
-        # ── Inline eval on eval positions ──
-        log(is_main, f"\nStep 6: Eval (teacher-forced + beam search)")
-        eval_results = _run_inline_eval(
-            probe, sid_cache_dir, preprocessed_dir, n_layers,
-            n_clusters_per_layer, device, args.batch_size)
+    # ── Inline eval (ALL ranks participate, all-reduce results) ──
+    log(is_main, f"\nStep 6: Eval (teacher-forced + beam search, {world_size} GPUs)")
+    eval_results = _run_inline_eval(
+        probe, sid_cache_dir, preprocessed_dir, n_layers,
+        n_clusters_per_layer, local_rank, world_size, device,
+        is_main, args.batch_size)
 
-        # Append eval results to train_meta.json
+    # Save eval results (rank 0 only)
+    if is_main and eval_results:
         meta_path = os.path.join(output_dir, 'train_meta.json')
         with open(meta_path) as f:
             meta = json.load(f)
