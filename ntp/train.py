@@ -347,8 +347,12 @@ def train_packed(
 
     if world_size > 1:
         # MoE: not all experts active every batch → unused params expected
-        model = DDP(model, device_ids=[local_rank],
-                    find_unused_parameters=(model_type == 's-tier'))
+        ddp_kwargs = {}
+        if model_type == 's-tier':
+            ddp_kwargs['find_unused_parameters'] = True
+            import warnings
+            warnings.filterwarnings('ignore', message='.*find_unused_parameters.*')
+        model = DDP(model, device_ids=[local_rank], **ddp_kwargs)
 
     # Shard data per rank to save memory (each rank only holds 1/N)
     if pre_sharded:
