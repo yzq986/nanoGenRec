@@ -1,10 +1,13 @@
 """
 Semantic ID Next Token Prediction — Eval Only.
 
-Loads a pre-trained NTPProbe checkpoint and runs beam search + recall.
+Loads a pre-trained NTP checkpoint and runs eval using unified sequences.
+
+Teacher-forced metrics (PPL, depth hit@10) computed in one batched forward pass
+on eval positions (pos >= split_pos). Beam search recall only on small subsample.
 
 Usage:
-    1. Train:  torchrun --nproc_per_node=8 run.py train-ntp --sid_cache ...
+    1. Train:  torchrun --nproc_per_node=8 run.py train-ntp --preprocessed_dir ...
     2. Eval:   python run.py hyperparam --ntp_checkpoint ... --run_ntp
 """
 
@@ -18,95 +21,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 
 from gr_demo.metrics.base import BaseMetric, MetricResult
-from gr_demo.ntp.baseline import NTPProbe, SIDSequenceDataset
+from gr_demo.ntp.baseline import NTPProbe
 from gr_demo.ntp.model import NTPModel, SIDTrie, constrained_beam_search
-from gr_demo.ntp.train import EvalSequenceDataset, eval_collate_fn
-
-
-def _batched_varlen_teacher_forced(probe, input_batch, target_batch, lengths, n_layers, device):
-    """Batched teacher-forced eval for variable-length inputs.
-
-    Instead of per-sample forward, constructs a padded teacher batch
-    (ctx + tgt[:-1] per sample, right-padded) and does ONE forward pass.
-    Then gathers per-sample logits at the correct positions.
-
-    Returns:
-        batch_loss: float, sum of per-sample average losses
-        depth_hit_10: list of per-layer hit@10 counts for this batch
-    """
-    B = input_batch.size(0)
-
-    # Build teacher sequences: ctx[:L] + tgt[:-1] for each sample, right-padded
-    teacher_lens = lengths + (n_layers - 1)  # (B,)
-    max_tlen = teacher_lens.max().item()
-
-    teacher_batch = torch.zeros(B, max_tlen, dtype=torch.long, device=device)
-    for bi in range(B):
-        L = lengths[bi].item()
-        teacher_batch[bi, :L] = input_batch[bi, :L]
-        teacher_batch[bi, L:L + n_layers - 1] = target_batch[bi, :-1]
-
-    # Single batched forward through probe internals
-    positions = torch.arange(max_tlen, device=device).unsqueeze(0)
-    x = probe._embed_tokens(teacher_batch) + probe.pos_emb(positions)
-
-    if hasattr(probe, 'decoder'):
-        # NTPProbe: nn.TransformerDecoder (needs explicit causal mask)
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(max_tlen, device=device)
-        hidden = probe.decoder(x, x, tgt_mask=causal_mask)
-    else:
-        # NTPModel: TransformerLayers generate their own causal masks
-        hidden = probe._transformer_forward(x)
-
-    # Extract per-sample, per-layer logits
-    # For sample bi with context length L:
-    #   position L-1 predicts target[0] at layer L % n_layers
-    #   position L   predicts target[1] at layer (L+1) % n_layers
-    #   position L+1 predicts target[2] at layer (L+2) % n_layers
-    # Generically: position (L - 1 + li) predicts target[li] at layer (L + li) % n_layers
-
-    batch_loss = 0.0
-    depth_hit_10 = [0] * n_layers
-
-    # Gather all positions we need: for each sample, n_layers positions
-    # pos[bi, li] = lengths[bi] - 1 + li
-    li_range = torch.arange(n_layers, device=device)  # (n_layers,)
-    gather_pos = (lengths.unsqueeze(1) - 1 + li_range.unsqueeze(0))  # (B, n_layers)
-
-    for li in range(n_layers):
-        pos = gather_pos[:, li]  # (B,)
-        target_layer_ids = (lengths + li) % n_layers  # (B,) — which output_proj to use
-
-        # Group by target_layer for efficient projection
-        h_at_pos = hidden[torch.arange(B, device=device), pos]  # (B, D)
-
-        layer_losses = torch.zeros(B, device=device)
-        layer_logits_topk = torch.zeros(B, 10, dtype=torch.long, device=device)
-
-        for tl in range(n_layers):
-            mask = (target_layer_ids == tl)
-            if not mask.any():
-                continue
-            logits = probe.output_projs[tl](h_at_pos[mask])  # (N, C_tl)
-            targets_l = target_batch[mask, li]
-            layer_losses[mask] = F.cross_entropy(logits, targets_l, reduction='none')
-            topk_vals = min(10, logits.size(-1))
-            layer_logits_topk[mask, :topk_vals] = logits.topk(topk_vals, dim=-1).indices
-
-        batch_loss += layer_losses.sum().item() / n_layers
-
-        # Depth hit@10 (prefix-based: must hit at all preceding layers too)
-        hit = (layer_logits_topk == target_batch[:, li:li + 1]).any(dim=-1)  # (B,)
-        if li == 0:
-            prefix_hit = hit
-        else:
-            prefix_hit = prefix_hit & hit
-        depth_hit_10[li] = prefix_hit.sum().item()
-
-    return batch_loss, depth_hit_10
 
 
 def _build_sid_to_items(sid_cache_dir):
@@ -122,6 +40,255 @@ def _build_sid_to_items(sid_cache_dir):
         else:
             sid_to_items['_'.join(str(t) for t in sid_str)].add(cid)
     return dict(sid_to_items)
+
+
+def _load_eval_sequences(preprocessed_dir, n_shards):
+    """Load all shards and return unified sequences that have eval positions."""
+    from gr_demo.ntp.preprocess import load_shard_full
+    all_seqs = []
+    for i in range(n_shards):
+        shard_path = os.path.join(preprocessed_dir, f'train_shard_{i}.npz')
+        seqs = load_shard_full(shard_path)
+        # Keep only sequences that have eval items (split_pos < len(tokens))
+        for s in seqs:
+            if s['split_pos'] < len(s['tokens']) and len(s['eval_cids']) > 0:
+                all_seqs.append(s)
+    return all_seqs
+
+
+def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=2048,
+                                 verbose=True):
+    """Batched teacher-forced eval on eval positions of unified sequences.
+
+    For each sequence, eval positions are where the predicted token index >= split_pos.
+    In LM-style (input=tokens[:-1], target=tokens[1:]):
+      position i predicts token[i+1].
+      token[i+1] is eval when i+1 >= split_pos, i.e. i >= split_pos - 1.
+
+    Returns dict with:
+        'avg_loss': float
+        'ppl': float
+        'depth_hit_10': list of per-layer hit@10 rates
+        'n_eval_positions': int (total eval positions across all sequences)
+    """
+    n_seqs = len(sequences)
+    total_loss = 0.0
+    total_eval_positions = 0
+    depth_hit_10_counts = [0] * n_layers
+
+    # Sort by length for efficient batching
+    sorted_indices = sorted(range(n_seqs), key=lambda i: len(sequences[i]['tokens']))
+
+    t0 = time.time()
+    processed = 0
+
+    for batch_start in range(0, n_seqs, batch_size):
+        batch_end = min(batch_start + batch_size, n_seqs)
+        batch_indices = sorted_indices[batch_start:batch_end]
+        batch_seqs = [sequences[i] for i in batch_indices]
+        B = len(batch_seqs)
+
+        tokens_list = [s['tokens'] for s in batch_seqs]
+        split_positions = torch.tensor([s['split_pos'] for s in batch_seqs],
+                                       dtype=torch.long, device=device)
+        lengths = torch.tensor([len(t) for t in tokens_list],
+                               dtype=torch.long, device=device)
+
+        max_len = lengths.max().item()
+        padded = torch.zeros(B, max_len, dtype=torch.long, device=device)
+        for i, toks in enumerate(tokens_list):
+            padded[i, :len(toks)] = torch.tensor(toks, dtype=torch.long)
+
+        # LM-style shift
+        input_tokens = padded[:, :-1]
+        target_tokens = padded[:, 1:]
+        T = input_tokens.size(1)
+
+        arange = torch.arange(T, device=device).unsqueeze(0)
+        valid_mask = arange < (lengths.unsqueeze(1) - 1)
+
+        # Eval mask: position i is eval when i+1 >= split_pos, i.e. i >= split_pos - 1
+        eval_mask = valid_mask & (arange >= (split_positions.unsqueeze(1) - 1))
+
+        if not eval_mask.any():
+            continue
+
+        # Forward pass
+        L = n_layers
+        positions = torch.arange(T, device=device).unsqueeze(0)
+        x = probe._embed_tokens(input_tokens) + probe.pos_emb(positions)
+
+        if hasattr(probe, 'decoder'):
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
+            hidden = probe.decoder(x, x, tgt_mask=causal_mask)
+        else:
+            hidden = probe._transformer_forward(x)
+
+        # Per-layer loss and hit@10 on eval positions
+        hidden_flat = hidden.reshape(-1, hidden.size(-1))
+        target_flat = target_tokens.reshape(-1)
+        mask_flat = eval_mask.reshape(-1)
+
+        # Position → layer mapping: target at position i has layer (i+1) % L
+        pos_layer = ((torch.arange(T, device=device) + 1) % L)
+        pos_layer_flat = pos_layer.unsqueeze(0).expand(B, -1).reshape(-1)
+
+        batch_loss = 0.0
+        batch_n = 0
+        for li in range(L):
+            layer_mask = mask_flat & (pos_layer_flat == li)
+            if not layer_mask.any():
+                continue
+            logits = probe.output_projs[li](hidden_flat[layer_mask])
+            targets_l = target_flat[layer_mask]
+
+            batch_loss += F.cross_entropy(logits, targets_l, reduction='sum').item()
+            batch_n += layer_mask.sum().item()
+
+            # Hit@10 — prefix-based across layers
+            topk_vals = min(10, logits.size(-1))
+            hit = (logits.topk(topk_vals, dim=-1).indices == targets_l.unsqueeze(1)).any(dim=-1)
+
+            if li == 0:
+                # Initialize per-position hit tracking for this batch
+                # We need to track across layers for the same (batch, seq_pos) position
+                # Group by (batch_idx, item_idx) — each item spans L positions
+                pass
+
+            depth_hit_10_counts[li] += hit.sum().item()
+
+        total_loss += batch_loss
+        total_eval_positions += batch_n
+        processed += B
+
+        if verbose and processed % (batch_size * 4) < batch_size:
+            elapsed = time.time() - t0
+            rate = processed / elapsed if elapsed > 0 else 0
+            remaining = (n_seqs - processed) / rate if rate > 0 else 0
+            eta_m, eta_s = divmod(int(remaining), 60)
+            print(f"    teacher-forced: {processed:,}/{n_seqs:,} seqs "
+                  f"({rate:.0f} seqs/s, ETA {eta_m}m{eta_s:02d}s)")
+
+    if total_eval_positions == 0:
+        return {'avg_loss': 0, 'ppl': 1.0, 'depth_hit_10': [0] * n_layers,
+                'n_eval_positions': 0}
+
+    # Each eval position contributes to exactly one layer.
+    # depth_hit_10 is per-layer count / per-layer total.
+    n_per_layer = total_eval_positions // n_layers
+    avg_loss = total_loss / total_eval_positions
+    ppl = np.exp(avg_loss)
+    depth_h10 = [c / max(n_per_layer, 1) for c in depth_hit_10_counts]
+
+    return {
+        'avg_loss': avg_loss,
+        'ppl': ppl,
+        'depth_hit_10': depth_h10,
+        'n_eval_positions': total_eval_positions,
+    }
+
+
+def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
+                        device, recall_beam_size=500, n_recall_samples=5000,
+                        verbose=True):
+    """Beam search recall on a small subsample of eval items.
+
+    For each sampled eval item, uses all preceding tokens as context,
+    runs constrained beam search, and checks recall@K.
+
+    Returns dict with recall@K values.
+    """
+    # Collect all eval items across sequences
+    eval_items = []
+    for seq in sequences:
+        split_pos = seq['split_pos']
+        tokens = seq['tokens']
+        eval_cids = seq['eval_cids']
+        n_items_in_seq = len(tokens) // n_layers
+        split_item_idx = split_pos // n_layers
+
+        for ei, cid in enumerate(eval_cids):
+            item_idx = split_item_idx + ei
+            if item_idx < 1:  # need at least 1 preceding item for context
+                continue
+            # Context: all tokens before this item
+            ctx_end = item_idx * n_layers
+            context_tokens = tokens[:ctx_end]
+            # Target: this item's SID tokens
+            target_tokens = tokens[ctx_end:ctx_end + n_layers]
+            eval_items.append({
+                'context': context_tokens,
+                'target': target_tokens,
+                'cid': cid,
+            })
+
+    if not eval_items:
+        return {}
+
+    # Subsample
+    if len(eval_items) > n_recall_samples:
+        random.seed(42)
+        eval_items = random.sample(eval_items, n_recall_samples)
+
+    if verbose:
+        print(f"  Beam search recall on {len(eval_items):,} items "
+              f"(beam_size={recall_beam_size})")
+
+    recall_ks = [10, 50, 100, 500]
+    item_recall = {k: 0 for k in recall_ks}
+    depth_correct = [0] * n_layers
+    t0 = time.time()
+
+    for idx, item in enumerate(eval_items):
+        ctx = torch.tensor(item['context'], dtype=torch.long, device=device).unsqueeze(0)
+        target = item['target']
+        target_cid = item['cid']
+
+        beams, _ = constrained_beam_search(
+            probe, ctx, sid_trie, beam_size=recall_beam_size)
+
+        # Depth accuracy (top-1 beam)
+        pred_top1 = beams[0, 0]
+        prefix_ok = True
+        for li in range(n_layers):
+            prefix_ok = prefix_ok and (pred_top1[li].item() == target[li])
+            if prefix_ok:
+                depth_correct[li] += 1
+            else:
+                break
+
+        # Item recall
+        candidates = []
+        seen = set()
+        for ki in range(beams.size(1)):
+            sid_str = '_'.join(str(t.item()) for t in beams[0, ki])
+            for cand in sid_to_items.get(sid_str, set()):
+                if cand not in seen:
+                    candidates.append(cand)
+                    seen.add(cand)
+        for k in recall_ks:
+            if target_cid in set(candidates[:k]):
+                item_recall[k] += 1
+
+        # Progress
+        if verbose and (idx + 1) % 500 == 0:
+            elapsed = time.time() - t0
+            rate = (idx + 1) / elapsed
+            remaining = (len(eval_items) - idx - 1) / rate
+            eta_m, eta_s = divmod(int(remaining), 60)
+            r10 = item_recall[10] / (idx + 1)
+            r500 = item_recall[500] / (idx + 1)
+            print(f"    beam {idx+1:,}/{len(eval_items):,} "
+                  f"({rate:.1f}/s, ETA {eta_m}m{eta_s:02d}s) "
+                  f"R@10={r10:.4f} R@500={r500:.4f}")
+
+    n = len(eval_items)
+    results = {}
+    for k in recall_ks:
+        results[f'item_recall@{k}'] = item_recall[k] / n
+    results['depth_acc_beam'] = [c / n for c in depth_correct]
+    results['n_recall_samples'] = n
+    return results
 
 
 # ============================================================
@@ -169,10 +336,11 @@ class SemanticIDPredictionMetric(BaseMetric):
         force_autoregressive: bool = False,
         **kwargs
     ) -> MetricResult:
-        """Eval-only: load pre-trained probe from checkpoint, run beam search + recall.
+        """Eval-only: load pre-trained probe from checkpoint, run eval.
 
-        Requires ntp_checkpoint pointing to a directory with probe.pt + eval_data.pt
-        (produced by `python run.py train-ntp`).
+        Uses unified sequences from preprocessed shards. Teacher-forced metrics
+        (PPL, hit@10) computed in one batched forward pass. Beam search recall
+        on a small subsample (5K).
         """
         if ntp_checkpoint is None:
             return MetricResult(
@@ -204,236 +372,109 @@ class SemanticIDPredictionMetric(BaseMetric):
         n_params = sum(p.numel() for p in probe.parameters())
         n_layers = probe_config['n_sid_layers']
         n_clusters_per_layer = probe_config['n_clusters_per_layer']
-        use_parallel = probe_config['parallel']
 
         if verbose:
-            mode_str = "parallel (MTP)" if use_parallel else "autoregressive"
-            print(f"  {model_type}: {n_params / 1e6:.1f}M params, {mode_str}")
+            print(f"  {model_type}: {n_params / 1e6:.1f}M params")
 
-        # ── Load eval data ──
-        eval_seq_path = os.path.join(ntp_checkpoint, 'eval_sequences.npz')
-        if os.path.exists(eval_seq_path):
-            # v2: numpy format (eval sequences only, sid_to_items from SID cache)
-            from gr_demo.ntp.preprocess import load_eval_sequences
-            eval_data, eval_cids = load_eval_sequences(ntp_checkpoint)
-        else:
-            # v1: legacy pickle (includes sid_to_items inline)
-            eval_ckpt = torch.load(
-                os.path.join(ntp_checkpoint, 'eval_data.pt'),
-                map_location='cpu', weights_only=False,
-            )
-            eval_data = eval_ckpt['eval_data']
-            eval_cids = eval_ckpt['eval_cids']
-
-        # Build sid_to_items from SID cache (always rebuild, never load from checkpoint)
+        # ── Load train meta ──
         meta_path = os.path.join(ntp_checkpoint, 'train_meta.json')
         with open(meta_path) as f:
-            train_meta_tmp = json.load(f)
-        sid_cache_dir = train_meta_tmp['sid_cache']
-        if verbose:
-            print(f"  Building sid_to_items from {sid_cache_dir}")
-        sid_to_items = _build_sid_to_items(sid_cache_dir)
+            train_meta = json.load(f)
+        sid_cache_dir = train_meta['sid_cache']
+        preprocessed_dir = train_meta.get('preprocessed_dir', '')
+        n_train = train_meta.get('n_train', 0)
 
-        sid_trie = SIDTrie(sid_to_items, n_layers)
-        if verbose:
-            n_sids = sum(len(v) for v in sid_trie.children[0].values())
-            print(f"  SID trie: {n_sids:,} root tokens, "
-                  f"{len(sid_to_items):,} complete SIDs")
+        # ── Load eval sequences from preprocessed shards ──
+        if preprocessed_dir and os.path.isdir(preprocessed_dir):
+            prep_meta_path = os.path.join(preprocessed_dir, 'meta.json')
+            with open(prep_meta_path) as f:
+                prep_meta = json.load(f)
+            n_shards = prep_meta['n_shards']
 
-        # Subsample eval if needed
-        if eval_sample_size > 0 and len(eval_data) > eval_sample_size:
-            random.seed(42)
-            indices = random.sample(range(len(eval_data)), eval_sample_size)
-            eval_data = [eval_data[i] for i in indices]
-            eval_cids = [eval_cids[i] for i in indices]
-
-        if verbose:
-            print(f"  Eval samples: {len(eval_data):,}")
-
-        # ── Load train meta for reporting ──
-        meta_path = os.path.join(ntp_checkpoint, 'train_meta.json')
-        n_train = 0
-        if os.path.exists(meta_path):
-            with open(meta_path) as f:
-                train_meta = json.load(f)
-            n_train = train_meta.get('n_train', 0)
-
-        # ── Eval ──
-        # Both probe and s-tier now use packed training with variable-length eval data.
-        # Detect varlen by checking if input lengths vary (new format) vs fixed (legacy ckpt).
-        if len(eval_data) > 0:
-            input_lens = set(len(d[0]) for d in eval_data[:100])
-            varlen_eval = len(input_lens) > 1
-        else:
-            varlen_eval = False
-
-        if varlen_eval:
-            eval_loader = DataLoader(
-                EvalSequenceDataset(eval_data), batch_size=batch_size,
-                shuffle=False, num_workers=2, pin_memory=True,
-                collate_fn=eval_collate_fn,
-            )
             if verbose:
-                input_lens = [len(d[0]) for d in eval_data]
-                print(f"  Variable-length eval: min={min(input_lens)}, "
-                      f"max={max(input_lens)}, avg={np.mean(input_lens):.0f} tokens")
+                print(f"  Loading eval data from {preprocessed_dir} ({n_shards} shards)")
+            eval_sequences = _load_eval_sequences(preprocessed_dir, n_shards)
         else:
-            eval_loader = DataLoader(
-                SIDSequenceDataset(eval_data), batch_size=batch_size,
-                shuffle=False, num_workers=2, pin_memory=True,
-            )
+            # Fallback: no preprocessed dir — need to rebuild
+            if verbose:
+                print(f"  No preprocessed_dir — rebuilding sequences from SID cache")
+            sid_dict = np.load(
+                os.path.join(sid_cache_dir, 'semantic_ids.npy'), allow_pickle=True
+            ).item()
+            from gr_demo.eval.batch import load_all_behavior_data
+            behavior_data_loaded = load_all_behavior_data()
+            from gr_demo.ntp.train import build_unified_sequences
+            sequences, _nl, _ncpl, _split_ts = build_unified_sequences(
+                sid_dict, behavior_data_loaded, n_items=n_items)
+            eval_sequences = [s for s in sequences
+                              if s['split_pos'] < len(s['tokens']) and len(s['eval_cids']) > 0]
+            del sid_dict, behavior_data_loaded, sequences
 
-        eval_losses = []
-        depth_hit_10 = [0] * n_layers
-        total_eval = 0
-        depth_correct = [0] * n_layers
-        recall_ks = [10, 50, 100, 500]
-        item_recall = {k: 0 for k in recall_ks}
-        eval_offset = 0
-        eval_t0 = time.time()
+        if verbose:
+            print(f"  Eval sequences: {len(eval_sequences):,}")
 
+        # ── Subsample eval sequences if needed ──
+        if eval_sample_size > 0 and len(eval_sequences) > eval_sample_size:
+            random.seed(42)
+            eval_sequences = random.sample(eval_sequences, eval_sample_size)
+            if verbose:
+                print(f"  Subsampled to {len(eval_sequences):,} sequences")
+
+        # ── Teacher-forced eval (batched forward) ──
+        if verbose:
+            print(f"\n  Teacher-forced eval (batched)...")
         with torch.no_grad():
-            for batch in eval_loader:
-                if varlen_eval:
-                    input_batch, target_batch, lengths = batch
-                    lengths = lengths.to(device, non_blocking=True)
-                else:
-                    input_batch, target_batch = batch
-                    lengths = None
+            tf_results = _batched_teacher_forced_eval(
+                probe, eval_sequences, n_layers, device,
+                batch_size=batch_size, verbose=verbose)
 
-                input_batch = input_batch.to(device, non_blocking=True)
-                target_batch = target_batch.to(device, non_blocking=True)
-                B = input_batch.size(0)
-
-                # ── Teacher-forced metrics (loss + hit@10) ──
-                if use_parallel:
-                    logits_list = probe(input_batch)  # [(B, C_l), ...]
-
-                    loss = sum(
-                        F.cross_entropy(logits_list[l], target_batch[:, l])
-                        for l in range(n_layers)
-                    ) / n_layers
-                    eval_losses.append(loss.item() * B)
-
-                    prefix_hit_10 = torch.ones(B, dtype=torch.bool, device=device)
-                    for i in range(n_layers):
-                        top10 = logits_list[i].topk(10, dim=-1).indices
-                        hit = (top10 == target_batch[:, i:i+1]).any(dim=-1)
-                        prefix_hit_10 = prefix_hit_10 & hit
-                        depth_hit_10[i] += prefix_hit_10.sum().item()
-
-                elif varlen_eval:
-                    # Batched teacher-forced for variable-length inputs
-                    batch_loss, batch_dh10 = _batched_varlen_teacher_forced(
-                        probe, input_batch, target_batch, lengths,
-                        n_layers, device)
-                    eval_losses.append(batch_loss)
-                    for li in range(n_layers):
-                        depth_hit_10[li] += batch_dh10[li]
-
-                else:
-                    teacher_input = torch.cat([input_batch, target_batch[:, :-1]], dim=1)
-                    logits_list = probe(teacher_input, return_last_n=n_layers)
-
-                    loss = sum(
-                        F.cross_entropy(logits_list[l], target_batch[:, l])
-                        for l in range(n_layers)
-                    ) / n_layers
-                    eval_losses.append(loss.item() * B)
-
-                    prefix_hit_10 = torch.ones(B, dtype=torch.bool, device=device)
-                    for i in range(n_layers):
-                        top10 = logits_list[i].topk(10, dim=-1).indices
-                        hit = (top10 == target_batch[:, i:i+1]).any(dim=-1)
-                        prefix_hit_10 = prefix_hit_10 & hit
-                        depth_hit_10[i] += prefix_hit_10.sum().item()
-
-                # ── Beam search + recall (per-sample, with progress) ──
-                if not use_parallel:
-                    actual_beam = max(beam_size, recall_beam_size)
-
-                    for bi in range(B):
-                        if varlen_eval:
-                            L_ctx = lengths[bi].item()
-                            sample = input_batch[bi, :L_ctx].unsqueeze(0)
-                        else:
-                            sample = input_batch[bi:bi + 1]
-
-                        sample_beams, _ = constrained_beam_search(
-                            probe, sample, sid_trie, beam_size=actual_beam)
-
-                        # Depth accuracy (top-1 beam)
-                        pred_top1 = sample_beams[0, 0]
-                        prefix_ok = True
-                        for li in range(n_layers):
-                            prefix_ok = prefix_ok and (pred_top1[li] == target_batch[bi, li]).item()
-                            if prefix_ok:
-                                depth_correct[li] += 1
-                            else:
-                                break
-
-                        # Item recall
-                        target_cid = eval_cids[eval_offset + bi]
-                        candidates = []
-                        seen = set()
-                        for ki in range(sample_beams.size(1)):
-                            sid_str = '_'.join(str(t.item()) for t in sample_beams[0, ki])
-                            for item in sid_to_items.get(sid_str, set()):
-                                if item not in seen:
-                                    candidates.append(item)
-                                    seen.add(item)
-                        for k in recall_ks:
-                            if target_cid in set(candidates[:k]):
-                                item_recall[k] += 1
-
-                        # Progress every 500 samples
-                        global_idx = eval_offset + bi + 1
-                        if verbose and global_idx % 500 == 0:
-                            elapsed = time.time() - eval_t0
-                            rate = global_idx / elapsed
-                            remaining = (len(eval_data) - global_idx) / rate
-                            eta_m, eta_s = divmod(int(remaining), 60)
-                            r10 = item_recall[10] / global_idx if global_idx > 0 else 0
-                            r500 = item_recall[500] / global_idx if global_idx > 0 else 0
-                            print(f"    eval {global_idx:,}/{len(eval_data):,} "
-                                  f"({rate:.1f} samples/s, ETA {eta_m}m{eta_s:02d}s) "
-                                  f"R@10={r10:.4f} R@500={r500:.4f}")
-
-                eval_offset += B
-                total_eval += B
-
-        if total_eval == 0:
-            return MetricResult(name=self.name, value=0.0,
-                                details={'error': 'No eval samples'}, status='unknown')
-
-        avg_loss = sum(eval_losses) / total_eval
-        ppl = np.exp(avg_loss)
-        depth_acc = [c / total_eval for c in depth_correct]
-        depth_h10 = [h / total_eval for h in depth_hit_10]
-
-        details = {
-            'depth_acc_beam': depth_acc,
-            'depth_hit@10': depth_h10,
-            'n_eval': total_eval,
-            'n_train': n_train,
-            'n_params': n_params,
-            'mode': 'parallel' if use_parallel else 'autoregressive',
-            'ntp_checkpoint': ntp_checkpoint,
-        }
-        for k in recall_ks:
-            details[f'item_recall@{k}'] = item_recall[k] / total_eval
+        ppl = tf_results['ppl']
+        depth_h10 = tf_results['depth_hit_10']
 
         if verbose:
             print(f"  Perplexity: {ppl:.2f}")
-            print(f"  Depth acc (beam): {[f'{a:.3f}' for a in depth_acc]}")
             print(f"  Depth hit@10: {[f'{h:.3f}' for h in depth_h10]}")
-            for k in recall_ks:
-                print(f"  Item recall@{k}: {details[f'item_recall@{k}']:.4f}")
+            print(f"  Eval positions: {tf_results['n_eval_positions']:,}")
+
+        # ── Beam search recall (small subsample) ──
+        if verbose:
+            print(f"\n  Building sid_to_items from {sid_cache_dir}")
+        sid_to_items = _build_sid_to_items(sid_cache_dir)
+        sid_trie = SIDTrie(sid_to_items, n_layers)
+
+        n_recall_samples = min(5000, eval_sample_size) if eval_sample_size > 0 else 5000
+
+        with torch.no_grad():
+            beam_results = _beam_search_recall(
+                probe, eval_sequences, sid_trie, sid_to_items, n_layers,
+                device, recall_beam_size=recall_beam_size,
+                n_recall_samples=n_recall_samples, verbose=verbose)
+
+        # ── Assemble results ──
+        details = {
+            'depth_acc_beam': beam_results.get('depth_acc_beam', [0] * n_layers),
+            'depth_hit@10': depth_h10,
+            'n_eval_positions': tf_results['n_eval_positions'],
+            'n_eval_sequences': len(eval_sequences),
+            'n_recall_samples': beam_results.get('n_recall_samples', 0),
+            'n_train': n_train,
+            'n_params': n_params,
+            'mode': 'autoregressive',
+            'ntp_checkpoint': ntp_checkpoint,
+        }
+        for k, v in beam_results.items():
+            if k.startswith('item_recall@'):
+                details[k] = v
+
+        if verbose:
+            for k in ['item_recall@10', 'item_recall@50', 'item_recall@100', 'item_recall@500']:
+                if k in details:
+                    print(f"  {k}: {details[k]:.4f}")
 
         return MetricResult(
             name=self.name,
             value=round(ppl, 4),
-            layer_values=depth_acc,
+            layer_values=beam_results.get('depth_acc_beam', [0] * n_layers),
             details=details,
             status=self.assess_quality(ppl),
         )

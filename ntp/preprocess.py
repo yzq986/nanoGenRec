@@ -1,20 +1,19 @@
-"""NTP data preprocessing — build packed sequences and save as shards.
+"""NTP data preprocessing — build unified sequences and save as shards.
 
 Single-process command that prepares data for DDP training.
-Each shard contains a portion of the training data; during training,
-each rank loads only its own shard (rank k loads train_shard_k.npz).
+Each shard contains unified per-user sequences (tokens + split_pos + eval_cids).
+During training, each rank loads only its own shard.
 
 Usage:
-    python run.py preprocess-ntp \
-        --sid_cache experiments/sid_cache/qwen3-0.6b \
-        --output_dir experiments/ntp_data/exp013 \
+    python run.py preprocess-ntp \\
+        --sid_cache experiments/sid_cache/qwen3-0.6b \\
+        --output_dir experiments/ntp_data/exp013 \\
         --n_shards 8
 
 Output:
     {output_dir}/
-        train_shard_0.npz ... train_shard_{N-1}.npz   (per-rank training data)
-        eval_data.pt                                    (eval sequences + cids + sid_to_items)
-        meta.json                                       (n_layers, n_clusters, n_train, etc.)
+        train_shard_0.npz ... train_shard_{N-1}.npz   (per-rank data)
+        meta.json                                       (n_layers, n_clusters, etc.)
 """
 
 import argparse
@@ -23,9 +22,8 @@ import os
 import time
 
 import numpy as np
-import torch
 
-from gr_demo.ntp.train import build_packed_sequences
+from gr_demo.ntp.train import build_unified_sequences
 
 
 def parse_args():
@@ -48,71 +46,84 @@ def parse_args():
 
 
 def save_shard(sequences, path):
-    """Save variable-length sequences as concatenated tokens + offsets."""
+    """Save unified sequences (tokens + split_pos + eval_cids) as .npz.
+
+    Args:
+        sequences: list of dicts with 'tokens', 'split_pos', 'eval_cids'
+    """
     if not sequences:
-        np.savez_compressed(path, tokens=np.array([], dtype=np.int32),
-                            offsets=np.array([0], dtype=np.int64))
+        np.savez_compressed(
+            path,
+            tokens=np.array([], dtype=np.int32),
+            offsets=np.array([0], dtype=np.int64),
+            split_pos=np.array([], dtype=np.int32),
+            eval_cids_flat=np.array([], dtype='<U1'),
+            eval_cids_offsets=np.array([0], dtype=np.int64),
+        )
         return
 
     all_tokens = []
     offsets = [0]
+    split_pos = []
+    eval_cids_flat = []
+    eval_cids_offsets = [0]
+
     for seq in sequences:
-        all_tokens.extend(seq)
-        offsets.append(offsets[-1] + len(seq))
+        all_tokens.extend(seq['tokens'])
+        offsets.append(offsets[-1] + len(seq['tokens']))
+        split_pos.append(seq['split_pos'])
+        eval_cids_flat.extend(seq['eval_cids'])
+        eval_cids_offsets.append(eval_cids_offsets[-1] + len(seq['eval_cids']))
 
     np.savez_compressed(
         path,
         tokens=np.array(all_tokens, dtype=np.int32),
         offsets=np.array(offsets, dtype=np.int64),
+        split_pos=np.array(split_pos, dtype=np.int32),
+        eval_cids_flat=np.array(eval_cids_flat),
+        eval_cids_offsets=np.array(eval_cids_offsets, dtype=np.int64),
     )
 
 
 def load_shard(path):
-    """Load shard back into list of token lists."""
-    data = np.load(path)
+    """Load shard → (tokens_list, split_pos_list).
+
+    Returns only what training needs. eval_cids loaded separately via load_shard_eval_cids.
+    """
+    data = np.load(path, allow_pickle=True)
     tokens = data['tokens']
     offsets = data['offsets']
+    split_pos = data['split_pos']
+
+    tokens_list = []
+    split_pos_list = []
+    for i in range(len(offsets) - 1):
+        tokens_list.append(tokens[offsets[i]:offsets[i + 1]].tolist())
+        split_pos_list.append(int(split_pos[i]))
+    return tokens_list, split_pos_list
+
+
+def load_shard_full(path):
+    """Load full shard data → list of dicts with tokens, split_pos, eval_cids."""
+    data = np.load(path, allow_pickle=True)
+    tokens = data['tokens']
+    offsets = data['offsets']
+    split_pos = data['split_pos']
+    eval_cids_flat = data['eval_cids_flat']
+    eval_cids_offsets = data['eval_cids_offsets']
+
     sequences = []
     for i in range(len(offsets) - 1):
-        sequences.append(tokens[offsets[i]:offsets[i+1]].tolist())
+        seq_tokens = tokens[offsets[i]:offsets[i + 1]].tolist()
+        cids_start = eval_cids_offsets[i]
+        cids_end = eval_cids_offsets[i + 1]
+        eval_cids = eval_cids_flat[cids_start:cids_end].tolist()
+        sequences.append({
+            'tokens': seq_tokens,
+            'split_pos': int(split_pos[i]),
+            'eval_cids': eval_cids,
+        })
     return sequences
-
-
-def save_eval_data(output_dir, eval_data, eval_cids):
-    """Save eval sequences as numpy arrays. No sid_to_items — rebuilt from SID cache at eval."""
-    eval_inputs_flat, eval_inputs_offsets = [], [0]
-    eval_targets = []
-    for inp, tgt in eval_data:
-        eval_inputs_flat.extend(inp)
-        eval_inputs_offsets.append(eval_inputs_offsets[-1] + len(inp))
-        eval_targets.append(tgt)
-    path = os.path.join(output_dir, 'eval_sequences.npz')
-    np.savez_compressed(
-        path,
-        inputs=np.array(eval_inputs_flat, dtype=np.int32),
-        offsets=np.array(eval_inputs_offsets, dtype=np.int64),
-        targets=np.array(eval_targets, dtype=np.int32),
-        cids=np.array(eval_cids),
-    )
-    size = os.path.getsize(path) / 1e6
-    print(f"  eval_sequences.npz: {len(eval_data):,} samples ({size:.1f}MB)")
-
-
-def load_eval_sequences(prep_dir):
-    """Load eval sequences from numpy. Returns (eval_data, eval_cids)."""
-    seq_data = np.load(os.path.join(prep_dir, 'eval_sequences.npz'), allow_pickle=True)
-    inputs_flat = seq_data['inputs']
-    offsets = seq_data['offsets']
-    targets = seq_data['targets']
-    cids = seq_data['cids'].tolist()
-
-    eval_data = []
-    for i in range(len(offsets) - 1):
-        inp = inputs_flat[offsets[i]:offsets[i + 1]].tolist()
-        tgt = targets[i].tolist()
-        eval_data.append((inp, tgt))
-
-    return eval_data, cids
 
 
 def main():
@@ -137,45 +148,43 @@ def main():
         date_start=args.date_start, date_end=args.date_end)
     print(f"  Interactions: {len(behavior_data['uid']):,}")
 
-    # ── Build packed sequences ──
-    print("\nStep 3: Building packed sequences")
-    train_seqs, eval_data, eval_cids, sid_to_items, n_layers, n_clusters_per_layer = \
-        build_packed_sequences(
+    # ── Build unified sequences ──
+    print("\nStep 3: Building unified sequences")
+    sequences, n_layers, n_clusters_per_layer, split_ts = \
+        build_unified_sequences(
             sid_dict, behavior_data,
             n_items=args.n_items, max_seq_len=args.max_seq_len)
 
     del sid_dict, behavior_data  # free memory
 
     # ── Save shards ──
-    print(f"\nStep 4: Saving {args.n_shards} training shards")
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    n_total = len(train_seqs)
+    n_total = len(sequences)
+    n_eval_items = sum(len(s['eval_cids']) for s in sequences)
     shard_size = n_total // args.n_shards
+
+    print(f"\nStep 4: Saving {args.n_shards} shards")
+    os.makedirs(args.output_dir, exist_ok=True)
 
     for i in range(args.n_shards):
         start = i * shard_size
         end = start + shard_size if i < args.n_shards - 1 else n_total
         shard_path = os.path.join(args.output_dir, f'train_shard_{i}.npz')
-        save_shard(train_seqs[start:end], shard_path)
+        save_shard(sequences[start:end], shard_path)
         file_size = os.path.getsize(shard_path) / 1e6
-        print(f"  shard {i}: {end - start:,} seqs → {shard_path} ({file_size:.1f}MB)")
+        print(f"  shard {i}: {end - start:,} seqs -> {shard_path} ({file_size:.1f}MB)")
 
-    del train_seqs
-
-    # ── Save eval data (sequences only; sid_to_items rebuilt from SID cache at eval) ──
-    print("\nStep 5: Saving eval data")
-    save_eval_data(args.output_dir, eval_data, eval_cids)
+    del sequences
 
     # ── Save metadata ──
     meta = {
         'n_layers': n_layers,
         'n_clusters_per_layer': n_clusters_per_layer,
-        'n_train': n_total,
-        'n_eval': len(eval_data),
+        'n_seqs': n_total,
+        'n_eval_items': n_eval_items,
         'n_shards': args.n_shards,
         'n_items': args.n_items,
         'max_seq_len': args.max_seq_len,
+        'split_ts': float(split_ts),
         'sid_cache': args.sid_cache,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
     }
@@ -188,8 +197,8 @@ def main():
     print(f"\n{'=' * 60}")
     print(f"Preprocessing complete! ({elapsed:.1f}s)")
     print(f"  Output: {args.output_dir}/")
-    print(f"  Shards: {args.n_shards} × ~{shard_size:,} seqs")
-    print(f"  Eval:   {len(eval_data):,} samples")
+    print(f"  Shards: {args.n_shards} x ~{shard_size:,} seqs")
+    print(f"  Eval items: {n_eval_items:,}")
     print(f"{'=' * 60}")
     print(f"\nNext: torchrun --nproc_per_node={args.n_shards} run.py train-ntp "
           f"--preprocessed_dir {args.output_dir} --model probe")
