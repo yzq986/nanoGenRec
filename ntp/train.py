@@ -89,7 +89,13 @@ _VIEW_EXIT_BIT = 4096  # bit 12: view_exit is not a positive signal
 
 
 def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
-    """Vectorized user interaction grouping using numpy. Returns sorted per-user item lists."""
+    """Vectorized user interaction grouping using numpy. Returns sorted per-user item lists.
+
+    Returns:
+        uids_s, iids_s, ts_s: sorted arrays
+        starts, ends: per-user group boundaries
+        sorted_orig_indices: original row indices (into behavior_data) for each sorted position
+    """
     import pandas as pd
 
     uids = behavior_data['uid']
@@ -103,13 +109,15 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
 
     # Vectorized filter: strip view_exit bit, then check for real positive actions
     action_mask = (actions & ~_VIEW_EXIT_BIT) > 0
-    uids_f = uids[action_mask]
-    iids_f = iids[action_mask]
-    ts_f = timestamps[action_mask]
+    orig_indices = np.where(action_mask)[0]
+    uids_f = uids[orig_indices]
+    iids_f = iids[orig_indices]
+    ts_f = timestamps[orig_indices]
 
     # Filter: iid in SID dict (vectorized via pandas isin)
     valid_iids = set(content_to_tokens.keys())
     iid_mask = pd.Index(iids_f).isin(valid_iids)
+    orig_indices = orig_indices[iid_mask]
     uids_f = uids_f[iid_mask]
     iids_f = iids_f[iid_mask]
     ts_f = ts_f[iid_mask]
@@ -121,6 +129,7 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
     uids_s = uids_f[sort_idx]
     iids_s = iids_f[sort_idx]
     ts_s = ts_f[sort_idx]
+    sorted_orig_indices = orig_indices[sort_idx]
 
     # Group boundaries
     boundaries = np.where(uids_s[1:] != uids_s[:-1])[0] + 1
@@ -128,7 +137,7 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
     ends = np.concatenate([boundaries, [len(uids_s)]])
 
     verbose_fn(f"  Users with valid interactions: {len(starts):,}")
-    return uids_s, iids_s, ts_s, starts, ends
+    return uids_s, iids_s, ts_s, starts, ends, sorted_orig_indices
 
 
 
@@ -199,47 +208,10 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
         'action_bitmap': np.ones(len(exposure_neg_data['uid']), dtype=np.int32),
         'first_ts': exposure_neg_data['first_ts'],
     }
-    uids_s, iids_s, ts_s, starts, ends = \
+    uids_s, iids_s, ts_s, starts, ends, sorted_orig_indices = \
         _build_user_items(fake_behavior, content_to_tokens, verbose_fn)
 
-    # Build iid → index mapping for neg_iids lookup
-    # _build_user_items sorts and filters; we need to map each sorted row back
-    # to the original index in exposure_neg_data to fetch neg_iids.
-    # Instead, pre-build iid→neg_iids lookup keyed by (uid, iid, ts).
-    # Simpler: build a global row-index mapping.
-    # Since _build_user_items filters + sorts internally, we rebuild the lookup
-    # from the original data: for each (uid, iid, ts) triple, store neg_iids.
-    orig_uids = exposure_neg_data['uid']
-    orig_iids = exposure_neg_data['iid']
-    orig_ts = exposure_neg_data['first_ts']
     orig_neg_iids = exposure_neg_data['neg_iids']
-
-    # Build lookup: (uid, iid, ts) → neg_iids list
-    # For ~30M rows this dict takes ~5GB worst case but keys are references.
-    # Use a flat array approach: index by original row idx.
-    # Re-derive the sort to get original indices.
-    verbose_fn(f"  Building neg_iids index...")
-    t1 = time.time()
-
-    # Faster approach: since _build_user_items does action>0 filter + iid∈SID filter
-    # + sort, we replicate the filter to get the original indices, then sort them.
-    import pandas as pd
-
-    valid_iids = set(content_to_tokens.keys())
-    iid_mask = np.array([iid in valid_iids for iid in orig_iids], dtype=np.bool_)
-    orig_indices = np.where(iid_mask)[0]
-    filtered_uids = orig_uids[orig_indices]
-    filtered_ts = orig_ts[orig_indices]
-
-    sort_idx = np.lexsort((filtered_ts, filtered_uids))
-    # sorted_orig_indices[i] = original row index for sorted position i
-    sorted_orig_indices = orig_indices[sort_idx]
-
-    verbose_fn(f"  neg_iids index built ({time.time()-t1:.1f}s)")
-
-    # Now sorted_orig_indices is aligned with uids_s/iids_s/ts_s.
-    # For user u with items starts[u]:ends[u], the original row index is
-    # sorted_orig_indices[starts[u]:ends[u]].
 
     # ── Phase 2: compute split_ts ──
     sorted_ts = np.sort(ts_s)
@@ -352,7 +324,7 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
                                    n_layers, n_clusters_per_layer,
                                    max_seq_len, n_eval_target, verbose_fn):
     """Build sequences from behavior data only (no ENTP negatives)."""
-    uids_s, iids_s, ts_s, starts, ends = \
+    uids_s, iids_s, ts_s, starts, ends, _ = \
         _build_user_items(behavior_data, content_to_tokens, verbose_fn)
 
     # Find split_ts
