@@ -346,10 +346,7 @@ def train_packed(
                  f"max_seq={max_seq_len}, batch_size={batch_size}")
 
     if world_size > 1:
-        # MoE models (s-tier) have experts that may not all be used every batch
-        find_unused = (model_type == 's-tier')
-        model = DDP(model, device_ids=[local_rank],
-                    find_unused_parameters=find_unused)
+        model = DDP(model, device_ids=[local_rank])
 
     # Shard data per rank to save memory (each rank only holds 1/N)
     if pre_sharded:
