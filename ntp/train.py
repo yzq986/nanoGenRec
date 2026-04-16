@@ -1123,7 +1123,9 @@ def main():
     wandb_run = None
     if is_main:
         try:
+            import wandb.sdk  # noqa: avoid shadowing by local wandb/ dir
             import wandb
+            log(is_main, f"  W&B version={wandb.__version__}, file={wandb.__file__}")
             wandb_run = wandb.init(
                 project="gr-demo-ntp",
                 name=args.name,
