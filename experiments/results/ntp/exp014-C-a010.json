@@ -1,0 +1,38 @@
+{
+  "name": "exp014-C-a010",
+  "model_type": "s-tier",
+  "n_params": 45781504,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "eval": {
+    "ppl": 31.6704,
+    "layer_ppl": [
+      361.4122,
+      15.226,
+      5.8281
+    ],
+    "avg_loss": 3.455383,
+    "depth_hit@10": [
+      0.1907,
+      0.1571,
+      0.1553
+    ],
+    "depth_hit@10_indep": [
+      0.1902,
+      0.7718,
+      0.8357
+    ],
+    "depth_acc_beam": [
+      0.021,
+      0.013,
+      0.013
+    ],
+    "target_sid_found_rate": 0.53,
+    "n_eval_positions": 149774,
+    "n_eval_items": 49796,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.089,
+    "item_recall@50": 0.234,
+    "item_recall@100": 0.304,
+    "item_recall@500": 0.529
+  }
+}
