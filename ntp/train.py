@@ -580,6 +580,23 @@ def train_packed(
 
     n_params = sum(p.numel() for p in model.parameters())
 
+    # Compute active params for FLOPs estimation (MoE: only top_k/n_experts fraction active)
+    if model_type == 's-tier' and hasattr(model, 'layers'):
+        _m = model
+        expert_params = 0
+        non_expert_params = 0
+        for name, p in _m.named_parameters():
+            if '.experts.' in name:
+                expert_params += p.numel()
+            else:
+                non_expert_params += p.numel()
+        # top_k out of n_experts active per token
+        _top_k = _m.layers[0].ffn.top_k if hasattr(_m.layers[0].ffn, 'top_k') else 2
+        _n_experts = _m.layers[0].ffn.n_experts if hasattr(_m.layers[0].ffn, 'n_experts') else 8
+        n_active_params = non_expert_params + int(expert_params * _top_k / _n_experts)
+    else:
+        n_active_params = n_params
+
     # Auto-cap batch_size to fit GPU memory.
     # Attention is O(B × S²); cap so peak activation fits in ~30GB.
     mem_safe_bs = max(64, 40_000_000 // (max_seq_len * max_seq_len))
@@ -588,7 +605,8 @@ def train_packed(
                       f"capping to {mem_safe_bs}")
         batch_size = mem_safe_bs
 
-    log(is_main, f"  {model_type} (packed): {n_params / 1e6:.1f}M params, "
+    log(is_main, f"  {model_type} (packed): {n_params / 1e6:.1f}M params "
+                 f"({n_active_params / 1e6:.1f}M active), "
                  f"max_seq={max_seq_len}, batch_size={batch_size}")
 
     if world_size > 1:
@@ -626,7 +644,8 @@ def train_packed(
 
     model.train()
     total_loss = 0.0
-    loss_history = []  # per-step loss for scaling law analysis
+    total_tokens = 0
+    train_log = []  # per-step metrics for scaling law analysis
     t0 = time.time()
 
     for step, batch in enumerate(train_loader):
@@ -667,28 +686,63 @@ def train_packed(
 
         optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
         optimizer.step()
         scheduler.step()
+
         step_loss = loss.item()
         total_loss += step_loss
-        loss_history.append(round(step_loss, 6))
+        # tokens processed this step (across all ranks)
+        step_tokens = int(lengths.sum().item()) * world_size
+        total_tokens += step_tokens
+
+        # Record per-step metrics (rank 0 only to avoid duplicate I/O)
+        if is_main:
+            train_log.append({
+                'step': step,
+                'loss': round(step_loss, 6),
+                'lr': round(scheduler.get_last_lr()[0], 8),
+                'grad_norm': round(grad_norm, 4),
+                'tokens': total_tokens,
+                'wall_s': round(time.time() - t0, 2),
+            })
 
         if is_main and (step + 1) % 100 == 0:
             elapsed = time.time() - t0
             seqs_per_sec = (step + 1) * batch_size * world_size / elapsed
+            toks_per_sec = total_tokens / elapsed
             remaining = (n_batches - step - 1) / ((step + 1) / elapsed)
             eta = format_eta(remaining)
             print(f"    step {step+1}/{n_batches}: "
                   f"loss={total_loss/(step+1):.4f}, "
-                  f"{seqs_per_sec:.0f} seqs/s, ETA {eta}")
+                  f"lr={scheduler.get_last_lr()[0]:.2e}, "
+                  f"gnorm={grad_norm:.2f}, "
+                  f"{toks_per_sec:.0f} tok/s, ETA {eta}")
 
     avg_loss = total_loss / n_batches
     elapsed = time.time() - t0
-    log(is_main, f"  Train done: loss={avg_loss:.4f} ({elapsed:.1f}s)")
+    throughput = total_tokens / elapsed if elapsed > 0 else 0
+    # FLOPs ≈ 6 * N_active * D (forward + backward per token)
+    total_flops = 6 * n_active_params * total_tokens
+    log(is_main, f"  Train done: loss={avg_loss:.4f}, "
+                 f"{total_tokens:,} tokens, {throughput:.0f} tok/s, "
+                 f"{total_flops / 1e12:.2f} TFLOPs ({elapsed:.1f}s)")
 
     raw_model = model.module if isinstance(model, DDP) else model
-    return raw_model.cpu(), avg_loss, n_params, model_type, loss_history
+
+    train_summary = {
+        'n_params': n_params,
+        'n_active_params': n_active_params,
+        'total_tokens': total_tokens,
+        'total_flops': total_flops,
+        'throughput_tok_per_s': round(throughput, 1),
+        'wall_time_s': round(elapsed, 1),
+        'batch_size': batch_size,
+        'world_size': world_size,
+        'n_batches': n_batches,
+        'max_seq_len': max_seq_len,
+    }
+    return raw_model.cpu(), avg_loss, n_params, model_type, train_log, train_summary
 
 
 def format_eta(seconds):
@@ -711,7 +765,7 @@ def format_eta(seconds):
 def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
                     avg_loss, n_params, sid_cache_dir, preprocessed_dir,
                     model_type='probe', n_train=0, n_eval=0,
-                    loss_history=None):
+                    train_log=None, train_summary=None):
     """Save probe checkpoint + train_meta.json (rank 0 only).
 
     Eval data lives in preprocessed shards — not duplicated here.
@@ -754,7 +808,7 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
         'config': probe_config,
     }, os.path.join(output_dir, 'probe.pt'))
 
-    # 2. Train metadata
+    # 2. Train metadata (summary-level, always saved)
     meta = {
         'n_train': n_train,
         'n_eval': n_eval,
@@ -767,20 +821,24 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
         'preprocessed_dir': preprocessed_dir,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
     }
+    if train_summary:
+        meta['train'] = train_summary
     with open(os.path.join(output_dir, 'train_meta.json'), 'w') as f:
         json.dump(meta, f, indent=2)
 
-    # 3. Per-step loss curve (for scaling law analysis)
-    if loss_history:
-        loss_path = os.path.join(output_dir, 'loss_curve.json')
-        with open(loss_path, 'w') as f:
-            json.dump(loss_history, f)
+    # 3. Per-step train log (JSONL, for scaling law analysis)
+    #    Fields: step, loss, lr, grad_norm, tokens (cumulative), wall_s
+    if train_log:
+        log_path = os.path.join(output_dir, 'train_log.jsonl')
+        with open(log_path, 'w') as f:
+            for entry in train_log:
+                f.write(json.dumps(entry) + '\n')
 
     print(f"  Saved to {output_dir}/")
-    print(f"    probe.pt      ({os.path.getsize(os.path.join(output_dir, 'probe.pt')) / 1e6:.1f}MB)")
+    print(f"    probe.pt        ({os.path.getsize(os.path.join(output_dir, 'probe.pt')) / 1e6:.1f}MB)")
     print(f"    train_meta.json")
-    if loss_history:
-        print(f"    loss_curve.json ({len(loss_history)} steps)")
+    if train_log:
+        print(f"    train_log.jsonl ({len(train_log)} steps)")
 
 
 # ============================================================
@@ -1125,7 +1183,7 @@ def main():
             lr = args.lr
 
         log(is_main, f"\nStep 4: Training ({model_type}, packed)")
-        probe, avg_loss, n_params, model_type, loss_history = train_packed(
+        probe, avg_loss, n_params, model_type, train_log, train_summary = train_packed(
             tokens_list=tokens_list,
             split_pos_list=split_pos_list,
             n_clusters_per_layer=n_clusters_per_layer,
@@ -1163,7 +1221,8 @@ def main():
                 model_type=model_type,
                 n_train=n_train,
                 n_eval=n_eval,
-                loss_history=loss_history,
+                train_log=train_log,
+                train_summary=train_summary,
             )
 
     # ── Inline eval (ALL ranks participate, all-reduce results) ──
