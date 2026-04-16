@@ -67,10 +67,11 @@ EXP-013 S-tier model recall@500=59.5%，但 **L0 PPL=344.8 是明确瓶颈**（L
 - **Metric**: L0/L1/L2 PPL, hit@10 per layer, recall@{10,50,100,500}
 - **Data**: 31 天行为数据 (03-01~03-31) + 31 天曝光数据 (同期)
 
-**ENTP 负样本构造**:
-- 对每个用户的 packed sequence 中每个 clicked item（时间 t_i），取 `(t_{i-1}, t_i]` 窗口内曝光未点击的 item
-- 映射到 L0 token，随机采样 K=5 个
-- 时间对齐确保捕捉 "timely interest fade-out"
+**ENTP 负样本构造 (PySpark 端)**:
+- `export_exposure.py` 新增 ENTP section：Spark SQL window function `pos_grp = cumsum(is_positive)` 分段，
+  每段的 non-positive (action_bitmap ≤ 0) 作为下一个 positive 的负样本，取最近 K=5 个
+- 输出 `feed_user_exposure_neg/{date_start}_{date_end}` parquet: `uid, iid, first_ts, neg_iids ARRAY<STRING>`
+- Python 端 `load_exposure_neg_data()` 加载 ~130M 行（秒级），`_build_sequences_from_exposure()` 只做 iid→L0 映射
 
 **Loss**:
 ```
@@ -79,11 +80,12 @@ L_ENTP = −(1/N) Σ log(1 − p_i^(L0))   (对 unclicked exposure 的 L0 token)
 ```
 
 **改动文件**:
-1. `eval/batch.py` — 新增 `load_all_exposure_data()`
-2. `ntp/train.py` — `build_unified_sequences()` 增加 exposure 负样本构建, 训练循环传递 neg 数据
-3. `ntp/model.py` — `_forward_packed()` 增加 ENTP loss 项
-4. `ntp/baseline.py` — `NTPProbe._forward_packed()` 同步 ENTP 扩展
-5. `ntp/preprocess.py` — shard 格式扩展存储 neg_l0_tokens
+1. `data/export_exposure.py` — PySpark ENTP 负样本导出 (Spark SQL window function)
+2. `eval/batch.py` — 新增 `load_exposure_neg_data()` 加载 compact parquet
+3. `ntp/train.py` — `_build_sequences_from_exposure()` 简化为 dict→序列映射; wandb 集成
+4. `ntp/model.py` — `_forward_packed()` 增加 ENTP loss 项
+5. `ntp/baseline.py` — `NTPProbe._forward_packed()` 同步 ENTP 扩展
+6. `ntp/preprocess.py` — shard 格式扩展存储 neg_l0; 调用 `load_exposure_neg_data()`
 
 **可插拔设计**: `--entp_weight 0`（默认）= 完全等价于 EXP-013 代码路径。
 
@@ -99,7 +101,19 @@ L_ENTP = −(1/N) Σ log(1 − p_i^(L0))   (对 unclicked exposure 的 L0 token)
 `bash experiments/scripts/exp-014.sh`
 
 ### Results
-TBD
+
+**PySpark ENTP 导出验证 (2026-04-16)**:
+
+| 指标 | PySpark 导出 | 旧流式 walk (对照) | 说明 |
+|---|---|---|---|
+| 总曝光行 | ~1.19B | 1,185,707,891 | 一致 |
+| Positives | 130,995,419 | 124,893,764 | +4.9%, 差异 = SID 字典外的 iid（Python 端过滤） |
+| Users | 4,608,606 | 3,042,069 | +51%, 多出的用户只有 SID 外 iid，Python 端过滤后消失 |
+| 有负样本 | 40,761,718 (31.1% row级) | 2,084,314 (68.5% user级) | 口径不同，无矛盾 |
+
+31% row 级有负样本合理：Feed 场景用户常连续点击（同页多 item），连续 positive 之间无 non-positive → 后者拿不到 neg。
+
+训练待跑。
 
 ### Analysis
 TBD

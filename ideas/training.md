@@ -473,9 +473,38 @@ DualGR 还提出:
 
 **评估**: NTP recall@K, 特别关注"兴趣变化"场景 (用户最近行为转向新类目)
 
+### 实现记录
+
+**PySpark 端 ENTP 负样本导出 (2026-04-16)**:
+
+实现方式: `data/export_exposure.py` 新增 ENTP section，Spark SQL window function
+`pos_grp = cumsum(action_bitmap > 0)` 分段，每段 non-positive 作为下一个 positive 的负样本，
+COLLECT_LIST + SORT_ARRAY + SLICE 取最近 K=5 个。输出 compact parquet `feed_user_exposure_neg/`。
+Python 端 `load_exposure_neg_data()` 加载 ~130M 行（秒级），`_build_sequences_from_exposure()`
+只做 iid→L0 token 映射。
+
+**数据验证 — PySpark 导出 vs 旧流式 walk 对比 (03-01~03-31)**:
+
+| 指标 | PySpark 导出 | 旧流式 walk (对照) | 说明 |
+|---|---|---|---|
+| 总曝光行 | ~1.19B | 1,185,707,891 | 一致 |
+| Positives (action_bitmap > 0) | 130,995,419 | 124,893,764 | +4.9% |
+| Users | 4,608,606 | 3,042,069 | +51% |
+| 有负样本 | 40,761,718 (31.1% row级) | 2,084,314 (68.5% user级) | 口径不同 |
+
+差异分析:
+- **Positives +4.9%**: PySpark 不过滤 SID 字典外 iid，多出 ~6M。Python 端 `_build_user_items()` 的 `iid ∈ SID` 过滤兜底，不影响最终序列
+- **Users +51%**: 多出的 1.5M 用户只有 SID 字典外 iid，Python 端过滤后不足 2 个 valid item，不产出序列
+- **有负样本 31% vs 68.5%**: 口径不同无矛盾。31% 是 row 级（131M 正样本行里 41M 有 neg），68.5% 是 user 级（3M 用户里 2M 有 neg）。Feed 场景用户常连续点击（同页多 item），连续 positive 之间无 non-positive → 后者拿不到 neg
+- 旧流式 walk 最终 3,042,069 users / 76M items / 59M neg tokens；PySpark 导出经 Python 端过滤后应得到一致结果
+
+**性能对比**:
+- 旧流式 walk: Phase 1 读 620 文件 2917s + Phase 2 groupby 1350s = **~71 min**
+- PySpark 导出: Spark 集群分钟级 + Python load_exposure_neg_data() **~30s**
+
 ### 关键问题
 
-1. 需要行为数据包含"曝光未点击"信息 — 当前 `export_behavior.py` 是否已覆盖?
+1. ~~需要行为数据包含"曝光未点击"信息~~ ✅ `export_exposure.py` 已有完整曝光序列
 2. Hard negative 太强可能导致模型过于保守 (偏向热门 item)
 3. Long/short-term 分支 (DBR) 需要更大的架构改动，可以独立拆分
 
