@@ -89,19 +89,25 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
     t0 = time.time()
     processed = 0
 
+    # Auto-cap batch size for long sequences (attention O(B*S^2))
+    global_max_len = max(len(s['tokens']) for s in sequences) if sequences else 1
+    if global_max_len > 64:
+        mem_safe_bs = max(16, 40_000_000 // (global_max_len * global_max_len))
+        if batch_size > mem_safe_bs:
+            if verbose:
+                print(f"    eval batch_size {batch_size} → {mem_safe_bs} (max_seq={global_max_len})")
+            batch_size = mem_safe_bs
+
     for batch_start in range(0, n_seqs, batch_size):
         batch_end = min(batch_start + batch_size, n_seqs)
         batch_indices = sorted_indices[batch_start:batch_end]
         batch_seqs = [sequences[i] for i in batch_indices]
         B = len(batch_seqs)
-
         tokens_list = [s['tokens'] for s in batch_seqs]
         split_positions = torch.tensor([s['split_pos'] for s in batch_seqs],
                                        dtype=torch.long, device=device)
         lengths = torch.tensor([len(t) for t in tokens_list],
                                dtype=torch.long, device=device)
-
-        max_len = lengths.max().item()
         padded = torch.zeros(B, max_len, dtype=torch.long, device=device)
         for i, toks in enumerate(tokens_list):
             padded[i, :len(toks)] = torch.tensor(toks, dtype=torch.long)
