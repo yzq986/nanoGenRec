@@ -204,21 +204,23 @@ def load_all_exposure_data(date_start: str = None, date_end: str = None) -> Dict
     dfs = []
     for i, f in enumerate(files):
         with fs.open(f, 'rb') as file:
-            dfs.append(pd.read_parquet(file, columns=['uid', 'iid', 'action_bitmap', 'exposure_ts']))
+            dfs.append(pd.read_parquet(file, columns=['uid', 'iid', 'action_bitmap', 'exposure_ts', 'first_ts']))
         if (i + 1) % 10 == 0:
             print(f"  Loaded {i + 1}/{len(files)}")
 
     df = pd.concat(dfs, ignore_index=True)
     n_clicked = (df['action_bitmap'] > 0).sum()
     n_unclicked = (df['action_bitmap'] == 0).sum()
+    n_negative = (df['action_bitmap'] < 0).sum()
     print(f"  Total: {len(df):,} exposures "
-          f"(clicked={n_clicked:,}, unclicked={n_unclicked:,})")
+          f"(clicked={n_clicked:,}, unclicked={n_unclicked:,}, negative={n_negative:,})")
 
     return {
         'uid': df['uid'].values,
         'iid': df['iid'].values,
         'action_bitmap': df['action_bitmap'].values.astype(np.int32),
         'exposure_ts': df['exposure_ts'].fillna(0).values.astype(np.int64),
+        'first_ts': df['first_ts'].fillna(0).values.astype(np.int64),
     }
 
 

@@ -183,20 +183,29 @@ def main():
     ).item()
     print(f"  SID assignments: {len(sid_dict):,}")
 
-    # ── Load behavior data ──
-    print("\nStep 2: Loading behavior data")
-    from gr_demo.eval.batch import load_all_behavior_data
-    behavior_data = load_all_behavior_data(
-        date_start=args.date_start, date_end=args.date_end)
-    print(f"  Interactions: {len(behavior_data['uid']):,}")
-
-    # ── Load exposure data (ENTP) ──
+    # ── Load data ──
     exposure_data = None
     if args.entp_weight > 0:
-        print("\nStep 2b: Loading exposure data (ENTP)")
+        # ENTP mode: exposure 表包含正样本+负样本，一份数据搞定
+        print("\nStep 2: Loading exposure data (ENTP mode — skipping behavior)")
         from gr_demo.eval.batch import load_all_exposure_data
         exposure_data = load_all_exposure_data(
             date_start=args.date_start, date_end=args.date_end)
+        # Derive behavior_data from exposure (action_bitmap > 0 = positive interactions)
+        mask = exposure_data['action_bitmap'] > 0
+        behavior_data = {
+            'uid': exposure_data['uid'][mask],
+            'iid': exposure_data['iid'][mask],
+            'action_bitmap': exposure_data['action_bitmap'][mask],
+            'first_ts': exposure_data['first_ts'][mask],
+        }
+        print(f"  Positive interactions: {len(behavior_data['uid']):,}")
+    else:
+        print("\nStep 2: Loading behavior data")
+        from gr_demo.eval.batch import load_all_behavior_data
+        behavior_data = load_all_behavior_data(
+            date_start=args.date_start, date_end=args.date_end)
+        print(f"  Interactions: {len(behavior_data['uid']):,}")
 
     # ── Build unified sequences ──
     print("\nStep 3: Building unified sequences")
