@@ -183,23 +183,27 @@ echo ""
 echo "[exp014-A-baseline] Skipped — reuse EXP-013 s-tier results as baseline"
 echo "  PPL=29.6, L0=344.8, L1=13.3, L2=5.7, recall@500=59.5%"
 
-# ── Config B: Conservative (alpha=0.05) ──
-train_entp_config "exp014-B-a005" 0.05 \
-    "ENTP alpha=0.05, K=5 — conservative"
+# ── Round 2: with L0 collision filter (preprocess filters neg sharing L0 with pos) ──
+# Round 1 (B/C) regressed due to gradient conflict from L0 collision.
+# Round 2 uses same alpha sweep but with filtered negatives.
 
-# ── Config C: Paper default (alpha=0.1) ──
-train_entp_config "exp014-C-a010" 0.1 \
-    "ENTP alpha=0.1, K=5 — DualGR paper default"
+# ── Config E: Conservative (alpha=0.05) — with L0 filter ──
+train_entp_config "exp014-E-a005" 0.05 \
+    "ENTP alpha=0.05, K=5 — with L0 collision filter"
 
-# ── Config D: Aggressive (alpha=0.2) ──
-train_entp_config "exp014-D-a020" 0.2 \
-    "ENTP alpha=0.2, K=5 — aggressive"
+# ── Config F: Paper default (alpha=0.1) — with L0 filter ──
+train_entp_config "exp014-F-a010" 0.1 \
+    "ENTP alpha=0.1, K=5 — with L0 collision filter"
+
+# ── Config G: Aggressive (alpha=0.2) — with L0 filter ──
+train_entp_config "exp014-G-a020" 0.2 \
+    "ENTP alpha=0.2, K=5 — with L0 collision filter"
 
 # ── Final commit ──
 echo ""
 echo ">>> Final commit..."
 git add experiments/
-git commit -m "EXP-014 results: ENTP-Loss alpha sweep (0/0.05/0.1/0.2)" || echo "Nothing to commit"
+git commit -m "EXP-014 results: ENTP-Loss round 2 with L0 collision filter" || echo "Nothing to commit"
 ./push.sh
 
 echo ""
