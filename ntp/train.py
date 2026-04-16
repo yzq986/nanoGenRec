@@ -136,44 +136,56 @@ def _build_user_neg_index(exposure_data, content_to_tokens, verbose_fn=print):
             col 0 = exposure_ts, col 1 = L0 token.
             Sorted by exposure_ts. Only includes iids in content_to_tokens.
     """
-    import pandas as pd
-
     uids = exposure_data['uid']
     iids = exposure_data['iid']
     ts = exposure_data['exposure_ts']
 
     verbose_fn(f"  ENTP: {len(uids):,} unclicked exposures")
 
-    # Filter: iid must be in SID dict
-    valid_iids = set(content_to_tokens.keys())
-    iid_mask = pd.Index(iids).isin(valid_iids)
-    uids_f = uids[iid_mask]
-    iids_f = iids[iid_mask]
-    ts_f = ts[iid_mask]
-    verbose_fn(f"  ENTP: {len(uids_f):,} with valid SID")
+    # Build iid → L0 token lookup array for vectorized mapping.
+    # iids are strings, so we build a dict and vectorize via np.frompyfunc.
+    t0 = time.time()
+    iid_to_l0 = {}
+    for iid, tokens in content_to_tokens.items():
+        iid_to_l0[iid] = tokens[0]
+    verbose_fn(f"  ENTP: iid→L0 lookup built ({len(iid_to_l0):,} items, {time.time()-t0:.1f}s)")
 
-    # Map iid → L0 token (first layer only)
-    l0_tokens = np.array([content_to_tokens[iid][0] for iid in iids_f], dtype=np.int32)
+    # Vectorized lookup: map iid → L0 token (or -1 if not in SID dict)
+    t0 = time.time()
+    _lookup = np.frompyfunc(lambda x: iid_to_l0.get(x, -1), 1, 1)
+    l0_all = _lookup(iids).astype(np.int32)
+    valid_mask = l0_all >= 0
+    n_valid = valid_mask.sum()
+    verbose_fn(f"  ENTP: {n_valid:,} with valid SID ({time.time()-t0:.1f}s)")
 
-    # Sort by (uid, ts)
+    # Filter to valid only
+    uids_f = uids[valid_mask]
+    ts_f = ts[valid_mask]
+    l0_f = l0_all[valid_mask]
+    del l0_all, valid_mask
+
+    # Sort by (uid, ts) — lexsort is fast on numeric arrays
+    t0 = time.time()
     sort_idx = np.lexsort((ts_f, uids_f))
     uids_s = uids_f[sort_idx]
     ts_s = ts_f[sort_idx]
-    l0_s = l0_tokens[sort_idx]
+    l0_s = l0_f[sort_idx]
+    del uids_f, ts_f, l0_f, sort_idx
+    verbose_fn(f"  ENTP: sorted ({time.time()-t0:.1f}s)")
 
-    # Group by uid
+    # Group by uid — pre-stack into single (N, 2) array, then split
+    t0 = time.time()
     boundaries = np.where(uids_s[1:] != uids_s[:-1])[0] + 1
-    starts = np.concatenate([[0], boundaries])
-    ends = np.concatenate([boundaries, [len(uids_s)]])
+    stacked = np.column_stack([ts_s, l0_s])
+    del ts_s, l0_s
 
-    user_neg_index = {}
-    for u in range(len(starts)):
-        s, e = starts[u], ends[u]
-        uid = uids_s[s]
-        # Stack (ts, l0_token) pairs
-        user_neg_index[uid] = np.column_stack([ts_s[s:e], l0_s[s:e]])
+    # Split into per-user arrays
+    splits = np.split(stacked, boundaries)
+    unique_uids = uids_s[np.concatenate([[0], boundaries])]
+    del uids_s, stacked, boundaries
 
-    verbose_fn(f"  ENTP: {len(user_neg_index):,} users with unclicked exposures")
+    user_neg_index = dict(zip(unique_uids, splits))
+    verbose_fn(f"  ENTP: {len(user_neg_index):,} users with unclicked exposures ({time.time()-t0:.1f}s)")
     return user_neg_index
 
 
