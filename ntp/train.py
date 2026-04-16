@@ -582,11 +582,19 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
             batch_size=batch_size, verbose=is_main)
 
     # All-reduce teacher-forced stats
-    local_stats = torch.tensor([
-        tf_results['avg_loss'] * tf_results['n_eval_positions'],  # total loss
-        tf_results['n_eval_positions'],                            # total positions
-    ] + [h * (tf_results['n_eval_positions'] / n_layers)           # hit counts per layer
-         for h in tf_results['depth_hit_10']],
+    # Layout: [total_loss, n_positions, n_eval_items,
+    #          prefix_hit_0..L-1, indep_hit_0..L-1]
+    local_n_pos = tf_results['n_eval_positions']
+    local_n_items = tf_results.get('n_eval_items', 0)
+    local_n_per_layer = local_n_pos / n_layers if n_layers > 0 else 1
+
+    local_stats = torch.tensor(
+        [tf_results['avg_loss'] * local_n_pos,  # total loss
+         local_n_pos,                             # total positions
+         local_n_items,                           # total eval items
+         ] + [h * local_n_items for h in tf_results['depth_hit_10']         # prefix hit counts
+         ] + [h * local_n_per_layer for h in tf_results.get('depth_hit_10_indep',
+                                                             tf_results['depth_hit_10'])],
         device=device)
 
     if world_size > 1:
@@ -594,17 +602,22 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
 
     total_loss = local_stats[0].item()
     total_positions = local_stats[1].item()
+    total_eval_items = local_stats[2].item()
     n_per_layer = total_positions / n_layers if n_layers > 0 else 1
 
     global_avg_loss = total_loss / max(total_positions, 1)
     global_ppl = np.exp(global_avg_loss)
-    global_depth_h10 = [local_stats[2 + li].item() / max(n_per_layer, 1)
+    global_depth_h10 = [local_stats[3 + li].item() / max(total_eval_items, 1)
                         for li in range(n_layers)]
+    global_depth_h10_indep = [local_stats[3 + n_layers + li].item() / max(n_per_layer, 1)
+                              for li in range(n_layers)]
 
     if is_main:
         print(f"  PPL: {global_ppl:.2f}")
-        print(f"  Depth hit@10: {[f'{h:.3f}' for h in global_depth_h10]}")
-        print(f"  Eval positions: {int(total_positions):,} (across {world_size} ranks)")
+        print(f"  Depth hit@10 (prefix): {[f'{h:.3f}' for h in global_depth_h10]}")
+        print(f"  Depth hit@10 (indep):  {[f'{h:.3f}' for h in global_depth_h10_indep]}")
+        print(f"  Eval items: {int(total_eval_items):,}, "
+              f"positions: {int(total_positions):,} (across {world_size} ranks)")
 
     # ── Beam search recall (split 5K across ranks) ──
     log(is_main, f"  Building sid_to_items from {sid_cache_dir}")
@@ -624,8 +637,9 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
     # All-reduce beam search recall counts
     recall_ks = [10, 50, 100, 500]
     n_local = beam_results.get('n_recall_samples', 0)
+    local_sid_found = beam_results.get('target_sid_found_rate', 0) * n_local
     local_beam_stats = torch.tensor(
-        [n_local] +
+        [n_local, local_sid_found] +
         [beam_results.get(f'item_recall@{k}', 0) * n_local for k in recall_ks] +
         [beam_results.get('depth_acc_beam', [0] * n_layers)[li] * n_local
          for li in range(n_layers)],
@@ -635,11 +649,12 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
         dist.all_reduce(local_beam_stats, op=dist.ReduceOp.SUM)
 
     total_recall_n = local_beam_stats[0].item()
+    global_sid_found_rate = local_beam_stats[1].item() / max(total_recall_n, 1)
     global_recall = {}
     for ki, k in enumerate(recall_ks):
         global_recall[f'item_recall@{k}'] = (
-            local_beam_stats[1 + ki].item() / max(total_recall_n, 1))
-    global_depth_acc = [local_beam_stats[1 + len(recall_ks) + li].item() / max(total_recall_n, 1)
+            local_beam_stats[2 + ki].item() / max(total_recall_n, 1))
+    global_depth_acc = [local_beam_stats[2 + len(recall_ks) + li].item() / max(total_recall_n, 1)
                         for li in range(n_layers)]
 
     probe.cpu()
@@ -649,13 +664,17 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
         'ppl': round(global_ppl, 4),
         'avg_loss': round(global_avg_loss, 6),
         'depth_hit@10': [round(h, 4) for h in global_depth_h10],
+        'depth_hit@10_indep': [round(h, 4) for h in global_depth_h10_indep],
         'depth_acc_beam': [round(a, 4) for a in global_depth_acc],
+        'target_sid_found_rate': round(global_sid_found_rate, 4),
         'n_eval_positions': int(total_positions),
+        'n_eval_items': int(total_eval_items),
         'n_recall_samples': int(total_recall_n),
     }
     results.update(global_recall)
 
     if is_main:
+        print(f"  target_sid_found_rate: {global_sid_found_rate:.4f}")
         for k in recall_ks:
             print(f"  item_recall@{k}: {results[f'item_recall@{k}']:.4f}")
 

@@ -74,7 +74,11 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
     n_seqs = len(sequences)
     total_loss = 0.0
     total_eval_positions = 0
-    depth_hit_10_counts = [0] * n_layers
+    total_eval_items = 0
+    # Per-layer independent hit@10
+    indep_hit_counts = [0] * n_layers
+    # Prefix-based hit@10: layer li = "layers 0..li ALL hit"
+    prefix_hit_counts = [0] * n_layers
 
     # Sort by length for efficient batching
     sorted_indices = sorted(range(n_seqs), key=lambda i: len(sequences[i]['tokens']))
@@ -124,14 +128,18 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
         else:
             hidden = probe._transformer_forward(x)
 
-        # Per-layer loss and hit@10 on eval positions
+        # Per-layer loss and per-position hit@10
         hidden_flat = hidden.reshape(-1, hidden.size(-1))
         target_flat = target_tokens.reshape(-1)
         mask_flat = eval_mask.reshape(-1)
 
         # Position → layer mapping: target at position i has layer (i+1) % L
         pos_layer = ((torch.arange(T, device=device) + 1) % L)
-        pos_layer_flat = pos_layer.unsqueeze(0).expand(B, -1).reshape(-1)
+        pos_layer_2d = pos_layer.unsqueeze(0).expand(B, -1)  # (B, T)
+        pos_layer_flat = pos_layer_2d.reshape(-1)
+
+        # Per-position hit@10 stored in (B, T) tensor
+        hit_2d = torch.zeros(B, T, dtype=torch.bool, device=device)
 
         batch_loss = 0.0
         batch_n = 0
@@ -145,18 +153,36 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
             batch_loss += F.cross_entropy(logits, targets_l, reduction='sum').item()
             batch_n += layer_mask.sum().item()
 
-            # Hit@10 — prefix-based across layers
             topk_vals = min(10, logits.size(-1))
             hit = (logits.topk(topk_vals, dim=-1).indices == targets_l.unsqueeze(1)).any(dim=-1)
 
+            # Independent per-layer count
+            indep_hit_counts[li] += hit.sum().item()
+
+            # Store hits back into (B, T) for prefix tracking
+            layer_mask_2d = eval_mask & (pos_layer_2d == li)
+            hit_2d[layer_mask_2d] = hit
+
+        # Prefix-based hit@10 across layers (item-level)
+        # Layer-0 eval positions mark the start of each eval item
+        layer0_eval = eval_mask & (pos_layer_2d == 0)  # (B, T)
+        l0_b, l0_t = torch.where(layer0_eval)
+        n_items_batch = len(l0_b)
+
+        for li in range(L):
+            check_t = l0_t + li
+            valid = check_t < T
+            hits_at_li = torch.zeros(n_items_batch, dtype=torch.bool, device=device)
+            hits_at_li[valid] = hit_2d[l0_b[valid], check_t[valid]]
+
             if li == 0:
-                # Initialize per-position hit tracking for this batch
-                # We need to track across layers for the same (batch, seq_pos) position
-                # Group by (batch_idx, item_idx) — each item spans L positions
-                pass
+                prefix_hit = hits_at_li
+            else:
+                prefix_hit = prefix_hit & hits_at_li
 
-            depth_hit_10_counts[li] += hit.sum().item()
+            prefix_hit_counts[li] += prefix_hit.sum().item()
 
+        total_eval_items += n_items_batch
         total_loss += batch_loss
         total_eval_positions += batch_n
         processed += B
@@ -171,20 +197,22 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
 
     if total_eval_positions == 0:
         return {'avg_loss': 0, 'ppl': 1.0, 'depth_hit_10': [0] * n_layers,
-                'n_eval_positions': 0}
+                'depth_hit_10_indep': [0] * n_layers,
+                'n_eval_positions': 0, 'n_eval_items': 0}
 
-    # Each eval position contributes to exactly one layer.
-    # depth_hit_10 is per-layer count / per-layer total.
     n_per_layer = total_eval_positions // n_layers
     avg_loss = total_loss / total_eval_positions
     ppl = np.exp(avg_loss)
-    depth_h10 = [c / max(n_per_layer, 1) for c in depth_hit_10_counts]
+    indep_h10 = [c / max(n_per_layer, 1) for c in indep_hit_counts]
+    prefix_h10 = [c / max(total_eval_items, 1) for c in prefix_hit_counts]
 
     return {
         'avg_loss': avg_loss,
         'ppl': ppl,
-        'depth_hit_10': depth_h10,
+        'depth_hit_10': prefix_h10,
+        'depth_hit_10_indep': indep_h10,
         'n_eval_positions': total_eval_positions,
+        'n_eval_items': total_eval_items,
     }
 
 
@@ -237,15 +265,27 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
     recall_ks = [10, 50, 100, 500]
     item_recall = {k: 0 for k in recall_ks}
     depth_correct = [0] * n_layers
+    target_sid_found = 0  # how often the correct SID appears anywhere in beams
     t0 = time.time()
 
     for idx, item in enumerate(eval_items):
         ctx = torch.tensor(item['context'], dtype=torch.long, device=device).unsqueeze(0)
         target = item['target']
         target_cid = item['cid']
+        target_sid_str = '_'.join(str(t) for t in target)
 
-        beams, _ = constrained_beam_search(
+        beams, scores = constrained_beam_search(
             probe, ctx, sid_trie, beam_size=recall_beam_size)
+
+        # Check if target SID appears in any beam
+        found_rank = -1
+        for ki in range(beams.size(1)):
+            sid_str = '_'.join(str(t.item()) for t in beams[0, ki])
+            if sid_str == target_sid_str:
+                found_rank = ki
+                break
+        if found_rank >= 0:
+            target_sid_found += 1
 
         # Depth accuracy (top-1 beam)
         pred_top1 = beams[0, 0]
@@ -270,6 +310,20 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
             if target_cid in set(candidates[:k]):
                 item_recall[k] += 1
 
+        # Debug output for first 10 samples
+        if verbose and idx < 10:
+            n_items_mapped = len(candidates)
+            top5_strs = []
+            for ki in range(min(5, beams.size(1))):
+                s = '_'.join(str(t.item()) for t in beams[0, ki])
+                sc = scores[0, ki].item() if scores is not None else 0
+                top5_strs.append(f"{s}({sc:.2f})")
+            found_str = f"FOUND@{found_rank}" if found_rank >= 0 else "NOT_FOUND"
+            print(f"    [sample {idx}] ctx_len={len(item['context'])} "
+                  f"target_sid={target_sid_str} target_cid={target_cid} "
+                  f"items_mapped={n_items_mapped} {found_str}")
+            print(f"      top5: {' | '.join(top5_strs)}")
+
         # Progress
         if verbose and (idx + 1) % 500 == 0:
             elapsed = time.time() - t0
@@ -278,16 +332,27 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
             eta_m, eta_s = divmod(int(remaining), 60)
             r10 = item_recall[10] / (idx + 1)
             r500 = item_recall[500] / (idx + 1)
+            sid_found_rate = target_sid_found / (idx + 1)
+            d_acc = [depth_correct[li] / (idx + 1) for li in range(n_layers)]
+            d_acc_str = '/'.join(f'{a:.3f}' for a in d_acc)
             print(f"    beam {idx+1:,}/{len(eval_items):,} "
                   f"({rate:.1f}/s, ETA {eta_m}m{eta_s:02d}s) "
-                  f"R@10={r10:.4f} R@500={r500:.4f}")
+                  f"R@10={r10:.4f} R@500={r500:.4f} "
+                  f"SID_found={sid_found_rate:.4f} depth_acc={d_acc_str}")
 
     n = len(eval_items)
+    target_sid_found_rate = target_sid_found / max(n, 1)
     results = {}
     for k in recall_ks:
         results[f'item_recall@{k}'] = item_recall[k] / n
     results['depth_acc_beam'] = [c / n for c in depth_correct]
+    results['target_sid_found_rate'] = target_sid_found_rate
     results['n_recall_samples'] = n
+
+    if verbose:
+        print(f"  Beam search summary: target_sid_found={target_sid_found_rate:.4f} "
+              f"({target_sid_found}/{n})")
+
     return results
 
 
