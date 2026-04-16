@@ -538,6 +538,7 @@ def train_packed(
     ffn_dim=512,
     neg_l0_list=None,
     entp_weight=0.0,
+    wandb_run=None,
 ):
     """Train NTPModel or NTPProbe with unified sequences (causal LM style).
 
@@ -548,6 +549,7 @@ def train_packed(
         split_pos_list: list of int split positions per sequence
         neg_l0_list: optional list of 2D lists (n_items, K) neg L0 tokens for ENTP.
         entp_weight: α weight for ENTP loss (0 = disabled).
+        wandb_run: optional wandb run object for logging (rank 0 only).
     """
 
     if model_type == 's-tier':
@@ -698,14 +700,26 @@ def train_packed(
 
         # Record per-step metrics (rank 0 only to avoid duplicate I/O)
         if is_main:
+            cur_lr = scheduler.get_last_lr()[0]
+            cur_flops = 6 * n_active_params * total_tokens
             train_log.append({
                 'step': step,
                 'loss': round(step_loss, 6),
-                'lr': round(scheduler.get_last_lr()[0], 8),
+                'lr': round(cur_lr, 8),
                 'grad_norm': round(grad_norm, 4),
                 'tokens': total_tokens,
+                'flops': cur_flops,
                 'wall_s': round(time.time() - t0, 2),
             })
+            if wandb_run is not None:
+                wandb_run.log({
+                    'train/loss': step_loss,
+                    'train/lr': cur_lr,
+                    'train/grad_norm': grad_norm,
+                    'train/ppl': np.exp(step_loss),
+                    'tokens': total_tokens,
+                    'flops': cur_flops,
+                }, step=step)
 
         if is_main and (step + 1) % 100 == 0:
             elapsed = time.time() - t0
@@ -1131,6 +1145,38 @@ def main():
     output_dir = args.output_dir or os.path.join(
         repo_root, 'experiments', 'ntp_checkpoints', args.name)
 
+    # ── W&B init (rank 0 only) ──
+    wandb_run = None
+    if is_main:
+        try:
+            import wandb
+            wandb_run = wandb.init(
+                project="gr-demo-ntp",
+                name=args.name,
+                config={
+                    'model_type': model_type,
+                    'n_layers': n_layers,
+                    'n_clusters_per_layer': n_clusters_per_layer,
+                    'n_items': n_items,
+                    'max_seq_len': max_seq_len,
+                    'batch_size': args.batch_size,
+                    'world_size': world_size,
+                    'n_seqs': prep_meta['n_seqs'],
+                    'n_eval_items': prep_meta['n_eval_items'],
+                    'n_shards': prep_meta['n_shards'],
+                    'sid_cache': sid_cache_dir,
+                    'preprocessed_dir': preprocessed_dir,
+                    'entp_weight': args.entp_weight,
+                    'eval_only': args.eval_only,
+                },
+            )
+            # Custom x-axes: train/* uses tokens, eval/* uses default step
+            wandb_run.define_metric('train/*', step_metric='tokens')
+            log(is_main, "  W&B initialized")
+        except Exception as e:
+            wandb_run = None
+            log(is_main, f"  W&B not available: {e}")
+
     if args.eval_only:
         # ── Eval-only: load checkpoint, skip training ──
         ckpt_path = os.path.join(output_dir, 'probe.pt')
@@ -1168,6 +1214,8 @@ def main():
         probe.to(device)
         n_params = sum(p.numel() for p in probe.parameters())
         avg_loss = 0.0
+        train_log = None
+        train_summary = None
         log(is_main, f"  {model_type}: {n_params / 1e6:.1f}M params")
     else:
         # ── Train (both probe and s-tier use packed sequences) ──
@@ -1203,7 +1251,19 @@ def main():
             ffn_dim=ffn_dim,
             neg_l0_list=neg_l0_list,
             entp_weight=args.entp_weight,
+            wandb_run=wandb_run,
         )
+
+        # Update W&B config with model-specific info discovered during training
+        if wandb_run is not None and train_summary:
+            wandb_run.config.update({
+                'n_params': train_summary['n_params'],
+                'n_active_params': train_summary['n_active_params'],
+                'embed_dim': embed_dim,
+                'n_heads': n_heads,
+                'n_transformer_layers': n_transformer_layers,
+                'lr': lr,
+            }, allow_val_change=True)
 
         # ── Save checkpoint (rank 0 only) ──
         if is_main:
@@ -1264,6 +1324,26 @@ def main():
             if k in eval_results:
                 log(is_main, f"  {k}: {eval_results[k]:.4f}")
         log(is_main, f"{'=' * 60}")
+
+    # ── W&B: log eval summary + finish ──
+    if wandb_run is not None:
+        if eval_results:
+            # Summary metrics for cross-run comparison (scaling law tables)
+            wandb_run.summary['eval/ppl'] = eval_results.get('ppl')
+            wandb_run.summary['eval/avg_loss'] = eval_results.get('avg_loss')
+            for k in ['item_recall@10', 'item_recall@50', 'item_recall@100', 'item_recall@500']:
+                if k in eval_results:
+                    wandb_run.summary[f'eval/{k}'] = eval_results[k]
+            for li, ppl in enumerate(eval_results.get('layer_ppl', [])):
+                wandb_run.summary[f'eval/layer_ppl_L{li}'] = ppl
+            wandb_run.summary['eval/target_sid_found_rate'] = eval_results.get(
+                'target_sid_found_rate')
+        if not args.eval_only and train_summary:
+            wandb_run.summary['total_tokens'] = train_summary['total_tokens']
+            wandb_run.summary['total_flops'] = train_summary['total_flops']
+            wandb_run.summary['n_active_params'] = train_summary['n_active_params']
+            wandb_run.summary['train_loss'] = avg_loss
+        wandb_run.finish()
 
     cleanup_ddp()
 
