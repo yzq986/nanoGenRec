@@ -510,6 +510,9 @@ def train_packed(
     max_seq_len=512,
     model_type='s-tier',
     ffn_dim=512,
+    n_experts=8,
+    top_k=2,
+    expert_dim=None,
     neg_l0_list=None,
     entp_weight=0.0,
     wandb_run=None,
@@ -527,6 +530,8 @@ def train_packed(
     """
 
     if model_type == 's-tier':
+        use_moe = n_experts >= 2
+        _expert_dim = expert_dim if expert_dim is not None else embed_dim * 4
         model = NTPModel(
             n_clusters_per_layer=n_clusters_per_layer,
             n_sid_layers=n_layers,
@@ -534,10 +539,10 @@ def train_packed(
             embed_dim=embed_dim,
             n_heads=n_heads,
             n_transformer_layers=n_transformer_layers,
-            use_moe=True,
-            n_experts=8,
-            top_k=2,
-            expert_dim=1024,
+            use_moe=use_moe,
+            n_experts=max(n_experts, 1),
+            top_k=top_k,
+            expert_dim=_expert_dim,
             parallel=False,  # packed = always causal AR
             max_seq_len=max_seq_len,
         ).to(device)
@@ -588,7 +593,7 @@ def train_packed(
     if world_size > 1:
         # MoE: not all experts active every batch → unused params expected
         ddp_kwargs = {}
-        if model_type == 's-tier':
+        if model_type == 's-tier' and n_experts >= 2:
             ddp_kwargs['find_unused_parameters'] = True
             import warnings
             warnings.filterwarnings('ignore', message='.*find_unused_parameters.*')
@@ -763,6 +768,18 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
 
     # 1. Model checkpoint
     if model_type == 's-tier':
+        # Read actual MoE config from model (not hardcoded)
+        _ffn0 = probe.layers[0].ffn
+        if hasattr(_ffn0, 'n_experts'):
+            _use_moe = True
+            _n_experts = _ffn0.n_experts
+            _top_k = _ffn0.top_k
+            _expert_dim = _ffn0.experts[0].w1.out_features
+        else:
+            _use_moe = False
+            _n_experts = 1
+            _top_k = 1
+            _expert_dim = _ffn0[0].out_features  # nn.Sequential dense FFN
         probe_config = {
             'model_type': 's-tier',
             'n_clusters_per_layer': n_clusters_per_layer,
@@ -771,10 +788,10 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
             'embed_dim': probe.embed_dim,
             'n_heads': probe.layers[0].attn.num_heads,
             'n_transformer_layers': len(probe.layers),
-            'use_moe': True,
-            'n_experts': 8,
-            'top_k': 2,
-            'expert_dim': 1024,
+            'use_moe': _use_moe,
+            'n_experts': _n_experts,
+            'top_k': _top_k,
+            'expert_dim': _expert_dim,
             'parallel': probe.parallel,
             'max_seq_len': probe.max_seq_len,
         }
@@ -842,14 +859,25 @@ def parse_args():
     parser.add_argument('--name', type=str, default='default',
                         help='Experiment name for output subdir')
     parser.add_argument('--batch_size', type=int, default=4096)
-    parser.add_argument('--lr', type=float, default=3e-3)
+    parser.add_argument('--lr', type=float, default=None,
+                        help='Learning rate (default: 1e-3 for s-tier, 3e-3 for probe)')
     parser.add_argument('--embed_dim', type=int, default=256)
-    parser.add_argument('--n_heads', type=int, default=4)
-    parser.add_argument('--n_transformer_layers', type=int, default=2)
-    parser.add_argument('--ffn_dim', type=int, default=512)
+    parser.add_argument('--n_heads', type=int, default=None,
+                        help='Attention heads (default: 8 for s-tier, 4 for probe)')
+    parser.add_argument('--n_transformer_layers', type=int, default=None,
+                        help='Transformer layers (default: 6 for s-tier, 2 for probe)')
+    parser.add_argument('--ffn_dim', type=int, default=512,
+                        help='FFN hidden dim (probe only)')
     parser.add_argument('--model', type=str, default='probe',
                         choices=['probe', 's-tier'],
-                        help='Model: probe (2L dense, ~5M) or s-tier (6L MoE, ~39.5M)')
+                        help='Model: probe (2L dense) or s-tier (MoE)')
+    # MoE config (s-tier only)
+    parser.add_argument('--n_experts', type=int, default=8,
+                        help='Number of MoE experts (s-tier only, 0 or 1 = dense)')
+    parser.add_argument('--top_k', type=int, default=2,
+                        help='Top-k expert routing (s-tier only)')
+    parser.add_argument('--expert_dim', type=int, default=None,
+                        help='Expert FFN hidden dim (s-tier only, default: 4*embed_dim)')
     parser.add_argument('--eval_only', action='store_true',
                         help='Skip training, load checkpoint and run eval only')
     # ENTP-Loss (DualGR, WWW 2026)
@@ -1195,16 +1223,16 @@ def main():
         log(is_main, f"  {model_type}: {n_params / 1e6:.1f}M params")
     else:
         # ── Train (both probe and s-tier use packed sequences) ──
+        embed_dim = args.embed_dim
+        ffn_dim = args.ffn_dim
         if model_type == 's-tier':
-            embed_dim, n_heads, n_transformer_layers = 256, 8, 6
-            lr = 1e-3
-            ffn_dim = 512
+            n_heads = args.n_heads if args.n_heads is not None else 8
+            n_transformer_layers = args.n_transformer_layers if args.n_transformer_layers is not None else 6
+            lr = args.lr if args.lr is not None else 1e-3
         else:
-            embed_dim = args.embed_dim
-            n_heads = args.n_heads
-            n_transformer_layers = args.n_transformer_layers
-            ffn_dim = args.ffn_dim
-            lr = args.lr
+            n_heads = args.n_heads if args.n_heads is not None else 4
+            n_transformer_layers = args.n_transformer_layers if args.n_transformer_layers is not None else 2
+            lr = args.lr if args.lr is not None else 3e-3
 
         log(is_main, f"\nStep 4: Training ({model_type}, packed)")
         probe, avg_loss, n_params, model_type, train_log, train_summary = train_packed(
@@ -1225,6 +1253,9 @@ def main():
             max_seq_len=max_seq_len,
             model_type=model_type,
             ffn_dim=ffn_dim,
+            n_experts=args.n_experts,
+            top_k=args.top_k,
+            expert_dim=args.expert_dim,
             neg_l0_list=neg_l0_list,
             entp_weight=args.entp_weight,
             wandb_run=wandb_run,
@@ -1238,6 +1269,9 @@ def main():
                 'embed_dim': embed_dim,
                 'n_heads': n_heads,
                 'n_transformer_layers': n_transformer_layers,
+                'n_experts': args.n_experts,
+                'top_k': args.top_k,
+                'expert_dim': args.expert_dim or embed_dim * 4,
                 'lr': lr,
             }, allow_val_change=True)
 
@@ -1282,11 +1316,17 @@ def main():
         results_dir = os.path.join(repo_root, 'experiments', 'results', 'ntp')
         os.makedirs(results_dir, exist_ok=True)
         results_path = os.path.join(results_dir, f'{args.name}.json')
+        _n_active = train_summary['n_active_params'] if train_summary else n_params
+        _total_tokens = train_summary['total_tokens'] if train_summary else 0
+        _total_flops = train_summary['total_flops'] if train_summary else 0
         with open(results_path, 'w') as f:
             json.dump({
                 'name': args.name,
                 'model_type': model_type,
                 'n_params': n_params,
+                'n_active_params': _n_active,
+                'total_tokens': _total_tokens,
+                'total_flops': _total_flops,
                 'sid_cache': sid_cache_dir,
                 'eval': eval_results,
             }, f, indent=2)
