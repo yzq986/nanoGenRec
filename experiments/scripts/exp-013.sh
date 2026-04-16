@@ -15,9 +15,11 @@
 set -euo pipefail
 
 SKIP_SMOKE=false
+FORCE=false
 for arg in "$@"; do
     case "$arg" in
         --no-smoke) SKIP_SMOKE=true ;;
+        --force) FORCE=true ;;
     esac
 done
 
@@ -34,26 +36,34 @@ echo "  NTP data:  ${NTP_DATA}"
 echo "============================================================"
 
 # ── Step 1: preprocess-sid (4096×3 + FSQ 12d_4096 binary) ──
-rm -rf "${SID_CACHE}"
-echo "[Step 1] Running preprocess-sid (4096×3, FSQ [2]×12 binary)..."
-python run.py preprocess-sid \
-    --model qwen3-0.6b \
-    --behavior_path auto \
-    --output_dir "${SID_CACHE}" \
-    --num_clusters 4096 \
-    --fsq_levels 12d_4096 \
-    --fsq_projection mlp \
-    --fsq_mlp_hidden 64 \
-    --fsq_epochs 50
+if [ "${FORCE}" = true ]; then rm -rf "${SID_CACHE}"; fi
+if [ -f "${SID_CACHE}/semantic_ids.npy" ]; then
+    echo "[Step 1] SID cache found, skipping preprocess-sid (use --force to rebuild)"
+else
+    echo "[Step 1] Running preprocess-sid (4096×3, FSQ [2]×12 binary)..."
+    python run.py preprocess-sid \
+        --model qwen3-0.6b \
+        --behavior_path auto \
+        --output_dir "${SID_CACHE}" \
+        --num_clusters 4096 \
+        --fsq_levels 12d_4096 \
+        --fsq_projection mlp \
+        --fsq_mlp_hidden 64 \
+        --fsq_epochs 50
+fi
 
 # ── Step 2: preprocess-ntp (build shards, single process) ──
-rm -rf "${NTP_DATA}"
-echo "[Step 2] Running preprocess-ntp (${N_GPUS} shards)..."
-python run.py preprocess-ntp \
-    --sid_cache "${SID_CACHE}" \
-    --output_dir "${NTP_DATA}" \
-    --n_shards "${N_GPUS}" \
-    --date_start 2026-03-01 --date_end 2026-03-31
+if [ "${FORCE}" = true ]; then rm -rf "${NTP_DATA}"; fi
+if [ -f "${NTP_DATA}/meta.json" ]; then
+    echo "[Step 2] NTP data found, skipping preprocess-ntp (use --force to rebuild)"
+else
+    echo "[Step 2] Running preprocess-ntp (${N_GPUS} shards)..."
+    python run.py preprocess-ntp \
+        --sid_cache "${SID_CACHE}" \
+        --output_dir "${NTP_DATA}" \
+        --n_shards "${N_GPUS}" \
+        --date_start 2026-03-01 --date_end 2026-03-31
+fi
 
 # ── Phase 0: Smoke test (s-tier, small batch) ──
 if [ "${SKIP_SMOKE}" = true ]; then
