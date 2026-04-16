@@ -112,7 +112,13 @@ def fit_scaling_law(N_active, losses):
 
 
 def plot_scaling_law(points, params, output_path):
-    """Plot scaling law: data points + fitted curve. Saves to PNG."""
+    """Plot scaling law: 2x2 grid. Saves to PNG.
+
+    Top-left:  Log-X Linear-Y — Loss vs N (intuitive, see diminishing returns)
+    Top-right: Log-Log — (L - a) vs N (verify power law = straight line)
+    Bottom-left:  Log-X — Recall@100 vs N
+    Bottom-right: Log-X — PPL vs N
+    """
     try:
         import matplotlib
         matplotlib.use('Agg')
@@ -125,47 +131,107 @@ def plot_scaling_law(points, params, output_path):
     L = np.array([p['loss'] for p in points])
     names = [p['name'].replace('exp015-scale-', '').replace('exp013-', '*') for p in points]
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 11))
 
-    # Left: Loss vs Active Params (log-log)
-    ax1.scatter(N / 1e6, L, s=80, zorder=5, color='#2563eb')
+    # ── Top-left: Log-X Linear-Y (intuitive view) ──
+    ax = axes[0, 0]
+    ax.scatter(N / 1e6, L, s=80, zorder=5, color='#2563eb')
     for i, name in enumerate(names):
-        ax1.annotate(name, (N[i] / 1e6, L[i]), textcoords="offset points",
-                     xytext=(5, 5), fontsize=7, color='gray')
-
+        ax.annotate(name, (N[i] / 1e6, L[i]), textcoords="offset points",
+                    xytext=(5, 5), fontsize=7, color='gray')
     if params is not None:
         a, b, alpha = params
         N_fit = np.logspace(np.log10(N.min() * 0.5), np.log10(N.max() * 2), 200)
         L_fit = a + b / np.power(N_fit, alpha)
-        ax1.plot(N_fit / 1e6, L_fit, 'r--', linewidth=1.5,
-                 label=f'$L = {a:.3f} + {b:.1f} / N^{{{alpha:.3f}}}$')
-        ax1.legend(fontsize=10)
+        ax.plot(N_fit / 1e6, L_fit, 'r--', linewidth=1.5,
+                label=f'$L = {a:.3f} + {b:.1f} / N^{{{alpha:.3f}}}$')
+        ax.axhline(y=a, color='gray', linestyle=':', linewidth=1, alpha=0.5,
+                   label=f'Irreducible loss = {a:.3f}')
+        ax.legend(fontsize=9)
+    ax.set_xscale('log')
+    ax.set_xlabel('Active Parameters (M)')
+    ax.set_ylabel('Eval Loss')
+    ax.set_title('Scaling Law: Loss vs Model Size')
+    ax.grid(True, alpha=0.3)
 
-    ax1.set_xscale('log')
-    ax1.set_xlabel('Active Parameters (M)')
-    ax1.set_ylabel('Eval Loss')
-    ax1.set_title('NTP Scaling Law: Loss vs Model Size')
-    ax1.grid(True, alpha=0.3)
+    # ── Top-right: Log-Log of (L - a) vs N (power law verification) ──
+    ax = axes[0, 1]
+    if params is not None:
+        a, b, alpha = params
+        residual = L - a
+        valid = residual > 0
+        if valid.sum() >= 2:
+            ax.scatter(N[valid] / 1e6, residual[valid], s=80, zorder=5, color='#dc2626')
+            for i in range(len(N)):
+                if valid[i]:
+                    ax.annotate(names[i], (N[i] / 1e6, residual[i]),
+                                textcoords="offset points", xytext=(5, 5),
+                                fontsize=7, color='gray')
+            # Fitted line: log(L-a) = log(b) - alpha * log(N)
+            N_fit = np.logspace(np.log10(N.min() * 0.5), np.log10(N.max() * 2), 200)
+            ax.plot(N_fit / 1e6, b / np.power(N_fit, alpha), 'r--', linewidth=1.5,
+                    label=f'slope $= -\\alpha = -{alpha:.3f}$')
+            ax.legend(fontsize=9)
+            ax.set_xscale('log')
+            ax.set_yscale('log')
+            ax.set_xlabel('Active Parameters (M)')
+            ax.set_ylabel('$L - a$ (reducible loss)')
+            ax.set_title('Power Law Verification (should be straight line)')
+            ax.grid(True, alpha=0.3, which='both')
+        else:
+            ax.text(0.5, 0.5, 'Not enough points above\nirreducible loss',
+                    ha='center', va='center', transform=ax.transAxes, fontsize=11, color='gray')
+            ax.set_title('Power Law Verification')
+    else:
+        ax.text(0.5, 0.5, 'Fit not available\n(install scipy)', ha='center', va='center',
+                transform=ax.transAxes, fontsize=11, color='gray')
+        ax.set_title('Power Law Verification')
 
-    # Right: Recall@100 vs Active Params (log scale x)
+    # ── Bottom-left: Recall@100 vs N ──
+    ax = axes[1, 0]
     recalls = [p.get('recall@100') for p in points]
     if all(r is not None for r in recalls):
         R = np.array(recalls) * 100
-        ax2.scatter(N / 1e6, R, s=80, zorder=5, color='#16a34a')
+        ax.scatter(N / 1e6, R, s=80, zorder=5, color='#16a34a')
         for i, name in enumerate(names):
-            ax2.annotate(name, (N[i] / 1e6, R[i]), textcoords="offset points",
-                         xytext=(5, 5), fontsize=7, color='gray')
-        ax2.set_xscale('log')
-        ax2.set_xlabel('Active Parameters (M)')
-        ax2.set_ylabel('Recall@100 (%)')
-        ax2.set_title('Recall@100 vs Model Size')
-        ax2.grid(True, alpha=0.3)
+            ax.annotate(name, (N[i] / 1e6, R[i]), textcoords="offset points",
+                        xytext=(5, 5), fontsize=7, color='gray')
+        ax.set_xscale('log')
+        ax.set_xlabel('Active Parameters (M)')
+        ax.set_ylabel('Recall@100 (%)')
+        ax.set_title('Recall@100 vs Model Size')
+        ax.grid(True, alpha=0.3)
     else:
-        ax2.text(0.5, 0.5, 'Recall data not available', ha='center', va='center',
-                 transform=ax2.transAxes, fontsize=12, color='gray')
-        ax2.set_title('Recall@100 vs Model Size')
+        ax.text(0.5, 0.5, 'Recall data not available', ha='center', va='center',
+                transform=ax.transAxes, fontsize=12, color='gray')
+        ax.set_title('Recall@100 vs Model Size')
 
-    fig.tight_layout()
+    # ── Bottom-right: PPL vs N ──
+    ax = axes[1, 1]
+    ppls = [p.get('ppl') for p in points]
+    if all(p is not None for p in ppls):
+        P = np.array(ppls)
+        ax.scatter(N / 1e6, P, s=80, zorder=5, color='#9333ea')
+        for i, name in enumerate(names):
+            ax.annotate(name, (N[i] / 1e6, P[i]), textcoords="offset points",
+                        xytext=(5, 5), fontsize=7, color='gray')
+        if params is not None:
+            a, b, alpha = params
+            N_fit = np.logspace(np.log10(N.min() * 0.5), np.log10(N.max() * 2), 200)
+            PPL_fit = np.exp(a + b / np.power(N_fit, alpha))
+            ax.plot(N_fit / 1e6, PPL_fit, 'r--', linewidth=1.5, alpha=0.7)
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_xlabel('Active Parameters (M)')
+        ax.set_ylabel('Perplexity')
+        ax.set_title('PPL vs Model Size (log-log)')
+        ax.grid(True, alpha=0.3, which='both')
+    else:
+        ax.text(0.5, 0.5, 'PPL data not available', ha='center', va='center',
+                transform=ax.transAxes, fontsize=12, color='gray')
+        ax.set_title('PPL vs Model Size')
+
+    fig.tight_layout(pad=2.0)
     fig.savefig(output_path, dpi=150, bbox_inches='tight')
     print(f"  Plot saved to {output_path}")
     plt.close()
