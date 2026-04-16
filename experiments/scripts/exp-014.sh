@@ -66,12 +66,12 @@ echo "============================================================"
 SMOKE_CKPT="experiments/ntp_checkpoints/exp014-smoke"
 rm -rf "${SMOKE_CKPT}" "${NTP_DATA_SMOKE}"
 
-echo "[Phase 0a] Preprocess smoke data (1 day, ${N_GPUS} shards, with ENTP neg)..."
+echo "[Phase 0a] Preprocess smoke data (full date range, ${N_GPUS} shards, with ENTP neg)..."
 python run.py preprocess-ntp \
     --sid_cache "${SID_CACHE}" \
     --output_dir "${NTP_DATA_SMOKE}" \
     --n_shards "${N_GPUS}" \
-    --date_start 2026-03-31 --date_end 2026-03-31 \
+    --date_start "${DATE_START}" --date_end "${DATE_END}" \
     --entp_weight 0.1 --entp_k 5
 
 echo "[Phase 0b] Train from smoke shards..."
