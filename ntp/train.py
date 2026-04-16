@@ -226,8 +226,7 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
     import pandas as pd
 
     valid_iids = set(content_to_tokens.keys())
-    iid_mask = pd.Index(orig_iids).isin(valid_iids)
-    # All rows have action>0 (our fake), so only iid filter matters
+    iid_mask = np.array([iid in valid_iids for iid in orig_iids], dtype=np.bool_)
     orig_indices = np.where(iid_mask)[0]
     filtered_uids = orig_uids[orig_indices]
     filtered_ts = orig_ts[orig_indices]
