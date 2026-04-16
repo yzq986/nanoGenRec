@@ -243,6 +243,52 @@ class SparseMoEBlock(nn.Module):
 
 
 # ============================================================
+# ENTP-Loss helper (shared by NTPModel and NTPProbe)
+# ============================================================
+
+def _compute_entp_loss(
+    hidden_flat: torch.Tensor,
+    l0_proj: nn.Linear,
+    pos_layer_flat: torch.Tensor,
+    mask_flat: torch.Tensor,
+    neg_tokens_flat: torch.Tensor,
+    neg_mask_flat: torch.Tensor,
+) -> torch.Tensor:
+    """Compute ENTP penalty: −mean(log(1 − p_L0)) for unclicked exposures.
+
+    Only operates at L0 prediction positions (pos_layer == 0) with valid negatives.
+
+    Args:
+        hidden_flat: (B*S, D) — transformer hidden states, flattened.
+        l0_proj: output_projs[0] — L0 projection head.
+        pos_layer_flat: (B*S,) — which SID layer each position predicts.
+        mask_flat: (B*S,) — valid train positions.
+        neg_tokens_flat: (B*S, K) — L0 tokens of negatives per position.
+        neg_mask_flat: (B*S, K) — True for valid negatives.
+    Returns:
+        entp_loss: scalar.
+    """
+    # L0 positions with valid negatives
+    l0_mask = mask_flat & (pos_layer_flat == 0)
+    has_neg = neg_mask_flat.any(dim=-1)  # (B*S,)
+    active = l0_mask & has_neg
+    if not active.any():
+        return hidden_flat.new_tensor(0.0)
+
+    logits = l0_proj(hidden_flat[active])         # (N, C_l0)
+    probs = F.softmax(logits, dim=-1)             # (N, C_l0)
+
+    neg_tok = neg_tokens_flat[active]             # (N, K)
+    neg_val = neg_mask_flat[active]               # (N, K)
+
+    # Gather prob of each negative token; clamp -1 pad to 0 for safe indexing
+    neg_probs = probs.gather(1, neg_tok.clamp(min=0))  # (N, K)
+
+    penalty = -torch.log(1.0 - neg_probs.clamp(max=1.0 - 1e-6))  # (N, K)
+    return (penalty * neg_val).sum() / neg_val.sum().clamp(min=1)
+
+
+# ============================================================
 # Transformer Layer (pre-norm, causal, supports MoE or dense FFN)
 # ============================================================
 
@@ -387,6 +433,9 @@ class NTPModel(nn.Module):
         return_last_n: int = 1,
         packed_targets: Optional[torch.Tensor] = None,
         packed_mask: Optional[torch.Tensor] = None,
+        neg_l0_tokens: Optional[torch.Tensor] = None,
+        neg_l0_mask: Optional[torch.Tensor] = None,
+        entp_weight: float = 0.0,
     ):
         """Forward pass — supports both legacy (sliding window) and packed modes.
 
@@ -402,9 +451,16 @@ class NTPModel(nn.Module):
             return_last_n: trailing positions for logits (legacy).
             packed_targets: (B, T) shifted targets for packed mode.
             packed_mask: (B, T) bool mask of valid target positions.
+            neg_l0_tokens: (B, N_items, K) L0 tokens of unclicked exposures for ENTP loss.
+            neg_l0_mask: (B, N_items, K) bool mask (True = valid negative).
+            entp_weight: weight α for ENTP loss term.
         """
         if packed_targets is not None:
-            return self._forward_packed(input_tokens, packed_targets, packed_mask)
+            return self._forward_packed(
+                input_tokens, packed_targets, packed_mask,
+                neg_l0_tokens=neg_l0_tokens, neg_l0_mask=neg_l0_mask,
+                entp_weight=entp_weight,
+            )
 
         device = input_tokens.device
 
@@ -442,6 +498,9 @@ class NTPModel(nn.Module):
         input_tokens: torch.Tensor,
         targets: torch.Tensor,
         target_mask: torch.Tensor,
+        neg_l0_tokens: Optional[torch.Tensor] = None,
+        neg_l0_mask: Optional[torch.Tensor] = None,
+        entp_weight: float = 0.0,
     ) -> torch.Tensor:
         """LM-style forward on packed user sequences. Returns scalar loss.
 
@@ -449,12 +508,20 @@ class NTPModel(nn.Module):
         output_projs[(i+1) % n_sid_layers]. Loss is averaged per-layer
         then across layers (matching legacy training).
 
+        When entp_weight > 0 and neg_l0_tokens is provided, adds ENTP-Loss
+        (DualGR, WWW 2026): penalizes L0 probability of unclicked exposures
+        via −α·log(1 − p_L0) at L0 prediction positions.
+
         Args:
             input_tokens: (B, S) — packed tokens (right-padded with 0)
             targets: (B, S) — shifted targets (right-padded, ignored via mask)
             target_mask: (B, S) — True for valid target positions
+            neg_l0_tokens: (B, S, K) — L0 tokens of unclicked exposures per position.
+                Only meaningful at L0 prediction positions. Padded with -1.
+            neg_l0_mask: (B, S, K) — True for valid negative tokens.
+            entp_weight: α weight for ENTP loss term.
         Returns:
-            loss: scalar
+            loss: scalar (ntp_loss + α * entp_loss)
         """
         B, S = input_tokens.size()
         device = input_tokens.device
@@ -483,7 +550,19 @@ class NTPModel(nn.Module):
             total_loss += F.cross_entropy(logits, target_flat[layer_mask])
             n_active_layers += 1
 
-        return total_loss / max(n_active_layers, 1)
+        ntp_loss = total_loss / max(n_active_layers, 1)
+
+        # ── ENTP-Loss (optional) ──
+        if entp_weight > 0 and neg_l0_tokens is not None:
+            entp_loss = _compute_entp_loss(
+                hidden_flat, self.output_projs[0],
+                pos_layer_flat, mask_flat,
+                neg_l0_tokens.reshape(-1, neg_l0_tokens.size(-1)),
+                neg_l0_mask.reshape(-1, neg_l0_mask.size(-1)),
+            )
+            return ntp_loss + entp_weight * entp_loss
+
+        return ntp_loss
 
     @torch.no_grad()
     def beam_search(self, input_tokens: torch.Tensor, beam_size: int = 5) -> torch.Tensor:

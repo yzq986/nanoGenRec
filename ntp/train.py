@@ -126,8 +126,58 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
     return uids_s, iids_s, ts_s, starts, ends
 
 
+def _build_user_neg_index(exposure_data, content_to_tokens, verbose_fn=print):
+    """Build per-user index of unclicked exposure L0 tokens, sorted by timestamp.
+
+    Returns:
+        user_neg_index: dict {uid: np.ndarray of shape (N, 2)} where
+            col 0 = exposure_ts, col 1 = L0 token.
+            Sorted by exposure_ts. Only includes iids in content_to_tokens.
+    """
+    import pandas as pd
+
+    uids = exposure_data['uid']
+    iids = exposure_data['iid']
+    ts = exposure_data['exposure_ts']
+
+    verbose_fn(f"  ENTP: {len(uids):,} unclicked exposures")
+
+    # Filter: iid must be in SID dict
+    valid_iids = set(content_to_tokens.keys())
+    iid_mask = pd.Index(iids).isin(valid_iids)
+    uids_f = uids[iid_mask]
+    iids_f = iids[iid_mask]
+    ts_f = ts[iid_mask]
+    verbose_fn(f"  ENTP: {len(uids_f):,} with valid SID")
+
+    # Map iid → L0 token (first layer only)
+    l0_tokens = np.array([content_to_tokens[iid][0] for iid in iids_f], dtype=np.int32)
+
+    # Sort by (uid, ts)
+    sort_idx = np.lexsort((ts_f, uids_f))
+    uids_s = uids_f[sort_idx]
+    ts_s = ts_f[sort_idx]
+    l0_s = l0_tokens[sort_idx]
+
+    # Group by uid
+    boundaries = np.where(uids_s[1:] != uids_s[:-1])[0] + 1
+    starts = np.concatenate([[0], boundaries])
+    ends = np.concatenate([boundaries, [len(uids_s)]])
+
+    user_neg_index = {}
+    for u in range(len(starts)):
+        s, e = starts[u], ends[u]
+        uid = uids_s[s]
+        # Stack (ts, l0_token) pairs
+        user_neg_index[uid] = np.column_stack([ts_s[s:e], l0_s[s:e]])
+
+    verbose_fn(f"  ENTP: {len(user_neg_index):,} users with unclicked exposures")
+    return user_neg_index
+
+
 def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512,
-                            n_eval_target=50000, verbose_fn=print):
+                            n_eval_target=50000, verbose_fn=print,
+                            exposure_data=None, entp_k=5):
     """Build unified per-user sequences with split_pos for train/eval masking.
 
     Each user → one complete SID token sequence. split_pos marks the boundary
@@ -136,11 +186,18 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
     The split timestamp is chosen so that the total number of eval items across
     all users is approximately n_eval_target.
 
+    Args:
+        exposure_data: if provided, builds per-position negative L0 tokens for
+            ENTP-Loss (DualGR). Must be the output of load_all_exposure_data().
+        entp_k: max negatives per item position.
+
     Returns:
         sequences: list of dicts with keys:
             'tokens': List[int]  — full SID token sequence (n_items * n_layers)
             'split_pos': int     — token-level split point
             'eval_cids': List    — content_ids for items after split
+            'neg_l0': List[List[int]] (optional) — per-item K negative L0 tokens,
+                padded with -1. Length = n_user_items, inner length = entp_k.
         n_layers: int
         n_clusters_per_layer: list
     """
@@ -151,6 +208,12 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
 
     uids_s, iids_s, ts_s, starts, ends = \
         _build_user_items(behavior_data, content_to_tokens, verbose_fn)
+
+    # Build per-user negative index (ENTP)
+    user_neg_index = None
+    if exposure_data is not None:
+        user_neg_index = _build_user_neg_index(
+            exposure_data, content_to_tokens, verbose_fn)
 
     # Find split_ts so that total eval items ≈ n_eval_target
     # Items with ts > split_ts become eval items
@@ -169,6 +232,7 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
     n_train_only = 0
     n_eval_only = 0
     n_both = 0
+    n_neg_total = 0
 
     for u in range(len(starts)):
         s, e = starts[u], ends[u]
@@ -205,11 +269,38 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
         for toks in user_tokens:
             flat.extend(toks)
 
-        sequences.append({
+        seq_dict = {
             'tokens': flat,
             'split_pos': split_token_pos,
             'eval_cids': eval_cids,
-        })
+        }
+
+        # ── Per-item negative L0 tokens (ENTP) ──
+        if user_neg_index is not None:
+            uid = uids_s[s]
+            neg_arr = user_neg_index.get(uid)  # (M, 2): [ts, l0_token] sorted
+            neg_l0_per_item = []
+            for i in range(n):
+                item_negs = [-1] * entp_k
+                if neg_arr is not None and len(neg_arr) > 0:
+                    t_lo = float(user_ts[i - 1]) if i > 0 else 0.0
+                    t_hi = float(user_ts[i])
+                    # Binary search for window (t_lo, t_hi]
+                    lo = np.searchsorted(neg_arr[:, 0], t_lo, side='right')
+                    hi = np.searchsorted(neg_arr[:, 0], t_hi, side='right')
+                    candidates = neg_arr[lo:hi, 1]
+                    if len(candidates) > 0:
+                        if len(candidates) > entp_k:
+                            chosen = np.random.choice(candidates, entp_k, replace=False)
+                        else:
+                            chosen = candidates
+                        for j, tok in enumerate(chosen):
+                            item_negs[j] = int(tok)
+                        n_neg_total += len(chosen)
+                neg_l0_per_item.append(item_negs)
+            seq_dict['neg_l0'] = neg_l0_per_item
+
+        sequences.append(seq_dict)
 
         # Stats
         if split_item_idx == n:
@@ -230,6 +321,10 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
     verbose_fn(f"  Split: {n_both:,} train+eval, "
                f"{n_train_only:,} train-only, {n_eval_only:,} eval-only")
     verbose_fn(f"  Eval items: {n_eval_items:,}")
+    if user_neg_index is not None:
+        avg_neg = n_neg_total / max(len(sequences), 1)
+        verbose_fn(f"  ENTP negatives: {n_neg_total:,} total, "
+                   f"avg {avg_neg:.1f}/seq (K={entp_k})")
 
     return sequences, n_layers, n_clusters_per_layer, split_ts
 
@@ -241,33 +336,84 @@ def build_unified_sequences(sid_dict, behavior_data, n_items=10, max_seq_len=512
 class UnifiedSequenceDataset(torch.utils.data.Dataset):
     """Dataset of unified per-user sequences with split_pos."""
 
-    def __init__(self, tokens_list, split_pos_list):
+    def __init__(self, tokens_list, split_pos_list, neg_l0_list=None):
         """
         Args:
             tokens_list: list of 1D token lists (variable length)
             split_pos_list: list of int split positions
+            neg_l0_list: optional list of 2D lists (n_items, K) neg L0 tokens
         """
         self.tokens_list = tokens_list
         self.split_pos_list = split_pos_list
+        self.neg_l0_list = neg_l0_list
 
     def __len__(self):
         return len(self.tokens_list)
 
     def __getitem__(self, idx):
-        return (torch.tensor(self.tokens_list[idx], dtype=torch.long),
+        item = (torch.tensor(self.tokens_list[idx], dtype=torch.long),
                 self.split_pos_list[idx])
+        if self.neg_l0_list is not None:
+            return item + (torch.tensor(self.neg_l0_list[idx], dtype=torch.long),)
+        return item
 
 
 def unified_collate_fn(batch):
-    """Right-pad variable-length sequences, return split_pos tensor."""
-    seqs, split_positions = zip(*batch)
+    """Right-pad variable-length sequences, return split_pos tensor.
+
+    When neg_l0 data is present (3-tuples), also pads and returns neg tensors.
+    """
+    has_neg = len(batch[0]) == 3
+    if has_neg:
+        seqs, split_positions, neg_l0s = zip(*batch)
+    else:
+        seqs, split_positions = zip(*batch)
+
     lengths = torch.tensor([len(s) for s in seqs], dtype=torch.long)
     split_pos = torch.tensor(split_positions, dtype=torch.long)
     max_len = lengths.max().item()
     padded = torch.zeros(len(seqs), max_len, dtype=torch.long)
     for i, seq in enumerate(seqs):
         padded[i, :len(seq)] = seq
-    return padded, lengths, split_pos
+
+    if not has_neg:
+        return padded, lengths, split_pos
+
+    # Pad neg_l0: (B, max_items, K) → expand to (B, max_len_tokens, K)
+    # neg_l0s[i] shape: (n_items_i, K) — one row per item
+    # We need to broadcast item-level negs to token-level positions.
+    # Each item spans n_layers tokens; neg only applies at L0 prediction positions.
+    K = neg_l0s[0].size(1)
+    n_layers = max_len // neg_l0s[0].size(0) if neg_l0s[0].size(0) > 0 else 3
+    # Infer n_layers from first sequence: tokens / items
+    for i, nl in enumerate(neg_l0s):
+        if nl.size(0) > 0:
+            n_layers = lengths[i].item() // nl.size(0)
+            break
+
+    # Build (B, max_len-1, K) tensor aligned with input_tokens positions.
+    # Position j in input predicts token j+1. If (j+1) % n_layers == 0,
+    # it's an L0 prediction → use neg from item index (j+1) // n_layers.
+    S = max_len - 1  # same as input_tokens length
+    neg_padded = torch.full((len(seqs), S, K), -1, dtype=torch.long)
+    neg_mask = torch.zeros(len(seqs), S, K, dtype=torch.bool)
+
+    for i, nl in enumerate(neg_l0s):
+        n_items_i = nl.size(0)
+        for item_idx in range(n_items_i):
+            # This item's L0 prediction is at input position: item_idx * n_layers - 1
+            # because position j predicts token j+1, and token item_idx*n_layers
+            # is the L0 token of item_idx. So j+1 = item_idx*n_layers → j = item_idx*n_layers - 1.
+            # But item_idx=0 means j=-1 (no preceding context) → skip.
+            if item_idx == 0:
+                continue
+            pos = item_idx * n_layers - 1
+            if pos >= S:
+                break
+            neg_padded[i, pos] = nl[item_idx]
+            neg_mask[i, pos] = (nl[item_idx] >= 0)
+
+    return padded, lengths, split_pos, neg_padded, neg_mask
 
 
 # ============================================================
@@ -293,6 +439,8 @@ def train_packed(
     model_type='s-tier',
     ffn_dim=512,
     pre_sharded=False,
+    neg_l0_list=None,
+    entp_weight=0.0,
 ):
     """Train NTPModel or NTPProbe with unified sequences (causal LM style).
 
@@ -302,6 +450,8 @@ def train_packed(
         tokens_list: list of 1D token lists (variable length per user)
         split_pos_list: list of int split positions per sequence
         pre_sharded: if True, data is already this rank's shard (from preprocess-ntp).
+        neg_l0_list: optional list of 2D lists (n_items, K) neg L0 tokens for ENTP.
+        entp_weight: α weight for ENTP loss (0 = disabled).
     """
 
     if model_type == 's-tier':
@@ -355,6 +505,7 @@ def train_packed(
         model = DDP(model, device_ids=[local_rank], **ddp_kwargs)
 
     # Shard data per rank to save memory (each rank only holds 1/N)
+    neg_shard = neg_l0_list
     if pre_sharded:
         tokens_shard = tokens_list
         split_pos_shard = split_pos_list
@@ -365,14 +516,16 @@ def train_packed(
         shard_end = shard_start + shard_size if local_rank < world_size - 1 else n_total
         tokens_shard = tokens_list[shard_start:shard_end]
         split_pos_shard = split_pos_list[shard_start:shard_end]
-        del tokens_list, split_pos_list
+        if neg_l0_list is not None:
+            neg_shard = neg_l0_list[shard_start:shard_end]
+        del tokens_list, split_pos_list, neg_l0_list
         log(is_main, f"  Rank {local_rank}: shard {shard_start}..{shard_end} "
                       f"({len(tokens_shard):,} seqs)")
     else:
         tokens_shard = tokens_list
         split_pos_shard = split_pos_list
 
-    dataset = UnifiedSequenceDataset(tokens_shard, split_pos_shard)
+    dataset = UnifiedSequenceDataset(tokens_shard, split_pos_shard, neg_shard)
     train_loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -391,11 +544,24 @@ def train_packed(
                  f"{n_batches} batches/epoch, batch_size={batch_size}, "
                  f"world_size={world_size}")
 
+    use_entp = entp_weight > 0 and neg_shard is not None
+    if use_entp:
+        log(is_main, f"  ENTP-Loss enabled: α={entp_weight}")
+
     model.train()
     total_loss = 0.0
     t0 = time.time()
 
-    for step, (padded, lengths, split_positions) in enumerate(train_loader):
+    for step, batch in enumerate(train_loader):
+        if use_entp:
+            padded, lengths, split_positions, neg_padded, neg_mask_batch = batch
+            neg_padded = neg_padded.to(device, non_blocking=True)
+            neg_mask_batch = neg_mask_batch.to(device, non_blocking=True)
+        else:
+            padded, lengths, split_positions = batch
+            neg_padded = None
+            neg_mask_batch = None
+
         padded = padded.to(device, non_blocking=True)
         lengths = lengths.to(device, non_blocking=True)
         split_positions = split_positions.to(device, non_blocking=True)
@@ -413,7 +579,14 @@ def train_packed(
         # i+1 < split_pos, i.e. i < split_pos - 1.
         train_mask = valid_mask & (arange < (split_positions.unsqueeze(1) - 1))
 
-        loss = model(input_tokens, packed_targets=target_tokens, packed_mask=train_mask)
+        loss = model(
+            input_tokens,
+            packed_targets=target_tokens,
+            packed_mask=train_mask,
+            neg_l0_tokens=neg_padded,
+            neg_l0_mask=neg_mask_batch,
+            entp_weight=entp_weight,
+        )
 
         optimizer.zero_grad()
         loss.backward()
@@ -556,6 +729,11 @@ def parse_args():
                              'If set, skips data building and loads per-rank shard directly.')
     parser.add_argument('--eval_only', action='store_true',
                         help='Skip training, load checkpoint and run eval only')
+    # ENTP-Loss (DualGR, WWW 2026)
+    parser.add_argument('--entp_weight', type=float, default=0.0,
+                        help='ENTP-Loss weight α (0=disabled). Paper default: 0.1')
+    parser.add_argument('--entp_k', type=int, default=5,
+                        help='Max negative L0 tokens per item position for ENTP')
     return parser.parse_args()
 
 
@@ -743,8 +921,11 @@ def main():
                 f"Expected {prep_meta['n_shards']} shards but world_size={world_size}. "
                 f"Re-run preprocess-ntp with --n_shards {world_size}.")
         from gr_demo.ntp.preprocess import load_shard
-        tokens_list, split_pos_list = load_shard(shard_path)
-        log(is_main, f"  Rank {local_rank}: loaded {len(tokens_list):,} seqs from shard")
+        shard_data = load_shard(shard_path)
+        tokens_list, split_pos_list = shard_data[0], shard_data[1]
+        neg_l0_list = shard_data[2] if len(shard_data) > 2 else None
+        log(is_main, f"  Rank {local_rank}: loaded {len(tokens_list):,} seqs from shard"
+                     + (f" (with ENTP neg data)" if neg_l0_list is not None else ""))
         log(is_main, f"  Layers: {n_layers}, n_items: {n_items}, max_seq_len: {max_seq_len}")
 
         n_train = prep_meta['n_seqs']
@@ -770,16 +951,26 @@ def main():
                 date_start=args.date_start, date_end=args.date_end)
             log(is_main, f"  Interactions: {len(behavior_data['uid']):,}")
 
+            # ENTP: load exposure data if enabled
+            exposure_data = None
+            if args.entp_weight > 0:
+                log(is_main, "\nStep 2b: Loading exposure data (ENTP)")
+                from gr_demo.eval.batch import load_all_exposure_data
+                exposure_data = load_all_exposure_data(
+                    date_start=args.date_start, date_end=args.date_end)
+
             log(is_main, "\nStep 3: Building unified sequences")
             sequences, n_layers, n_clusters_per_layer, _split_ts = \
                 build_unified_sequences(
                     sid_dict, behavior_data,
-                    n_items=n_items, max_seq_len=max_seq_len)
+                    n_items=n_items, max_seq_len=max_seq_len,
+                    exposure_data=exposure_data, entp_k=args.entp_k)
 
-            del sid_dict, behavior_data
+            del sid_dict, behavior_data, exposure_data
 
             tokens_list = [s['tokens'] for s in sequences]
             split_pos_list = [s['split_pos'] for s in sequences]
+            neg_l0_list = [s['neg_l0'] for s in sequences] if 'neg_l0' in sequences[0] else None
             n_eval = sum(len(s['eval_cids']) for s in sequences)
             n_train = len(sequences)
             del sequences
@@ -791,9 +982,13 @@ def main():
                         tokens_list, allow_pickle=True)
                 np.save(os.path.join(shared_dir, 'split_pos_list.npy'),
                         split_pos_list, allow_pickle=True)
-            meta = (n_layers, n_clusters_per_layer, n_train, n_eval)
+                if neg_l0_list is not None:
+                    np.save(os.path.join(shared_dir, 'neg_l0_list.npy'),
+                            neg_l0_list, allow_pickle=True)
+            meta = (n_layers, n_clusters_per_layer, n_train, n_eval,
+                    neg_l0_list is not None)
         else:
-            tokens_list = split_pos_list = None
+            tokens_list = split_pos_list = neg_l0_list = None
             meta = None
 
         if world_size > 1:
@@ -815,17 +1010,23 @@ def main():
                 split_pos_list = np.load(
                     os.path.join(shared_dir, 'split_pos_list.npy'),
                     allow_pickle=True).tolist()
+                neg_l0_path = os.path.join(shared_dir, 'neg_l0_list.npy')
+                if os.path.exists(neg_l0_path):
+                    neg_l0_list = np.load(neg_l0_path, allow_pickle=True).tolist()
 
             dist.barrier()
             if is_main:
                 os.remove(os.path.join(shared_dir, 'tokens_list.npy'))
                 os.remove(os.path.join(shared_dir, 'split_pos_list.npy'))
+                neg_l0_path = os.path.join(shared_dir, 'neg_l0_list.npy')
+                if os.path.exists(neg_l0_path):
+                    os.remove(neg_l0_path)
                 try:
                     os.rmdir(shared_dir)
                 except OSError:
                     pass
 
-        n_layers, n_clusters_per_layer, n_train, n_eval = meta
+        n_layers, n_clusters_per_layer, n_train, n_eval, _has_neg = meta
         log(is_main, f"  Seqs: {len(tokens_list):,}, Eval items: {n_eval:,}, Layers: {n_layers}")
 
     # ── Data statistics ──
@@ -965,6 +1166,8 @@ def main():
             model_type=model_type,
             ffn_dim=ffn_dim,
             pre_sharded=bool(args.preprocessed_dir),
+            neg_l0_list=neg_l0_list,
+            entp_weight=args.entp_weight,
         )
 
         # ── Save checkpoint (rank 0 only) ──

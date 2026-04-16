@@ -114,7 +114,10 @@ class NTPProbe(nn.Module):
                 generated_tokens: Optional[torch.Tensor] = None,
                 return_last_n: int = 1,
                 packed_targets: Optional[torch.Tensor] = None,
-                packed_mask: Optional[torch.Tensor] = None):
+                packed_mask: Optional[torch.Tensor] = None,
+                neg_l0_tokens: Optional[torch.Tensor] = None,
+                neg_l0_mask: Optional[torch.Tensor] = None,
+                entp_weight: float = 0.0):
         """
         Args:
             input_tokens: (B, seq_len) history SID tokens
@@ -122,13 +125,20 @@ class NTPProbe(nn.Module):
             return_last_n: number of trailing positions to return logits for.
             packed_targets: (B, S) shifted targets for packed mode.
             packed_mask: (B, S) bool mask of valid target positions.
+            neg_l0_tokens: (B, S, K) L0 tokens of unclicked exposures for ENTP loss.
+            neg_l0_mask: (B, S, K) bool mask (True = valid negative).
+            entp_weight: weight α for ENTP loss term.
         Returns:
             Packed mode: scalar loss.
             Legacy mode, return_last_n=1: (B, C_layer) single logit tensor
             Legacy mode, return_last_n>1: list of n tensors [(B, C_l0), (B, C_l1), ...]
         """
         if packed_targets is not None:
-            return self._forward_packed(input_tokens, packed_targets, packed_mask)
+            return self._forward_packed(
+                input_tokens, packed_targets, packed_mask,
+                neg_l0_tokens=neg_l0_tokens, neg_l0_mask=neg_l0_mask,
+                entp_weight=entp_weight,
+            )
 
         B = input_tokens.size(0)
         device = input_tokens.device
@@ -179,6 +189,9 @@ class NTPProbe(nn.Module):
         input_tokens: torch.Tensor,
         targets: torch.Tensor,
         target_mask: torch.Tensor,
+        neg_l0_tokens: Optional[torch.Tensor] = None,
+        neg_l0_mask: Optional[torch.Tensor] = None,
+        entp_weight: float = 0.0,
     ) -> torch.Tensor:
         """LM-style forward on packed user sequences. Returns scalar loss.
 
@@ -190,9 +203,14 @@ class NTPProbe(nn.Module):
             input_tokens: (B, S) — packed tokens (right-padded with 0)
             targets: (B, S) — shifted targets (right-padded, ignored via mask)
             target_mask: (B, S) — True for valid target positions
+            neg_l0_tokens: (B, S, K) — L0 tokens of unclicked exposures.
+            neg_l0_mask: (B, S, K) — True for valid negatives.
+            entp_weight: α weight for ENTP loss.
         Returns:
             loss: scalar
         """
+        from gr_demo.ntp.model import _compute_entp_loss
+
         B, S = input_tokens.size()
         device = input_tokens.device
         L = self.n_sid_layers
@@ -222,7 +240,18 @@ class NTPProbe(nn.Module):
             total_loss += F.cross_entropy(logits, target_flat[layer_mask])
             n_active_layers += 1
 
-        return total_loss / max(n_active_layers, 1)
+        ntp_loss = total_loss / max(n_active_layers, 1)
+
+        if entp_weight > 0 and neg_l0_tokens is not None:
+            entp_loss = _compute_entp_loss(
+                hidden_flat, self.output_projs[0],
+                pos_layer_flat, mask_flat,
+                neg_l0_tokens.reshape(-1, neg_l0_tokens.size(-1)),
+                neg_l0_mask.reshape(-1, neg_l0_mask.size(-1)),
+            )
+            return ntp_loss + entp_weight * entp_loss
+
+        return ntp_loss
 
     @torch.no_grad()
     def beam_search(self, input_tokens: torch.Tensor, beam_size: int = 5) -> torch.Tensor:
