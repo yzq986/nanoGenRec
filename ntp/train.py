@@ -586,10 +586,13 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
 
     # All-reduce teacher-forced stats
     # Layout: [total_loss, n_positions, n_eval_items,
-    #          prefix_hit_0..L-1, indep_hit_0..L-1]
+    #          prefix_hit_0..L-1, indep_hit_0..L-1, per_layer_loss_0..L-1]
     local_n_pos = tf_results['n_eval_positions']
     local_n_items = tf_results.get('n_eval_items', 0)
     local_n_per_layer = local_n_pos / n_layers if n_layers > 0 else 1
+    local_layer_ppl = tf_results.get('layer_ppl', [1.0] * n_layers)
+    # Reconstruct per-layer total loss from layer_ppl: loss_li = ln(ppl_li) * n_per_layer
+    local_layer_loss = [np.log(max(p, 1e-8)) * local_n_per_layer for p in local_layer_ppl]
 
     local_stats = torch.tensor(
         [tf_results['avg_loss'] * local_n_pos,  # total loss
@@ -597,7 +600,8 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
          local_n_items,                           # total eval items
          ] + [h * local_n_items for h in tf_results['depth_hit_10']         # prefix hit counts
          ] + [h * local_n_per_layer for h in tf_results.get('depth_hit_10_indep',
-                                                             tf_results['depth_hit_10'])],
+                                                             tf_results['depth_hit_10'])
+         ] + local_layer_loss,                    # per-layer total loss
         device=device)
 
     if world_size > 1:
@@ -614,9 +618,13 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
                         for li in range(n_layers)]
     global_depth_h10_indep = [local_stats[3 + n_layers + li].item() / max(n_per_layer, 1)
                               for li in range(n_layers)]
+    off = 3 + 2 * n_layers
+    global_layer_ppl = [np.exp(local_stats[off + li].item() / max(n_per_layer, 1))
+                        for li in range(n_layers)]
 
     if is_main:
-        print(f"  PPL: {global_ppl:.2f}")
+        print(f"  PPL: {global_ppl:.2f}  (per-layer: {[f'L{i}={p:.2f}' for i, p in enumerate(global_layer_ppl)]})")
+        print(f"    L0=cross-item (hard), L1..L{n_layers-1}=intra-item (easy)")
         print(f"  Depth hit@10 (prefix): {[f'{h:.3f}' for h in global_depth_h10]}")
         print(f"  Depth hit@10 (indep):  {[f'{h:.3f}' for h in global_depth_h10_indep]}")
         print(f"  Eval items: {int(total_eval_items):,}, "
@@ -665,6 +673,7 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
     # Combine results (meaningful on rank 0)
     results = {
         'ppl': round(global_ppl, 4),
+        'layer_ppl': [round(p, 4) for p in global_layer_ppl],
         'avg_loss': round(global_avg_loss, 6),
         'depth_hit@10': [round(h, 4) for h in global_depth_h10],
         'depth_hit@10_indep': [round(h, 4) for h in global_depth_h10_indep],

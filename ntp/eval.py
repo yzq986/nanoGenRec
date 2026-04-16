@@ -75,6 +75,9 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
     total_loss = 0.0
     total_eval_positions = 0
     total_eval_items = 0
+    # Per-layer loss tracking
+    per_layer_loss = [0.0] * n_layers
+    per_layer_count = [0] * n_layers
     # Per-layer independent hit@10
     indep_hit_counts = [0] * n_layers
     # Prefix-based hit@10: layer li = "layers 0..li ALL hit"
@@ -150,8 +153,12 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
             logits = probe.output_projs[li](hidden_flat[layer_mask])
             targets_l = target_flat[layer_mask]
 
-            batch_loss += F.cross_entropy(logits, targets_l, reduction='sum').item()
-            batch_n += layer_mask.sum().item()
+            layer_loss = F.cross_entropy(logits, targets_l, reduction='sum').item()
+            layer_n = layer_mask.sum().item()
+            batch_loss += layer_loss
+            batch_n += layer_n
+            per_layer_loss[li] += layer_loss
+            per_layer_count[li] += layer_n
 
             topk_vals = min(10, logits.size(-1))
             hit = (logits.topk(topk_vals, dim=-1).indices == targets_l.unsqueeze(1)).any(dim=-1)
@@ -205,10 +212,18 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
     ppl = np.exp(avg_loss)
     indep_h10 = [c / max(n_per_layer, 1) for c in indep_hit_counts]
     prefix_h10 = [c / max(total_eval_items, 1) for c in prefix_hit_counts]
+    layer_ppl = [np.exp(per_layer_loss[li] / max(per_layer_count[li], 1))
+                 for li in range(n_layers)]
+
+    if verbose:
+        print(f"  Per-layer PPL: {['L' + str(i) + '=' + f'{p:.2f}' for i, p in enumerate(layer_ppl)]}")
+        print(f"    L0 = cross-item prediction (hard)")
+        print(f"    L1..L{n_layers-1} = intra-item autocompletion (teacher-forced, easy)")
 
     return {
         'avg_loss': avg_loss,
         'ppl': ppl,
+        'layer_ppl': layer_ppl,
         'depth_hit_10': prefix_h10,
         'depth_hit_10_indep': indep_h10,
         'n_eval_positions': total_eval_positions,
@@ -495,11 +510,17 @@ class SemanticIDPredictionMetric(BaseMetric):
 
         ppl = tf_results['ppl']
         depth_h10 = tf_results['depth_hit_10']
+        depth_h10_indep = tf_results.get('depth_hit_10_indep', depth_h10)
+        layer_ppl = tf_results.get('layer_ppl', [])
 
         if verbose:
             print(f"  Perplexity: {ppl:.2f}")
-            print(f"  Depth hit@10: {[f'{h:.3f}' for h in depth_h10]}")
-            print(f"  Eval positions: {tf_results['n_eval_positions']:,}")
+            if layer_ppl:
+                print(f"  Per-layer PPL: {[f'L{i}={p:.2f}' for i, p in enumerate(layer_ppl)]}")
+            print(f"  Depth hit@10 (prefix): {[f'{h:.3f}' for h in depth_h10]}")
+            print(f"  Depth hit@10 (indep):  {[f'{h:.3f}' for h in depth_h10_indep]}")
+            print(f"  Eval items: {tf_results.get('n_eval_items', 0):,}, "
+                  f"positions: {tf_results['n_eval_positions']:,}")
 
         # ── Beam search recall (small subsample) ──
         if verbose:
