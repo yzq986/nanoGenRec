@@ -31,6 +31,9 @@ for arg in "$@"; do
     esac
 done
 
+# Ensure wandb is available
+pip install -q wandb 2>/dev/null || true
+
 N_GPUS="${N_GPUS:-$(python -c 'import torch; print(max(1, torch.cuda.device_count()))')}"
 SID_CACHE="experiments/sid_cache/exp013-4096x3-12d-binary"
 NTP_DATA="experiments/ntp_data/exp014"
