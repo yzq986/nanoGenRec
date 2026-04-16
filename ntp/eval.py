@@ -108,6 +108,7 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
                                        dtype=torch.long, device=device)
         lengths = torch.tensor([len(t) for t in tokens_list],
                                dtype=torch.long, device=device)
+        max_len = lengths.max().item()
         padded = torch.zeros(B, max_len, dtype=torch.long, device=device)
         for i, toks in enumerate(tokens_list):
             padded[i, :len(toks)] = torch.tensor(toks, dtype=torch.long)
