@@ -189,17 +189,31 @@ TEXT_CACHE_MAX_SIZE = 500_000  # 最大条目数
 
 
 class LFUCache:
-    """精确计数 LFU: 淘汰访问频次最低的条目。"""
+    """O(1) LFU cache: 频率桶 + min_freq 追踪。"""
 
     def __init__(self, max_size=TEXT_CACHE_MAX_SIZE):
-        self._data = {}       # text → embedding
-        self._counter = {}    # text → int
+        from collections import OrderedDict, defaultdict
+        self._data = {}                          # text → embedding
+        self._freq = {}                          # text → int
+        self._buckets = defaultdict(OrderedDict)  # freq → {text: None}
+        self._min_freq = 0
         self._max_size = max_size
         self.hits = 0
 
+    def _touch(self, text):
+        """将 text 从当前频率桶移到 freq+1 桶。"""
+        f = self._freq[text]
+        del self._buckets[f][text]
+        if not self._buckets[f]:
+            del self._buckets[f]
+            if self._min_freq == f:
+                self._min_freq = f + 1
+        self._freq[text] = f + 1
+        self._buckets[f + 1][text] = None
+
     def get(self, text):
         if text in self._data:
-            self._counter[text] += 1
+            self._touch(text)
             self.hits += 1
             return self._data[text]
         return None
@@ -208,11 +222,17 @@ class LFUCache:
         if text in self._data:
             return
         if len(self._data) >= self._max_size:
-            victim = min(self._counter, key=self._counter.get)
+            # 淘汰 min_freq 桶中最早插入的
+            bucket = self._buckets[self._min_freq]
+            victim, _ = bucket.popitem(last=False)
+            if not bucket:
+                del self._buckets[self._min_freq]
             del self._data[victim]
-            del self._counter[victim]
+            del self._freq[victim]
         self._data[text] = embedding
-        self._counter[text] = 1
+        self._freq[text] = 1
+        self._buckets[1][text] = None
+        self._min_freq = 1
 
     def __len__(self):
         return len(self._data)
