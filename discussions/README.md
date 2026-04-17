@@ -11,3 +11,4 @@ trade-offs matter.
 | File | Topic | Date |
 |------|-------|------|
 | [001-sp-dpo-vs-sft-vs-contrastive.md](001-sp-dpo-vs-sft-vs-contrastive.md) | SP-DPO vs SFT vs Contrastive Learning: what's really different? | 2026-04-17 |
+| [002-rf-dpo-grpo-ecpo-progression.md](002-rf-dpo-grpo-ecpo-progression.md) | From SP-DPO to ECPO: the full RL alignment progression | 2026-04-17 |

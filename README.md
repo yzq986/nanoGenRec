@@ -8,7 +8,7 @@
 ## 当前阶段
 
 ```
-Tokenizer 阶段 ✅ → NTP Baseline 阶段 ← (当前)
+Tokenizer 阶段 ✅ → NTP 阶段 ← (当前) → RL 对齐 (规划中)
 ```
 
 - **Tokenizer**: 4096×3 binary MLP-FSQ `[2]×12` 确认为赢家 (EXP-012, snHR=0.095, collision=0.89%)
@@ -42,14 +42,22 @@ graph LR
         N_TRAIN --> N_EVAL
     end
 
-    subgraph S5 ["5. 部署"]
+    subgraph S5 ["5. RL 对齐 (规划中)"]
+        direction TB
+        R_TRAIN["<b>训练</b><br>SP-DPO → RF-DPO → GRPO → ECPO<br><code>rl/</code>"]
+        R_EVAL["<b>评测</b><br>Recall/NDCG 对比<br>Reward 分布变化"]
+        R_TRAIN --> R_EVAL
+    end
+
+    subgraph S6 ["6. 部署"]
         D5["打包上线<br><code>model/pack.py</code>"]
     end
 
-    S1 --> S2 --> S3 --> S4 --> S5
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6
 
     style S3 fill:#e8f5e9,stroke:#43a047
     style S4 fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
+    style S5 fill:#f3e5f5,stroke:#9c27b0,stroke-dasharray:5
 ```
 
 所有命令通过 `python -m gr_demo <command>` 调用。
@@ -241,6 +249,13 @@ gr_demo/
 │   │   ├── exp-011.py     # EXP-011 codebook ablation
 │   │   └── exp-011.sh     # EXP-011 shell 版
 │   └── hyperparam/        # 超参搜索结果
+├── rl/
+│   ├── README.md          # RL 对齐 roadmap (SP-DPO → RF-DPO → GRPO → ECPO)
+│   └── __init__.py
+├── discussions/
+│   ├── README.md          # 深度技术讨论索引
+│   ├── 001-sp-dpo-vs-sft-vs-contrastive.md  # SP-DPO vs SFT vs 对比学习
+│   └── 002-rf-dpo-grpo-ecpo-progression.md  # RL 对齐完整递进路径
 ├── ideas/
 │   ├── README.md          # 索引 + 优先级总览 (62 ideas, 39 papers)
 │   ├── tokenizer.md       # 量化方法 (9 ideas)
@@ -304,6 +319,7 @@ L̂(N) = 2.522 + 2055.1 / N^0.456
 4. **Embedding fine-tune 路线已关闭**: I2I contrastive 信号不足以弥补 semantic→behavior embedding gap
 5. **Scaling law 成立**: NTP loss 遵循 `L(N) = 2.522 + 2055/N^0.456`，α 接近 OneRec-V2 (0.489)
 6. **当前 pipeline**: Qwen3-0.6B (冻结) → 4096×3 binary MLP-FSQ `[2]×12` → 3-token SID → NTP 模型
+7. **RL 对齐路径已规划**: SP-DPO → RF-DPO → GRPO → ECPO 四阶段渐进，详见 [rl/README.md](rl/README.md)
 
 ## 数据规模与分布
 
