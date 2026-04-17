@@ -193,72 +193,76 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
         if not files_with_new:
             return np.array([]), []
 
-        # Phase 2: read full data only for files with new rows
-        dfs = []
+        # Phase 2: read files one-by-one, skip seen content_ids
+        seen_cids = set(cached_ids)  # treat cached as already seen
+        my_content_ids = []
+        my_texts = []
+        n_dup_skipped = 0
+
         for f in files_with_new:
             with fs.open(f, 'rb') as file:
-                dfs.append(pd.read_parquet(file))
+                df = pd.read_parquet(file)
 
-        df = pd.concat(dfs, ignore_index=True)
-        n_before_dedup = len(df)
-        df = df.drop_duplicates(subset='content_id', keep='first')
-        if rank == 0 and n_before_dedup != len(df):
-            print(f"  Phase 2: dedup {n_before_dedup:,} → {len(df):,} rows")
+            text_col = None
+            for col in ['full_text', 'text', 'content']:
+                if col in df.columns:
+                    text_col = col
+                    break
+            if text_col is None:
+                raise ValueError(f"No text column found. Available: {list(df.columns)}")
 
-        text_col = None
-        for col in ['full_text', 'text', 'content']:
-            if col in df.columns:
-                text_col = col
-                break
-        if text_col is None:
-            raise ValueError(f"No text column found. Available: {list(df.columns)}")
+            for cid, text in zip(df['content_id'].values, df[text_col].fillna('').values):
+                cid_str = str(cid)
+                if cid_str in seen_cids:
+                    n_dup_skipped += 1
+                    continue
+                if cid_to_shard(cid, world_size) == rank:
+                    my_content_ids.append(cid)
+                    my_texts.append(text)
+                seen_cids.add(cid_str)
 
-        content_ids_all = df['content_id'].values
-        texts_all = df[text_col].fillna('').values
+        if rank == 0 and n_dup_skipped > 0:
+            print(f"  Phase 2: skipped {n_dup_skipped:,} duplicate rows")
 
-        # Filter: uncached AND hash to this rank
-        my_indices = np.array([
-            i for i in range(len(content_ids_all))
-            if str(content_ids_all[i]) not in cached_ids
-            and cid_to_shard(content_ids_all[i], world_size) == rank
-        ])
+        content_ids = np.array(my_content_ids) if my_content_ids else np.array([])
+        texts = my_texts
     else:
-        # ── No cache: load everything, hash-partition ──
-        dfs = []
+        # ── No cache: load file-by-file, skip seen content_ids ──
+        seen_cids = set()
+        my_content_ids = []
+        my_texts = []
+        total_rows = 0
+
         for f in files:
             with fs.open(f, 'rb') as file:
-                dfs.append(pd.read_parquet(file))
+                df = pd.read_parquet(file)
+            total_rows += len(df)
 
-        if not dfs:
-            return np.array([]), []
+            text_col = None
+            for col in ['full_text', 'text', 'content']:
+                if col in df.columns:
+                    text_col = col
+                    break
+            if text_col is None:
+                raise ValueError(f"No text column found. Available: {list(df.columns)}")
 
-        df = pd.concat(dfs, ignore_index=True)
-        n_before_dedup = len(df)
-        df = df.drop_duplicates(subset='content_id', keep='first')
+            for cid, text in zip(df['content_id'].values, df[text_col].fillna('').values):
+                cid_str = str(cid)
+                if cid_str in seen_cids:
+                    continue
+                if cid_to_shard(cid, world_size) == rank:
+                    my_content_ids.append(cid)
+                    my_texts.append(text)
+                seen_cids.add(cid_str)
 
         if rank == 0:
-            print(f"Total rows: {n_before_dedup:,} → {len(df):,} after dedup")
+            print(f"Total rows: {total_rows:,}, unique: {len(seen_cids):,}")
 
-        text_col = None
-        for col in ['full_text', 'text', 'content']:
-            if col in df.columns:
-                text_col = col
-                break
-        if text_col is None:
-            raise ValueError(f"No text column found. Available: {list(df.columns)}")
+        content_ids = np.array(my_content_ids) if my_content_ids else np.array([])
+        texts = my_texts
 
-        content_ids_all = df['content_id'].values
-        texts_all = df[text_col].fillna('').values
-        my_indices = np.array([
-            i for i in range(len(content_ids_all))
-            if cid_to_shard(content_ids_all[i], world_size) == rank
-        ])
-
-    if len(my_indices) == 0:
+    if len(content_ids) == 0:
         return np.array([]), []
-
-    content_ids = content_ids_all[my_indices]
-    texts = texts_all[my_indices].tolist()
 
     print(f"[Rank {rank}] Got {len(content_ids):,} rows to process")
 
