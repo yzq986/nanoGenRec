@@ -1,0 +1,42 @@
+{
+  "name": "exp016-C-31d-M",
+  "model_type": "s-tier",
+  "n_params": 629568512,
+  "n_active_params": 101086208,
+  "total_tokens": 261921144,
+  "total_flops": 158859691451891712,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "eval": {
+    "ppl": 19.3927,
+    "layer_ppl": [
+      290.6826,
+      8.3138,
+      3.0497
+    ],
+    "avg_loss": 2.964897,
+    "depth_hit@10": [
+      0.2304,
+      0.2073,
+      0.2064
+    ],
+    "depth_hit@10_indep": [
+      0.2298,
+      0.8486,
+      0.8968
+    ],
+    "depth_acc_beam": [
+      0.03,
+      0.019,
+      0.019
+    ],
+    "target_sid_found_rate": 0.659,
+    "n_eval_positions": 148533,
+    "n_eval_items": 49383,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.137,
+    "item_recall@50": 0.312,
+    "item_recall@100": 0.432,
+    "item_recall@500": 0.658
+  },
+  "reused_from": "exp015-scale-07-100M"
+}
