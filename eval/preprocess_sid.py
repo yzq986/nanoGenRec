@@ -3,7 +3,15 @@
 固定 tokenizer config 后一次性跑完，后续 NTP 实验直接加载缓存。
 
 Usage:
+    # Full mode (train + predict, single GPU)
     python run.py preprocess-sid --model qwen3-0.6b --behavior_path auto
+
+    # Incremental mode (predict-only, single GPU)
+    python run.py preprocess-sid --model qwen3-0.6b --incremental
+
+    # Incremental mode (predict-only, 8×A100 distributed)
+    torchrun --nproc_per_node=8 -m gr_demo.eval.preprocess_sid \
+        --model qwen3-0.6b --incremental
 
 输出目录: experiments/sid_cache/{model_key}/
     - quantizer.pt       训练好的 ResKmeansFSQ 模型
@@ -70,27 +78,64 @@ def parse_args():
     return parser.parse_args()
 
 
-def _load_embedding_cache(model_key):
-    """Load embedding cache, return (cache_dict, embedding_dim)."""
-    embedding_cache_dir = f'{EFS_EMBEDDING_CACHE}/{model_key}'
-    incremental_cache_path = f'{embedding_cache_dir}/incremental_cache.npy'
-    embedding_cache_path = f'{embedding_cache_dir}/embeddings.npy'
-    content_ids_cache_path = f'{embedding_cache_dir}/content_ids.npy'
+NUM_SHARDS = 8
 
+
+def _load_embedding_cache(model_key, shard_idx=None):
+    """Load embedding cache, return (cache_dict, embedding_dim).
+
+    Args:
+        model_key: embedding model key
+        shard_idx: if set, load only shard_{shard_idx}.npy (for distributed mode).
+                   if None, load all shards merged (for single-process mode).
+    """
+    embedding_cache_dir = f'{EFS_EMBEDDING_CACHE}/{model_key}'
+
+    # ── Shard-based loading ──
+    if shard_idx is not None:
+        shard_path = f'{embedding_cache_dir}/shard_{shard_idx}.npy'
+        if os.path.exists(shard_path):
+            cache_dict = np.load(shard_path, allow_pickle=True).item()
+            dim = next(iter(cache_dict.values())).shape[0] if cache_dict else 0
+            print(f"  Loaded shard_{shard_idx}: {len(cache_dict):,} embeddings, dim={dim}")
+            return cache_dict, dim
+        raise FileNotFoundError(f"Shard not found: {shard_path}")
+
+    # ── Full loading: try shards first, then legacy ──
+    shard_files = [f'{embedding_cache_dir}/shard_{i}.npy' for i in range(NUM_SHARDS)]
+    has_shards = any(os.path.exists(f) for f in shard_files)
+
+    if has_shards:
+        cache_dict = {}
+        for i, sf in enumerate(shard_files):
+            if os.path.exists(sf):
+                shard = np.load(sf, allow_pickle=True).item()
+                cache_dict.update(shard)
+        if cache_dict:
+            dim = next(iter(cache_dict.values())).shape[0]
+            print(f"  Loaded {len(cache_dict):,} embeddings from {NUM_SHARDS} shards, dim={dim}")
+            return cache_dict, dim
+
+    # Legacy: incremental_cache.npy
+    incremental_cache_path = f'{embedding_cache_dir}/incremental_cache.npy'
     if os.path.exists(incremental_cache_path):
         cache_dict = np.load(incremental_cache_path, allow_pickle=True).item()
         dim = next(iter(cache_dict.values())).shape[0]
-        print(f"  Loaded {len(cache_dict):,} embeddings from incremental_cache, dim={dim}")
+        print(f"  Loaded {len(cache_dict):,} embeddings from incremental_cache (legacy), dim={dim}")
         return cache_dict, dim
-    elif os.path.exists(embedding_cache_path) and os.path.exists(content_ids_cache_path):
+
+    # Legacy: separate arrays
+    embedding_cache_path = f'{embedding_cache_dir}/embeddings.npy'
+    content_ids_cache_path = f'{embedding_cache_dir}/content_ids.npy'
+    if os.path.exists(embedding_cache_path) and os.path.exists(content_ids_cache_path):
         embeddings = np.load(embedding_cache_path, allow_pickle=True)
         content_ids = np.load(content_ids_cache_path, allow_pickle=True)
         cache_dict = {cid: emb for cid, emb in zip(content_ids, embeddings)}
         dim = embeddings.shape[1]
-        print(f"  Loaded {len(cache_dict):,} embeddings from cache, dim={dim}")
+        print(f"  Loaded {len(cache_dict):,} embeddings from cache (legacy), dim={dim}")
         return cache_dict, dim
-    else:
-        raise FileNotFoundError(f"Cache not found at {embedding_cache_dir}. Run encode first.")
+
+    raise FileNotFoundError(f"No embedding cache found at {embedding_cache_dir}. Run encode first.")
 
 
 def _find_sid_cache_dir(repo_root, model_key, explicit_output_dir):
@@ -130,8 +175,45 @@ def _find_sid_cache_dir(repo_root, model_key, explicit_output_dir):
     return default_dir  # will fail later with clear error
 
 
+def _setup_distributed():
+    """Initialize distributed environment. Returns (rank, world_size, local_rank)."""
+    import torch.distributed as dist
+
+    if 'RANK' in os.environ:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+        dist.init_process_group('nccl')
+    else:
+        rank = 0
+        world_size = 1
+        local_rank = 0
+
+    torch.cuda.set_device(local_rank)
+    return rank, world_size, local_rank
+
+
+def _cleanup_distributed():
+    import torch.distributed as dist
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def _cid_to_shard(cid, n_shards=NUM_SHARDS) -> int:
+    """Deterministic shard assignment — matches encode_distributed.cid_to_shard."""
+    return hash(str(cid)) % n_shards
+
+
 def main_incremental(args):
-    """Incremental mode: load existing quantizer, predict SIDs for new items only."""
+    """Incremental mode: load existing quantizer, predict SIDs for new items only.
+
+    Supports torchrun distributed mode (8×A100):
+        torchrun --nproc_per_node=8 -m gr_demo.eval.preprocess_sid \\
+            --model qwen3-0.6b --incremental
+
+    Each rank loads its own shard_{rank}.npy, diffs against existing semantic_ids.npy,
+    predicts SIDs on its own GPU, then Rank 0 collects and merges all results.
+    """
     model_key = args.model
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     output_dir = _find_sid_cache_dir(repo_root, model_key, args.output_dir)
@@ -140,95 +222,172 @@ def main_incremental(args):
     sid_path = os.path.join(output_dir, 'semantic_ids.npy')
     config_path = os.path.join(output_dir, 'config.json')
 
-    if not os.path.exists(quantizer_path) or not os.path.exists(sid_path):
-        raise FileNotFoundError(
-            f"Incremental mode requires existing quantizer.pt and semantic_ids.npy in {output_dir}. "
-            "Run full preprocess-sid first.")
+    # ── Distributed setup ──
+    is_distributed = 'RANK' in os.environ
+    if is_distributed:
+        rank, world_size, local_rank = _setup_distributed()
+        device = f'cuda:{local_rank}'
+    else:
+        rank, world_size, local_rank = 0, 1, 0
+        device = args.device
 
-    print("=" * 60)
-    print("SID Preprocessing (INCREMENTAL)")
-    print("=" * 60)
+    if not os.path.exists(quantizer_path) or not os.path.exists(sid_path):
+        if rank == 0:
+            raise FileNotFoundError(
+                f"Incremental mode requires existing quantizer.pt and semantic_ids.npy in {output_dir}. "
+                "Run full preprocess-sid first.")
+        return
+
+    if rank == 0:
+        print("=" * 60)
+        print(f"SID Preprocessing (INCREMENTAL, {'distributed ' + str(world_size) + ' GPUs' if is_distributed else 'single GPU'})")
+        print("=" * 60)
     t0 = time.time()
 
-    # ── Step 1: Load existing SID cache ──
-    print("\nStep 1: Loading existing SID cache...")
+    # ── Step 1: Load existing SID keys (all ranks, read-only) ──
+    if rank == 0:
+        print("\nStep 1: Loading existing SID cache...")
     existing_sid_dict = np.load(sid_path, allow_pickle=True).item()
     existing_keys = set(existing_sid_dict.keys())
-    print(f"  Existing SIDs: {len(existing_keys):,}")
+    if rank == 0:
+        print(f"  Existing SIDs: {len(existing_keys):,}")
 
-    # ── Step 2: Load embedding cache & diff ──
-    print("\nStep 2: Loading embedding cache...")
-    cache_dict, _ = _load_embedding_cache(model_key)
+    # ── Step 2: Each rank loads its own shard & diffs ──
+    if rank == 0:
+        print("\nStep 2: Loading embedding shards & computing diff...")
+
+    if is_distributed:
+        # Distributed: each rank loads only its own shard
+        cache_dict, _ = _load_embedding_cache(model_key, shard_idx=rank)
+    else:
+        # Single-process: load all shards merged
+        cache_dict, _ = _load_embedding_cache(model_key)
+
     all_keys = set(str(k) for k in cache_dict.keys())
 
     # Optional exposure filter
     if args.behavior_path:
-        print("  Filtering by exposed IIDs...")
+        if rank == 0:
+            print("  Filtering by exposed IIDs...")
         exposed_iids = load_exposed_iids(args.behavior_path,
                                          date_start=args.date_start, date_end=args.date_end)
         all_keys = all_keys & exposed_iids
-        print(f"  Exposed items in embedding cache: {len(all_keys):,}")
+        if rank == 0:
+            print(f"  Exposed items in embedding cache: {len(all_keys):,}")
 
     new_keys = all_keys - existing_keys
-    print(f"  New items to process: {len(new_keys):,}")
+    print(f"  [Rank {rank}] New items to process: {len(new_keys):,}")
 
-    if not new_keys:
-        print("\nNo new items — SID cache is up to date.")
-        return
-
-    # ── Step 3: Load quantizer ──
-    print("\nStep 3: Loading trained quantizer...")
-    model = ResKmeansFSQ.load(quantizer_path, device=args.device)
+    # ── Step 3: Load quantizer on this rank's GPU ──
+    if rank == 0:
+        print(f"\nStep 3: Loading trained quantizer on {device}...")
+    model = ResKmeansFSQ.load(quantizer_path, device=device)
 
     # ── Step 4: Predict SIDs for new items ──
-    print(f"\nStep 4: Generating SIDs for {len(new_keys):,} new items...")
-    t1 = time.time()
+    my_new_sid_dict = {}
+    if new_keys:
+        if rank == 0:
+            print(f"\nStep 4: Generating SIDs...")
+        t1 = time.time()
 
-    new_keys_list = sorted(new_keys)
-    new_embeddings = np.array([cache_dict[k] if k in cache_dict
-                               else cache_dict[int(k)] for k in new_keys_list],
-                              dtype=np.float32)
-    new_embed_tensor = torch.tensor(new_embeddings, dtype=torch.float32)
+        new_keys_list = sorted(new_keys)
+        new_embeddings = np.array([cache_dict[k] if k in cache_dict
+                                   else cache_dict[int(k)] for k in new_keys_list],
+                                  dtype=np.float32)
+        new_embed_tensor = torch.tensor(new_embeddings, dtype=torch.float32)
 
-    new_sids = generate_semantic_ids_fsq(model, new_embed_tensor, model.normalize_residuals)
-    gen_time = time.time() - t1
-    print(f"  Generated {len(new_sids):,} SIDs ({gen_time:.1f}s)")
+        new_sids = generate_semantic_ids_fsq(model, new_embed_tensor, model.normalize_residuals)
+        gen_time = time.time() - t1
+        print(f"  [Rank {rank}] Generated {len(new_sids):,} SIDs ({gen_time:.1f}s)")
 
-    # ── Step 5: Merge & save ──
-    print(f"\nStep 5: Merging and saving...")
-    for key, sid in zip(new_keys_list, new_sids):
-        existing_sid_dict[key] = sid
-
-    np.save(sid_path, existing_sid_dict)
-    print(f"  Saved {len(existing_sid_dict):,} total SID assignments "
-          f"(+{len(new_keys):,} new)")
-
-    # Update config
-    all_sids = list(existing_sid_dict.values())
-    unique_sids = len(set(all_sids))
-    collision = 1.0 - unique_sids / len(all_sids)
-    print(f"  Unique SIDs: {unique_sids:,} / {len(all_sids):,} (collision={collision:.4f})")
-
-    if os.path.exists(config_path):
-        with open(config_path) as f:
-            config = json.load(f)
+        my_new_sid_dict = {k: sid for k, sid in zip(new_keys_list, new_sids)}
     else:
-        config = {}
-    config.update({
-        'n_items': len(existing_sid_dict),
-        'n_unique_sids': unique_sids,
-        'collision_rate': round(collision, 6),
-        'incremental_update': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'incremental_new_items': len(new_keys),
-    })
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=2)
+        if rank == 0:
+            print("\nStep 4: No new items on this rank, skipping predict.")
 
-    total_time = time.time() - t0
-    print(f"\n{'='*60}")
-    print(f"Incremental SID update complete! ({total_time:.1f}s)")
-    print(f"  +{len(new_keys):,} new items → {len(existing_sid_dict):,} total")
-    print(f"{'='*60}")
+    # ── Step 5: Collect results on Rank 0 & merge ──
+    if is_distributed:
+        import torch.distributed as dist
+        import pickle
+
+        if rank == 0:
+            print(f"\nStep 5: Collecting results from {world_size} ranks...")
+
+        # Each rank serializes its new SID dict
+        local_bytes = pickle.dumps(my_new_sid_dict)
+        local_size = torch.tensor([len(local_bytes)], dtype=torch.long, device=device)
+
+        # Gather sizes on rank 0
+        if rank == 0:
+            all_sizes = [torch.tensor([0], dtype=torch.long, device=device) for _ in range(world_size)]
+        else:
+            all_sizes = None
+        dist.gather(local_size, gather_list=all_sizes, dst=0)
+
+        # Gather serialized data on rank 0
+        if rank == 0:
+            all_new_sids = dict(my_new_sid_dict)  # start with rank 0's own results
+            for src_rank in range(1, world_size):
+                sz = all_sizes[src_rank].item()
+                if sz > 0:
+                    buf = torch.empty(sz, dtype=torch.uint8, device=device)
+                    dist.recv(buf, src=src_rank)
+                    remote_dict = pickle.loads(bytes(buf.cpu().tolist()))
+                    all_new_sids.update(remote_dict)
+                else:
+                    # Receive empty marker
+                    dist.recv(torch.empty(0, dtype=torch.uint8, device=device), src=src_rank)
+        else:
+            # Non-zero ranks send their data to rank 0
+            data_tensor = torch.ByteTensor(list(local_bytes)).to(device)
+            dist.send(data_tensor, dst=0)
+
+        dist.barrier()
+    else:
+        all_new_sids = my_new_sid_dict
+
+    # Rank 0 merges and saves
+    if rank == 0:
+        total_new = len(all_new_sids)
+        if total_new == 0:
+            print("\nNo new items across all ranks — SID cache is up to date.")
+        else:
+            print(f"  Total new SIDs from all ranks: {total_new:,}")
+            existing_sid_dict.update(all_new_sids)
+
+            np.save(sid_path, existing_sid_dict)
+            print(f"  Saved {len(existing_sid_dict):,} total SID assignments "
+                  f"(+{total_new:,} new)")
+
+            # Update config
+            all_sids = list(existing_sid_dict.values())
+            unique_sids = len(set(all_sids))
+            collision = 1.0 - unique_sids / len(all_sids)
+            print(f"  Unique SIDs: {unique_sids:,} / {len(all_sids):,} (collision={collision:.4f})")
+
+            if os.path.exists(config_path):
+                with open(config_path) as f:
+                    config = json.load(f)
+            else:
+                config = {}
+            config.update({
+                'n_items': len(existing_sid_dict),
+                'n_unique_sids': unique_sids,
+                'collision_rate': round(collision, 6),
+                'incremental_update': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'incremental_new_items': total_new,
+            })
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
+
+        total_time = time.time() - t0
+        print(f"\n{'='*60}")
+        print(f"Incremental SID update complete! ({total_time:.1f}s)")
+        print(f"  +{total_new:,} new items → {len(existing_sid_dict):,} total")
+        print(f"{'='*60}")
+
+    if is_distributed:
+        _cleanup_distributed()
 
 
 def main():
