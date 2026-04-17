@@ -10,13 +10,13 @@
 |------|------|---------|-----|
 | [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision/Capacity/VRQ/MMQ/GeoSID) | 12 | sid-0 |
 | [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性/Caption) | 6 | — |
-| [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason) | 21 | — |
-| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank) | 15 | onemall-0 |
-| [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO) | 9 | — |
-| [inference.md](inference.md) | 推理优化 (Dynamic Beam/CSR约束/Register压缩/PRM-Beam/GRC) | 6 | — |
+| [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale) | 23 | — |
+| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum) | 17 | onemall-0 |
+| [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR) | 10 | — |
+| [inference.md](inference.md) | 推理优化 (Dynamic Beam/CSR约束/Register压缩/PRM-Beam/GRC/FP8-PTQ) | 7 | — |
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | oneloc-4 |
 
-**总计: 72 ideas (3 P0 / 46 P1 / 23 P2)**
+**总计: 78 ideas (3 P0 / 51 P1 / 24 P2)**
 
 ## 全局演进图
 
@@ -71,7 +71,10 @@ graph LR
         REG4REC0("reg4rec-0 MoE推理自反思"):::p1
         SIGMA0("sigma-0 指令多任务GR"):::p1
         LEMUR0("lemur-0 E2E多模态+MemBank"):::p1
-        P2_ARCH("onemall-4, oneloc-0/1, oxygen-0, llada-0/mdgr-0, sid-5, gr2-0, higr-0 &nbsp;(8 P2)"):::p2
+        GENREC0("genrec-0 Page-wise NTP"):::p1
+        GENREC1("genrec-1 Token Merger"):::p1
+        RCLREC0("rclrec-0 Reverse Curriculum"):::p1
+        P2_ARCH("onemall-4, oneloc-0/1, oxygen-0, llada-0/mdgr-0, sid-5, gr2-0, higr-0, nsgr-0 &nbsp;(9 P2)"):::p2
     end
 
     %% ═══ Col 3: RL / Inference / Scaling ═══
@@ -89,6 +92,8 @@ graph LR
         PROMISE0("promise-0 PRM-guided Beam"):::p1
         GRC0("grc-0 Gen-Reflect-Correct"):::p1
         SGREC0("sgrec-0 A2PO + Semantic Judge"):::p1
+        GENREC2("genrec-2 GRPO-SR Hybrid Reward"):::p1
+        ORECV2("orecv2-0 FP8 PTQ"):::p1
         P2_RL("gr4ad-3, oneloc-2, uni-0, flame-0, gpr-0, mbgr-0 &nbsp;(6 P2)"):::p2
     end
 
@@ -128,6 +133,11 @@ graph LR
     SID2 --> UNIREC1
     GR4 --> PROMISE0
     GR4 --> GRC0
+    OM0 --> GENREC0
+    GENREC1 --> EARN0
+    OM2 --> GENREC2
+    PLUM0 --> ORECV2
+    GENREC0 --> RCLREC0
 ```
 
 ## ID 来源追溯
@@ -182,6 +192,10 @@ graph LR
 | `onevision` | OneVision (Kuaishou, arxiv 2510.05759) | 视觉对齐 RQ + 动态剪枝 |
 | `mmq` | MMQ (Alibaba, arxiv 2508.15281, WSDM 2026) | 共享-专有多模态混合量化 |
 | `orec-think` | OneRec-Think (Kuaishou, arxiv 2510.11639) | In-Text Reasoning for GR |
+| `genrec` | GenRec (JD.com, arxiv 2604.14878, SIGIR 2026) | Page-wise NTP + Token Merger + GRPO-SR |
+| `nsgr` | NSGR (Meituan, arxiv 2604.05314) | Next-Scale 粗到细生成式重排序 |
+| `orecv2` | OneRec-V2 Quant (Kuaishou, arxiv 2603.11486) | FP8 PTQ 推理加速 |
+| `rclrec` | RCLRec (Alibaba International, arxiv 2603.28124) | 反向课程学习稀疏转化建模 |
 
 ## 核心设计原则
 
@@ -299,6 +313,11 @@ Text → [Qwen3-0.6B] → 1024D → [MLP-FSQ h=64] → 3-token SID → [NTP 模�
 | IDEA-reg4rec-0 | Architecture | MoE 并行量化 + 推理自反思 (Alibaba) |
 | IDEA-sigma-0 | Training | 指令驱动多任务 GR + 自适应融合 (AliExpress) |
 | IDEA-lemur-0 | Training | 端到端多模态 + Memory Bank (Douyin QAUC +0.81%) |
+| IDEA-genrec-0 | Training | Page-wise NTP 多标签页面级监督 (JD +9.5% click) |
+| IDEA-genrec-1 | Architecture | Asymmetric Token Merger (prompt 长度减半, 性能无损) |
+| IDEA-genrec-2 | RL | GRPO-SR + Hybrid Rewards (防 Reward Hacking) |
+| IDEA-orecv2-0 | Inference | FP8 PTQ 推理加速 (-49% latency, +92% throughput) |
+| IDEA-rclrec-0 | Training | 反向课程学习稀疏转化 (+2.09% revenue) |
 
 ### P2 — 有前置依赖 / NTP 后再看
 
@@ -328,3 +347,4 @@ Text → [Qwen3-0.6B] → 1024D → [MLP-FSQ h=64] → 3-token SID → [NTP 模�
 | IDEA-geogr-0 | Tokenizer | 地理感知 SID (Co-visited Contrastive) |
 | IDEA-onevision-0 | Tokenizer | VRQ 视觉对齐 RQ + 动态剪枝 |
 | IDEA-mmq-0 | Tokenizer | 共享-专有多模态混合量化 |
+| IDEA-nsgr-0 | Architecture | Next-Scale 粗到细重排序 (Meituan CTR +2.89%) |

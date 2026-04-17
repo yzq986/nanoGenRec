@@ -1,0 +1,833 @@
+RCLRec: Reverse Curriculum Learning for Modeling Sparse
+Conversions in Generative Recommendation
+Yulei Huang∗
+Alibaba International Digital
+Commerce Group
+Hangzhou, China
+huangyulei.hyl@alibaba-inc.com
+Hao Deng∗
+Alibaba International Digital
+Commerce Group
+Beijing, China
+denghao.deng@alibaba-inc.com
+Haibo Xing
+Alibaba International Digital
+Commerce Group
+Hangzhou, China
+xinghaibo.xhb@alibaba-inc.com
+Jinxin Hu†
+Alibaba International Digital
+Commerce Group
+Beijing, China
+jinxin.hjx@lazada.com
+Chuanfei Xu
+AI, Guangdong Laboratory of
+Artificial Intelligence and Digital
+Economy
+Guangzhou, China
+xuchuanfei@gml.ac.cn
+Zulong Chen
+Alibaba Group
+Hangzhou, China
+zulong.czl@alibaba-inc.com
+Yu Zhang
+Alibaba International Digital
+Commerce Group
+Beijing, China
+daoji@lazada.com
+Xiaoyi Zeng
+Alibaba International Digital
+Commerce Group
+Hangzhou, China
+yuanhan@taobao.com
+Abstract
+Conversion objectives in large-scale recommender systems are
+sparse, making them difficult to optimize. Generative recommen-
+dation (GR) partially alleviates data sparsity by organizing multi-
+type behaviors into a unified token sequence with shared repre-
+sentations, but conversion signals remain insufficiently modeled.
+While recent behavior-aware GR models encode behavior types
+and employ behavior-aware attention to highlight decision-related
+intermediate behaviors, they still rely on standard attention over
+the full history and provide no additional supervision for conver-
+sions, leaving conversion sparsity largely unresolved. To address
+these challenges, we propose RCLRec, a reverse curriculum learn-
+ing–based GR framework for sparse conversion supervision. For
+each conversion target, RCLRec constructs a short curriculum by se-
+lecting a subsequence of conversion-related items from the history
+in reverse. Their semantic tokens are fed to the decoder as a prefix,
+together with the target conversion tokens, under a joint generation
+objective. This design provides additional instance-specific interme-
+diate supervision, alleviating conversion sparsity and focusing the
+model on the user’s critical decision process. We further introduce a
+curriculum quality-aware loss to ensure that the selected curricula
+∗Contributed equally to this research.
+†Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Acronym ’XX, Woodstock, NY
+© 2026 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+are informative for conversion prediction. Experiments on offline
+datasets and an online A/B test show that RCLRec achieves superior
+performance, with +2.09% advertising revenue and +1.86% orders
+in online deployment.
+CCS Concepts
+• Information systems →Retrieval models and ranking.
+Keywords
+Generative Recommendation, Curriculum Learning, Conversion
+ACM Reference Format:
+Yulei Huang, Hao Deng, Haibo Xing, Jinxin Hu, Chuanfei Xu, Zulong Chen,
+Yu Zhang, and Xiaoyi Zeng. 2026. RCLRec: Reverse Curriculum Learning
+for Modeling Sparse Conversions in Generative Recommendation. In Pro-
+ceedings of Make sure to enter the correct conference title from your rights
+confirmation email (Acronym ’XX). ACM, New York, NY, USA, 6 pages.
+https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Recently, generative recommendation (GR) based on semantic to-
+kens has attracted extensive attention in both academia and indus-
+try [4, 21, 23]. Unlike traditional sequential recommenders [2, 8],
+GR organizes a user’s multi-type behaviors (e.g., impressions, clicks,
+purchases) into a unified item sequence, and represents each item
+in this sequence using shared discrete semantic tokens obtained by
+vector quantization [5, 6, 9] (see Figure 1(b)). By sharing token-level
+representations across behavior types and exploiting large-scale
+interaction data, GR has achieved strong retrieval performance
+[6, 14, 17]. However, behavior types in GR exhibit highly imbal-
+anced distributions. While conversion behaviors (e.g., purchases)
+are much less frequent than impressions and clicks, they directly
+determine key business metrics such as revenue and orders [2, 26].
+arXiv:2603.28124v1  [cs.IR]  30 Mar 2026
+
+
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+...
+User History
+BOS
+EOS
+Target
+Hidden 
+States
+Encoder
+Decoder
+0
+2
+4
+6
+8
+Category
+Brand
+Seller
+Avg Match Count 
+click
+add to cart
+conversion
+Hidden
+States
+...
+Encoder
+EOS
+BOS
+Target
+Reverse
+Curriculum
+Prefix
+Module
+Curriculum
+User History
+Decoder with
+curriculum prefix
+Inject as prefix
+Top K select
+query
+...
+ History
+Target
+ Item 
+ Behavior
+ (a) History–Target Semantic Relevance
+ (b)  Standard Generative Recommendation
+ (d) Our RCLRec 
+ (c) Behavior-wise Relevance Statistics  
+Semantic relevance
+Figure 1: (a) Multi-behavior history–target semantic rele-
+vance. (b) Standard GR method. (c) Behavior-wise relevance
+statistics showing that conversions are preceded by more
+coherent clusters of related items. (d) Our proposed RCLRec.
+This data sparsity leaves the conversion objective insufficiently
+modeled by existing GR methods, and hinders accurate learning of
+user preferences at the conversion stage.
+To better address this issue, recent work [1, 7, 11, 25] explicitly
+incorporates behavior types into GR models. For example, some
+approaches encode behavior-type distinctions in the encoder and
+employ behavior-aware attention in the decoder [7, 11]. With this
+behavior-aware attention, GR can focus on highly indicative be-
+haviors (e.g., revisits, comparisons, prior conversions) even under
+imbalanced behavior distributions. However, these methods do
+not fundamentally alleviate conversion sparsity, as the model still
+learns conversion patterns from very few events and receives no
+additional supervision specifically for the conversion objective.
+Our empirical analysis shows that conversion events are typically
+preceded by a coherent cluster of related items (e.g., from the same
+category), reflecting a clearer and more focused decision process,
+as shown in Figure 1(c). Thus, for conversion prediction, a small
+subset of behaviors in the long interaction history often forms a key
+decision-making subsequence that disproportionately influences
+the final purchase, providing a concentrated source of supervision
+for the sparse conversion objective. Nevertheless, existing GR meth-
+ods still rely on standard cross-attention to implicitly discover
+useful intermediate behaviors from the full history, without
+systematically identifying or explicitly modeling key subsequences
+for each conversion. As a result, these crucial signals remain buried
+among numerous irrelevant behaviors, so current GR methods
+struggle to fully exploit them when modeling conversions.
+To address these problems, we propose RCLRec (Figure 1(d)),
+a reverse curriculum learning–based GR framework specifically
+designed for sparse conversion supervision, drawing on curriculum
+strategies for sparse-reward reinforcement learning [3, 20]. RCLRec
+uses reverse-constructed curricula of key intermediate behaviors
+to densify supervision signals. Unlike classical curriculum learning
+with multi-stage difficulty scheduling, we adopt reverse curriculum
+as a one-shot decoder-side curriculum prefix. This is because
+noisy, heterogeneous user histories [10, 15] make it difficult to
+design reliable multi-stage curricula over interactions. In detail, our
+main contributions are:
+• We propose a reverse curriculum prefix module (RCPM), which
+reversely selects 𝑘key intermediate behaviors from the history to
+form a curriculum prefix. Injected into the decoder alongside the
+target conversion tokens, this prefix provides additional instance-
+specific intermediate supervision and focuses the model on the
+user’s critical decision process under sparse conversion signals.
+• We propose a curriculum quality-aware loss that encourages the
+selected subsequences to be informative for conversion.
+• We conduct experiments on two real-world datasets and an online
+A/B test, achieving significant improvements of +2.09% adver-
+tising revenue and +1.86% orders, demonstrating the practical
+effectiveness of RCLRec in production.
+2
+Problem Formulation
+Let U and I denote the user and item sets. Let B denote the set of
+behavior types, such as click (clk), add-to-cart (atc), and conversion
+(pay), i.e., B = {clk, atc, . . . , pay}. For each user 𝑢∈U, the interac-
+tion history is a chronological sequence 𝑆𝑢= {(𝑏1,𝑖1), . . . , (𝑏𝑇,𝑖𝑇)},
+where 𝑏𝑡∈B, 𝑖𝑡∈I, and 𝑇is the sequence length. Following
+recent GR methods [14, 24], we map each item 𝑖∈I to a length-𝐿
+token sequence z𝑖= [𝑧1
+𝑖, . . . ,𝑧𝐿
+𝑖] using a discrete semantic mapping
+𝜙: I →{𝑉ℓ}𝐿
+ℓ=1, where 𝑧ℓ
+𝑖∈Vℓ. To support behavior-conditioned
+generation, we use a behavior embedding matrix E ∈R|B|×𝑑and
+treat e𝑏∈E as the behavior-specific BOS control token in the
+decoder [11] (e.g., epay for conversions). Given 𝑆𝑢and a target be-
+havior𝑏, GR retrieves items by generating the target token sequence
+z𝑇+1 = 𝜙(𝑖𝑇+1) and minimizing the negative log-likelihood (NLL):
+LGR = −
+𝐿
+∑︁
+ℓ=1
+log𝑝𝜃
+ 𝑧ℓ
+T+1 | 𝑆𝑢, e𝑏, z<ℓ
+T+1
+ ,
+(1)
+where z<ℓ
+T+1 is the prefix of the target token sequence and 𝜃are
+the model parameters.
+3
+Methodology
+3.1
+Overview and Two-Stage Training
+Figure 2 illustrates the overall framework of RCLRec. To better learn
+sparse conversion targets, RCLRec introduces (i) a reverse cur-
+riculum prefix module (RCPM) that selects conversion-relevant
+historical interactions and injects their semantic tokens as a decoder
+prefix, and (ii) a curriculum quality-aware loss function that
+encourages the selected prefix to improve conversion likelihood
+(Sec. 3.3). We adopt a two-stage training scheme. Specifically, we
+first pre-train a standard encoder-decoder GR backbone on mixed
+multi-behavior data using Eq. (1) to learn general item semantic
+representations and behavior embeddings, including the conversion
+behavior token epay. We then perform supervised fine-tuning (SFT)
+only on conversion samples, where we jointly optimize the SFT
+objective with RCPM and the curriculum quality-aware loss.
+3.2
+Reverse Curriculum Prefix Module (RCPM)
+RCPM performs conversion-aware subsequence selection on the
+encoder side and exposes the selected items as decoder prefixes
+under teacher forcing. As shown in Figure 1(c), conversions are
+often preceded by a short sequence of conversion-indicative behav-
+iors in user interaction histories. Concretely, RCPM implements
+a reverse curriculum as a one-shot decoder-side prefix by tracing
+backward from the conversion target. Rather than simply selecting
+the most recent actions, it employs a pay-conditioned user query
+
+
+RCLRec: Reverse Curriculum Learning for Modeling Sparse Conversions in Generative Recommendation
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+Reverse Curriculum Prefix Module
+Query
+...
+Relevance Score (Ǘ֩)
+selected indices
+ Generated Reverse Curriculum (ǯ֙֡խձսֹ)
+IBQ-based k-selector
+Query 
+Construction
+...
+IBQ-based k-selection 
+Curriculum Prefix
+Construction
+forward: hard mask
+Self-Attention
+Add & Norm
+FFN
+Encoder
+...
+...
+Hidden States
+...
+History Encoder
+Causal Self-Attention
+Add & Norm
+FFN
+Decoder
+BOS
+EOS
+Cross-Attention
+Curriculum-Prefixed Decoder
+sorted in        ascending relevance
+Inject as prefix
+Legend of RCL-Rec
+User Profile
+History Token
+Hidden States
+BOS
+Behavior BOS Token
+Curriculum Token
+Traget  Token
+backward: soft probs
+ Relevance Scoring
+over Encoder States 
+Target
+Curriculum Quality-Aware Loss 
+Loss no
+Curriculum
+Loss with 
+Curriculum
+margin (m)
+ƶ֭֝՝։
+ƶ֙՝ֽ
+ա՝֥խ
+ƶ֙՝ֽ
+ե֭֡
+−푙Ǔǋǔ޿0(Ǆ֙՝ֽ|ƽ֭)
+−푙Ǔǋǔ޿(Ǆ֙՝ֽ|ƽ֭, ǯճգ)
+BOS
+Figure 2: Overview of RCLRec. It uses a Reverse Curriculum Prefix Module (RCPM) to select conversion-relevant interactions
+from history as a decoder-side prefix, and is trained with a curriculum quality-aware loss.
+to retrieve those historical interactions that are most indicative of
+the conversion decision. This reverse selection over heterogeneous
+user histories [13], together with teacher forcing on the selected
+curriculum tokens, reduces interference from irrelevant behaviors
+and provides denser supervision and clearer context for conversion
+generation under sparse conversion signals.
+Concretely, RCPM consists of two steps: (i) reverse curriculum
+prefix selection from the user’s interaction history, and (ii) an
+end-to-end curriculum optimization mechanism.
+3.2.1
+Reverse curriculum prefix selection. First, to identify histori-
+cal interactions that are most indicative of the conversion target,
+we construct a personalized query. Let x𝑢∈R𝑑𝑥denote the feature
+vector of user 𝑢(e.g., user ID, demographics), obtained via standard
+embedding and feature encoding [2]. We map x𝑢to the model di-
+mension as e𝑢= W𝑢x𝑢∈R𝑑, and reuse the conversion behavior
+embedding epay ∈R𝑑learned in pre-training. We concatenate them
+and feed the result into a lightweight multi-layer perceptron (MLP)
+to obtain the query: q = MLP [e𝑢; epay] ∈R𝑑.
+This user-specific, pay-conditioned query serves as the anchor
+for conversion-oriented curriculum selection. Second, given q, we
+score the relevance of each historical interaction with respect to
+the conversion target using the contextual encoder states H𝑢=
+[h1, . . . , h𝑇]. Each h𝑡encodes the 𝑡-th interaction and its contex-
+tual dependencies, reflecting its contribution to the user’s evolving
+intent. We compute the relevance score 𝑠𝑡via a scaled inner product:
+𝑠𝑡= q⊤h𝑡
+√
+𝑑
+,
+𝑡= 1, . . . ,𝑇,
+(2)
+where 𝑑is the encoder hidden size. These scores 𝑠𝑡are then nor-
+malized into a categorical distribution over the sequence:
+𝑝𝑡=
+exp(𝑠𝑡/𝜏)
+Í𝑇
+𝑗=1 exp(𝑠𝑗/𝜏)
+,
+𝑡= 1, . . . ,𝑇,
+(3)
+where 𝜏> 0 is a temperature hyperparameter and p = [𝑝1, . . . , 𝑝𝑇]
+reflects the conversion-aware relevance of each historical behavior.
+Third, we select the top-𝑘behaviors for the reverse curriculum:
+K = argmax(p,𝑘) = {𝑡1, . . . ,𝑡𝑘},
+|K| = 𝑘,
+(4)
+where argmax(·,𝑘) returns the indices of the 𝑘largest entries in p.
+Each 𝑡𝑗∈K corresponds to a selected interaction (𝑏𝑡𝑗,𝑖𝑡𝑗), whose
+item tokens are used to construct the curriculum prefix. Finally, we
+construct the prefix by concatenating the semantic token sequences
+of the selected items 𝜙(K) in ascending order of relevance scores:
+Gprefix =
+
+𝜙(𝑖𝑡1 ); . . . ;𝜙(𝑖𝑡𝑘)
+
+=
+
+z1
+𝑖𝑡1 , . . . , z𝐿
+𝑖𝑡1 , . . . , z1
+𝑖𝑡𝑘, . . . , z𝐿
+𝑖𝑡𝑘
+
+,
+(5)
+where the indices in K are sorted such that 𝑝𝑡1 ≤𝑝𝑡2 ≤· · · ≤𝑝𝑡𝑘
+and each 𝜙(𝑖𝑡𝑗) is the semantic token sequence of item 𝑖𝑡𝑗. With
+this ordering, the most conversion-relevant item (with the largest
+𝑝𝑡𝑘) appears last in the prefix and is therefore closest to the target
+tokens, providing stronger conditioning for conversion prediction.
+During SFT, we inject Gprefix as a decoder-side prefix and per-
+form teacher forcing on the concatenated sequence. Concretely,
+the decoder input is formed as [[BOS]; Gprefix; zpay], where zpay =
+𝜙(𝑖target) denotes the token sequence of the target conversion item.
+3.2.2
+End-to-end curriculum optimization mechanism. The above
+reverse curriculum prefix selection involves a discrete top-𝑘opera-
+tion, which is non-differentiable. To enable end-to-end optimization,
+we introduce a curriculum optimization mechanism based on Index
+Backpropagation Quantization (IBQ) [16].
+In the forward pass, we take the top-𝑘indices K from the rele-
+vance distribution p and build a hard 𝑘-hot mask mhard ∈{0, 1}𝑇by
+setting 𝑚hard
+𝑡
+= I(𝑡∈K) for 𝑡= 1, . . . ,𝑇, where I(·) is the indicator
+function. This mask specifies which historical positions are selected
+to construct the curriculum prefix Gprefix for the decoder.
+In the backward pass, we replace the non-differentiable hard
+mask with a straight-through surrogate mask, enabling gradients
+to flow through index selection. Specifically, we construct a con-
+tinuous selection vector m = mhard −sg[p] + p, where sg[·] is the
+stop-gradient operator. During the forward pass, m is identical to
+the hard mask mhard and yields the same curriculum prefix.
+During the backward pass, gradients are propagated through p
+instead of the non-differentiable top-𝑘operator, effectively enabling
+end-to-end optimization of the selection distribution. The resulting
+curriculum-augmented SFT loss is
+LSFT = −
+|Gprefix|+𝐿
+∑︁
+ℓ=1
+log𝑝𝜃
+ yℓ| 𝑆𝑢, epay, y<ℓ ,
+y = [Gprefix; zpay],
+(6)
+
+
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+Table 1: Performance comparison on Tmall and Industry datasets. Best results are in bold and second-best are underlined.
+"Improv." shows the relative improvement (%) over the second-best method.
+Method
+Industrial Dataset
+Tmall Dataset
+Recall@5
+Recall@10
+NDCG@5
+NDCG@10
+Recall@5
+Recall@10
+NDCG@5
+NDCG@10
+SASRec
+18.67%
+21.25%
+14.49%
+16.22%
+39.36%
+44.79%
+30.66%
+32.72%
+BERT4Rec
+18.32%
+21.68%
+14.41%
+16.34%
+40.47%
+45.18%
+31.39%
+33.25%
+PBAT
+19.35%
+22.85%
+14.96%
+16.89%
+40.21%
+45.58%
+31.16%
+33.47%
+HSTU
+20.24%
+24.62%
+15.57%
+17.35%
+40.63%
+45.67%
+31.60%
+33.79%
+TIGER
+21.40%
+25.23%
+16.28%
+17.56%
+42.61%
+45.92%
+32.96%
+35.47%
+MBGen
+23.39%
+26.75%
+18.23%
+19.35%
+44.10%
+47.57%
+35.14%
+37.94%
+GEAR
+23.56%
+26.87%
+18.29%
+19.25%
+44.43%
+47.36%
+35.24%
+37.10%
+RCLRec (Ours)
+26.21%
+29.62%
+20.80%
+21.91%
+49.78%
+52.37%
+40.36%
+42.48%
+Improv.
++11.25%
++10.23%
++13.72%
++13.23%
++12.04%
++10.09%
++14.53%
++11.97%
+where y is the concatenated decoder-side sequence consisting
+of the curriculum prefix tokens Gprefix and the conversion target
+tokens zpay. Thus, during SFT we apply teacher forcing on y and
+optimize the autoregressive likelihood of all decoder tokens.
+3.3
+Curriculum Quality-Aware Loss
+Although RCPM injects selected intermediate curricula into the
+decoder, they may not always improve conversion modeling. Train-
+ing the model with a curriculum prefix may increase its predictive
+confidence [12], but it does not guarantee improved conversion
+prediction performance over a no-curriculum baseline. We there-
+fore define curriculum quality as the likelihood gain on conversion
+tokens brought by the selected prefix.
+We first pre-train a standard encoder–decoder GR model (Eq. (1))
+to obtain parameters𝜃0. In the SFT stage, we initialize the curriculum-
+prefixed model from 𝜃0 and optimize its parameters 𝜃using Eq. (6),
+while keeping 𝜃0 as a fixed no-curriculum baseline when computing
+the quality-aware loss. We define the average conversion-token
+NLL with and without curriculum prefix as:
+Lcurr
+pay (𝜃) = −1
+𝐿
+𝐿
+∑︁
+ℓ=1
+log𝑝𝜃
+ 𝑧ℓ
+pay | 𝑆𝑢, epay, Gprefix, z<ℓ
+pay
+,
+Lbase
+pay (𝜃0) = −1
+𝐿
+𝐿
+∑︁
+ℓ=1
+log𝑝𝜃0
+ 𝑧ℓ
+pay | 𝑆𝑢, epay, z<ℓ
+pay
+.
+(7)
+A high-quality curriculum should reduce the conversion-token
+NLL compared with the baseline. We therefore define the curricu-
+lum quality-aware loss as a hinge constraint on the NLL reduction:
+Lqual = max
+
+0, 𝑚− Lbase
+pay −Lcurr
+pay
+
+,
+(8)
+where 𝑚≥0 is a small margin. We jointly optimize this regularizer
+with the SFT objective in Eq. (6), and the overall SFT loss is
+Ltotal = LSFT + 𝜆qual Lqual,
+(9)
+where 𝜆qual ≥0 controls the constraint strength. By explicitly
+maximizing conversion likelihood improvement over the fixed no-
+curriculum baseline, this loss steers RCPM toward selecting curric-
+ula that genuinely benefit conversion prediction.
+4
+Experiments
+4.1
+Experimental Setup
+Datasets. We evaluate RCLRec on two datasets: (i) an in-house
+industrial advertising dataset from an Asian e-commerce platform
+0.23 
+0.25 
+0.27 
+0.29 
+0.31 
+1
+2
+3
+4
+5
+6
+Recall
+Curriculum Length
+Recall@5
+Recall@10
+Figure 3: Scalability and sensitivity of curriculum length 𝑘.
+with three behaviors and over 1B interactions, where conversions
+account for 1.23% of interactions, and (ii) the public Tmall dataset [27]
+with four behaviors using common preprocessing and user sam-
+pling settings, where conversions account for 0.95% of interactions.
+Training & evaluation metrics. We follow a pre-training and SFT
+pipeline. We first pre-train on mixed multi-behavior data and then
+fine-tune only on conversion samples, using the same backbone
+and training settings. For offline evaluation, we report Recall@5/10
+and NDCG@5/10 on the conversion target set [22, 26].
+Baselines & implementation. We compare with seven rep-
+resentative methods: SASRec [8], BERT4Rec [19], PBAT [18],
+HSTU [25], TIGER [14], MBGen [11], and GEAR [7]. All baselines
+are implemented according to their original designs and trained on
+the same dataset partition for a fair comparison. For RCLRec, each
+item is mapped to 𝐿= 4 semantic tokens. We use a 4-layer Trans-
+former encoder and a 2-layer decoder with hidden size 𝑑= 256 and
+8 attention heads. We set 𝑘= 4, 𝜏= 0.5, and 𝜆qual = 0.1.
+4.2
+Experimental Results
+Overall performance. Table 1 reports the overall performance
+on both datasets. We observe that: (1) RCLRec achieves the best
+Recall@5/10 and NDCG@5/10 on the conversion target set, out-
+performing all baselines. (2) Traditional sequential models (e.g.,
+SASRec, BERT4Rec) lag behind, indicating limited ability to exploit
+conversion-relevant signals under sparse supervision. (3) Compared
+with multi-behavior GR baselines (e.g., MBGen, GEAR), RCLRec pro-
+vides more consistent gains by explicitly constructing conversion-
+related prefixes and guiding their effectiveness during SFT.
+Scalability and sensitivity analysis. We vary the curricu-
+lum length 𝑘∈{1, . . . , 6} on the industrial dataset and report
+Recall@5/10, as shown in Figure 3. A moderate curriculum size
+(around 𝑘= 4) provides a significant improvement over shorter
+prefixes, while further increasing 𝑘brings only marginal gains,
+suggesting that a small number of carefully selected interactions
+already capture most of the conversion-relevant context and that
+longer prefixes mainly introduce noise.
+
+
+RCLRec: Reverse Curriculum Learning for Modeling Sparse Conversions in Generative Recommendation
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 2: Ablation results on the industrial dataset.
+Variant
+Recall@5 Recall@10 NDCG@5 NDCG@10
+RCLRec
+26.21%
+29.62%
+20.80%
+21.91%
+w/o RCPM
+23.61%
+26.78%
+18.83%
+19.89%
+Recent-𝑘curriculum
+24.57%
+27.91%
+19.37%
+20.49%
+w/o Quality-Aware Loss
+25.55%
+28.73%
+20.15%
+21.13%
+Ablation study. Table 2 summarizes the effect of each compo-
+nent. Removing the RCPM (w/o RCPM) causes a large performance
+drop, indicating that explicitly constructing conversion-oriented
+curricula is crucial. Using recent curricula (Recent-𝑘), which sim-
+ply takes the most recent 𝑘interactions, underperforms across all
+metrics, showing that the gain comes from conversion-oriented se-
+lection rather than recency. Removing the curriculum quality-aware
+loss (w/o Quality-Aware Loss) also harms performance, suggesting
+that it improves curriculum usefulness and target relevance.
+Online results. We further evaluated RCLRec in an online A/B
+test on an industrial e-commerce advertising platform from Jan.
+20 to Jan. 27, 2026. We used TIGER [14] as the baseline, with each
+bucket receiving 25% of randomly sampled users. RCLRec improved
+advertising revenue by 2.09% and orders by 1.86%, demonstrat-
+ing its effectiveness in production.
+5
+Conclusion
+This paper presents RCLRec, a reverse curriculum learning–based
+generative recommendation (GR) framework for sparse conversion
+supervision. RCLRec introduces a Reverse Curriculum Prefix Mod-
+ule (RCPM), which traces backward from each conversion target,
+selects a short curriculum of key intermediate behaviors from the
+history, and feeds their semantic tokens to the decoder as a prefix
+together with the target tokens under a joint generation objective.
+This design transforms key intermediate behaviors into instance-
+specific supervision, alleviating conversion sparsity and guiding
+the model toward the user’s critical decision process around con-
+versions. We further propose a curriculum quality–aware loss that
+encourages the selected subsequences to be informative for con-
+version prediction. Extensive experiments on offline and online
+datasets show that RCLRec achieves superior performance and of-
+fers valuable insights for GR with sparse targets. In future work,
+we plan to extend the RCLRec framework to other target behaviors
+and richer curriculum designs.
+References
+[1] Hao Deng, Haibo Xing, Kanefumi Matsuyama, Yulei Huang, Jinxin Hu, Hong Wen,
+Jia Xu, Zulong Chen, Yu Zhang, Xiaoyi Zeng, et al. 2025. Heterrec: Heterogeneous
+information transformer for scalable sequential recommendation. In Proceedings
+of the 48th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 3020–3024.
+[2] Hao Deng, Haibo Xing, Kanefumi Matsuyama, Moyu Zhang, Jinxin Hu, Hong
+Wen, Yu Zhang, Xiaoyi Zeng, and Jing Zhang. 2025. CSMF: Cascaded Selective
+Mask Fine-Tuning for Multi-Objective Embedding-Based Retrieval. In Proceedings
+of the 48th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 2122–2131.
+[3] Carlos Florensa, David Held, Markus Wulfmeier, Michael Zhang, and Pieter
+Abbeel. 2017. Reverse curriculum generation for reinforcement learning. In
+Conference on robot learning. PMLR, 482–495.
+[4] Min Hou, Le Wu, Yuxin Liao, Yonghui Yang, Zhen Zhang, Changlong Zheng,
+Han Wu, and Richang Hong. 2025. A survey on generative recommendation:
+Data, model, and tasks. arXiv preprint arXiv:2510.27157 (2025).
+[5] Yupeng Hou, Zhankui He, Julian McAuley, and Wayne Xin Zhao. 2023. Learning
+vector-quantized item representation for transferable sequential recommenders.
+In Proceedings of the ACM Web Conference 2023. 1162–1171.
+[6] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating Long
+Semantic IDs in Parallel for Recommendation. arXiv preprint arXiv:2506.05781
+(2025).
+[7] Junzhe Jiang, Kai Zhang, Junfeng Kang, Yucong Luo, and Min Gao. 2025. Gear:
+Generalized alternating regressor for multi-behavior sequential recommendation.
+In Proceedings of the 48th International ACM SIGIR Conference on Research and
+Development in Information Retrieval. 2870–2874.
+[8] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[9] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive image generation using residual quantization. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition. 11523–11532.
+[10] Qiao Liu, Yifu Zeng, Refuoe Mokhosi, and Haibin Zhang. 2018. STAMP: short-
+term attention/memory priority model for session-based recommendation. In
+Proceedings of the 24th ACM SIGKDD international conference on knowledge dis-
+covery & data mining. 1831–1839.
+[11] Zihan Liu, Yupeng Hou, and Julian McAuley. 2024. Multi-behavior generative
+recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management. 1575–1585.
+[12] Alexandru Niculescu-Mizil and Rich Caruana. 2005. Predicting good probabilities
+with supervised learning. In Proceedings of the 22nd international conference on
+Machine learning. 625–632.
+[13] Li-Wei Pan, Wei-Ke Pan, Mei-Yan Wei, Hong-Zhi Yin, and Zhong Ming. 2026. A
+survey on sequential recommendation. Frontiers of Computer Science 20, 3 (2026),
+2003606.
+[14] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[15] Tobias Schnabel, Adith Swaminathan, Ashudeep Singh, Navin Chandak, and
+Thorsten Joachims. 2016. Recommendations as treatments: Debiasing learning
+and evaluation. In international conference on machine learning. PMLR, 1670–
+1679.
+[16] Fengyuan Shi, Zhuoyan Luo, Yixiao Ge, Yujiu Yang, Ying Shan, and Limin Wang.
+2025. Scalable image tokenization with index backpropagation quantization. In
+Proceedings of the IEEE/CVF International Conference on Computer Vision. 16037–
+16046.
+[17] Anima Singh, Trung Vu, Nikhil Mehta, Raghunandan Keshavan, Maheswaran
+Sathiamoorthy, Yilin Zheng, Lichan Hong, Lukasz Heldt, Li Wei, Devansh Tandon,
+Ed Chi, and Xinyang Yi. 2024. Better Generalization with Semantic IDs: A
+Case Study in Ranking for Recommendations. In Proceedings of the 18th ACM
+Conference on Recommender Systems (Bari, Italy) (RecSys ’24). Association for
+Computing Machinery, New York, NY, USA, 1039–1044. doi:10.1145/3640457.
+3688190
+[18] Jiajie Su, Chaochao Chen, Zibin Lin, Xi Li, Weiming Liu, and Xiaolin Zheng.
+2023. Personalized behavior-aware transformer for multi-behavior sequential
+recommendation. In Proceedings of the 31st ACM international conference on
+multimedia. 6321–6331.
+[19] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential recommendation with bidirectional encoder rep-
+resentations from transformer. In Proceedings of the 28th ACM international
+conference on information and knowledge management. 1441–1450.
+[20] Zhiheng Xi, Wenxiang Chen, Boyang Hong, Senjie Jin, Rui Zheng, Wei He, Yiwen
+Ding, Shichun Liu, Xin Guo, Junzhe Wang, et al. 2024. Training large language
+models for reasoning through reverse curriculum reinforcement learning. arXiv
+preprint arXiv:2402.05808 (2024).
+[21] Haibo Xing, Hao Deng, Yucheng Mao, Jinxin Hu, Yi Xu, Hao Zhang, Jiahao
+Wang, Shizhun Wang, Yu Zhang, Xiaoyi Zeng, et al. 2025. Reg4rec: Reasoning-
+enhanced generative model for large-scale recommendation systems. arXiv
+preprint arXiv:2508.15308 (2025).
+[22] Haibo Xing, Kanefumi Matsuyama, Hao Deng, Jinxin Hu, Yu Zhang, and Xiaoyi
+Zeng. 2025. ESANS: Effective and Semantic-Aware Negative Sampling for Large-
+Scale Retrieval Systems. In Proceedings of the ACM on Web Conference 2025.
+462–471.
+[23] Liu Yang, Fabian Paischer, Kaveh Hassani, Jiacheng Li, Shuai Shao, Zhang Gabriel
+Li, Yun He, Xue Feng, Nima Noorshams, Sem Park, et al. 2024. Unifying gen-
+erative and dense retrieval for sequential recommendation.
+arXiv preprint
+arXiv:2411.18814 (2024).
+[24] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, et al. 2025. Sparse meets dense: Unified generative
+recommendations with cascaded sparse-dense representations. arXiv preprint
+arXiv:2503.02453 (2025).
+[25] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, et al. 2024. Actions speak louder than words:
+Trillion-parameter sequential transducers for generative recommendations. arXiv
+preprint arXiv:2402.17152 (2024).
+[26] Yukun Zheng, Jiang Bian, Guanghao Meng, Chao Zhang, Honggang Wang,
+Zhixuan Zhang, Sen Li, Tao Zhuang, Qingwen Liu, and Xiaoyi Zeng. 2022.
+
+
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+Multi-Objective Personalized Product Retrieval in Taobao Search. arXiv preprint
+arXiv:2210.04170 (2022).
+[27] Wenliang Zhong, Rong Jin, Cheng Yang, Xiaowei Yan, Qi Zhang, and Qiang Li.
+2015. Stock constrained recommendation in tmall. In Proceedings of the 21th
+ACM SIGKDD International Conference on Knowledge Discovery and Data Mining.
+2287–2296.
