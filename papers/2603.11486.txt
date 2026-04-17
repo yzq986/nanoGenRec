@@ -1,0 +1,883 @@
+Quantized Inference for OneRec-V2
+Yi Su, Xinchen Luo, Hongtao Cheng, Ziteng Shu, Yunfeng Zhao,
+Fangyu Zhang, Jiaqiang Liu, Xiao Liang, Yiwu Liu, Ruiming Tang
+Kuaishou Inc., Beijing, China
+tangruiming@kuaishou.com
+Abstract
+Quantized inference has demonstrated substan-
+tial system-level benefits in large language
+models while preserving model quality. In con-
+trast, reliably applying low-precision quanti-
+zation to recommender systems remains chal-
+lenging in industrial settings. This difficulty
+arises from differences in training paradigms,
+architectural patterns, and computational char-
+acteristics, which lead to distinct numerical
+behaviors in weights and activations.
+Tra-
+ditional recommender models often exhibit
+high-magnitude and high-variance weights and
+activations, making them more sensitive to
+quantization-induced perturbations. In addi-
+tion, recommendation workloads frequently
+suffer from limited hardware utilization, limit-
+ing the practical gains of low-precision compu-
+tation. In this work, we revisit low-precision in-
+ference in the context of generative recommen-
+dation. Through empirical distribution anal-
+ysis, we show that the weight and activation
+statistics of OneRec-V2 are significantly more
+controlled and closer to those of large language
+models than traditional recommendation mod-
+els. Moreover, OneRec-V2 exhibits a more
+compute-intensive inference pattern with sub-
+stantially higher hardware utilization, enabling
+more end-to-end throughput gains with low-
+precision computation. Leveraging this prop-
+erty, we develop a FP8 post training quantiza-
+tion framework and integrate it into an opti-
+mized inference infrastructure. The proposed
+joint optimization achieves a 49% reduction
+in end-to-end inference latency and a 92% in-
+crease in throughput. Extensive online A/B
+testing further confirms that FP8 inference in-
+troduces no degradation in core metrics. These
+results suggest that as recommender systems
+evolve toward the paradigms of large language
+models, algorithm-level and system-level opti-
+mization techniques established in the LLM do-
+main can be effectively adapted to large-scale
+recommendation workloads.
+1
+Introduction
+Quantized inference has become an essential tech-
+nique for improving the efficiency of large-scale
+neural networks. In large language models (LLMs),
+low-precision formats have demonstrated substan-
+tial system-level benefits while preserving model
+quality (Micikevicius et al., 2022; Xiao et al.,
+2023; Dettmers et al., 2022; Micikevicius et al.,
+2017). These successes are closely tied to the dense,
+compute-intensive execution patterns and relatively
+well-regulated numerical behaviors of Transformer-
+based architectures.
+In contrast, applying low-precision quantiza-
+tion reliably in recommender systems has long
+remained challenging in industrial practice. Tradi-
+tional recommendation models are typically opti-
+mized for fine-grained ranking tasks and differ sig-
+nificantly from LLMs in both training paradigms
+and architectural structures (Naumov et al., 2019;
+Lee and Lee, 2019; Batmaz et al., 2019). Em-
+pirically, their weights and activations often ex-
+hibit high magnitudes and large variances, which
+make these models more sensitive to quantization-
+induced perturbations. From a systems perspec-
+tive, classical recommender inference workloads
+are frequently memory or control bound and ex-
+hibit relatively low hardware utilization (Naumov
+et al., 2019; Ivchenko et al., 2022; Zhou et al.,
+2025b). As a result, even when hardware platforms
+support low-precision computation, the practical
+end-to-end gains may be limited. These numerical
+and system factors have historically hindered the
+effective deployment of low-precision inference in
+traditional recommendation pipelines.
+Recent advances in generative recommendation
+models have begun to narrow this gap. OneRec
+introduces a unified generative framework that in-
+tegrates retrieval and ranking (Zhou et al., 2025b),
+and subsequent extensions such as OneRec-V2 fur-
+ther refine this paradigm through architectural scal-
+1
+arXiv:2603.11486v1  [cs.IR]  12 Mar 2026
+
+
+ing and training improvements (Zhou et al., 2025c;
+Liu et al., 2025; Zhou et al., 2025a). Compared
+to classical recommendation architectures, these
+models rely more heavily on dense and structurally
+constrained computation paths, increasing compu-
+tation intensity and improving hardware utilization
+during inference. At the same time, their training
+paradigms impose stronger implicit regularization
+on activation magnitudes and variances.
+In this work, we investigate quantized inference
+for OneRec-V2. Through empirical distribution
+analysis, we show that the weight and activation
+statistics of OneRec-V2 are significantly more con-
+trolled and closer to those of LLMs than those of
+traditional recommendation models. Moreover, its
+compute-intensive inference pattern allows low-
+precision computation to translate more effectively
+into end-to-end system improvements. Leverag-
+ing these properties, we develop a FP8 post train-
+ing quantization framework integrated with an op-
+timized inference infrastructure.
+Extensive ex-
+periments demonstrate that the proposed system
+achieves a 49% reduction in end-to-end inference
+latency and a 92% increase in throughput. Online
+A/B testing further confirms that our quantized in-
+ference introduces no degradation in core metrics.
+These results suggest that as recommender systems
+evolve toward the paradigms of large language
+models, low-precision techniques established in the
+LLM domain can be safely and effectively adapted
+to modern recommendation workloads.
+The main contributions of this paper are summa-
+rized as follows:
+• We analyze the numerical and system factors
+that have historically limited the effectiveness
+of low-precision inference in traditional rec-
+ommender systems.
+• We empirically demonstrate that the architec-
+tural and training paradigm shifts in OneRec-
+V2 lead to more controlled weight and acti-
+vation statistics and higher hardware utiliza-
+tion, substantially improving the feasibility of
+quantized inference.
+• We develop a FP8 post training quantization
+framework integrated with an optimized in-
+ference infrastructure, achieving significant
+latency reduction and throughput improve-
+ment without any degradation in online per-
+formance.
+2
+Related Work
+2.1
+Low-Precision Quantization
+Low-precision quantization aims to reduce compu-
+tation and memory costs by representing weights
+and activations with lower numerical precision
+while controlling the resulting approximation er-
+ror. In recent years, extensive studies have demon-
+strated that low-precision quantization can be ap-
+plied effectively to large language models, achiev-
+ing substantial inference acceleration with minimal
+quality degradation (Dettmers et al., 2022; Xiao
+et al., 2023; Jacob et al., 2018; Wu et al., 2020;
+Zhang et al., 2023).
+These advances highlight the importance of
+aligning quantization strategies with model archi-
+tecture and activation statistics. When numerical
+distributions are well regulated and computation
+is dense and compute-bound, low-precision com-
+putation can translate into significant system-level
+gains (Lin et al., 2024; Frantar et al., 2022; Micike-
+vicius et al., 2022). However, most existing results
+are established in the context of large language
+models, whose standardized architectures and ex-
+ecution patterns differ substantially from those of
+recommendation models.
+In the recommendation domain, prior work
+has explored low-precision techniques primarily
+for embedding compression or memory efficiency
+(Zhang et al., 2018). While these studies demon-
+strate the feasibility of applying low-precision rep-
+resentations to specific components, they typically
+do not investigate distributional properties or end-
+to-end inference behavior under low-precision de-
+ployment. As a result, the system-level effective-
+ness of low-precision quantization in modern rec-
+ommendation models remains underexplored.
+2.2
+Recommendation Models and Generative
+Recommendation
+Recommendation models have traditionally been
+developed under supervised learning paradigms,
+with objectives such as click-through rate or con-
+version rate. Classical industrial architectures com-
+monly adopt multi-stage pipelines, where retrieval,
+filtering, and ranking are implemented as separate
+components. These systems typically rely on large
+embedding tables to represent sparse categorical
+features, followed by multi-layer perceptrons or
+feature interaction modules for prediction (Naumov
+et al., 2019; Lee and Lee, 2019; Batmaz et al., 2019;
+Ivchenko et al., 2022). While effective in practice,
+2
+
+
+the multi-stage design inherently constrains down-
+stream models by the capacity and recall limits of
+upstream stages, and the overall inference pipeline
+often exhibits heterogeneous and loosely coupled
+computation patterns.
+Recently,
+generative
+recommendation
+has
+emerged as an alternative paradigm that formulates
+recommendation as conditional sequence genera-
+tion (Wang et al., 2023). By integrating retrieval
+and ranking into a unified generative process, this
+approach removes strict stage boundaries and en-
+ables end-to-end optimization within a single mod-
+eling framework. OneRec represents a systematic
+exploration of this paradigm (Zhou et al., 2025b),
+and subsequent extensions such as OneRec-V2 fur-
+ther scale the architecture through training and
+structural refinements (Zhou et al., 2025c; Liu et al.,
+2025; Zhou et al., 2025a). Compared to traditional
+multi-stage pipelines, generative recommendation
+models rely more heavily on dense computation
+paths and unified execution patterns, which can
+lead to higher hardware utilization during training
+and inference.
+In parallel, a growing body of work has exam-
+ined the interaction between large language mod-
+els and recommendation tasks, including empirical
+studies of LLM-based recommendation capabilities
+and surveys of emerging design trends (Liu et al.,
+2023; Wu et al., 2024). These developments further
+highlight the convergence between generative mod-
+eling and modern recommendation workloads.
+3
+Preliminary
+3.1
+Background on Quantization
+Quantization is a technique that represents model
+parameters and intermediate activations using
+lower numerical precision in order to reduce com-
+putation cost, memory footprint, and data move-
+ment during inference. Given a floating-point ten-
+sor x, quantization typically involves rescaling its
+values to match the representable range of a target
+format, followed by rounding. A generic quantized
+representation ˆx can be expressed as
+ˆx = Q(x; s) = round
+x
+s
+
+,
+where s denotes a scaling factor that controls how
+the dynamic range of x is mapped to the target pre-
+cision. During computation, quantized values are
+often accumulated in higher precision or combined
+with appropriate scaling to control numerical error.
+Low-precision quantization can be applied to
+both model weights and activations. Key design
+choices include the granularity of scaling (e.g., per-
+tensor, per-channel, or block-wise) and whether
+scaling factors are determined statically or dynam-
+ically at runtime.
+In LLMs, low-precision for-
+mats are typically used in conjunction with higher-
+precision accumulation for dense linear operations
+such as matrix multiplication, where most of the
+computational cost resides.
+The effectiveness of quantization depends criti-
+cally on the numerical properties of the tensors be-
+ing quantized. In particular, the magnitude and vari-
+ance of weights and activations determine whether
+low-precision representations introduce tolerable
+perturbations or lead to harmful numerical distor-
+tion. As a result, understanding the distributional
+characteristics of a model is an essential prerequi-
+site for assessing the feasibility of low-precision
+inference.
+3.2
+Distribution Characteristics of Model
+Weights and Activations
+To understand the feasibility of low-precision infer-
+ence across different model families, we analyze
+the empirical distributions of model weights and ac-
+tivations. We compare three representative models:
+(1) a recommendation model used for fine-grained
+ranking (snapshot dated 2026-02-04), (2) OneRec-
+V2 (snapshot dated 2026-02-27), and (3) Qwen3-
+8B as a representative LLM. For each model, we
+collect statistics including variance, absolute maxi-
+mum (AbsMax), and 99th-percentile absolute value
+(AbsP99), and report their mean values across all
+tensors. These metrics capture both overall distribu-
+tion and extreme-value behavior, which are critical
+factors for quantization. Figure 1 summarizes these
+statistics in log scale.
+Traditional recommendation model. The tradi-
+tional recommendation model exhibits extremely
+large numerical scales in both weights and acti-
+vations. The mean variance of weights is on the
+order of 107, and the mean AbsMax exceeds 103.
+Activation statistics show a similar pattern, with
+mean variance also on the order of 106 and large
+extreme-value magnitudes. These results indicate
+highly dispersed distributions and wide dynamic
+ranges of the model.
+Large language model. In contrast, Qwen3-8B
+exhibits substantially smaller weight statistics. The
+mean variance of weights is about 0.1, and extreme
+values is about 2.0. While activation maximum
+3
+
+
+Variance
+AbsMax
+AbsP99
+10
+1
+100
+101
+102
+103
+104
+105
+106
+107
+Mean Layer-wise Statistic (log scale)
+Traditional Rec
+OneRec-V2
+Qwen3-8B
+(a) Weight distribution statistics (log scale).
+Variance
+AbsMax
+AbsP99
+101
+102
+103
+104
+105
+106
+107
+Mean Layer-wise Statistic (log scale)
+Traditional Rec
+OneRec-V2
+Qwen3-8B
+(b) Activation distribution statistics (log scale).
+Figure 1: Comparison of distribution statistics across different model families, including a classical recommendation
+model, OneRec-V2, and Qwen3-8B. All values are reported as the mean variance, mean absolute maximum
+(AbsMax), and mean 99th percentile absolute value (AbsP99) across all tensors, and plotted in log scale. The
+classical recommendation model exhibits significantly larger dynamic ranges and variances compared to OneRec-V2
+and Qwen3-8B, while OneRec-V2 demonstrates distributional characteristics closer to those of Qwen3-8B.
+and variance may occasionally reach higher values,
+their overall scale remains markedly lower than
+those observed in the traditional recommendation
+model.
+OneRec-V2. We can conclude from the figure
+that OneRec-V2 demonstrates distributional statis-
+tics that are much closer to those of the large lan-
+guage model than to the traditional recommenda-
+tion model. The mean weight variance is below
+0.1. Activation statistics are also orders of magni-
+tude smaller than those observed in the classical
+recommendation model, with substantially reduced
+dynamic ranges and dispersion.
+These empirical observations indicate that the
+numerical behavior of weights and activations dif-
+fers fundamentally across model families. Models
+with extremely wide dynamic ranges and highly
+dispersed distributions present greater challenges
+for coarse-grained scaling, whereas models with
+more controlled statistics are inherently more com-
+patible with low-precision representations.
+4
+Method
+Based on the distributional analysis presented in
+the previous section, we design a practical low-
+precision inference solution for OneRec-V2. Our
+goal is not only to introduce low-precision com-
+putation into the model, but also to ensure that
+such numerical changes translate into meaning-
+ful end-to-end system improvements under real
+serving workloads. To this end, we adopt a joint
+optimization strategy that consists of two comple-
+mentary components. First, we develop a post-
+training quantization scheme tailored to the numer-
+ical and computational characteristics of OneRec-
+V2. Second, we integrate the quantized model into
+an optimized inference infrastructure that improves
+hardware utilization and execution efficiency. The
+combination of these two components enables low-
+precision computation to deliver stable and measur-
+able system-level gains.
+4.1
+Quantization Strategy
+We adopt a post-training quantization (PTQ) ap-
+proach to introduce low-precision computation into
+the inference stage of OneRec-V2 without mod-
+ifying the model architecture or training proce-
+dure. Quantization is applied only to the most
+computation-intensive operators, namely the Lin-
+ear layers (including the qkvo projection layers in
+Attention and the linear transformations in Dense
+FFN) and the grouped GEMM operations in Sparse
+MoE. Other numerically sensitive or less compute-
+dominant components remain in their original pre-
+cision to control potential numerical risks.
+Figure 2 shows the comparison between FP16
+matmul and FP8 matmul of Linear layers. In Lin-
+ear layers, weights are quantized by channel, with
+scales computed offline from the FP16 parame-
+ters, while activations are quantized dynamically
+by token using runtime-computed scales. Matrix
+multiplication is performed using FP8 TensorCore
+multiplication with FP32 accumulation, the results
+are cast back to FP16 before entering subsequent
+layers. For grouped GEMM in MoE, we adopt
+block-wise quantization, using a 1 × 128 granu-
+larity for activations along the last dimension and
+4
+
+
+Activation
+(FP16)
+Weights
+(FP16)
+MatMul
+(FP16)
+Output
+(FP16)
+(a) FP16 MatMul
+Activation
+(FP16)
+Quantized 
+Weights
+(FP8)
+MatMul
+(FP8)
+Output
+(FP32)
+Scales of 
+Weights
+(FP32)
+DynamicQuantize
+(Per-Token)
+Scales of 
+Activation
+(FP32)
+Quantized 
+Activation
+(FP8)
+Output
+(FP16)
+Cast
+(b) FP8 MatMul
+FP32
+FP16
+FP8(E4M3)
+Figure 2: Comparison between FP16 and FP8 linear computation. In the FP8 path, inputs are first rescaled and
+quantized to low precision, followed by low-precision matrix multiplication with FP32 accumulation, and finally
+cast back to higher precision for subsequent layers. The FP16 path performs matrix multiplication directly in higher
+precision.
+a 128 × 128 granularity for weights. This block-
+aligned design reduces the dynamic range covered
+by a single scale while preserving the original rout-
+ing and parallel execution structure, allowing low-
+precision computation to be integrated without ac-
+curacy degradation. All model weights are pre-
+quantized and stored in a (FP8 weight, FP32 scale)
+pair in GPU memory.
+Overall, the quantization strategy prioritizes cov-
+erage of compute-intensive operators and controls
+numerical error through structure-aligned scaling
+and higher-precision accumulation, providing a sta-
+ble numerical foundation for subsequent system-
+level inference optimization.
+4.2
+Infrastructure Optimization
+In addition to quantization, we optimize the in-
+ference infrastructure (RecoGEM) to ensure that
+reduced-precision computation translates into mea-
+surable end-to-end performance gains. Instead of
+relying on a multi-stage conversion pipeline (e.g.,
+PyTorch →ONNX →TensorRT), we construct the
+TensorRT execution graph directly using a unified
+operator library, enabling tighter control over ker-
+nel selection, operator fusion, and memory layout.
+On top of this execution framework, we imple-
+ment several operator-level optimizations:
+• Quantization operators. We implement an
+efficient per-row quantization operator for ac-
+tivation scaling and a fused low-precision ma-
+trix multiplication kernel that integrates quan-
+tization and GEMM execution, reducing inter-
+mediate memory traffic and improving com-
+pute efficiency.
+• TopK optimization. We replace the default
+TopK implementation with a radix-based ker-
+nel (RadixTopK) and apply kernel fusion and
+zero-copy techniques to reduce memory move-
+ment and improve throughput under large-
+batch workloads.
+• Attention optimization.
+We redesign the
+attention kernel for the large-batch, short-
+context setting typical of OneRec-V2, intro-
+ducing batch-level parallelism and software
+pipelining to improve scheduling efficiency
+and hardware utilization.
+• MoE optimization. For Sparse MoE, we op-
+timize the grouped GEMM execution path us-
+ing Hopper TMA-enabled kernels and opera-
+tor fusion, improving TensorCore utilization
+and increasing the effective model FLOPs uti-
+lization (MFU).
+Together, these infrastructure-level optimiza-
+tions increase arithmetic intensity and hardware
+utilization during inference. When combined with
+the quantization strategy described earlier, the opti-
+mized inference stack enables substantial latency
+reduction and throughput improvement under pro-
+duction serving configurations.
+5
+
+
+5
+Experiments
+In this section, we evaluate the effectiveness of
+the proposed low-precision inference approach for
+OneRec-V2. We first report offline serving perfor-
+mance, including end-to-end latency and through-
+put, and analyze the contribution of infrastructure
+upgrade, quantization, and operator-level optimiza-
+tions. We then present online A/B testing results
+to verify that the proposed deployment achieves
+substantial efficiency gains without degrading rec-
+ommendation quality.
+5.1
+Setup
+Model. We evaluate a production-scale OneRec-
+V2 model with a fat-MoE architecture, consisting
+of approximately 4B backbone parameters with
+0.5B activated per token. The model follows a gen-
+erative recommendation paradigm and is deployed
+in a single-column short-video recommendation
+scenario.
+Configuration. All experiments are conducted
+with batch size 32 under an online serving configu-
+ration. The baseline system performs inference in
+FP16. The proposed system applies post-training
+quantization to computation dominant Linear lay-
+ers in Attention, Dense FFN, and MoE expert mod-
+ules, while other components remain in FP16.
+5.2
+System Performance Evaluation
+We first evaluate the system-level efficiency of the
+proposed deployment in terms of end-to-end la-
+tency and throughput.
+The baseline FP16 system achieves an average
+inference latency of 139 ms and a throughput of
+205. After migrating to the optimized inference
+infra and enabling low-precision computation, la-
+tency is reduced to 70 ms, corresponding to a 49%
+reduction. Throughput increases from 205 to 394,
+yielding a 92% improvement over the baseline.
+To understand the sources of these gains, we fur-
+ther decompose the throughput improvement into
+three components, as shown in Figure 3. Infrastruc-
+ture upgrade contributes a 27% increase relative
+to the baseline, enabling low-precision computa-
+tion on Linear and MoE operators contributes an
+additional 42%, and operator-level optimizations
+contribute a further 23%. These additive improve-
+ments collectively account for the observed 92%
+end-to-end throughput gain.
+Overall, the results indicate that infrastructure
+upgrade, low-precision quantization, and operator-
+FP16 Baseline
+(205)
+Infra
+(+27%)
+FP8 Quant.
+(+42%)
+Op. Opt.
+(+23%)
+Final
+(394, +92%)
+0
+50
+100
+150
+200
+250
+300
+350
+400
+450
+Throughput
+205
+260
+346
+394
+394
+Throughput Gain Breakdown
+Baseline
+Infra upgrade
+FP8 quantization
+Operator optimization
+Final
+Figure 3: Throughput gain breakdown. Starting from
+a baseline throughput of 205, the migration to the opti-
+mized inference architecture contributes a 27% improve-
+ment, enabling FP8 quantization on Linear and MoE
+operators contributes an additional 42%, and operator-
+level optimizations contribute a further 23%. These
+additive improvements result in a final throughput of
+394, corresponding to a 92% end-to-end increase over
+the baseline.
+Table 1: Online A/B results under FP8 inference com-
+pared to the FP16 baseline.
+Metric
+Kuaishou
+Kuaishou Lite
+App Stay Time
++0.047%
+-0.018%
+Watch Time
++0.044%
+-0.157%
+Video View
++0.073%
+-0.041%
+Like
++0.085%
+-0.102%
+Follow
++0.020%
+-0.450%
+Comment
++0.805%
++0.261%
+Collect
++0.430%
+-0.353%
+Forward
++0.313%
++1.047%
+level optimizations each provide measurable per-
+formance gains. While quantization contributes a
+substantial portion of the throughput improvement,
+the full 92% increase is realized through their com-
+bined and complementary effects.
+5.3
+Online A/B Evaluation
+To evaluate the impact of low-precision inference
+on recommendation quality, we conduct online A/B
+testing in production environments over a one-week
+period. Table 1 shows that core metrics remain sta-
+ble under the optimized inference configuration in
+both Kuaishou and Kuaishou Lite. No consistent
+performance degradation is observed across key
+indicators. Overall, the results confirm that low-
+precision inference can be deployed without com-
+promising recommendation effectiveness in real-
+world settings.
+6
+
+
+5.4
+Analysis and Discussion
+The experimental results support two main ob-
+servations. First, low-precision inference can de-
+liver substantial system-level acceleration in gen-
+erative recommendation models whose computa-
+tion is dominated by dense linear operations and
+MoE experts. The nearly 2× throughput improve-
+ment demonstrates the practical value of reduced-
+precision computation in large-scale recommen-
+dation serving. Second, despite applying lower
+precision to key computation paths, online metrics
+remain stable. Combined with the distribution anal-
+ysis in Preliminary, this indicates that the weight
+and activation statistics of OneRec-V2 are suffi-
+ciently controlled to tolerate quantization noise.
+Overall,
+the results demonstrate that low-
+precision inference is both feasible and beneficial
+for large-scale generative recommendation models
+under real-world production constraints.
+6
+Conclusion
+In this work, we study low-precision inference
+in the context of generative recommendation and
+demonstrate its practicality on a production-scale
+OneRec-V2 model. We show that the feasibility of
+quantization in recommendation models depends
+not only on numerical formats, but also on model
+architecture, training paradigm, and inference exe-
+cution characteristics. Compared to traditional rec-
+ommendation models, OneRec-V2 exhibits more
+controlled weight and activation statistics and a
+more compute-intensive execution pattern, making
+it more amenable to low-precision computation.
+Building upon these properties, we integrate
+post-training quantization with an optimized in-
+ference infrastructure and operator-level improve-
+ments. Our experiments show that each component
+contributes positively to system efficiency, and their
+combination leads to substantial end-to-end latency
+reduction and throughput improvement, while pre-
+serving online recommendation quality under real-
+world applications.
+These results suggest that as recommendation
+models evolve toward dense, generative architec-
+tures, low-precision computation can become a
+practical and scalable tool for improving serving
+efficiency. More broadly, optimization techniques
+developed for large language models can be effec-
+tively adapted to modern recommendation models
+when architectural and system-level considerations
+are jointly addressed.
+Limitations
+No exploration of lower precisions. This work
+focuses on FP8 inference as a practical trade-off
+between efficiency and deployment stability, and
+does not investigate more aggressive low-precision
+settings such as INT8, FP6, FP4, or mixed lower-
+bit schemes. As a result, the current study does not
+reveal the full accuracy-efficiency frontier of gen-
+erative recommendation models, and it remains un-
+clear whether further compression can be achieved
+without noticeable quality degradation.
+High infrastructure and requirements. The pro-
+posed solution relies on substantial infrastructure
+support and system-level customization, including
+hardware capability, TensorRT-based deployment,
+operator-level adaptation, and tailored optimization
+for key modules such as Linear and MoE. These re-
+quirements may limit the reproducibility and porta-
+bility of the approach, especially in production en-
+vironments that lack advanced inference stacks or
+sufficient engineering resources.
+Limited coverage of generative recommenda-
+tion models. Our conclusions are drawn from ex-
+periments on OneRec-V2, and we do not study a
+broader set of generative recommendation architec-
+tures. Therefore, it is still unclear to what extent the
+observed quantization properties and deployment
+benefits generalize across different model designs,
+training paradigms, and recommendation scenarios.
+Broader validation on more generative recommen-
+dation models is needed in future work.
+Acknowledgments
+We thank Haiping Xu, Xu He, Chenhui Wang, and
+Jin Ouyang for their contributions in training in-
+frastructure.
+References
+Zeynep Batmaz, Ali Yurekli, Alper Bilge, and Cihan
+Kaleli. 2019. A review on deep learning for recom-
+mender systems: challenges and remedies. Artificial
+Intelligence Review, 52(1):1–37.
+Tim Dettmers, Mike Lewis, Younes Belkada, and Luke
+Zettlemoyer. 2022. Gpt3. int8 (): 8-bit matrix mul-
+tiplication for transformers at scale. Advances in
+neural information processing systems, 35:30318–
+30332.
+Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and
+Dan Alistarh. 2022. Gptq: Accurate post-training
+quantization for generative pre-trained transformers.
+arXiv preprint arXiv:2210.17323.
+7
+
+
+Dmytro Ivchenko, Dennis Van Der Staay, Colin Taylor,
+Xing Liu, Will Feng, Rahul Kindi, Anirudh Sudar-
+shan, and Shahin Sefati. 2022. Torchrec: a pytorch
+domain library for recommendation systems. In Pro-
+ceedings of the 16th ACM Conference on Recom-
+mender Systems, pages 482–483.
+Benoit Jacob, Skirmantas Kligys, Bo Chen, Meng-
+long Zhu, Matthew Tang, Andrew Howard, Hartwig
+Adam, and Dmitry Kalenichenko. 2018.
+Quanti-
+zation and training of neural networks for efficient
+integer-arithmetic-only inference. In Proceedings of
+the IEEE conference on computer vision and pattern
+recognition, pages 2704–2713.
+Hyeungill Lee and Jungwoo Lee. 2019. Scalable deep
+learning-based recommendation systems. ICT ex-
+press, 5(2):84–88.
+Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-
+Ming Chen, Wei-Chen Wang, Guangxuan Xiao,
+Xingyu Dang, Chuang Gan, and Song Han. 2024.
+Awq: Activation-aware weight quantization for on-
+device llm compression and acceleration. Proceed-
+ings of machine learning and systems, 6:87–100.
+Junling Liu, Chao Liu, Peilin Zhou, Renjie Lv, Kang
+Zhou, and Yan Zhang. 2023. Is chatgpt a good rec-
+ommender? a preliminary study.
+arXiv preprint
+arXiv:2304.10149.
+Zhanyu Liu, Shiyao Wang, Xingmei Wang, Rongzhou
+Zhang, Jiaxin Deng, Honghui Bao, Jinghao Zhang,
+Wuchao Li, Pengfei Zheng, Xiangyu Wu, and 1
+others. 2025.
+Onerec-think:
+In-text reasoning
+for generative recommendation.
+arXiv preprint
+arXiv:2510.11639.
+Paulius Micikevicius, Sharan Narang, Jonah Alben, Gre-
+gory Diamos, Erich Elsen, David Garcia, Boris Gins-
+burg, Michael Houston, Oleksii Kuchaiev, Ganesh
+Venkatesh, and 1 others. 2017. Mixed precision train-
+ing. arXiv preprint arXiv:1710.03740.
+Paulius Micikevicius, Dusan Stosic, Neil Burgess, Mar-
+ius Cornea, Pradeep Dubey, Richard Grisenthwaite,
+Sangwon Ha, Alexander Heinecke, Patrick Judd,
+John Kamalu, and 1 others. 2022. Fp8 formats for
+deep learning. arXiv preprint arXiv:2209.05433.
+Maxim
+Naumov,
+Dheevatsa
+Mudigere,
+Hao-
+Jun
+Michael
+Shi,
+Jianyu
+Huang,
+Narayanan
+Sundaraman, Jongsoo Park, Xiaodong Wang, Udit
+Gupta, Carole-Jean Wu, Alisson G Azzolini, and 1
+others. 2019. Deep learning recommendation model
+for personalization and recommendation systems.
+arXiv preprint arXiv:1906.00091.
+Wenjie Wang, Xinyu Lin, Fuli Feng, Xiangnan He, and
+Tat-Seng Chua. 2023. Generative recommendation:
+Towards next-generation recommender paradigm.
+arXiv preprint arXiv:2304.03516.
+Hao Wu, Patrick Judd, Xiaojie Zhang, Mikhail Isaev,
+and Paulius Micikevicius. 2020. Integer quantization
+for deep learning inference: Principles and empirical
+evaluation. arXiv preprint arXiv:2004.09602.
+Likang Wu, Zhi Zheng, Zhaopeng Qiu, Hao Wang,
+Hongchao Gu, Tingjia Shen, Chuan Qin, Chen Zhu,
+Hengshu Zhu, Qi Liu, and 1 others. 2024. A sur-
+vey on large language models for recommendation.
+World Wide Web, 27(5):60.
+Guangxuan Xiao, Ji Lin, Mickael Seznec, Hao Wu,
+Julien Demouth, and Song Han. 2023. Smoothquant:
+Accurate and efficient post-training quantization for
+large language models. In International conference
+on machine learning, pages 38087–38099. PMLR.
+Jian Zhang, Jiyan Yang, and Hector Yuen. 2018. Train-
+ing with low-precision embedding tables. In Systems
+for Machine Learning Workshop at NeurIPS, volume
+2018.
+Jinjie Zhang, Yixuan Zhou, and Rayan Saab. 2023. Post-
+training quantization for neural networks with prov-
+able guarantees. SIAM journal on mathematics of
+data science, 5(2):373–399.
+Guorui Zhou, Honghui Bao, Jiaming Huang, Ji-
+axin Deng, Jinghao Zhang, Junda She, Kuo Cai,
+Lejian Ren, Lu Ren, Qiang Luo, and 1 others.
+2025a. Openonerec technical report. arXiv preprint
+arXiv:2512.24762.
+Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo
+Cai, Lejian Ren, Qiang Luo, Qianqian Wang, Qi-
+gen Hu, Rui Huang, Shiyao Wang, and 1 others.
+2025b.
+Onerec technical report.
+arXiv preprint
+arXiv:2506.13695.
+Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huan-
+jie Wang, Jiaxin Deng, Jinghao Zhang, Kuo Cai,
+Lejian Ren, Lu Ren, Liao Yu, and 1 others.
+2025c. Onerec-v2 technical report. arXiv preprint
+arXiv:2508.20900.
+A
+Example Appendix
+This is an appendix.
+8

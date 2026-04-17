@@ -266,4 +266,53 @@ GRC 将标准的单次解码扩展为三阶段 **Generation-Reflection-Correctio
 | P1 | IDEA-earn-0 | Register Token 压缩 | 3.79x speedup, 与 LazyAR 互补, KDD 2025 |
 | P1 | IDEA-promise-0 | PRM-guided Beam Search | 快手在线验证, test-time scaling 解锁小模型潜力 |
 | P1 | IDEA-grc-0 | Generation-Reflection-Correction | 阿里 +1.79% revenue, EGRS 控制延迟, 与 GRPO 协同 |
+| P1 | IDEA-orecv2-0 | FP8 PTQ 推理加速 | 快手 OneRec-V2, -49% latency +92% throughput, 0 质量损失 |
 | P2 | IDEA-flame-0 | GR Serving 系统 | 生产部署参考，当前阶段优先级低 |
+
+---
+
+## IDEA-orecv2-0: FP8 Post-Training Quantization 推理加速
+
+**优先级**: P1
+**来源**: Quantized Inference for OneRec-V2, Kuaishou (arxiv 2603.11486)
+**状态**: 待讨论
+
+### 核心思想
+
+快手 OneRec-V2 (4B 参数, 0.5B activated, fat-MoE 架构) 的 FP8 PTQ 推理优化。关键发现: GR 模型的 weight/activation 分布统计量远比传统推荐模型可控 (方差低 5-6 个数量级)，接近 LLM (Qwen3-8B)。因此 LLM 的量化技术可以直接迁移。具体方案:
+
+1. **Per-channel weight quantization** (offline): Linear 层 (Attention qkvo + Dense FFN) + grouped GEMM (MoE)
+2. **Per-token activation quantization** (runtime dynamic scaling)
+3. **FP8 TensorCore multiply + FP32 accumulation → cast back FP16**
+4. **MoE block-wise quantization**: 1×128 activation, 128×128 weight granularity
+
+配合 infrastructure 优化 (TensorRT 直接构建, RadixTopK, attention kernel 优化, MoE TMA kernel):
+- Latency: 139ms → 70ms (-49%)
+- Throughput: 205 → 394 (+92%)
+- 在线 A/B: 快手+快手极速版所有核心指标无劣化
+
+### 与当前项目的关联
+
+- 当前阶段关注模型训练，但部署时 FP8 是必经之路
+- 关键 insight: **GR 模型天然适合量化** — 与传统推荐模型不同, 不需要额外的量化感知训练
+- OneRec-V2 的 MoE + Transformer 架构与我们未来可能的模型架构一致
+- 42% throughput gain 来自 FP8 quant alone → 对部署成本影响巨大
+
+### 实验设计草案
+
+**Phase 1 — Distribution Analysis**:
+- 在训练好的 NTP 模型上分析 weight/activation 分布 (variance, AbsMax, AbsP99)
+- 与 OneRec-V2 和传统推荐模型的数据做对比
+- 判断我们的模型是否也具有 "接近 LLM" 的量化友好特性
+
+**Phase 2 — FP8 PTQ Inference**:
+- 用 PyTorch FP8 或 TensorRT FP8 做推理
+- 对比 FP16 vs FP8: latency, throughput, Recall@K 差异
+- 需要 H100 GPU (FP8 TensorCore)
+
+### 关键问题
+
+1. 当前模型规模较小 (不是 4B), FP8 加速比可能不如 OneRec-V2 显著
+2. 需要 Hopper 架构 GPU (H100/H200) 支持 FP8 TensorCore
+3. Phase 1 (分布分析) 零成本，可以先做
+4. 更适合模型上线部署阶段，当前优先级低于训练优化

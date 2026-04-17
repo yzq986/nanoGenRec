@@ -679,6 +679,8 @@ Huawei AppGallery 工业数据集 + 在线 A/B: **超越 HSTU 和 MTGR**, WWW 20
 | P2 | IDEA-llada-0 / IDEA-mdgr-0 | Discrete Diffusion 解码 | 非自回归新范式，MDGR 工业验证 +1.20% revenue |
 | P2 | IDEA-gr2-0 | LLM Reasoning Reranker | Meta 远期方案, 无在线 A/B |
 | P2 | IDEA-higr-0 | Hierarchical Slate Planning | Tencent 验证, 属于 reranking 阶段 |
+| P1 | IDEA-genrec-1 | Asymmetric Token Merger | JD SIGIR 2026, prompt 长度减半, 一个 Linear 层, 性能无损 |
+| P2 | IDEA-nsgr-0 | Next-Scale 粗到细重排序 | 美团 CTR +2.89%, 但属于 reranking 阶段 |
 
 ---
 
@@ -824,3 +826,78 @@ Meta 提出为大规模 foundation retrieval model 联合学习层次化索引: 
 1. MPQ 无序 token 与当前有序 SID 不兼容，需要大改 tokenizer pipeline → P2
 2. CORP 和 MSRA 是更容易落地的组件
 3. 在线评估细节需要看 full paper
+
+---
+
+## IDEA-genrec-1: 非对称 Token Merger (Prompt 侧 SID 压缩)
+
+**优先级**: P1
+**来源**: GenRec, JD.com (arxiv 2604.14878, SIGIR 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+JD GenRec 提出 Asymmetric Token Merger: 在 prefilling (encoder/prompt) 侧，将每个 item 的 3-token SID 通过线性层投影合并为 1 个 latent vector，使 prompt 长度减少 ~2x；而在 decoding 侧保持原始 SID token 分辨率。这是一种 **训练-推理一致的非对称压缩**: 压缩只应用于 prompt 侧 (用户历史)，解码侧仍生成完整 SID。实验显示 Token Merger 几乎不损失性能 (HR@50: 0.7192 vs 0.7201 without merger)，但 prompt 长度减半 → 支持更长的用户历史序列。
+
+### 与当前项目的关联
+
+- 当前 3-token SID 在 prompt 侧 tripling 了输入长度 → 限制 max sequence length
+- Token Merger 是极简的解决方案: `h = Linear(Concat(e(s1), e(s2), e(s3)))`, 一个线性层
+- 与 IDEA-onemall-1 (Query-Former 压缩) 方向相同但更轻量: QFormer 需要 cross-attention, Token Merger 只需一个 Linear
+- 与 IDEA-earn-0 (Register Token) 互补: EARN 压缩推理侧, Token Merger 压缩 prompt 侧
+- 直接可用: 不需要改 SID tokenizer，只在模型 forward 中加一层
+
+### 实验设计草案
+
+**Phase 1 — Linear Token Merger**:
+- 在 NTP 模型 forward 中，prompt 侧的每个 item 的 3 个 SID embedding concat → Linear → 1 个 vector
+- 保留 special tokens (<sep> 等) 不压缩
+- 训练: 从头训练 or fine-tune
+- 评估: HR@K, NDCG@K vs baseline (无压缩), 以及训练/推理速度
+
+**Phase 2 — 配合更长序列**:
+- Token Merger 释放的序列长度空间用于扩展用户历史 (2x 历史长度)
+- 与 IDEA-oneloc-4 (Scaling Law 序列长度) 配合: 验证更长序列在压缩表示下的 scaling 行为
+
+### 关键问题
+
+1. 线性投影可能丢失 SID 层级结构信息 (L1/L2/L3 的 hierarchical semantics)
+2. 需要与 IDEA-onemall-1 (QFormer) 做 head-to-head 对比: 哪种压缩更优
+3. 前置依赖: NTP 模型基础设施
+
+---
+
+## IDEA-nsgr-0: Next-Scale 粗到细生成式重排序
+
+**优先级**: P2
+**来源**: NSGR, Meituan (arxiv 2604.05314)
+**状态**: 待讨论
+
+### 核心思想
+
+美团 NSGR 提出一种新的 reranking 范式: Next-Scale Generation。不同于自回归 (逐个生成) 和 one-step (一次生成全部) 的方式，NSG 采用树状粗到细策略: 从用户兴趣出发，"一生二、二生四" 逐步细化推荐列表。核心组件: (1) Next-Scale Generator (NSG) — 每步对当前子集做 priority scoring + pairwise relationship classification (竞争/互补/中性) + binary split; (2) Multi-Scale Evaluator (MSE) — 树结构评估器，在每个 scale 提供指导信号; (3) Multi-Scale Neighbor Loss — 借鉴 GRPO 思想构造相对 reward。在线 A/B (美团外卖): CTR +2.89%, GMV +3.15%。
+
+### 与当前项目的关联
+
+- NSGR 是 reranking 而非 retrieval → 与我们的 NTP retrieval 不在同一阶段
+- 但其 **pairwise relationship modeling** (竞争/互补/中性分类) 可以启发 beam search 后的候选重排
+- Multi-Scale Neighbor Loss 与 GRPO 类似的 relative reward 思路可以迁移
+- SID + HSTU 作为 user interest 提取器是共性组件
+- 更适合系统上线后的 reranking 阶段引入
+
+### 实验设计草案
+
+**Phase 1 — Pairwise Relationship Reranking**:
+- 在 beam search 输出的 top-K 候选上，做 pairwise 竞争/互补分类
+- 用 NSGR 的 asymmetric influence weight 公式重排
+- 评估: list-wise diversity + precision
+
+**Phase 2 — Full NSGR Pipeline**:
+- 作为 retrieval (NTP) → reranking (NSGR) 的两阶段 pipeline
+- 需要训练 MSE evaluator
+
+### 关键问题
+
+1. 当前处于 retrieval 阶段, reranking 是后续工作 → P2
+2. NSGR 需要 evaluator 模型 (额外训练成本)
+3. 在线 NSGR 只在 candidate set ≥20 时有显著优势, 如果 beam=50 则值得考虑

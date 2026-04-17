@@ -1,0 +1,776 @@
+GenRec: A Preference-Oriented Generative Framework for
+Large-Scale Recommendation
+Yanyan Zou∗†
+JD.com
+Beijing, China
+zoe.yyzou@gmail.com
+Junbo Qi∗
+Waseda University
+Tokyo, Japan
+junboqi@toki.waseda.jp
+Lunsong Huang∗
+JD.com
+Beijing, China
+huanglunsong1@jd.com
+Yu Li∗
+JD.com
+Beijing, China
+liyu.liz@jd.com
+Kewei Xu∗
+JD.com
+Beijing, China
+xukewei3@jd.com
+Jiahao Gao∗
+JD.com
+Beijing, China
+gaojiahao.20@jd.com
+Binglei Zhao
+JD.com
+Beijing, China
+zhaobinglei1@jd.com
+Xuanhua Yang
+JD.com
+Beijing, China
+yangxuanhua1@jd.com
+Sulong Xu
+JD.com
+Beijing, China
+xusulong@jd.com
+Shengjie Li‡
+JD.com
+Beijing, China
+lishengjie1@jd.com
+Abstract
+Generative Retrieval (GR) offers a promising paradigm for recom-
+mendation through next-token prediction (NTP). However, scaling
+it to large-scale industrial systems introduces three challenges: (i)
+within a single request, the identical model inputs may produce
+inconsistent outputs due to the pagination request mechanism; (ii)
+the prohibitive cost of encoding long user behavior sequences with
+multi-token item representations based on semantic IDs, and (iii)
+aligning the generative policy with nuanced user preference signals.
+We present GenRec, a preference-oriented generative framework
+deployed on the JD App 1 that addresses above challenges within a
+single decoder-only architecture. For training objective, we propose
+Page-wise NTP task, which supervises over an entire interaction
+page rather than each interacted item individually, providing denser
+gradient signal and resolving the one-to-many ambiguity of point-
+wise training. On the prefilling side, an asymmetric linear Token
+Merger compresses multi-token Semantic IDs in the prompt while
+preserving full-resolution decoding, reducing input length by ∼2×
+with negligible accuracy loss. To further align outputs with user
+satisfaction, we introduce GRPO-SR, a reinforcement learning
+method that pairs Group Relative Policy Optimization with NLL
+∗Core contributors.
+†Project leader.
+‡Corresponding author.
+1https://www.jd.com
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+SIGIR ’26, Melbourne, VIC, Australia
+© 2026 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2599-9/2026/07
+https://doi.org/10.1145/3805712.3808437
+regularization for training stability, and employs Hybrid Rewards
+combining a dense reward model with a relevance gate to mitigate
+reward hacking. In month-long online A/B tests serving production
+traffic, GenRec achieves 9.5% improvement in click count and 8.7%
+in transaction count over the existing pipeline.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Generative Retrieval; Large-scale Recommender System; Super-
+vised Fine-tuning; Preference Alignment
+ACM Reference Format:
+Yanyan Zou, Junbo Qi, Lunsong Huang, Yu Li, Kewei Xu, Jiahao Gao, Bin-
+glei Zhao, Xuanhua Yang, Sulong Xu, and Shengjie Li. 2026. GenRec: A
+Preference-Oriented Generative Framework for Large-Scale Recommen-
+dation. In Proceedings of the 49th International ACM SIGIR Conference on
+Research and Development in Information Retrieval (SIGIR ’26), July 20–
+24, 2026, Melbourne, VIC, Australia. ACM, New York, NY, USA, 6 pages.
+https://doi.org/10.1145/3805712.3808437
+1
+Introduction
+Modern recommender systems typically adopt a retrieve-and-rank
+architecture [11, 13]. Recent progresses [10, 16, 21] have shown
+the effectiveness of generative retrieval paradigm. By reformulat-
+ing retrieval task as a conditional sequence generation problem,
+this approach directly generates target items from the entire cor-
+pus. Nevertheless, we observe that deploying such a method in
+large-scale industrial recommender systems remains challenging.
+First, to handle high-volume traffic and ensure user experience,
+arXiv:2604.14878v1  [cs.IR]  16 Apr 2026
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yanyan Zou et al.
+industrial systems typically employ the pagination request mecha-
+nism. Within each paginated request, a user might exhibit multiple
+positive interactions (e.g., click, transaction), leading to identical
+model inputs yet multiple valid output in generative task following
+the vanilla NTP paradigm. Second, the long user historical behav-
+ior sequences can lead to substantial computational overhead and
+increased online inference latency. Third, naively aligning the gen-
+erative model with personalized objectives could result in reward
+hacking and performance degradation. To address above challenges,
+we propose GenRec, a generative retrieval-based recommendation
+framework, unifying user intent understanding and item retrieval
+within a single decoder-only architecture. It integrates SID-based
+representations and preference alignment via Group Relative Policy
+Optimization with Supervised Regularization (GRPO-SR), enabling
+robust optimization under large-scale real-world users’ feedback.
+The main contributions are summarized as follows:
+• We introduce a Page-Wise NTP supervised fine-tuning
+(SFT) strategy to capture holistic user interaction patterns
+and resolve the one-to-many ambiguity of vanilla NTP.
+• We propose an asymmetric representation architecture utiliz-
+ing a linear Token Merger in prefilling side. This mechanism
+compresses the prompt embedding sequence to efficiently
+model long user behaviors, while decoding side are unmerged
+SIDs to ensure fine-grained item retrieval.
+• We develop a reinforcement learning (RL) method GRPO-
+SR with Hybrid Rewards for preference alignment, which
+combines a dense reward model with a gating mechanism
+that suppresses Reward Hacking. We further introduce
+Negative Log-Likelihood (NLL) regularization to stabilize
+training and preserve real-world user behavior patterns.
+• We empirically demonstrate scaling laws in generative rec-
+ommendation and validate the framework through large-
+scale deployment in the JD App, achieving 9.5% click and
+8.7% transaction improvements.
+2
+Methodology
+2.1
+Preliminary
+We formulate the retrieval task as a unified conditional sequence
+generation problem. Given the H = {𝑣1, . . . , 𝑣𝑛}, which denotes the
+user’s historical behavior sequence arranged in chronological order
+(e.g. 𝑣𝑛represents the most recent interaction), the model predicts
+the subsequent item Y, representing a potential user interest.
+To be specific, the method operates over discrete Semantic Iden-
+tifiers (SIDs) [16]. A multi-modal model (i.e., Qwen2.5-VL [1]) is
+employed to jointly encode both visual appearance and textual
+descriptions of each item into a continuous representation to cap-
+ture more comprehensive item information. Following existing
+practices [27], we fine-tune the embedding model using domain-
+specific collaborative pairs to ensure the learned embeddings cap-
+ture recommendation-oriented semantics. Then, RQ K-means is
+utilized to discretize the refined embeddings. This process iter-
+atively clusters the residual vectors, mapping each item 𝑣𝑖to a
+hierarchical tuple of cluster indices:
+SID(𝑣𝑖) = {𝑠1
+𝑖,𝑠2
+𝑖,𝑠3
+𝑖}.
+(1)
+2.2
+User-Centric Page-Wise NTP SFT
+Previous generative recommendation methods [16, 27] train and
+infer under the same point-wise protocol: predicting a single next
+item given a user history. Due to the pagination request mechanism
+of large-scale industrial recommender systems, we argue that this
+creates a fundamental label ambiguity: when the same history H
+is paired with 𝐾distinct positive items {𝑣(𝑘)}𝐾
+𝑘=1, the model must
+maximize Í
+𝑘log 𝑃𝜃(𝑣(𝑘) | H) over an identical prefix, effectively
+fitting a uniform mixture over all valid continuations. This flattened
+distribution both inflates gradient variance and dilutes per-item
+probability mass, degrading top-𝐾precision. The root causes a
+cardinality mismatch: a single session naturally yields multiple
+engagement signals, yet vanilla point-wise NTP collapses them
+into isolated input–label pairs, discarding intra-session structure.
+To resolve this, we decouple the training and inference formu-
+lations. Following Eq 1, we formulate the input as a composite
+prompt:
+𝑆𝑢= [SID(𝑣) : 𝑣∈H]≻,
+(2)
+Page-wise Supervision. We further design a page-wise next token
+prediction (i.e., PW-NTP) strategy for SFT. The target sequence is a
+page-wise list of items the user interacted within the current page,
+like ordered items O, clicked items C and exposed items E, ordered
+by interaction intensity:
+𝑌page = [SID(𝑣) : 𝑣∈O ∪C ∪E]≻
+(3)
+The training objective is the standard autoregressive SFT loss
+over the full response sequence 𝑌page:
+LSFT = −
+|𝑌page|
+∑︁
+𝑡=1
+log 𝑃𝜃(𝑦𝑡| 𝑆𝑢,𝑦<𝑡).
+(4)
+By supervising over the entire page rather than a single item, each
+forward pass provides a denser learning signal and resolves the
+one-to-many ambiguity inherent in point-wise training.
+Point-wise Beam Search. At serving time, the model generates
+beam-width items per query via beam search, following the standard
+point-wise protocol. This asymmetry is by design: list-wise training
+provides richer supervision of model gradients, while point-wise
+inference maintains compatibility with the production beam search
+pipeline for online serving requirements.
+Decoder-only Architecture with Token Merger. To better leverage
+and reuse the inference optimization techniques developed in the
+Large Language Model community, we directly adopt a decoder-
+only transformer architecture, as depicted in Figure 1. However,
+multi-token SIDs triple the input sequence length of the item part,
+posing severe latency challenges. We address this via a linear Token
+Merger. Since the SID triplet {𝑠1
+𝑖,𝑠2
+𝑖,𝑠3
+𝑖} is derived from a single
+item 𝑣𝑖, we concatenate and project their embeddings into a unified
+vector h𝑣𝑖via a linear layer in the prompt part:
+h𝑣𝑖= Linear(Concat(e(𝑠1
+𝑖), e(𝑠2
+𝑖), e(𝑠3
+𝑖))).
+(5)
+This design compresses item SIDs into latent vectors, reducing
+prompt length by ∼2× to accommodate long user sequences within
+strict inference budgets. Special tokens (e.g., <sep>) are kept un-
+merged to serve as explicit indicators of structural separation. Cru-
+cially, this optimization is confined to the prefilling phase, while the
+
+
+GenRec: A Preference-Oriented Generative Framework for Large-Scale Recommendation
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Decoder Layers
+Merger
+...
+...
+LM Head
+Input
+Output
+No Compressed Items for Training&Decoding 
+...
+...
+Figure 1: Model architecture of GenRec. High-dimensional items are quantized into Semantic IDs. To enhance efficiency, an
+Linear token Merger projects the concatenated embeddings of an item’s SIDs into a unified latent vector on the prefilling side.
+Other tokens (e.g. <sep>) remain uncompressed.
+decoding process and generative objective adhere to the original
+semantic token sequence.
+2.3
+Preference Alignment via RL
+While page-wise SFT captures behavioral regularities from histor-
+ical logs, it lacks explicit optimization for user satisfaction and
+is inherently brittle against sparse and non-stationary real-world
+feedback. To address these limitations, we introduce a RL method
+GRPO-SR, building on Group Relative Policy Optimization (GRPO)
+[17]. Unlike PW-NTP SFT stage, the RL stage aligns with the point-
+wise beam search inference protocol: each rollout generates a single
+item sequence per query, ensuring consistency between RL train-
+ing and online serving. Our method optimizes relative preferences
+among multiple generated candidates rather than absolute reward
+values, thereby improving robustness in industrial settings.
+Reward Formulation. Raw engagement signals (e.g., clicks) are
+too sparse to provide effective policy gradients. We instead employ
+a SIM-based model [14] to estimate a continuous preference score
+𝑟pref
+𝑖
+∈[0, 1] for each rollout candidate 𝑜𝑖. A key failure mode is
+reward hacking: the policy produces syntactically valid SID combi-
+nations that receive non-trivial 𝑟pref yet are semantically irrelevant.
+We suppress this with a gate mechanism G𝑖= I(𝑠𝑖> 𝜏) where 𝜏is
+a small constant, yielding the hybrid reward:
+𝑟𝑖= G𝑖· 𝑟pref
+𝑖
+.
+(6)
+The dense preference model, while smoother than binary labels,
+may still under-estimate rewards for items the user actually engaged
+with. Let D+ = O ∪C denote the set of ordered and clicked items
+from the interaction page. We calibrate the reward within each
+rollout group by anchoring positive items to the group maximum:
+˜𝑟𝑖=
+
+1 −I(𝑜𝑖∈D+)
+
+· 𝑟𝑖+ I(𝑜𝑖∈D+) · 𝑟max,
+(7)
+where 𝑟𝑚𝑎𝑥is the highest 𝑟𝑖in the group. This guarantees that the
+predicted items that hit real-world user’ positive behaviors always
+receive top-tier rewards, preventing the reward model’s estimation
+bias from down-weighting genuinely preferred items.
+GRPO-SR Objective. We propose a composite objective that har-
+monizes group-relative policy optimization with supervised stabil-
+ity. The loss function is defined as:
+LGRPO−SR(𝜃) =
+−E𝑆𝑢∼𝑇, {𝑜𝑖}𝐺
+𝑖=1∼𝜋𝜃(·|𝑆𝑢)
+"
+1
+𝐺
+𝐺
+∑︁
+𝑖=1
+1
+|𝑜𝑖|
+|𝑜𝑖|
+∑︁
+𝑡=1
+𝜋𝜃(𝑜𝑖,𝑡| 𝑆𝑢,𝑜𝑖,<𝑡)
+sg 𝜋𝜃(𝑜𝑖,𝑡| 𝑆𝑢,𝑜𝑖,<𝑡) ˆ𝐴𝑖,𝑡
+#
+−𝛼· E𝑣∼D+
+" |𝑣|
+∑︁
+𝑡=1
+log 𝜋𝜃(𝑣𝑡| 𝑆𝑢, 𝑣<𝑡)
+#
+(8)
+where𝑇is training set, and ˆ𝐴𝑖,𝑡is the advantage derived from group-
+relative rewards. The first term leverages a importance sampling
+𝜋𝜃/sg(𝜋𝜃) to enable stable, one-step policy updates. The second
+term, weighted by 𝛼, imposes a negative log-likelihood constraint
+over positive trajectories D+. Distinct from standard KL-divergence
+penalties, this NLL regularizer explicitly anchors the policy to the
+real-world users’ behavior, mitigating over-optimization towards.
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yanyan Zou et al.
+Model
+HR@1
+HR@10
+N@10
+HR@50
+N@50
+HaR ↓
+Traditional Methods
+BERT4Rec
+0.0315
+0.0968
+0.0412
+0.1832
+0.0689
+-
+SASRec
+0.0383
+0.1048
+0.0492
+0.1976
+0.0776
+-
+Generative Methods
+TIGER
+0.0518
+0.1660
+0.0803
+0.3556
+0.1409
+15.46%
+LC-Rec
+0.0947
+0.3669
+0.2146
+0.6226
+0.2717
+7.80%
+Ours
+GenRec
+0.1189
+0.4456
+0.2635
+0.7192
+0.3247
+4.96%
+w/o TM
+0.1193
+0.4467
+0.2653
+0.7201
+0.3276
+4.89%
+Table 1: Next-item vs. next-sequence prediction performance.
+“TM” denotes Token Merger. Best results are in bold, and the
+second best are underlined.
+3
+Evaluation
+3.1
+Experimental Setup
+The training and testing datasets are collected from a large-scale
+recommender platform from the JD.com, covering around 560 mil-
+lion user interaction sequences over a one-month period. We take
+the data from the last day for testing and the remaining for train-
+ing. For SFT, we consider three metrics for evaluation: HitRate
+(HR@K) [4], NDCG (N@K) [7] and Hallucination Rate (HaR, the
+percentage of invalid SIDs of the generated results.). For the RL ex-
+periments study, we utilize the highest 𝑟SIM score of the generated
+K items as Reward Metrics (R@K). We consider both traditional
+and generative methods as our baselines, including BERT4Rec [18],
+SASRec [8], TIGER [16], and LC-Rec [26]. It is worthy noting that
+both TIGER and LC-Rec are trained via vanilla point-wise NTP task.
+The Qwen2.5 [15] decoder-only architecture is adopted as our back-
+bone. To be specific, our model is further trained on the Qwen2.5
+variants of 1.5B, 3B and 7B. To train the generative models, we
+conducted distributed training across 8 NVIDIA H100 GPUs. The
+AdamW [9] is employed as the optimizer with a linear warm-up
+phase over the first 1% of training steps, followed by cosine learning
+rate decay.
+3.2
+Evaluation Results
+3.2.1
+Effectiveness of the Model Structure and SFT Framework. We
+take the Qwen2.5 3B as our main backbone. To make fair compar-
+ison, we reproduce the LC-Rec using the same Qwen2.5 variant.
+Recall that LC-Rec is trained following vanilla next-token prediction
+task. Table 1 illustrates the offline results of various methods on the
+large-scale industrial dataset. Our method (denoted as “GenRec")
+achieve better performance on HR and N yet lower HaR compared
+to both traditional and generative methods. When comparing the
+variant of our method with the full token as the input of the decoder
+module (i.e., removing the token merger module, denoted as “w/o
+TM"), both the performance and the valid generation rate remain
+comparable to the one with token merger. This demonstrates the
+effectiveness of the simple token merger where the decisive infor-
+mation of input are preserved while the input token length of the
+decoder module is reduced by half.
+Furthermore, to investigate the effectiveness of our proposed PW-
+NTP task, we compare LC-Rec (trained with vanilla NTP), which is
+Model Size
+HR@1
+HR@10
+N@10
+HR@50
+N@50
+HaR.↓
+1.5B
+0.1077
+0.4103
+0.2484
+0.6527
+0.1885
+5.34%
+3B
+0.1189
+0.4456
+0.2635
+0.7192
+0.3247
+4.96%
+7B
+0.1221
+0.4483
+0.2649
+0.7216
+0.3269
+5.42%
+Table 2: Model scaling performance. Best results are in bold,
+and the second best are underlined.
+equal to the variant of GenRec without token merger module as well
+as trained via vanilla NTP. As illustrated in Table 1 and Figure 2a,
+GenRec consistently outperforms LC-Rec across all metrics, as well
+as achieves a better converged loss, demonstrating the effectiveness
+of the proposed PW-NTP supervision.
+We attribute such significant improvement to two factors: (1)
+vanilla NTP creates a one-to-many ambiguity where identical input
+contexts correspond to multiple valid labels, increasing optimiza-
+tion difficulty and gradient variance; (2) PW-NTP aggregates super-
+vision signals across sequential targets, providing denser learning
+signal per forward pass and accelerating convergence. Notably, PW-
+NTP also reduces the hallucination rate by over 50%, suggesting
+that joint prediction encourages more coherent item generation.
+3.2.2
+Scaling with Model Size. We investigate model capacity by
+training Qwen2.5 variants (1.5B, 3B, and 7B) on identical data. As
+shown in Figure 2b and Table 2, training loss consistently decreases
+with scale. However, the performance gain from 3B to 7B is mar-
+ginal compared to the 1.5B-to-3B leap, despite a ∼2.3× parameter
+increase. Architectural analysis reveals a distinct structural differ-
+ence: the 3B model is deeper but narrower (36 layers, 2048 hidden
+size) compared to the 7B variant (28 layers, 3584 hidden size) [15].
+This suggests that for generative recommendation, the increased
+depth in the 3B model may allow for more effective modeling of
+complex user-item interactions through additional non-linear trans-
+formations, partially compensating for the lower representational
+capacity (width). This aligns with the “capacity density” hypoth-
+esis [20], indicating that optimizing depth over width may yield
+better efficiency for this domain.
+3.2.3
+RL Alignment. We study how RL helps align model outputs
+with user preferences. By systematically varying the number of
+generated rollouts and recording the mean reward among candi-
+dates, we use Reward Metric of 𝑟SIM as a metric to evaluate the
+quality of preference alignment.
+Table 3 demonstrates that the RL-aligned model consistently
+surpasses the SFT baseline across all inference budgets. The largest
+improvement appears at Reward@1 (+18.01% relative gain) with
+full GRPO-SR, indicating that RL effectively reshapes the output
+distribution toward high-reward candidates. However, removing
+G causes substantial drops in HR@50 and HaR despite marginal
+reward gains, which is a clear sign of reward hacking where the
+model exploits SIM’s requirement for valid SIDs that represent the
+real items while sacrificing overall quality.
+3.3
+Online A/B Testing
+We deploy both base SFT and RL-Aligned models on JD’s home-
+page feed recommendation platform with 10% traffic each over one
+
+
+GenRec: A Preference-Oriented Generative Framework for Large-Scale Recommendation
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+0
+5000
+10000
+15000
+20000
+25000
+30000
+35000
+Steps
+1.25
+1.50
+1.75
+2.00
+2.25
+2.50
+2.75
+Loss
+NTP
+PW-NTP
+(a) Task formulation
+0
+5000
+10000
+15000
+20000
+25000
+30000
+35000
+Steps
+1.2
+1.4
+1.6
+1.8
+2.0
+2.2
+2.4
+2.6
+Loss
+1.5B
+3B
+7B
+(b) Model scaling
+Figure 2: SFT loss curves. (a) Page-wise NTP converges faster than NTP. (b) Larger models achieve lower loss with diminishing
+returns beyond 3B.
+Model
+HR@50
+Reward Metrics
+HaR ↓
+R@1
+R@10
+R@50
+Baseline
+GenRec (Base SFT model)
+0.7192
+0.1027
+0.1519
+0.1776
+4.96%
+Policy Gradient Variants
+GRPO
+0.7248
+0.1177
+0.1650
+0.1861
+6.03%
+GRPO-SR
+0.7438
+0.1212
+0.1679
+0.1892
+2.68%
+Reward Variants
+GRPO w/o G
+0.6975
+0.1045
+0.1608
+0.1797
+1.75%
+GRPO-SR w/o G
+0.7016
+0.1067
+0.1598
+0.1813
+1.96%
+Table 3: RL performance. We analyze the impact of different
+method and the gating mechanism (G). Best results are in
+bold, and the second best are underlined.
+Setting
+Exposure Rate
+Click Count
+Transaction Count
+GenRec (Base SFT model)
+48.7%
++8.5%
++7.3%
++ GRPO-SR alignment
+57.3%
++9.5%
++8.7%
+Table 4: Online A/B results: RL alignment resolves click-
+conversion misalignment.
+month. As illustrated in Table 4, both versions achieve significant
+(two-sided test with 𝑝< 0.05) improvements on click and trans-
+action counts. To be specific, for the long-tail items, the proposed
+method leads to a 10% increase in exposure rate, a 16% increase in
+click count, and a 13% increase in transaction count. GenRec with
+GRPO-SR alignment is now fully deployed in production.
+4
+Related Work
+Motivated by Large Language Models (LLMs), recommender sys-
+tems are shifting from traditional discriminative to generative mod-
+eling [3, 6, 23, 24]. Redefining recommendation as sequence-to-
+sequence generation, studies optimize backbones: HSTU[22] boosts
+efficiency via gated linear recurrence instead of attention, MTGR[5]
+builds an industrial framework on it to balance scalability and pre-
+cision, and OneTrans [25] enhances generalization through multi-
+task learning and knowledge transfer. Treating items as tokens [2]
+causes large vocabularies and severe cold-start problems. To ad-
+dress this, Semantic IDs (SIDs) via vector quantization are explored:
+TIGER [16] uses RQ-VAE for cold-start transfer, LETTER [19] opti-
+mizes codebooks end-to-end, and OneRec [27] adopts iterative RQ
+K-means for efficient hierarchical IDs. Recent work pursues unified
+representations [12] to integrate semantic tokens’ generalization
+and atomic IDs’ specificity.
+5
+Conclusion
+This paper presents GenRec, a generative retrival model with pref-
+erence alignment. To address industrial challenges, we synergize
+Multimodal Semantic IDs and an Token Merger for efficient rep-
+resentation learning, while employing Page-wise Generative SFT
+and GRPO-SR to ensure alignment with hierarchical business objec-
+tives. Large-scale deployment confirms that this differentiable par-
+adigm significantly outperforms traditional multi-stage pipelines,
+validating its potential as a scalable solution for next-generation
+recommendation. We will investigate the reasoning ability of such
+framework for future work.
+Acknowledgments
+This work is sponsored by Beijing Nova Program (No.20250484857).
+Presenter Biography. Yanyan Zou is an applied scientist in Rec-
+ommendation Platform at JD.com since 2020, launching cutting-
+edge AI models into practical productions. Her research interests
+primarily lie in the areas of large language model and recommen-
+dation, with around 20 papers published in top-tier conferences
+(e.g., ACL, EMNLP, AAAI). She received her B.Engr. degree in 2015
+from Xiamen University, China, as well as her Ph.D. degree from
+Singapore University of Technology and Design in 2020.
+References
+[1] Shuai Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin Ge, Sibo Song, Kai
+Dang, Peng Wang, Shijie Wang, Jun Tang, et al. 2025. Qwen2. 5-vl technical
+report. arXiv preprint arXiv:2502.13923 (2025).
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yanyan Zou et al.
+[2] Runjin Chen, Mingxuan Ju, Ngoc Bui, Dimosthenis Antypas, Stanley Cai, Xi-
+aopeng Wu, Leonardo Neves, Zhangyang Wang, Neil Shah, and Tong Zhao.
+2024. Enhancing Item Tokenization for Generative Recommendation through
+Self-Improvement. arXiv:2412.17171 [cs.LG] https://arxiv.org/abs/2412.17171
+[3] Sunhao Dai, Jiakai Tang, Jiahua Wu, Kun Wang, Yuxuan Zhu, Bingjun Chen,
+Bangyang Hong, Yu Zhao, Cong Fu, Kangle Wu, Yabo Ni, Anxiang Zeng, Wen-
+jie Wang, Xu Chen, Jun Xu, and See-Kiong Ng. 2025.
+OnePiece: Bringing
+Context Engineering and Reasoning to Industrial Cascade Ranking System.
+arXiv:2509.18091 [cs.IR] https://arxiv.org/abs/2509.18091
+[4] Mukund Deshpande and George Karypis. 2004. Item-based top-n recommenda-
+tion algorithms. ACM Transactions on Information Systems (TOIS) 22, 1 (2004),
+143–177.
+[5] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, Yueming Han, MengLei Zhou,
+Lei Yu, Chuan Liu, and Wei Lin. 2025. MTGR: Industrial-Scale Generative Rec-
+ommendation Framework in Meituan. In Proceedings of the 34th ACM Interna-
+tional Conference on Information and Knowledge Management (CIKM ’25). ACM,
+5731–5738. doi:10.1145/3746252.3761565
+[6] Peiyu Hu, Wayne Lu, and Jia Wang. 2025. From IDs to Semantics: A Genera-
+tive Framework for Cross-Domain Recommendation with Adaptive Semantic
+Tokenization. arXiv:2511.08006 [cs.IR] https://arxiv.org/abs/2511.08006
+[7] Kalervo Järvelin and Jaana Kekäläinen. 2002. Cumulated gain-based evaluation
+of IR techniques. ACM Transactions on Information Systems (TOIS) 20, 4 (2002),
+422–446.
+[8] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[9] Diederik P Kingma. 2014. Adam: A method for stochastic optimization. arXiv
+preprint arXiv:1412.6980 (2014).
+[10] Xiaoxi Li, Jiajie Jin, Yujia Zhou, Yuyao Zhang, Peitian Zhang, Yutao Zhu, and
+Zhicheng Dou. 2025. From matching to generation: A survey on generative
+information retrieval. ACM Transactions on Information Systems 43, 3 (2025),
+1–62.
+[11] Yang Li, Kangbo Liu, Ranjan Satapathy, Suhang Wang, and Erik Cambria. 2024.
+Recent Developments in Recommender Systems: A Survey [Review Article]. IEEE
+Computational Intelligence Magazine 19, 2 (2024), 78–95. doi:10.1109/MCI.2024.
+3363984
+[12] Guanyu Lin, Zhigang Hua, Tao Feng, Shuang Yang, Bo Long, and Jiaxuan You.
+2025. Unified Semantic and ID Representation Learning for Deep Recommenders.
+arXiv:2502.16474 [cs.IR] https://arxiv.org/abs/2502.16474
+[13] Ruihui Mu. 2018. A Survey of Recommender Systems Based on Deep Learning.
+IEEE Access 6 (2018), 69009–69022. doi:10.1109/ACCESS.2018.2880197
+[14] Qi Pi, Guorui Zhou, Yujing Zhang, Zhe Wang, Lejian Ren, Ying Fan, Xiaoqiang
+Zhu, and Kun Gai. 2020. Search-based user interest modeling with lifelong
+sequential behavior data for click-through rate prediction. In Proceedings of the
+29th ACM International Conference on Information & Knowledge Management.
+2685–2692.
+[15] Qwen, :, An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen
+Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan Lin, Jian Yang,
+Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jingren Zhou, Junyang
+Lin, Kai Dang, Keming Lu, Keqin Bao, Kexin Yang, Le Yu, Mei Li, Mingfeng Xue,
+Pei Zhang, Qin Zhu, Rui Men, Runji Lin, Tianhao Li, Tianyi Tang, Tingyu Xia,
+Xingzhang Ren, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yu Wan,
+Yuqiong Liu, Zeyu Cui, Zhenru Zhang, and Zihan Qiu. 2025. Qwen2.5 Technical
+Report. arXiv:2412.15115 [cs.CL] https://arxiv.org/abs/2412.15115
+[16] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[17] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei
+Zhang, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. 2024. DeepSeek-
+Math: Pushing the Limits of Mathematical Reasoning in Open Language Models.
+arXiv:2402.03300 [cs.CL] https://arxiv.org/abs/2402.03300
+[18] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential Recommendation with Bidirectional Encoder Repre-
+sentations from Transformers. In CIKM.
+[19] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2025. Learnable Item Tokenization for Generative
+Recommendation. arXiv:2405.07314 [cs.IR] https://arxiv.org/abs/2405.07314
+[20] Chaojun Xiao, Jie Cai, Weilin Zhao, Biyuan Lin, Guoyang Zeng, Jie Zhou, Zhi
+Zheng, Xu Han, Zhiyuan Liu, and Maosong Sun. 2025. Densing law of llms.
+Nature Machine Intelligence (2025), 1–11.
+[21] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, et al. 2025. Sparse meets dense: Unified generative
+recommendations with cascaded sparse-dense representations. arXiv preprint
+arXiv:2503.02453 (2025).
+[22] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, Yinghai Lu, and Yu Shi. 2024. Actions Speak
+Louder than Words: Trillion-Parameter Sequential Transducers for Generative
+Recommendations. arXiv:2402.17152 [cs.LG] https://arxiv.org/abs/2402.17152
+[23] Jun Zhang, Yi Li, Yue Liu, Changping Wang, Yuan Wang, Yuling Xiong, Xun Liu,
+Haiyang Wu, Qian Li, Enming Zhang, Jiawei Sun, Xin Xu, Zishuai Zhang, Ruoran
+Liu, Suyuan Huang, Zhaoxin Zhang, Zhengkai Guo, Shuojin Yang, Meng-Hao
+Guo, Huan Yu, Jie Jiang, and Shi-Min Hu. 2025. GPR: Towards a Generative
+Pre-trained One-Model Paradigm for Large-Scale Advertising Recommendation.
+arXiv:2511.10138 [cs.IR] https://arxiv.org/abs/2511.10138
+[24] Junjie Zhang, Beichen Zhang, Wenqi Sun, Hongyu Lu, Wayne Xin Zhao, Yu
+Chen, and Ji-Rong Wen. 2025. Slow Thinking for Sequential Recommendation.
+arXiv:2504.09627 [cs.IR] https://arxiv.org/abs/2504.09627
+[25] Zhaoqi Zhang, Haolei Pei, Jun Guo, Tianyu Wang, Yufei Feng, Hui Sun,
+Shaowei Liu, and Aixin Sun. 2025.
+OneTrans: Unified Feature Interaction
+and Sequence Modeling with One Transformer in Industrial Recommender.
+arXiv:2510.26104 [cs.IR] https://arxiv.org/abs/2510.26104
+[26] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting large language models by integrating
+collaborative semantics for recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). IEEE, 1435–1448.
+[27] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo,
+Qianqian Wang, Qigen Hu, Rui Huang, Shiyao Wang, Weifeng Ding, Wuchao Li,
+Xinchen Luo, Xingmei Wang, Zexuan Cheng, Zixing Zhang, Bin Zhang, Boxuan
+Wang, Chaoyi Ma, Chengru Song, Chenhui Wang, Di Wang, Dongxue Meng, Fan
+Yang, Fangyu Zhang, Feng Jiang, Fuxing Zhang, Gang Wang, Guowang Zhang,
+Han Li, Hengrui Hu, Hezheng Lin, Hongtao Cheng, Hongyang Cao, Huanjie
+Wang, Jiaming Huang, Jiapeng Chen, Jiaqiang Liu, Jinghui Jia, Kun Gai, Lantao
+Hu, Liang Zeng, Liao Yu, Qiang Wang, Qidong Zhou, Shengzhe Wang, Shihui He,
+Shuang Yang, Shujie Yang, Sui Huang, Tao Wu, Tiantian He, Tingting Gao, Wei
+Yuan, Xiao Liang, Xiaoxiao Xu, Xugang Liu, Yan Wang, Yi Wang, Yiwu Liu, Yue
+Song, Yufei Zhang, Yunfan Wu, Yunfeng Zhao, and Zhanyu Liu. 2025. OneRec
+Technical Report. arXiv:2506.13695 [cs.IR] https://arxiv.org/abs/2506.13695
