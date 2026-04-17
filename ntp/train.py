@@ -230,6 +230,8 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
     n_both = 0
     n_neg_total = 0
     n_users_with_negs = 0
+    n_truncated = 0
+    raw_items_per_user = []
 
     for u in range(len(starts)):
         s, e = starts[u], ends[u]
@@ -237,11 +239,13 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
         if n < 2:
             continue
 
+        raw_items_per_user.append(n)
         user_iids = iids_s[s:e]
         user_ts = ts_s[s:e]
         user_orig_idx = sorted_orig_indices[s:e]
 
         if n > max_items:
+            n_truncated += 1
             offset = n - max_items
             user_iids = user_iids[offset:]
             user_ts = user_ts[offset:]
@@ -307,8 +311,36 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
     avg_len = total_tokens / len(sequences)
     n_eval_items = sum(len(s['eval_cids']) for s in sequences)
     elapsed = time.time() - t0
+
+    # Items/user distribution stats
+    raw_arr = np.array(raw_items_per_user)
+    pcts = np.percentile(raw_arr, [25, 50, 75, 90, 95, 99, 99.9])
+    seq_stats = {
+        'n_users': len(raw_arr),
+        'max_items': max_items,
+        'items_per_user_mean': round(float(raw_arr.mean()), 1),
+        'items_per_user_p25': int(pcts[0]),
+        'items_per_user_p50': int(pcts[1]),
+        'items_per_user_p75': int(pcts[2]),
+        'items_per_user_p90': int(pcts[3]),
+        'items_per_user_p95': int(pcts[4]),
+        'items_per_user_p99': int(pcts[5]),
+        'items_per_user_p999': int(pcts[6]),
+        'items_per_user_max': int(raw_arr.max()),
+        'n_truncated': n_truncated,
+        'truncated_pct': round(100.0 * n_truncated / len(raw_arr), 2),
+    }
+
     verbose_fn(f"  Unified sequences: {len(sequences):,}, "
                f"{total_tokens:,} tokens, avg {avg_len:.0f} tok/seq ({elapsed:.1f}s)")
+    verbose_fn(f"  Items/user: mean={seq_stats['items_per_user_mean']}, "
+               f"p50={seq_stats['items_per_user_p50']}, "
+               f"p90={seq_stats['items_per_user_p90']}, "
+               f"p95={seq_stats['items_per_user_p95']}, "
+               f"p99={seq_stats['items_per_user_p99']}, "
+               f"max={seq_stats['items_per_user_max']}")
+    verbose_fn(f"  Truncated at {max_items} items: {n_truncated:,} / {len(raw_arr):,} "
+               f"({seq_stats['truncated_pct']:.2f}%)")
     verbose_fn(f"  Split: {n_both:,} train+eval, "
                f"{n_train_only:,} train-only, {n_eval_only:,} eval-only")
     verbose_fn(f"  Eval items: {n_eval_items:,}")
@@ -317,7 +349,7 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
                f"avg {avg_neg:.1f}/seq (K={entp_k}), "
                f"{n_users_with_negs:,}/{len(sequences):,} users with negs")
 
-    return sequences, n_layers, n_clusters_per_layer, split_ts
+    return sequences, n_layers, n_clusters_per_layer, split_ts, seq_stats
 
 
 def _build_sequences_from_behavior(behavior_data, content_to_tokens,
@@ -342,6 +374,8 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
     n_train_only = 0
     n_eval_only = 0
     n_both = 0
+    n_truncated = 0
+    raw_items_per_user = []
 
     for u in range(len(starts)):
         s, e = starts[u], ends[u]
@@ -349,11 +383,13 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
         if n < 2:
             continue
 
+        raw_items_per_user.append(n)
         user_iids = iids_s[s:e]
         user_ts = ts_s[s:e]
         user_tokens = [content_to_tokens[iid] for iid in user_iids]
 
         if n > max_items:
+            n_truncated += 1
             offset = n - max_items
             user_iids = user_iids[offset:]
             user_ts = user_ts[offset:]
@@ -392,13 +428,41 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
     total_tokens = sum(len(s['tokens']) for s in sequences)
     avg_len = total_tokens / len(sequences)
     n_eval_items = sum(len(s['eval_cids']) for s in sequences)
+
+    # Items/user distribution stats
+    raw_arr = np.array(raw_items_per_user)
+    pcts = np.percentile(raw_arr, [25, 50, 75, 90, 95, 99, 99.9])
+    seq_stats = {
+        'n_users': len(raw_arr),
+        'max_items': max_items,
+        'items_per_user_mean': round(float(raw_arr.mean()), 1),
+        'items_per_user_p25': int(pcts[0]),
+        'items_per_user_p50': int(pcts[1]),
+        'items_per_user_p75': int(pcts[2]),
+        'items_per_user_p90': int(pcts[3]),
+        'items_per_user_p95': int(pcts[4]),
+        'items_per_user_p99': int(pcts[5]),
+        'items_per_user_p999': int(pcts[6]),
+        'items_per_user_max': int(raw_arr.max()),
+        'n_truncated': n_truncated,
+        'truncated_pct': round(100.0 * n_truncated / len(raw_arr), 2),
+    }
+
     verbose_fn(f"  Unified sequences: {len(sequences):,}, "
                f"{total_tokens:,} tokens, avg {avg_len:.0f} tok/seq")
+    verbose_fn(f"  Items/user: mean={seq_stats['items_per_user_mean']}, "
+               f"p50={seq_stats['items_per_user_p50']}, "
+               f"p90={seq_stats['items_per_user_p90']}, "
+               f"p95={seq_stats['items_per_user_p95']}, "
+               f"p99={seq_stats['items_per_user_p99']}, "
+               f"max={seq_stats['items_per_user_max']}")
+    verbose_fn(f"  Truncated at {max_items} items: {n_truncated:,} / {len(raw_arr):,} "
+               f"({seq_stats['truncated_pct']:.2f}%)")
     verbose_fn(f"  Split: {n_both:,} train+eval, "
                f"{n_train_only:,} train-only, {n_eval_only:,} eval-only")
     verbose_fn(f"  Eval items: {n_eval_items:,}")
 
-    return sequences, n_layers, n_clusters_per_layer, split_ts
+    return sequences, n_layers, n_clusters_per_layer, split_ts, seq_stats
 
 
 # ============================================================

@@ -504,7 +504,7 @@ class SemanticIDPredictionMetric(BaseMetric):
             from gr_demo.eval.batch import load_all_behavior_data
             behavior_data_loaded = load_all_behavior_data()
             from gr_demo.ntp.train import build_unified_sequences
-            sequences, _nl, _ncpl, _split_ts = build_unified_sequences(
+            sequences, _nl, _ncpl, _split_ts, _seq_stats = build_unified_sequences(
                 sid_dict, behavior_data_loaded, n_items=n_items)
             eval_sequences = [s for s in sequences
                               if s['split_pos'] < len(s['tokens']) and len(s['eval_cids']) > 0]
