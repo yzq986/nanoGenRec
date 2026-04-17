@@ -11,7 +11,9 @@ import numpy as np
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# repo root = gr_demo/, its parent must be on sys.path so `import gr_demo` works
+repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(repo_root))
 
 from gr_demo.eval.batch import load_all_behavior_data
 
