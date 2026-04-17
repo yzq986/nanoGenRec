@@ -184,34 +184,65 @@ def load_date_data(date_path, rank, world_size, cached_ids):
 # 编码
 # ============================================================
 
-TEXT_CACHE_MAX_LEN = 256  # 短于此长度的文本缓存 text→embedding
+TEXT_CACHE_MAX_LEN = 256   # 短于此长度的文本缓存 text→embedding
+TEXT_CACHE_MAX_SIZE = 500_000  # LRU 最大条目数
+
+
+class LRUTextCache:
+    """简单 LRU: OrderedDict, 超过 max_size 淘汰最久未用的。"""
+
+    def __init__(self, max_size=TEXT_CACHE_MAX_SIZE):
+        from collections import OrderedDict
+        self._cache = OrderedDict()
+        self._max_size = max_size
+        self.hits = 0
+
+    def get(self, text):
+        if text in self._cache:
+            self._cache.move_to_end(text)
+            self.hits += 1
+            return self._cache[text]
+        return None
+
+    def put(self, text, embedding):
+        if text in self._cache:
+            self._cache.move_to_end(text)
+        else:
+            if len(self._cache) >= self._max_size:
+                self._cache.popitem(last=False)
+        self._cache[text] = embedding
+
+    def __len__(self):
+        return len(self._cache)
 
 
 def encode_batch(embedder, content_ids, texts, batch_size, rank, text_cache=None):
     """编码一批文本，返回 {cid: embedding} dict。
 
-    text_cache: 短文本 → embedding 缓存 (跨日期复用)。
+    text_cache: LRUTextCache, 短文本 → embedding 缓存 (跨日期复用)。
     相同短文本直接复用 embedding，不重复过模型。
     """
     if text_cache is None:
-        text_cache = {}
+        text_cache = LRUTextCache()
 
     new_embeddings = {}
     start_time = time.time()
 
     # 分离: 可以从缓存命中的 vs 需要过模型的
-    to_encode_idx = []  # indices into content_ids/texts that need model inference
+    to_encode_idx = []
     n_text_hits = 0
     for i, (cid, text) in enumerate(zip(content_ids, texts)):
-        if len(text) <= TEXT_CACHE_MAX_LEN and text in text_cache:
-            new_embeddings[cid] = text_cache[text]
+        cached_emb = text_cache.get(text) if len(text) <= TEXT_CACHE_MAX_LEN else None
+        if cached_emb is not None:
+            new_embeddings[cid] = cached_emb
             n_text_hits += 1
         else:
             to_encode_idx.append(i)
 
     if n_text_hits > 0:
         print(f"    [Rank {rank}] Text cache hit: {n_text_hits:,}, "
-              f"to encode: {len(to_encode_idx):,}")
+              f"to encode: {len(to_encode_idx):,}, "
+              f"cache size: {len(text_cache):,}")
 
     # 编码需要过模型的
     batch_idx = 0
@@ -236,7 +267,7 @@ def encode_batch(embedder, content_ids, texts, batch_size, rank, text_cache=None
                 for cid, text, e in zip(batch_cids, batch_texts, emb_np):
                     new_embeddings[cid] = e
                     if len(text) <= TEXT_CACHE_MAX_LEN:
-                        text_cache[text] = e
+                        text_cache.put(text, e)
                 success = True
 
             except torch.cuda.OutOfMemoryError:
@@ -380,7 +411,7 @@ def main():
             pass
 
     embedder = None  # 惰性加载模型
-    text_cache = {}  # 短文本 → embedding 缓存 (跨日期复用)
+    text_cache = LRUTextCache()  # 短文本 → embedding LRU 缓存 (跨日期复用)
     total_new = 0
 
     # ── 逐日期处理 (新 → 旧) ──
