@@ -22,3 +22,4 @@ sys.path.insert(0, os.path.dirname(repo_root))  # adds parent of gr_demo/
 ```
 
 The CLI entry point is always `python run.py <command>`, NOT `python -m gr_demo`.
+For DDP/torchrun, use `torchrun ... run.py <command>`, NOT `torchrun -m gr_demo.<module>`.
