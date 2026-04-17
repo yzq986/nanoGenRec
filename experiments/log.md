@@ -130,11 +130,116 @@ L̂(N) = 2.522 + 2055.1 / N^0.456
 | 500M (L) | ~15.5 | ~2.74 | 成本高，收益递减 |
 | 1B | ~14.6 | ~2.68 | 接近 floor |
 
+### Chinchilla 分析
+
+EXP-015 所有模型在相同 262M tokens 上训练。按 Chinchilla 经验法则 (N* = D/20)，最优模型大小约 13M active params。
+
+**Tokens/Param 与 FLOP 效率**:
+
+| Config | Active | Tok/Param | FLOP 效率 (loss/PF) | Chinchilla 状态 |
+|--------|--------|-----------|---------------------|----------------|
+| scale-01 | 1.7M | 152 | — | 过训练 7.6x |
+| scale-02 | 3.6M | 72 | 0.28 | 过训练 3.6x |
+| scale-03 | 5.1M | 52 | 0.16 | 过训练 2.6x |
+| **scale-04** | **17.5M** | **15** | **0.05** | **接近最优 (0.7x)** |
+| scale-05 | 34.5M | 8 | 0.01 | 欠训练 0.4x |
+| scale-06 | 71.6M | 4 | 0.002 | 严重欠训练 0.2x |
+| scale-07 | 101.1M | 3 | 0.002 | 严重欠训练 0.1x |
+
+**关键发现**:
+
+1. **FLOP 效率单调递减** (0.28 → 0.16 → 0.05 → 0.01 → 0.00)，与 Chinchilla 预测完全一致
+2. **scale-04 (17.5M) 是 262M tokens 的 Chinchilla 最优点** — 15 tok/param 接近 20 的经验值
+3. **大模型严重欠训练但 loss 仍单调下降** — 推荐序列短 (30 tokens)，即使 3 tok/param 也不会 overfit，与 LLM 不同
+4. **加数据 ROI 极高**: 101M 模型 tok/param 从 3→20 需要 ~2B tokens (~240 天数据)，PPL 有望从 19.4 降到接近 floor (12.5)
+
+**Chinchilla 最优数据量**:
+
+| 模型 | Active Params | Chinchilla 最优 Tokens | 需要天数 |
+|------|-------------|----------------------|---------|
+| S (17M) | 17.5M | 350M | ~41 天 |
+| M (55M) | 55M | 1.1B | ~130 天 |
+| M+ (101M) | 101M | 2.0B | ~240 天 |
+
+**结论: 当前瓶颈是数据不是模型。先加数据 (31→90 天) 再加模型是 ROI 最高的路径。**
+
 ### Next Steps
 
-1. **M 档实验**: embed=512, 12L, MoE 16E top-2 — 验证预测 PPL≈23
-2. **Data scaling**: 固定 M 档模型，sweep 数据量 (7d/14d/31d/62d) 看 Chinchilla-style 双变量 scaling law
-3. **Tokenizer ceiling**: a=2.522 偏高，尝试 8192×3 codebook 降低 irreducible loss
+1. **EXP-016 Data Scaling**: 固定 S/M 模型，sweep 数据量 → Chinchilla 双变量 scaling law → 找到最优 N-D 配比
+2. **Tokenizer ceiling**: a=2.522 偏高，尝试 8192×3 codebook 降低 irreducible loss
+
+---
+
+## EXP-016: Data Scaling Law — 固定模型 Sweep 数据量 (Chinchilla 双变量)
+
+**Date**: 2026-04-17
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+EXP-015 揭示了两个关键事实:
+
+1. **Scaling law 成立**: `L(N) = 2.522 + 2055/N^0.456`，但这是固定 D=262M tokens 下的单变量 law
+2. **大模型严重欠训练**: scale-07 (101M active) 仅 3 tok/param，Chinchilla 建议 20x。FLOP 效率在超过 17.5M 后急剧衰减
+
+Chinchilla (Hoffmann 2022) 的完整 scaling law 是双变量的:
+
+```
+L(N, D) = E + A/N^α + B/D^β
+```
+
+其中 E 是 irreducible loss, A/N^α 是模型不足项, B/D^β 是数据不足项。EXP-015 只 sweep 了 N，D 固定。本实验固定 N，sweep D，以拟合完整的双变量 law，并找到给定算力预算下的最优 N-D 配比。
+
+**核心问题**: 把数据从 31 天扩到 90 天 (~760M tokens) 后:
+- S 档 (17.5M active, 目前 15 tok/param → 43 tok/param) PPL 还会降多少？
+- M 档 (101M active, 目前 3 tok/param → 8 tok/param) PPL 能降到多少？
+- β 是多少？（数据 scaling 指数）
+
+### Hypothesis
+
+1. 数据从 262M→760M tokens，S 档 (17.5M) PPL 下降有限 (<5%)，因为已接近 Chinchilla 最优且过训练
+2. 数据从 262M→760M tokens，M 档 (101M) PPL 下降显著 (>15%)，因为目前严重欠训练
+3. β ≈ 0.4-0.5（与 α≈0.456 接近，符合 Chinchilla 对称性假设）
+4. 给定 90 天数据 (~760M tokens)，Chinchilla 最优模型大小上移到 ~38M active params
+
+### Design
+
+- **Variable**: 数据量 D ∈ {7d, 14d, 31d, 62d, 90d} × 模型 {S (17.5M), M+ (101M)}
+- **Fixed**: SID 4096×3 binary, 1 epoch, beam_size=500
+- **Metric**: eval loss, PPL, item_recall@{10,50,100,500}
+
+| Config | Model | Data Days | ~Tokens | Tok/Param (S) | Tok/Param (M+) |
+|--------|-------|-----------|---------|---------------|----------------|
+| A-7d | S + M+ | 7 | ~59M | 3.4 | 0.6 |
+| B-14d | S + M+ | 14 | ~118M | 6.7 | 1.2 |
+| C-31d | S + M+ | 31 | ~262M | 15.0 | 2.6 |
+| D-62d | S + M+ | 62 | ~524M | 29.9 | 5.2 |
+| E-90d | S + M+ | 90 | ~760M | 43.4 | 7.5 |
+
+C-31d 的 S 档可复用 EXP-015 scale-04 结果，M+ 档复用 scale-07 结果。实际新增训练: 4×2 - 2 = 6 runs。
+
+**分析计划**:
+1. 分别对 S 和 M+ 拟合 `L(D) = E + B/D^β`
+2. 联合 EXP-015 + EXP-016 数据拟合双变量 `L(N,D) = E + A/N^α + B/D^β`
+3. 画 iso-FLOP 曲线 (固定 C=6ND)，找每条曲线上的最优 N-D 分配
+4. 预测: 给定 8×A100 × 1h 算力预算，最优配置是什么
+
+### Run
+
+`bash experiments/scripts/exp-016.sh`
+
+### Results
+
+TBD
+
+### Analysis
+
+TBD
+
+### Next Steps
+
+TBD
 
 ---
 
