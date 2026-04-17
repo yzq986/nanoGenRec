@@ -1,0 +1,15 @@
+{
+  "n_train": 13335621,
+  "n_eval": 3333906,
+  "n_clusters_per_layer": [
+    4096,
+    4096,
+    4096
+  ],
+  "n_layers": 3,
+  "n_items": 10,
+  "n_params": 7893760,
+  "train_loss": 0.79349,
+  "sid_cache": "experiments/sid_cache/exp011-H-4096x3-12d-binary",
+  "timestamp": "2026-04-15 12:30:49"
+}

@@ -1,0 +1,28 @@
+{
+  "n_train": 1692758,
+  "n_eval": 49399,
+  "n_clusters_per_layer": [
+    4096,
+    4096,
+    4096
+  ],
+  "n_layers": 3,
+  "n_items": 10,
+  "n_params": 629568512,
+  "train_loss": 2.811596,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "preprocessed_dir": "experiments/ntp_data/exp016-14d",
+  "timestamp": "2026-04-17 17:16:33",
+  "train": {
+    "n_params": 629568512,
+    "n_active_params": 101086208,
+    "total_tokens": 129972024,
+    "total_flops": 78830274313469952,
+    "throughput_tok_per_s": 10473.9,
+    "wall_time_s": 12409.1,
+    "batch_size": 16,
+    "world_size": 8,
+    "n_batches": 13224,
+    "max_seq_len": 512
+  }
+}
