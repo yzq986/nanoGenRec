@@ -155,26 +155,40 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
         files_with_new = []
         total_rows = 0
         skipped_files = 0
+        total_unique_cids = set()
+        my_new_cids_phase1 = 0  # uncached cids hashing to this rank
 
-        for f in files:
+        for fi, f in enumerate(files):
             with fs.open(f, 'rb') as file:
                 df_ids = pd.read_parquet(file, columns=['content_id'])
             total_rows += len(df_ids)
             cids = df_ids['content_id'].values
-            # Check: any uncached cid that hashes to this rank?
-            has_new = False
+            total_unique_cids.update(str(c) for c in cids)
+            # Count uncached cids for this rank in this file
+            file_has_new = False
             for cid in cids:
-                if str(cid) not in cached_ids and cid_to_shard(cid, world_size) == rank:
-                    has_new = True
-                    break
-            if has_new:
+                cid_str = str(cid)
+                if cid_str not in cached_ids and cid_to_shard(cid, world_size) == rank:
+                    my_new_cids_phase1 += 1
+                    file_has_new = True
+            if file_has_new:
                 files_with_new.append(f)
             else:
                 skipped_files += 1
+            if rank == 0 and ((fi + 1) % 50 == 0 or fi == len(files) - 1):
+                print(f"  Phase 1: scanned {fi+1}/{len(files)} files...")
 
+        n_unique = len(total_unique_cids)
+        n_cached = len(total_unique_cids & cached_ids)
+        n_all_new = n_unique - n_cached
         if rank == 0:
-            print(f"Total rows: {total_rows:,}, "
-                  f"skipped {skipped_files}/{len(files)} files (rank 0)")
+            print(f"  Phase 1 summary: {total_rows:,} total rows, "
+                  f"{n_unique:,} unique content_ids")
+            print(f"    Cached: {n_cached:,}, New (all ranks): {n_all_new:,}")
+            print(f"    Files with new data for rank 0: "
+                  f"{len(files_with_new)}/{len(files)} "
+                  f"(skipped {skipped_files})")
+        print(f"  [Rank {rank}] New items in Phase 1: {my_new_cids_phase1:,}")
 
         if not files_with_new:
             return np.array([]), []
@@ -204,10 +218,6 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
             if str(content_ids_all[i]) not in cached_ids
             and cid_to_shard(content_ids_all[i], world_size) == rank
         ])
-        n_uncached = len(my_indices)
-
-        if rank == 0:
-            print(f"Uncached rows for rank 0: {n_uncached:,}")
     else:
         # ── No cache: load everything, hash-partition ──
         dfs = []
