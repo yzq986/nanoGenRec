@@ -188,27 +188,18 @@ TEXT_CACHE_MAX_LEN = 16        # 短于此长度的文本缓存 text→embedding
 TEXT_CACHE_MAX_SIZE = 500_000  # 最大条目数
 
 
-class MorrisLFUCache:
-    """Morris counter LFU: 淘汰访问频次最低的条目。
-
-    频次用 Morris approximate counting: 命中时以 1/counter 概率递增，
-    实际值 ≈ log(access_count)，一个 int 覆盖很大频次范围。
-    满时淘汰 counter 最小的条目。
-    """
+class LFUCache:
+    """精确计数 LFU: 淘汰访问频次最低的条目。"""
 
     def __init__(self, max_size=TEXT_CACHE_MAX_SIZE):
-        import random
         self._data = {}       # text → embedding
-        self._counter = {}    # text → int (Morris counter)
+        self._counter = {}    # text → int
         self._max_size = max_size
-        self._rng = random.Random(42)
         self.hits = 0
 
     def get(self, text):
         if text in self._data:
-            c = self._counter[text]
-            if c == 0 or self._rng.randrange(c) == 0:
-                self._counter[text] = c + 1
+            self._counter[text] += 1
             self.hits += 1
             return self._data[text]
         return None
@@ -217,7 +208,6 @@ class MorrisLFUCache:
         if text in self._data:
             return
         if len(self._data) >= self._max_size:
-            # 淘汰 counter 最小的
             victim = min(self._counter, key=self._counter.get)
             del self._data[victim]
             del self._counter[victim]
@@ -231,11 +221,11 @@ class MorrisLFUCache:
 def encode_batch(embedder, content_ids, texts, batch_size, rank, text_cache=None):
     """编码一批文本，返回 {cid: embedding} dict。
 
-    text_cache: MorrisLFUCache, 短文本 → embedding 缓存 (跨日期复用)。
+    text_cache: LFUCache, 短文本 → embedding 缓存 (跨日期复用)。
     相同短文本直接复用 embedding，不重复过模型。
     """
     if text_cache is None:
-        text_cache = MorrisLFUCache()
+        text_cache = LFUCache()
 
     new_embeddings = {}
     start_time = time.time()
@@ -423,7 +413,7 @@ def main():
             pass
 
     embedder = None  # 惰性加载模型
-    text_cache = MorrisLFUCache()  # 短文本 → embedding LRU 缓存 (跨日期复用)
+    text_cache = LFUCache()  # 短文本 → embedding LRU 缓存 (跨日期复用)
     total_new = 0
 
     # ── 逐日期处理 (新 → 旧) ──
