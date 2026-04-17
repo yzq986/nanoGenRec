@@ -155,21 +155,22 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
         files_with_new = []
         total_rows = 0
         skipped_files = 0
-        total_unique_cids = set()
-        my_new_cids_phase1 = 0  # uncached cids hashing to this rank
+        seen_cids = set()        # dedup across files
+        my_new_cids = set()      # uncached unique cids hashing to this rank
 
         for fi, f in enumerate(files):
             with fs.open(f, 'rb') as file:
                 df_ids = pd.read_parquet(file, columns=['content_id'])
             total_rows += len(df_ids)
             cids = df_ids['content_id'].values
-            total_unique_cids.update(str(c) for c in cids)
-            # Count uncached cids for this rank in this file
             file_has_new = False
             for cid in cids:
                 cid_str = str(cid)
+                if cid_str in seen_cids:
+                    continue
+                seen_cids.add(cid_str)
                 if cid_str not in cached_ids and cid_to_shard(cid, world_size) == rank:
-                    my_new_cids_phase1 += 1
+                    my_new_cids.add(cid_str)
                     file_has_new = True
             if file_has_new:
                 files_with_new.append(f)
@@ -178,8 +179,8 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
             if rank == 0 and ((fi + 1) % 50 == 0 or fi == len(files) - 1):
                 print(f"  Phase 1: scanned {fi+1}/{len(files)} files...")
 
-        n_unique = len(total_unique_cids)
-        n_cached = len(total_unique_cids & cached_ids)
+        n_unique = len(seen_cids)
+        n_cached = len(seen_cids & cached_ids)
         n_all_new = n_unique - n_cached
         if rank == 0:
             print(f"  Phase 1 summary: {total_rows:,} total rows, "
@@ -188,7 +189,7 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
             print(f"    Files with new data for rank 0: "
                   f"{len(files_with_new)}/{len(files)} "
                   f"(skipped {skipped_files})")
-        print(f"  [Rank {rank}] New items in Phase 1: {my_new_cids_phase1:,}")
+        print(f"  [Rank {rank}] New items in Phase 1: {len(my_new_cids):,}")
 
         if not files_with_new:
             return np.array([]), []
