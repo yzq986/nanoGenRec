@@ -184,16 +184,42 @@ def load_date_data(date_path, rank, world_size, cached_ids):
 # 编码
 # ============================================================
 
-def encode_batch(embedder, content_ids, texts, batch_size, rank):
-    """编码一批文本，返回 {cid: embedding} dict。含 OOM 重试。"""
+TEXT_CACHE_MAX_LEN = 256  # 短于此长度的文本缓存 text→embedding
+
+
+def encode_batch(embedder, content_ids, texts, batch_size, rank, text_cache=None):
+    """编码一批文本，返回 {cid: embedding} dict。
+
+    text_cache: 短文本 → embedding 缓存 (跨日期复用)。
+    相同短文本直接复用 embedding，不重复过模型。
+    """
+    if text_cache is None:
+        text_cache = {}
+
     new_embeddings = {}
     start_time = time.time()
 
+    # 分离: 可以从缓存命中的 vs 需要过模型的
+    to_encode_idx = []  # indices into content_ids/texts that need model inference
+    n_text_hits = 0
+    for i, (cid, text) in enumerate(zip(content_ids, texts)):
+        if len(text) <= TEXT_CACHE_MAX_LEN and text in text_cache:
+            new_embeddings[cid] = text_cache[text]
+            n_text_hits += 1
+        else:
+            to_encode_idx.append(i)
+
+    if n_text_hits > 0:
+        print(f"    [Rank {rank}] Text cache hit: {n_text_hits:,}, "
+              f"to encode: {len(to_encode_idx):,}")
+
+    # 编码需要过模型的
     batch_idx = 0
-    total = len(content_ids)
+    total = len(to_encode_idx)
     while batch_idx < total:
-        batch_cids = content_ids[batch_idx:batch_idx + batch_size]
-        batch_texts = texts[batch_idx:batch_idx + batch_size]
+        batch_indices = to_encode_idx[batch_idx:batch_idx + batch_size]
+        batch_cids = [content_ids[i] for i in batch_indices]
+        batch_texts = [texts[i] for i in batch_indices]
 
         retry_size = len(batch_texts)
         success = False
@@ -207,8 +233,10 @@ def encode_batch(embedder, content_ids, texts, batch_size, rank):
                     chunk_embs.append(emb.cpu().float().numpy())
 
                 emb_np = np.concatenate(chunk_embs, axis=0)
-                for cid, e in zip(batch_cids, emb_np):
+                for cid, text, e in zip(batch_cids, batch_texts, emb_np):
                     new_embeddings[cid] = e
+                    if len(text) <= TEXT_CACHE_MAX_LEN:
+                        text_cache[text] = e
                 success = True
 
             except torch.cuda.OutOfMemoryError:
@@ -352,6 +380,7 @@ def main():
             pass
 
     embedder = None  # 惰性加载模型
+    text_cache = {}  # 短文本 → embedding 缓存 (跨日期复用)
     total_new = 0
 
     # ── 逐日期处理 (新 → 旧) ──
@@ -377,8 +406,9 @@ def main():
             print(f"  [Rank {rank}] Loading model on {device}...")
             embedder = Qwen3TextEmbedder(model_name, device=device)
 
-        # 编码
-        new_embeddings = encode_batch(embedder, my_cids, my_texts, batch_size, rank)
+        # 编码 (text_cache 跨日期复用，相同短文本不重复过模型)
+        new_embeddings = encode_batch(
+            embedder, my_cids, my_texts, batch_size, rank, text_cache=text_cache)
 
         # 追加到 shard
         existing_shard.update(new_embeddings)
