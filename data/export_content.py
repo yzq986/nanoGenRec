@@ -15,7 +15,7 @@ from gr_demo.config import (
 )
 
 # 范围模式 (补跑多天)
-DATE_KEY_START = "2026-03-01"
+DATE_KEY_START = "2026-01-01"
 DATE_KEY_END = "2026-03-31"
 
 # 单日模式: 设置 DATE_KEY_START == DATE_KEY_END
@@ -72,8 +72,6 @@ SELECT
     COALESCE(NULLIF(p.cover, ''), p.images, p.watermark_images) AS image
 FROM {HIVE_CONTENTS_TABLE} p
 INNER JOIN exposed_ids e ON p.id = e.content_id
-WHERE p.body_text_only IS NOT NULL
-  AND LENGTH(p.body_text_only) > 10
 """
 
     print(f"\n{'='*60}")

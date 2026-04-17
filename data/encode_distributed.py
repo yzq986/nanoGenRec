@@ -1,13 +1,15 @@
-"""torchrun 多卡编码（原 encode_multiprocess.py）。
+"""torchrun 多卡编码 — 8-shard 存储。
 
 用法:
-    # 8 卡并行
+    # 8 卡并行 (默认日期范围)
     torchrun --nproc_per_node=8 -m gr_demo.data.encode_distributed --model qwen3-0.6b
 
-    # 指定卡数
-    torchrun --nproc_per_node=4 -m gr_demo.data.encode_distributed --model qwen3-0.6b
+    # 指定日期范围
+    torchrun --nproc_per_node=8 -m gr_demo.data.encode_distributed \
+        --model qwen3-0.6b --date_start 2026-01-01 --date_end 2026-04-15
 
-每个进程处理 1/N 的数据，结果保存到各自的缓存文件，最后合并。
+每个 rank 处理 hash(content_id) % world_size == rank 的数据，
+结果直接写入对应的 shard_{rank}.npy，无需全量 merge。
 """
 
 import os
@@ -22,6 +24,13 @@ from transformers import AutoModel, AutoTokenizer
 from gr_demo.model.embedders import Qwen3TextEmbedder
 from gr_demo.config import S3_CONTENT_TEXT_EXPOSED, EFS_EMBEDDING_CACHE
 from gr_demo.config import DEFAULT_DATE, DEFAULT_DATE_START, DEFAULT_DATE_END
+
+NUM_SHARDS = 8  # 固定 shard 数，与 8xA100 对齐
+
+
+def cid_to_shard(cid, n_shards=NUM_SHARDS) -> int:
+    """Deterministic shard assignment by content_id hash."""
+    return hash(str(cid)) % n_shards
 
 
 # ============================================================
@@ -57,12 +66,10 @@ def download_model_if_needed(model_name: str, rank: int, world_size: int):
     """Rank 0 先下载模型，其他 rank 等待"""
     if rank == 0:
         print(f"[Rank 0] Downloading model {model_name}...")
-        # 触发下载
         AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         AutoModel.from_pretrained(model_name, trust_remote_code=True)
         print(f"[Rank 0] Model downloaded")
 
-    # 等待 rank 0 下载完成
     if world_size > 1:
         dist.barrier()
 
@@ -71,38 +78,37 @@ def download_model_if_needed(model_name: str, rank: int, world_size: int):
 # 缓存工具
 # ============================================================
 
-def load_cached_ids(output_dir: str, world_size: int) -> set:
-    """
-    快速加载已缓存的 content_id 集合 (不加载 embedding)
+def load_cached_ids(output_dir: str) -> set:
+    """快速加载已缓存的 content_id 集合 (不加载 embedding)
 
-    优先从 cached_ids.txt 加载 (最快)，否则从 .npy 文件提取 keys
+    优先从 cached_ids.txt 加载 (最快)，否则从 shard/旧缓存文件提取 keys
     """
     cached_ids = set()
 
-    # 方案 1: 从轻量索引文件加载 (最快)
     ids_file = f"{output_dir}/cached_ids.txt"
     if os.path.exists(ids_file):
         with open(ids_file, 'r') as f:
             cached_ids = set(line.strip() for line in f if line.strip())
         return cached_ids
 
-    # 方案 2: 从 .npy 文件提取 keys (较慢，但兼容旧缓存)
-    merged_cache_file = f"{output_dir}/incremental_cache.npy"
-    if os.path.exists(merged_cache_file):
-        try:
-            data = np.load(merged_cache_file, allow_pickle=True).item()
-            cached_ids.update(data.keys())
-        except:
-            pass
-
-    for r in range(world_size):
-        shard_file = f"{output_dir}/cache_rank{r}.npy"
+    # Fallback: scan shard files
+    for i in range(NUM_SHARDS):
+        shard_file = f"{output_dir}/shard_{i}.npy"
         if os.path.exists(shard_file):
             try:
                 data = np.load(shard_file, allow_pickle=True).item()
-                cached_ids.update(data.keys())
+                cached_ids.update(str(k) for k in data.keys())
             except:
                 pass
+
+    # Legacy: incremental_cache.npy
+    legacy_file = f"{output_dir}/incremental_cache.npy"
+    if os.path.exists(legacy_file):
+        try:
+            data = np.load(legacy_file, allow_pickle=True).item()
+            cached_ids.update(str(k) for k in data.keys())
+        except:
+            pass
 
     return cached_ids
 
@@ -120,19 +126,13 @@ def save_cached_ids(output_dir: str, cached_ids: set):
 # ============================================================
 
 def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = None):
-    """
-    每个 rank 加载自己的数据分片 (Row-level 均匀分配)
-
-    Args:
-        input_paths: str 或 list[str]，S3 路径（支持单路径或多天路径列表）
+    """每个 rank 加载 hash(cid) % world_size == rank 的数据。
 
     两阶段加载 (当 cached_ids 不为空时):
     1. 只读 content_id 列，跳过全部已缓存的文件
     2. 对有未缓存行的文件，再读 full_text 列
 
-    如果提供 cached_ids (set)，还会进一步做 cache-aware 负载均衡:
-    - 先过滤掉已缓存的 content_id
-    - 再对剩余待处理的数据做均匀分配
+    数据按 hash(content_id) % world_size 分配，保证同一 cid 始终归同一 rank/shard。
     """
     import pandas as pd
     import s3fs
@@ -151,8 +151,8 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
 
     # ── Two-phase loading when cached_ids available ──
     if cached_ids is not None and len(cached_ids) > 0:
-        # Phase 1: read only content_id column, find files with uncached rows
-        files_with_new = []  # (file_path, uncached_cids_in_file)
+        # Phase 1: read only content_id column, find files with uncached rows for this rank
+        files_with_new = []
         total_rows = 0
         skipped_files = 0
 
@@ -161,22 +161,25 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
                 df_ids = pd.read_parquet(file, columns=['content_id'])
             total_rows += len(df_ids)
             cids = df_ids['content_id'].values
-            uncached_mask = np.array([cid not in cached_ids for cid in cids])
-            if uncached_mask.any():
+            # Check: any uncached cid that hashes to this rank?
+            has_new = False
+            for cid in cids:
+                if str(cid) not in cached_ids and cid_to_shard(cid, world_size) == rank:
+                    has_new = True
+                    break
+            if has_new:
                 files_with_new.append(f)
             else:
                 skipped_files += 1
 
         if rank == 0:
             print(f"Total rows: {total_rows:,}, "
-                  f"skipped {skipped_files}/{len(files)} fully-cached files")
+                  f"skipped {skipped_files}/{len(files)} files (rank 0)")
 
         if not files_with_new:
-            if rank == 0:
-                print("All items cached, nothing to process")
             return np.array([]), []
 
-        # Phase 2: read full data only for files with uncached rows
+        # Phase 2: read full data only for files with new rows
         dfs = []
         for f in files_with_new:
             with fs.open(f, 'rb') as file:
@@ -195,17 +198,18 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
         content_ids_all = df['content_id'].values
         texts_all = df[text_col].fillna('').values
 
-        is_cached = np.array([cid in cached_ids for cid in content_ids_all])
-        uncached_indices = np.where(~is_cached)[0]
-        n_uncached = len(uncached_indices)
+        # Filter: uncached AND hash to this rank
+        my_indices = np.array([
+            i for i in range(len(content_ids_all))
+            if str(content_ids_all[i]) not in cached_ids
+            and cid_to_shard(content_ids_all[i], world_size) == rank
+        ])
+        n_uncached = len(my_indices)
 
         if rank == 0:
-            print(f"Uncached rows: {n_uncached:,} (from {len(files_with_new)} files)")
-
-        my_mask = np.arange(n_uncached) % world_size == rank
-        my_indices = uncached_indices[my_mask]
+            print(f"Uncached rows for rank 0: {n_uncached:,}")
     else:
-        # ── No cache: load everything ──
+        # ── No cache: load everything, hash-partition ──
         dfs = []
         for f in files:
             with fs.open(f, 'rb') as file:
@@ -229,7 +233,13 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
 
         content_ids_all = df['content_id'].values
         texts_all = df[text_col].fillna('').values
-        my_indices = np.arange(len(df))[np.arange(len(df)) % world_size == rank]
+        my_indices = np.array([
+            i for i in range(len(content_ids_all))
+            if cid_to_shard(content_ids_all[i], world_size) == rank
+        ])
+
+    if len(my_indices) == 0:
+        return np.array([]), []
 
     content_ids = content_ids_all[my_indices]
     texts = texts_all[my_indices].tolist()
@@ -290,6 +300,8 @@ def main():
     output_dir = f"{args.output_dir}/{args.model}"
     os.makedirs(output_dir, exist_ok=True)
 
+    shard_file = f"{output_dir}/shard_{rank}.npy"
+
     print(f"[Rank {rank}] Starting, device={device}")
 
     # Resolve input paths
@@ -297,7 +309,7 @@ def main():
 
     if rank == 0:
         print("=" * 60)
-        print(f"Multi-GPU Embedding Generation (Cache-aware Load Balancing)")
+        print(f"Multi-GPU Embedding Generation (8-shard, hash-partitioned)")
         print("=" * 60)
         print(f"Model: {model_name}")
         print(f"Input: {len(input_paths)} path(s)")
@@ -311,19 +323,17 @@ def main():
         print("=" * 60)
 
     # Step 1: Rank 0 加载 cached_ids 并广播给其他 ranks
-    cache_file = f"{output_dir}/cache_rank{rank}.npy"
     cached_ids = None
 
     if rank == 0:
         print("Loading cached IDs...")
         t0 = time.time()
-        cached_ids = load_cached_ids(output_dir, world_size)
+        cached_ids = load_cached_ids(output_dir)
         print(f"Loaded {len(cached_ids):,} cached IDs in {time.time()-t0:.1f}s")
 
     # 广播 cached_ids 给所有 ranks
     if world_size > 1:
         if rank == 0:
-            # Rank 0 序列化并广播
             cached_ids_list = list(cached_ids)
             size_tensor = torch.tensor([len(cached_ids_list)], dtype=torch.long, device=device)
         else:
@@ -334,7 +344,6 @@ def main():
 
         if size > 0:
             if rank == 0:
-                # 将 string ids 编码为 bytes 并广播
                 import pickle
                 data_bytes = pickle.dumps(cached_ids_list)
                 data_tensor = torch.ByteTensor(list(data_bytes)).to(device)
@@ -363,21 +372,21 @@ def main():
     if rank == 0:
         print(f"All ranks have {len(cached_ids):,} cached IDs")
 
-    # Step 2: 用 cache-aware 方式加载数据分片 (只分配未缓存的数据)
-    print(f"[Rank {rank}] Loading data with cache-aware balancing...")
+    # Step 2: 加载数据 (hash-partitioned, 每个 rank 只处理自己 shard 的数据)
+    print(f"[Rank {rank}] Loading data (hash-partitioned)...")
     my_content_ids, my_texts = load_data_shard(input_paths, rank, world_size, cached_ids=cached_ids)
 
-    # 此时 my_content_ids 已经是未缓存的数据，直接作为 to_process
     to_process = [(i, my_content_ids[i], my_texts[i]) for i in range(len(my_content_ids))]
     print(f"[Rank {rank}] To process: {len(to_process):,}")
 
     if len(to_process) == 0:
         print(f"[Rank {rank}] All cached, skipping")
+        new_embeddings = {}
     else:
         # Rank 0 先下载模型，其他 rank 等待
         download_model_if_needed(model_name, rank, world_size)
 
-        # 加载模型到各自的 GPU（使用统一的 Qwen3TextEmbedder，分布式模式传 device）
+        # 加载模型
         print(f"[Rank {rank}] Loading model on {device}...")
         embedder = Qwen3TextEmbedder(model_name, device=device)
 
@@ -419,10 +428,10 @@ def main():
 
             batch_idx += batch_size
 
-            # Checkpoint (只保存本次新生成的，避免重复写入巨大的 cached)
+            # Checkpoint
             batch_num = batch_idx // batch_size
             if batch_num % args.checkpoint_every == 0:
-                np.save(cache_file, new_embeddings)
+                np.save(f"{output_dir}/.tmp_rank{rank}.npy", new_embeddings)
 
             # Progress
             if batch_num % 10 == 0:
@@ -433,51 +442,43 @@ def main():
                 eta = remaining / speed if speed > 0 else 0
                 print(f"[Rank {rank}] {done:,}/{len(to_process):,} | {speed:.1f}/s | ETA: {eta/3600:.1f}h")
 
-        # 保存本次新生成的结果
-        np.save(cache_file, new_embeddings)
-        print(f"[Rank {rank}] Saved {len(new_embeddings):,} new embeddings to {cache_file}")
+    # Step 3: 每个 rank 合并新数据到自己的 shard 文件
+    existing_shard = {}
+    if os.path.exists(shard_file):
+        try:
+            existing_shard = np.load(shard_file, allow_pickle=True).item()
+        except:
+            pass
 
-    # 等待所有进程完成
+    existing_shard.update(new_embeddings)
+    np.save(shard_file, existing_shard)
+    new_count = len(new_embeddings)
+    total_count = len(existing_shard)
+    print(f"[Rank {rank}] Shard {rank}: {total_count:,} total (+{new_count:,} new) -> {shard_file}")
+
+    # 清理临时 checkpoint
+    tmp_file = f"{output_dir}/.tmp_rank{rank}.npy"
+    if os.path.exists(tmp_file):
+        os.remove(tmp_file)
+
+    # 等待所有 rank 写完 shard
     if world_size > 1:
         dist.barrier()
 
-    # Rank 0 合并结果
+    # Rank 0 更新 cached_ids.txt
     if rank == 0:
-        print("\nMerging results from all ranks...")
-
-        # 先加载已有的合并缓存
-        merged_cache = f"{output_dir}/incremental_cache.npy"
-        all_embeddings = {}
-        if os.path.exists(merged_cache):
-            try:
-                all_embeddings = np.load(merged_cache, allow_pickle=True).item()
-                print(f"  Existing merged cache: {len(all_embeddings):,} embeddings")
-            except:
-                pass
-
-        # 再合并所有 rank 的新缓存
-        new_count = 0
-        for r in range(world_size):
-            cache_file_r = f"{output_dir}/cache_rank{r}.npy"
-            if os.path.exists(cache_file_r):
+        print("\nUpdating cached_ids.txt...")
+        all_ids = set()
+        for i in range(world_size):
+            sf = f"{output_dir}/shard_{i}.npy"
+            if os.path.exists(sf):
                 try:
-                    data = np.load(cache_file_r, allow_pickle=True).item()
-                    all_embeddings.update(data)
-                    new_count += len(data)
-                    print(f"  Rank {r}: {len(data):,} new embeddings")
+                    data = np.load(sf, allow_pickle=True).item()
+                    all_ids.update(str(k) for k in data.keys())
                 except:
                     pass
-
-        # 保存合并后的缓存
-        np.save(merged_cache, all_embeddings)
-        print(f"Merged total: {len(all_embeddings):,} embeddings (new: {new_count:,})")
-
-        # 保存轻量索引文件 (下次启动时快速加载)
-        save_cached_ids(output_dir, set(all_embeddings.keys()))
-        print(f"Saved cached_ids.txt for fast loading")
-
-        # 不再生成完整数组，让 rkmeans 脚本用 incremental_cache 加载
-        print("Note: Use --skip_embedding with 'python -m gr_demo train' to load from cache")
+        save_cached_ids(output_dir, all_ids)
+        print(f"cached_ids.txt: {len(all_ids):,} total IDs")
 
     cleanup_distributed()
     print(f"[Rank {rank}] Done!")
