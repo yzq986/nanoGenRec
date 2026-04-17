@@ -200,6 +200,10 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
                 dfs.append(pd.read_parquet(file))
 
         df = pd.concat(dfs, ignore_index=True)
+        n_before_dedup = len(df)
+        df = df.drop_duplicates(subset='content_id', keep='first')
+        if rank == 0 and n_before_dedup != len(df):
+            print(f"  Phase 2: dedup {n_before_dedup:,} → {len(df):,} rows")
 
         text_col = None
         for col in ['full_text', 'text', 'content']:
@@ -229,9 +233,11 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
             return np.array([]), []
 
         df = pd.concat(dfs, ignore_index=True)
+        n_before_dedup = len(df)
+        df = df.drop_duplicates(subset='content_id', keep='first')
 
         if rank == 0:
-            print(f"Total rows: {len(df):,}")
+            print(f"Total rows: {n_before_dedup:,} → {len(df):,} after dedup")
 
         text_col = None
         for col in ['full_text', 'text', 'content']:
