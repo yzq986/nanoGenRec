@@ -4,7 +4,7 @@
 # Date: 2026-04-17
 #
 # Goal: Fit Chinchilla dual-variable law L(N,D) = E + A/N^α + B/D^β
-#       by sweeping data D ∈ {7d, 14d, 31d, 62d, 90d} for two models:
+#       by sweeping data D ∈ {7d, 14d, 31d, 62d, 66d} for two models:
 #       - S  (17.5M active): 256d 6L 8E top-2
 #       - M+ (101M active):  512d 12L 16E top-2
 #
@@ -36,7 +36,7 @@ echo "============================================================"
 echo "EXP-016: Data Scaling Law"
 echo "  SID:       4096×3 + FSQ [2]×12 binary"
 echo "  Models:    S (17.5M active), M+ (101M active)"
-echo "  Data:      7d / 14d / 31d / 62d / 90d"
+echo "  Data:      7d / 14d / 31d / 62d / 66d"
 echo "  GPUs:      ${N_GPUS}"
 echo "  Start from: config #${START_FROM}"
 echo "============================================================"
@@ -52,12 +52,12 @@ fi
 # Each config has a name, date_start, date_end
 # C-31d reuses exp013 data, so no new preprocessing needed
 declare -A DATE_STARTS DATE_ENDS NTP_DIRS TOKENS_APPROX
-DATE_STARTS=( [A-7d]="2026-03-25" [B-14d]="2026-03-18" [C-31d]="2026-03-01" [D-62d]="2026-02-01" [E-90d]="2026-01-01" )
-DATE_ENDS=(   [A-7d]="2026-03-31" [B-14d]="2026-03-31" [C-31d]="2026-03-31" [D-62d]="2026-03-31" [E-90d]="2026-03-31" )
-NTP_DIRS=(    [A-7d]="${NTP_DATA_BASE}/exp016-7d" [B-14d]="${NTP_DATA_BASE}/exp016-14d" [C-31d]="${NTP_DATA_BASE}/exp013" [D-62d]="${NTP_DATA_BASE}/exp016-62d" [E-90d]="${NTP_DATA_BASE}/exp016-90d" )
-TOKENS_APPROX=( [A-7d]="~59M" [B-14d]="~118M" [C-31d]="~262M" [D-62d]="~524M" [E-90d]="~760M" )
+DATE_STARTS=( [A-7d]="2026-03-25" [B-14d]="2026-03-18" [C-31d]="2026-03-01" [D-62d]="2026-02-01" [E-66d]="2026-01-25" )
+DATE_ENDS=(   [A-7d]="2026-03-31" [B-14d]="2026-03-31" [C-31d]="2026-03-31" [D-62d]="2026-03-31" [E-66d]="2026-03-31" )
+NTP_DIRS=(    [A-7d]="${NTP_DATA_BASE}/exp016-7d" [B-14d]="${NTP_DATA_BASE}/exp016-14d" [C-31d]="${NTP_DATA_BASE}/exp013" [D-62d]="${NTP_DATA_BASE}/exp016-62d" [E-66d]="${NTP_DATA_BASE}/exp016-66d" )
+TOKENS_APPROX=( [A-7d]="~61M" [B-14d]="~119M" [C-31d]="~238M" [D-62d]="~404M" [E-66d]="~445M" )
 
-DATA_KEYS=("A-7d" "B-14d" "C-31d" "D-62d" "E-90d")
+DATA_KEYS=("A-7d" "B-14d" "C-31d" "D-62d" "E-66d")
 
 # ── Helper: preprocess NTP data for a date range ──
 preprocess_data() {
@@ -244,7 +244,7 @@ M_EXPERT_DIM=2048
 if [ "${START_FROM}" -le 1 ]; then
     train_config "exp016-A-7d-S" "${NTP_DIRS[A-7d]}" \
         $S_BATCH $S_LR $S_EMBED $S_HEADS $S_LAYERS $S_EXPERTS $S_TOPK $S_EXPERT_DIM \
-        "S (17.5M) on 7d data (~59M tokens, 3.4 tok/param)"
+        "S (17.5M) on 7d data (~61M tokens, 3.5 tok/param)"
     commit_results "EXP-016: A-7d S-tier (17.5M) result"
 fi
 
@@ -252,7 +252,7 @@ fi
 if [ "${START_FROM}" -le 2 ]; then
     train_config "exp016-A-7d-M" "${NTP_DIRS[A-7d]}" \
         $M_BATCH $M_LR $M_EMBED $M_HEADS $M_LAYERS $M_EXPERTS $M_TOPK $M_EXPERT_DIM \
-        "M+ (101M) on 7d data (~59M tokens, 0.6 tok/param)"
+        "M+ (101M) on 7d data (~61M tokens, 0.6 tok/param)"
     commit_results "EXP-016: A-7d M+-tier (101M) result"
 fi
 
@@ -260,7 +260,7 @@ fi
 if [ "${START_FROM}" -le 3 ]; then
     train_config "exp016-B-14d-S" "${NTP_DIRS[B-14d]}" \
         $S_BATCH $S_LR $S_EMBED $S_HEADS $S_LAYERS $S_EXPERTS $S_TOPK $S_EXPERT_DIM \
-        "S (17.5M) on 14d data (~118M tokens, 6.7 tok/param)"
+        "S (17.5M) on 14d data (~119M tokens, 6.8 tok/param)"
     commit_results "EXP-016: B-14d S-tier (17.5M) result"
 fi
 
@@ -268,7 +268,7 @@ fi
 if [ "${START_FROM}" -le 4 ]; then
     train_config "exp016-B-14d-M" "${NTP_DIRS[B-14d]}" \
         $M_BATCH $M_LR $M_EMBED $M_HEADS $M_LAYERS $M_EXPERTS $M_TOPK $M_EXPERT_DIM \
-        "M+ (101M) on 14d data (~118M tokens, 1.2 tok/param)"
+        "M+ (101M) on 14d data (~119M tokens, 1.2 tok/param)"
     commit_results "EXP-016: B-14d M+-tier (101M) result"
 fi
 
@@ -295,7 +295,7 @@ with open('${DST_016}', 'w') as f: json.dump(d, f, indent=2)
         echo "[C-31d S] WARNING: ${SRC_015} not found, training from scratch..."
         train_config "exp016-C-31d-S" "${NTP_DIRS[C-31d]}" \
             $S_BATCH $S_LR $S_EMBED $S_HEADS $S_LAYERS $S_EXPERTS $S_TOPK $S_EXPERT_DIM \
-            "S (17.5M) on 31d data (~262M tokens, 15.0 tok/param) [fallback]"
+            "S (17.5M) on 31d data (~238M tokens, 13.6 tok/param) [fallback]"
     fi
     commit_results "EXP-016: C-31d S-tier (reuse EXP-015 scale-04)"
 fi
@@ -322,7 +322,7 @@ with open('${DST_016}', 'w') as f: json.dump(d, f, indent=2)
         echo "[C-31d M+] WARNING: ${SRC_015} not found, training from scratch..."
         train_config "exp016-C-31d-M" "${NTP_DIRS[C-31d]}" \
             $M_BATCH $M_LR $M_EMBED $M_HEADS $M_LAYERS $M_EXPERTS $M_TOPK $M_EXPERT_DIM \
-            "M+ (101M) on 31d data (~262M tokens, 2.6 tok/param) [fallback]"
+            "M+ (101M) on 31d data (~238M tokens, 2.4 tok/param) [fallback]"
     fi
     commit_results "EXP-016: C-31d M+-tier (reuse EXP-015 scale-07)"
 fi
@@ -331,7 +331,7 @@ fi
 if [ "${START_FROM}" -le 7 ]; then
     train_config "exp016-D-62d-S" "${NTP_DIRS[D-62d]}" \
         $S_BATCH $S_LR $S_EMBED $S_HEADS $S_LAYERS $S_EXPERTS $S_TOPK $S_EXPERT_DIM \
-        "S (17.5M) on 62d data (~524M tokens, 29.9 tok/param)"
+        "S (17.5M) on 62d data (~404M tokens, 23.1 tok/param)"
     commit_results "EXP-016: D-62d S-tier (17.5M) result"
 fi
 
@@ -339,24 +339,24 @@ fi
 if [ "${START_FROM}" -le 8 ]; then
     train_config "exp016-D-62d-M" "${NTP_DIRS[D-62d]}" \
         $M_BATCH $M_LR $M_EMBED $M_HEADS $M_LAYERS $M_EXPERTS $M_TOPK $M_EXPERT_DIM \
-        "M+ (101M) on 62d data (~524M tokens, 5.2 tok/param)"
+        "M+ (101M) on 62d data (~404M tokens, 4.0 tok/param)"
     commit_results "EXP-016: D-62d M+-tier (101M) result"
 fi
 
-# Step 9: E-90d S
+# Step 9: E-66d S
 if [ "${START_FROM}" -le 9 ]; then
-    train_config "exp016-E-90d-S" "${NTP_DIRS[E-90d]}" \
+    train_config "exp016-E-66d-S" "${NTP_DIRS[E-66d]}" \
         $S_BATCH $S_LR $S_EMBED $S_HEADS $S_LAYERS $S_EXPERTS $S_TOPK $S_EXPERT_DIM \
-        "S (17.5M) on 90d data (~760M tokens, 43.4 tok/param)"
-    commit_results "EXP-016: E-90d S-tier (17.5M) result"
+        "S (17.5M) on 66d data (~445M tokens, 25.4 tok/param)"
+    commit_results "EXP-016: E-66d S-tier (17.5M) result"
 fi
 
-# Step 10: E-90d M+
+# Step 10: E-66d M+
 if [ "${START_FROM}" -le 10 ]; then
-    train_config "exp016-E-90d-M" "${NTP_DIRS[E-90d]}" \
+    train_config "exp016-E-66d-M" "${NTP_DIRS[E-66d]}" \
         $M_BATCH $M_LR $M_EMBED $M_HEADS $M_LAYERS $M_EXPERTS $M_TOPK $M_EXPERT_DIM \
-        "M+ (101M) on 90d data (~760M tokens, 7.5 tok/param)"
-    commit_results "EXP-016: E-90d M+-tier (101M) result"
+        "M+ (101M) on 66d data (~445M tokens, 4.4 tok/param)"
+    commit_results "EXP-016: E-66d M+-tier (101M) result"
 fi
 
 # ── Final commit ──
