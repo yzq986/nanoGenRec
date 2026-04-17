@@ -141,10 +141,10 @@ def load_date_data(date_path, rank, world_size, cached_ids):
     if not files:
         return np.array([]), []
 
-    seen_cids = set()
     my_content_ids = []
     my_texts = []
     total_rows = 0
+    n_cached = 0
 
     for f in files:
         with fs.open(f, 'rb') as file:
@@ -160,18 +160,17 @@ def load_date_data(date_path, rank, world_size, cached_ids):
             raise ValueError(f"No text column found. Available: {list(df.columns)}")
 
         for cid, text in zip(df['content_id'].values, df[text_col].fillna('').values):
-            cid_str = str(cid)
-            if cid_str in seen_cids or cid_str in cached_ids:
+            if str(cid) in cached_ids:
+                n_cached += 1
                 continue
-            seen_cids.add(cid_str)
             if cid_to_shard(cid, world_size) == rank:
                 my_content_ids.append(cid)
                 my_texts.append(text)
 
-    n_unique = len(seen_cids)
     n_new = len(my_content_ids)
     if rank == 0:
-        print(f"    {total_rows:,} rows, {n_unique:,} unique new cids")
+        print(f"    {total_rows:,} rows, {n_cached:,} cached, "
+              f"{total_rows - n_cached:,} new")
     if n_new > 0:
         print(f"    [Rank {rank}] {n_new:,} items to encode")
 
