@@ -39,6 +39,110 @@
 
 ---
 
+## EXP-017: SP-DPO — Self-Play DPO Alignment for NTP Model
+
+**Date**: 2026-04-17
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+NTP 模型已达到 S-tier 基线 (EXP-013/015: PPL=28.1, R@500=60.5%)。当前训练纯 SFT (交叉熵)，只告诉模型"什么是对的"，不告诉模型"你当前犯的哪些错误是错的"。
+
+SP-DPO (Self-Play DPO, Align³GR, AAAI 2026 Oral) 是 RL 对齐的入门方案：
+1. 用模型自己 beam search 生成候选作为 rejected（负样本）
+2. Ground truth 作为 chosen（正样本）
+3. 按 SID prefix 匹配层数定义难度：Easy (0 层匹配) → Medium (L1 匹配) → Hard (L1+L2 匹配)
+4. Softmax-DPO loss 渐进训练 (1 chosen vs 20 rejected)
+
+核心优势：**零外部依赖** — 不需要 reward model，不需要用户反馈标签，只需要训练好的 NTP 模型。
+
+详细技术讨论见 [discussions/001](../discussions/001-sp-dpo-vs-sft-vs-contrastive.md) 和 [discussions/002](../discussions/002-rf-dpo-grpo-ecpo-progression.md)。
+
+### Hypothesis
+
+1. SP-DPO (Easy) 对 R@10 提升最大 (远距离负样本拉开基本对错边界)，但对 R@500 影响有限
+2. SP-DPO (Hard) 对 R@10 提升有限，但对 PPL 和逐层准确率显著改善 (精细区分 L3 混淆区)
+3. 渐进训练 (Easy→Medium→Hard) 优于单阶段直接 Hard (参考 Align³GR 消融: +7.8% vs +4.7%)
+4. Joint loss (NTP + DPO) 优于纯 DPO (保持 SFT 知识不丢失)
+5. 整体 Recall@10 提升 5-10%，PPL 提升 3-5%
+
+### Design
+
+- **Variable**: DPO 阶段 (Easy/Medium/Hard)、渐进 vs 单阶段、DPO loss 权重 λ
+- **Fixed**: S-tier 模型 (256d, 6L, 8E top-2, ~17.5M active), 31 天数据, beam_size=50 (采样)
+- **Metric**: PPL, item_recall@{10,50,100,500}, 逐层 depth_hit@10, DPO loss 曲线
+- **Data**: 复用 EXP-013 preprocessed NTP data (262M tokens)
+- **Baseline**: EXP-015 scale-04 checkpoint (PPL=28.1, R@500=60.5%)
+
+**SP-DPO 配置**:
+
+| 阶段 | Difficulty | Rejected 筛选规则 | Description |
+|------|-----------|------------------|-------------|
+| Stage 1 | Easy | prefix 匹配 0 层 (L1 就不同) | 完全不相关的候选 |
+| Stage 2 | Medium | prefix 匹配 1 层 (L1 同, L2 不同) | 同粗粒度类目 |
+| Stage 3 | Hard | prefix 匹配 2 层 (L1+L2 同, L3 不同) | 高度相似，仅细粒度不同 |
+
+**超参搜索**:
+
+| 参数 | 搜索范围 | 默认值 |
+|------|---------|--------|
+| λ (DPO loss weight) | {0.05, 0.1, 0.2, 0.5} | 0.1 |
+| β (DPO temperature) | {0.1, 0.5, 1.0} | 0.1 |
+| N_rejected | {10, 20} | 20 |
+| beam_size (采样) | 50 | 50 |
+| LR | {1e-4, 5e-5} | 1e-4 |
+
+**实验矩阵** (优先级排序):
+
+| Config | 阶段 | 渐进? | λ | β | 说明 |
+|--------|------|-------|---|---|------|
+| spdpo-baseline | — | — | — | — | SFT-only (复用 EXP-015 scale-04) |
+| spdpo-easy | Easy only | No | 0.1 | 0.1 | 单阶段 Easy |
+| spdpo-hard | Hard only | No | 0.1 | 0.1 | 单阶段 Hard (跳过 Easy/Medium) |
+| spdpo-prog | Easy→Med→Hard | Yes | 0.1 | 0.1 | 渐进三阶段 (核心实验) |
+| spdpo-prog-lam05 | Easy→Med→Hard | Yes | 0.05 | 0.1 | λ 消融 |
+| spdpo-prog-lam50 | Easy→Med→Hard | Yes | 0.5 | 0.1 | λ 消融 |
+
+**实现计划** (需要新增代码):
+
+1. `rl/preference.py` — 离线构造 preference pairs:
+   - 加载 SFT checkpoint → beam search 生成 50 候选 / eval item
+   - 按 prefix 匹配层数分组 Easy/Medium/Hard
+   - 每个 eval item 输出: chosen (ground truth SID) + 20 rejected (按难度筛选)
+   - 保存为 `.npz` 文件供 DPO trainer 读取
+
+2. `rl/dpo.py` — Softmax-DPO loss:
+   - 输入: policy logprobs (chosen + rejected), reference logprobs (chosen + rejected)
+   - 输出: Softmax-DPO loss (支持 1 chosen vs N rejected)
+
+3. `rl/trainer.py` — DPO 训练循环:
+   - 加载 SFT checkpoint 作为 π_ref (冻结) 和 π_θ (可训练)
+   - Joint loss: L = L_NTP + λ * L_DPO
+   - 支持渐进训练: 每阶段结束后 π_θ → π_ref
+
+4. `rl/eval.py` — 对比评估:
+   - 复用 `ntp/eval.py` 的 teacher-forced + beam search recall
+   - 额外: DPO loss 曲线、chosen/rejected 概率比变化
+
+### Run
+
+`bash experiments/scripts/exp-017.sh`
+
+### Results
+
+TBD
+
+### Analysis
+
+TBD
+
+### Next Steps
+
+TBD
+
+---
+
 ## EXP-015: NTP Scaling Law — Sweep Model Size from 1M to 100M Active Params
 
 **Date**: 2026-04-16 ~ 2026-04-17
