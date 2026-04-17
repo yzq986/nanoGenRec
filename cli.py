@@ -62,9 +62,12 @@ def main():
     elif command == 'pack':
         from gr_demo.model.pack import main as pack_main
         pack_main()
+    elif command == 'migrate-shards':
+        from gr_demo.data.migrate_shards import main as migrate_main
+        migrate_main()
     else:
         print(f"Unknown command: {command}")
-        print("Available commands: train, eval, eval-all, compare, hyperparam, preprocess-sid, preprocess-ntp, train-ntp, pack")
+        print("Available commands: train, eval, eval-all, compare, hyperparam, preprocess-sid, preprocess-ntp, train-ntp, pack, migrate-shards")
         sys.exit(1)
 
 
