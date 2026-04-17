@@ -479,7 +479,13 @@ def main():
             dist.barrier()
 
     # ── 最终汇总 ──
-    print(f"\n[Rank {rank}] Shard {rank}: {len(existing_shard):,} total "
+    total_lookups = text_cache.hits + total_new  # hits + misses (encoded)
+    if total_lookups > 0:
+        hit_rate = text_cache.hits / total_lookups
+        print(f"\n[Rank {rank}] Text cache: {text_cache.hits:,} hits / "
+              f"{total_lookups:,} lookups ({hit_rate:.1%}), "
+              f"size: {len(text_cache):,}")
+    print(f"[Rank {rank}] Shard {rank}: {len(existing_shard):,} total "
           f"(+{total_new:,} new) -> {shard_file}")
 
     if world_size > 1:
