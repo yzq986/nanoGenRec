@@ -39,7 +39,7 @@ print(f'  Items in cache: {len(sid):,}')
 echo ""
 echo ">>> Running incremental preprocess-sid (01-25 ~ 03-31)..."
 if [ "${N_GPUS}" -gt 1 ]; then
-    torchrun --nproc_per_node="${N_GPUS}" -m gr_demo.eval.preprocess_sid \
+    torchrun --nproc_per_node="${N_GPUS}" run.py preprocess-sid \
         --model qwen3-0.6b \
         --output_dir "${SID_CACHE}" \
         --incremental \
