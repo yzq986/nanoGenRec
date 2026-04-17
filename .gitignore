@@ -23,7 +23,7 @@ Thumbs.db
 # Experiment data (large, stay on EFS, not in git)
 experiments/sid_cache/
 experiments/ntp_data/
-experiments/ntp_checkpoints/
+experiments/ntp_checkpoints/**/*.pt
 experiments/hyperparam/**/model/
 experiments/hyperparam/**/embeddings/
 experiments/hyperparam/**/smoke_test/
