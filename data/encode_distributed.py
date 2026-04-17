@@ -184,7 +184,7 @@ def load_date_data(date_path, rank, world_size, cached_ids):
 # 编码
 # ============================================================
 
-TEXT_CACHE_MAX_LEN = 256   # 短于此长度的文本缓存 text→embedding
+TEXT_CACHE_MAX_LEN = 16    # 短于此长度的文本缓存 text→embedding
 TEXT_CACHE_MAX_SIZE = 500_000  # LRU 最大条目数
 
 
