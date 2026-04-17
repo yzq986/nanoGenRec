@@ -235,7 +235,7 @@ gr_demo/
 │   ├── similarity.py      # 相似度指标
 │   └── report.py          # 报告生成
 ├── experiments/
-│   ├── log.md             # 实验日志 (EXP-001 ~ EXP-012)
+│   ├── log.md             # 实验日志 (EXP-001 ~ EXP-015)
 │   ├── scripts/
 │   │   ├── tokenizer_grid_search.py  # 多 GPU tokenizer 搜索 (通用, 可复用)
 │   │   ├── exp-011.py     # EXP-011 codebook ablation
@@ -267,8 +267,33 @@ gr_demo/
 | EXP-010 | 完成 | NTP Baseline 效果极差 — 根因: 单一 4027-dim vocab 跨 3 层 + 仅 1 epoch |
 | EXP-011 | 完成 | 等大 codebook 消融: 4096×3 snHR=0.095 (+22% vs 1024×3) |
 | EXP-012 | 完成 | **Tokenizer Grid Search**: 4096×3 binary 确认为最优 (snHR=0.095, collision=0.89%) |
+| EXP-013 | 完成 | **S-tier NTP 全面碾压 Probe**: PPL 70→29.6 (-58%), recall@500 37%→60% (1.6x) |
+| EXP-014 | 进行中 | ENTP-Loss: L0 token collision 导致退步，Round 2 collision 过滤中 |
+| EXP-015 | 完成 | **Scaling Law 成立**: `L(N) = 2.522 + 2055/N^0.456`, α≈OneRec-V2, M 档为甜点 |
 
 详见 [experiments/log.md](experiments/log.md)。
+
+## NTP Scaling Law (EXP-015)
+
+在相同数据上 sweep 7 个模型规模 (1.7M ~ 101M active params)，拟合 power law:
+
+```
+L̂(N) = 2.522 + 2055.1 / N^0.456
+```
+
+- **α = 0.456** — 接近 OneRec-V2 的 0.489，验证架构 scaling 效率
+- **a = 2.522 (PPL≈12.5)** — irreducible loss floor，tokenizer + 用户行为随机性的天花板
+- **M 档 (~55M active) 是性价比甜点** — 之后曲线趋于平坦
+
+![NTP Scaling Law](experiments/results/ntp/exp015-scaling-law.png)
+
+| Active Params | PPL | R@100 | R@500 |
+|--------------|------|-------|-------|
+| 1.7M | 235 | 11.8% | 23.6% |
+| 5.1M | 70 | 24.9% | 45.6% |
+| 17.5M (S) | 28 | 35.6% | 60.5% |
+| 71.6M | 21 | 41.0% | 66.2% |
+| 101.1M | **19** | **43.2%** | **65.8%** |
 
 ## 关键结论
 
@@ -276,21 +301,23 @@ gr_demo/
 2. **KMeans cluster size 主导语义质量**: snHR 随 cluster 递增但边际递减 (1024→0.078, 4096→0.095, 8192→0.104)
 3. **Binary FSQ 全面优于 multi-level**: collision 更低, Gini 更均匀, 尤其大 cluster 下优势显著
 4. **Embedding fine-tune 路线已关闭**: I2I contrastive 信号不足以弥补 semantic→behavior embedding gap
-5. **当前 pipeline**: Qwen3-0.6B (冻结) → 4096×3 binary MLP-FSQ `[2]×12` → 3-token SID → NTP 模型
+5. **Scaling law 成立**: NTP loss 遵循 `L(N) = 2.522 + 2055/N^0.456`，α 接近 OneRec-V2 (0.489)
+6. **当前 pipeline**: Qwen3-0.6B (冻结) → 4096×3 binary MLP-FSQ `[2]×12` → 3-token SID → NTP 模型
 
-## NTP 模型架构 (S 档)
+## NTP 模型架构
 
 基于 OneRec-V2 Lazy Decoder-Only + MoE:
 
-| 参数 | 值 |
-|------|-----|
-| embed_dim | 256 |
-| n_layers | 6 (2 for probe) |
-| n_heads | 8 |
-| MoE experts | 8, top-2 |
-| expert FFN | SwiGLU, dim=1024 |
-| 总参数 | ~39.5M (激活 ~11M) |
-| SID | 3 tokens, 4096×3 binary `[2]×12` (36 bit) |
+| 参数 | S 档 (当前) | M 档 (规划) |
+|------|------------|------------|
+| embed_dim | 256 | 512 |
+| n_layers | 6 | 12 |
+| n_heads | 8 | 8 |
+| MoE experts | 8, top-2 | 16, top-2 |
+| expert FFN | SwiGLU, dim=1024 | SwiGLU, dim=2048 |
+| 总参数 | ~45.8M (激活 ~17M) | ~630M (激活 ~101M) |
+| 预测 PPL | 28 | ~19 |
+| SID | 3 tokens, 4096×3 binary `[2]×12` (36 bit) | 同左 |
 
 详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
