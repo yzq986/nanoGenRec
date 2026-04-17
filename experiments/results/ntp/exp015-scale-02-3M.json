@@ -1,0 +1,41 @@
+{
+  "name": "exp015-scale-02-3M",
+  "model_type": "s-tier",
+  "n_params": 3620352,
+  "n_active_params": 3620352,
+  "total_tokens": 261856512,
+  "total_flops": 5688076481593344,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "eval": {
+    "ppl": 100.3922,
+    "layer_ppl": [
+      456.9888,
+      61.3548,
+      36.3016
+    ],
+    "avg_loss": 4.609084,
+    "depth_hit@10": [
+      0.1572,
+      0.0926,
+      0.0878
+    ],
+    "depth_hit@10_indep": [
+      0.1568,
+      0.5528,
+      0.64
+    ],
+    "depth_acc_beam": [
+      0.012,
+      0.005,
+      0.005
+    ],
+    "target_sid_found_rate": 0.317,
+    "n_eval_positions": 148533,
+    "n_eval_items": 49383,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.037,
+    "item_recall@50": 0.118,
+    "item_recall@100": 0.166,
+    "item_recall@500": 0.317
+  }
+}
