@@ -270,6 +270,7 @@ gr_demo/
 | EXP-013 | 完成 | **S-tier NTP 全面碾压 Probe**: PPL 70→29.6 (-58%), recall@500 37%→60% (1.6x) |
 | EXP-014 | 进行中 | ENTP-Loss: L0 token collision 导致退步，Round 2 collision 过滤中 |
 | EXP-015 | 完成 | **Scaling Law 成立**: `L(N) = 2.522 + 2055/N^0.456`, α≈OneRec-V2, M 档为甜点 |
+| EXP-016 | 计划中 | Data Scaling Law: 5 data sizes × 2 models → Chinchilla 双变量 L(N,D) |
 
 详见 [experiments/log.md](experiments/log.md)。
 
@@ -303,6 +304,21 @@ L̂(N) = 2.522 + 2055.1 / N^0.456
 4. **Embedding fine-tune 路线已关闭**: I2I contrastive 信号不足以弥补 semantic→behavior embedding gap
 5. **Scaling law 成立**: NTP loss 遵循 `L(N) = 2.522 + 2055/N^0.456`，α 接近 OneRec-V2 (0.489)
 6. **当前 pipeline**: Qwen3-0.6B (冻结) → 4096×3 binary MLP-FSQ `[2]×12` → 3-token SID → NTP 模型
+
+## 数据规模与分布
+
+覆盖 2026-01-25 ~ 2026-03-31 (66 天) 的用户行为数据，分布极度长尾:
+
+| 时间窗口 | 用户数 | 正向交互 | P50/user | P99/user | 有效 Tokens* |
+|----------|-------|---------|----------|----------|-------------|
+| 7d | 1.54M | 23.9M | 3 | 220 | ~61M |
+| 14d | 2.51M | 53.1M | 3 | 331 | ~119M |
+| 31d | 4.55M | 129.7M | 3 | 499 | ~238M |
+| 62d | 7.29M | 261.8M | 3 | 669 | ~404M |
+| 66d | 7.85M | 299.0M | 3 | 715 | ~445M |
+
+> *有效 Tokens = 截断后 items × 3。NTP 训练每用户保留最近 170 items (max_seq_len=512)，
+> 约 4% 重度用户被截断，但其交互占总量 ~50%。详见 [data/README.md](data/README.md)。
 
 ## NTP 模型架构
 
