@@ -28,6 +28,8 @@ def main():
         print("  preprocess-sid  Train tokenizer + cache SID assignments")
         print("  preprocess-ntp  Build NTP data shards for DDP training")
         print("  train-ntp       Train NTP probe (supports DDP via torchrun)")
+        print("  sp-dpo-prepare  Build SP-DPO preference pairs via beam search")
+        print("  sp-dpo-train    Joint NTP+DPO training (SP-DPO alignment)")
         print("  pack            Pack model.tar.gz for deployment")
         sys.exit(1)
 
@@ -62,12 +64,20 @@ def main():
     elif command == 'pack':
         from gr_demo.model.pack import main as pack_main
         pack_main()
+    elif command == 'sp-dpo-prepare':
+        from gr_demo.rl.preference import main as spdpo_prepare_main
+        spdpo_prepare_main()
+    elif command == 'sp-dpo-train':
+        from gr_demo.rl.trainer import main as spdpo_train_main
+        spdpo_train_main()
     elif command == 'migrate-shards':
         from gr_demo.data.migrate_shards import main as migrate_main
         migrate_main()
     else:
         print(f"Unknown command: {command}")
-        print("Available commands: train, eval, eval-all, compare, hyperparam, preprocess-sid, preprocess-ntp, train-ntp, pack, migrate-shards")
+        print("Available commands: train, eval, eval-all, compare, hyperparam, "
+              "preprocess-sid, preprocess-ntp, train-ntp, sp-dpo-prepare, sp-dpo-train, "
+              "pack, migrate-shards")
         sys.exit(1)
 
 
