@@ -1,0 +1,84 @@
+{
+  "experiment": "exp-015",
+  "n_configs": 9,
+  "points": [
+    {
+      "name": "exp015-scale-01-1M",
+      "n_params": 1718016,
+      "n_active_params": 1718016,
+      "total_tokens": 261867120,
+      "eval_loss": 5.459944,
+      "eval_ppl": 235.0844
+    },
+    {
+      "name": "exp015-scale-02-3M",
+      "n_params": 3620352,
+      "n_active_params": 3620352,
+      "total_tokens": 261856512,
+      "eval_loss": 4.609084,
+      "eval_ppl": 100.3922
+    },
+    {
+      "name": "exp015-scale-03-5M",
+      "n_params": 6637824,
+      "n_active_params": 5064960,
+      "total_tokens": 261834552,
+      "eval_loss": 4.243076,
+      "eval_ppl": 69.6217
+    },
+    {
+      "name": "exp013-probe",
+      "n_params": 7489024,
+      "n_active_params": 7489024,
+      "total_tokens": 0,
+      "eval_loss": 4.247873,
+      "eval_ppl": 69.9564
+    },
+    {
+      "name": "exp015-scale-04-11M",
+      "n_params": 45781504,
+      "n_active_params": 17469952,
+      "total_tokens": 261836256,
+      "eval_loss": 3.334099,
+      "eval_ppl": 28.0531
+    },
+    {
+      "name": "exp015-scale-05-25M",
+      "n_params": 98157312,
+      "n_active_params": 34456320,
+      "total_tokens": 261908136,
+      "eval_loss": 3.178357,
+      "eval_ppl": 24.0073
+    },
+    {
+      "name": "exp013-s-tier",
+      "n_params": 45781504,
+      "n_active_params": 45781504,
+      "total_tokens": 0,
+      "eval_loss": 3.387677,
+      "eval_ppl": 29.5971
+    },
+    {
+      "name": "exp015-scale-06-55M",
+      "n_params": 222639104,
+      "n_active_params": 71644160,
+      "total_tokens": 261925056,
+      "eval_loss": 3.036853,
+      "eval_ppl": 20.8396
+    },
+    {
+      "name": "exp015-scale-07-100M",
+      "n_params": 629568512,
+      "n_active_params": 101086208,
+      "total_tokens": 261921144,
+      "eval_loss": 2.964897,
+      "eval_ppl": 19.3927
+    }
+  ],
+  "scaling_law": {
+    "formula": "L(N) = 2.5221 + 2055.1 / N^0.4561",
+    "a": 2.5220947057642578,
+    "b": 2055.067961391474,
+    "alpha": 0.45614261720072335
+  }
+}
