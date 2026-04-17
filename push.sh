@@ -94,7 +94,13 @@ push_main() {
 
     # Push to company (重写 author 为公司身份)
     if ! git remote | grep -q '^company$'; then
-        echo "  Skipping company (remote not configured)"
+        # Fallback: 没有 personal/company 双 remote 配置时，直接 push origin
+        if git remote | grep -q '^origin$'; then
+            echo "  No personal/public remotes — pushing to origin..."
+            git push origin "$BRANCH" 2>&1 || echo "  Warning: push to origin failed"
+        else
+            echo "  Skipping company (remote not configured)"
+        fi
         echo "Main repo push complete."
         return 0
     fi
