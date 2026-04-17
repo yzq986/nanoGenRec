@@ -231,7 +231,7 @@ def main():
 
     # ── Build unified sequences ──
     print("\nStep 3: Building unified sequences")
-    sequences, n_layers, n_clusters_per_layer, split_ts = \
+    sequences, n_layers, n_clusters_per_layer, split_ts, seq_stats = \
         build_unified_sequences(
             sid_dict, behavior_data=behavior_data,
             n_items=args.n_items, max_seq_len=args.max_seq_len,
@@ -273,6 +273,7 @@ def main():
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'has_neg_l0': has_neg,
         'entp_k': args.entp_k if has_neg else 0,
+        'seq_stats': seq_stats,
     }
     meta_path = os.path.join(args.output_dir, 'meta.json')
     with open(meta_path, 'w') as f:
