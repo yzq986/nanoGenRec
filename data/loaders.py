@@ -158,12 +158,12 @@ def resolve_behavior_paths(behavior_path: str, date_start: str = None, date_end:
     return [behavior_path]
 
 
-def load_exposed_iids(behavior_path: str) -> set:
+def load_exposed_iids(behavior_path: str, date_start: str = None, date_end: str = None) -> set:
     """从 behavior parquet 加载去重后的曝光 iid 集合（支持 'auto' 和 S3 路径）"""
     import pandas as pd
     import s3fs
 
-    paths = resolve_behavior_paths(behavior_path)
+    paths = resolve_behavior_paths(behavior_path, date_start=date_start, date_end=date_end)
     fs = s3fs.S3FileSystem()
 
     files = []

@@ -63,6 +63,10 @@ def parse_args():
     parser.add_argument('--fsq_epochs', type=int, default=None)
     parser.add_argument('--incremental', action='store_true',
                         help='Incremental mode: load existing quantizer, predict SIDs for new items only')
+    parser.add_argument('--date_start', type=str, default=None,
+                        help='Behavior date range start (YYYY-MM-DD)')
+    parser.add_argument('--date_end', type=str, default=None,
+                        help='Behavior date range end (YYYY-MM-DD)')
     return parser.parse_args()
 
 
@@ -160,7 +164,8 @@ def main_incremental(args):
     # Optional exposure filter
     if args.behavior_path:
         print("  Filtering by exposed IIDs...")
-        exposed_iids = load_exposed_iids(args.behavior_path)
+        exposed_iids = load_exposed_iids(args.behavior_path,
+                                         date_start=args.date_start, date_end=args.date_end)
         all_keys = all_keys & exposed_iids
         print(f"  Exposed items in embedding cache: {len(all_keys):,}")
 
@@ -271,7 +276,8 @@ def main():
     # ── Step 2: Exposure filter ──
     if args.behavior_path:
         print("\nStep 2: Filtering by exposed IIDs...")
-        exposed_iids = load_exposed_iids(args.behavior_path)
+        exposed_iids = load_exposed_iids(args.behavior_path,
+                                         date_start=args.date_start, date_end=args.date_end)
         cid_str = np.array([str(cid) for cid in content_ids])
         mask = np.isin(cid_str, list(exposed_iids))
         embeddings = embeddings[mask]

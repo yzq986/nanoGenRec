@@ -21,7 +21,7 @@ from transformers import AutoModel, AutoTokenizer
 
 from gr_demo.model.embedders import Qwen3TextEmbedder
 from gr_demo.config import S3_CONTENT_TEXT_EXPOSED, EFS_EMBEDDING_CACHE
-from gr_demo.config import DEFAULT_DATE
+from gr_demo.config import DEFAULT_DATE, DEFAULT_DATE_START, DEFAULT_DATE_END
 
 
 # ============================================================
@@ -119,9 +119,12 @@ def save_cached_ids(output_dir: str, cached_ids: set):
 # 数据加载
 # ============================================================
 
-def load_data_shard(input_path: str, rank: int, world_size: int, cached_ids: set = None):
+def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = None):
     """
     每个 rank 加载自己的数据分片 (Row-level 均匀分配)
+
+    Args:
+        input_paths: str 或 list[str]，S3 路径（支持单路径或多天路径列表）
 
     策略: 所有 rank 读取全部文件，但只保留 row_idx % world_size == rank 的行
     这样保证每个 rank 处理的数据量完全均匀
@@ -133,9 +136,14 @@ def load_data_shard(input_path: str, rank: int, world_size: int, cached_ids: set
     import pandas as pd
     import s3fs
 
+    if isinstance(input_paths, str):
+        input_paths = [input_paths]
+
     fs = s3fs.S3FileSystem()
-    path_clean = input_path.replace('s3://', '')
-    files = sorted(fs.glob(f"{path_clean}/*.parquet"))
+    files = []
+    for input_path in input_paths:
+        path_clean = input_path.replace('s3://', '')
+        files.extend(sorted(fs.glob(f"{path_clean}/*.parquet")))
 
     if rank == 0:
         print(f"Found {len(files)} parquet files")
@@ -208,10 +216,27 @@ DISTRIBUTED_MODEL_CONFIGS = {
 # Main
 # ============================================================
 
+def _resolve_content_paths(date_start, date_end):
+    """Resolve date range to S3 content paths (one per day)."""
+    from datetime import datetime, timedelta
+    ds = date_start or DEFAULT_DATE_START
+    de = date_end or DEFAULT_DATE_END
+    paths = []
+    d = datetime.strptime(ds, "%Y-%m-%d")
+    end = datetime.strptime(de, "%Y-%m-%d")
+    while d <= end:
+        paths.append(f"{S3_CONTENT_TEXT_EXPOSED}/{d.strftime('%Y-%m-%d')}")
+        d += timedelta(days=1)
+    return paths
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, default='qwen3-0.6b', choices=DISTRIBUTED_MODEL_CONFIGS.keys())
-    parser.add_argument('--input_path', type=str, default=f'{S3_CONTENT_TEXT_EXPOSED}/{DEFAULT_DATE}')
+    parser.add_argument('--date_start', type=str, default=None,
+                        help=f'Content date range start (default: {DEFAULT_DATE_START})')
+    parser.add_argument('--date_end', type=str, default=None,
+                        help=f'Content date range end (default: {DEFAULT_DATE_END})')
     parser.add_argument('--output_dir', type=str, default=EFS_EMBEDDING_CACHE)
     parser.add_argument('--batch_size', type=int, default=None)
     parser.add_argument('--checkpoint_every', type=int, default=100)
@@ -229,11 +254,19 @@ def main():
 
     print(f"[Rank {rank}] Starting, device={device}")
 
+    # Resolve input paths
+    input_paths = _resolve_content_paths(args.date_start, args.date_end)
+
     if rank == 0:
         print("=" * 60)
         print(f"Multi-GPU Embedding Generation (Cache-aware Load Balancing)")
         print("=" * 60)
         print(f"Model: {model_name}")
+        print(f"Input: {len(input_paths)} path(s)")
+        if len(input_paths) > 1:
+            print(f"  {input_paths[0]} ~ {input_paths[-1]}")
+        else:
+            print(f"  {input_paths[0]}")
         print(f"World size: {world_size}")
         print(f"Batch size per GPU: {batch_size}")
         print(f"Output: {output_dir}")
@@ -294,7 +327,7 @@ def main():
 
     # Step 2: 用 cache-aware 方式加载数据分片 (只分配未缓存的数据)
     print(f"[Rank {rank}] Loading data with cache-aware balancing...")
-    my_content_ids, my_texts = load_data_shard(args.input_path, rank, world_size, cached_ids=cached_ids)
+    my_content_ids, my_texts = load_data_shard(input_paths, rank, world_size, cached_ids=cached_ids)
 
     # 此时 my_content_ids 已经是未缓存的数据，直接作为 to_process
     to_process = [(i, my_content_ids[i], my_texts[i]) for i in range(len(my_content_ids))]
