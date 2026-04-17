@@ -126,8 +126,9 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
     Args:
         input_paths: str 或 list[str]，S3 路径（支持单路径或多天路径列表）
 
-    策略: 所有 rank 读取全部文件，但只保留 row_idx % world_size == rank 的行
-    这样保证每个 rank 处理的数据量完全均匀
+    两阶段加载 (当 cached_ids 不为空时):
+    1. 只读 content_id 列，跳过全部已缓存的文件
+    2. 对有未缓存行的文件，再读 full_text 列
 
     如果提供 cached_ids (set)，还会进一步做 cache-aware 负载均衡:
     - 先过滤掉已缓存的 content_id
@@ -148,50 +149,87 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
     if rank == 0:
         print(f"Found {len(files)} parquet files")
 
-    # 每个 rank 读取全部文件
-    dfs = []
-    for f in files:
-        with fs.open(f, 'rb') as file:
-            dfs.append(pd.read_parquet(file))
-
-    if not dfs:
-        return np.array([]), []
-
-    df = pd.concat(dfs, ignore_index=True)
-    total_rows = len(df)
-
-    if rank == 0:
-        print(f"Total rows: {total_rows:,}")
-
-    # 尝试不同的文本列名
-    text_col = None
-    for col in ['full_text', 'text', 'content']:
-        if col in df.columns:
-            text_col = col
-            break
-
-    if text_col is None:
-        raise ValueError(f"No text column found. Available: {list(df.columns)}")
-
-    content_ids_all = df['content_id'].values
-    texts_all = df[text_col].fillna('').values
-
-    # Cache-aware 负载均衡: 只对未缓存的数据做均匀分配
+    # ── Two-phase loading when cached_ids available ──
     if cached_ids is not None and len(cached_ids) > 0:
-        # Vectorized: 用 numpy 批量判断 (比 Python for loop 快 10x+)
+        # Phase 1: read only content_id column, find files with uncached rows
+        files_with_new = []  # (file_path, uncached_cids_in_file)
+        total_rows = 0
+        skipped_files = 0
+
+        for f in files:
+            with fs.open(f, 'rb') as file:
+                df_ids = pd.read_parquet(file, columns=['content_id'])
+            total_rows += len(df_ids)
+            cids = df_ids['content_id'].values
+            uncached_mask = np.array([cid not in cached_ids for cid in cids])
+            if uncached_mask.any():
+                files_with_new.append(f)
+            else:
+                skipped_files += 1
+
+        if rank == 0:
+            print(f"Total rows: {total_rows:,}, "
+                  f"skipped {skipped_files}/{len(files)} fully-cached files")
+
+        if not files_with_new:
+            if rank == 0:
+                print("All items cached, nothing to process")
+            return np.array([]), []
+
+        # Phase 2: read full data only for files with uncached rows
+        dfs = []
+        for f in files_with_new:
+            with fs.open(f, 'rb') as file:
+                dfs.append(pd.read_parquet(file))
+
+        df = pd.concat(dfs, ignore_index=True)
+
+        text_col = None
+        for col in ['full_text', 'text', 'content']:
+            if col in df.columns:
+                text_col = col
+                break
+        if text_col is None:
+            raise ValueError(f"No text column found. Available: {list(df.columns)}")
+
+        content_ids_all = df['content_id'].values
+        texts_all = df[text_col].fillna('').values
+
         is_cached = np.array([cid in cached_ids for cid in content_ids_all])
         uncached_indices = np.where(~is_cached)[0]
         n_uncached = len(uncached_indices)
 
         if rank == 0:
-            print(f"Uncached rows: {n_uncached:,} ({100*n_uncached/total_rows:.1f}%)")
+            print(f"Uncached rows: {n_uncached:,} (from {len(files_with_new)} files)")
 
-        # 对未缓存的数据做均匀分配
         my_mask = np.arange(n_uncached) % world_size == rank
         my_indices = uncached_indices[my_mask]
     else:
-        # 普通 row-level 分配
-        my_indices = np.arange(total_rows)[np.arange(total_rows) % world_size == rank]
+        # ── No cache: load everything ──
+        dfs = []
+        for f in files:
+            with fs.open(f, 'rb') as file:
+                dfs.append(pd.read_parquet(file))
+
+        if not dfs:
+            return np.array([]), []
+
+        df = pd.concat(dfs, ignore_index=True)
+
+        if rank == 0:
+            print(f"Total rows: {len(df):,}")
+
+        text_col = None
+        for col in ['full_text', 'text', 'content']:
+            if col in df.columns:
+                text_col = col
+                break
+        if text_col is None:
+            raise ValueError(f"No text column found. Available: {list(df.columns)}")
+
+        content_ids_all = df['content_id'].values
+        texts_all = df[text_col].fillna('').values
+        my_indices = np.arange(len(df))[np.arange(len(df)) % world_size == rank]
 
     content_ids = content_ids_all[my_indices]
     texts = texts_all[my_indices].tolist()
