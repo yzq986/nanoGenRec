@@ -128,9 +128,9 @@ def save_cached_ids(output_dir: str, cached_ids: set):
 def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = None):
     """每个 rank 加载 hash(cid) % world_size == rank 的数据。
 
-    两阶段加载 (当 cached_ids 不为空时):
-    1. 只读 content_id 列，跳过全部已缓存的文件
-    2. 对有未缓存行的文件，再读 full_text 列
+    两阶段加载:
+    1. 只读 content_id 列，按 ID 去重，跳过全部已缓存的文件
+    2. 对有未缓存行的文件，读全量数据，逐行去重 + hash 分配
 
     数据按 hash(content_id) % world_size 分配，保证同一 cid 始终归同一 rank/shard。
     """
@@ -139,6 +139,8 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
 
     if isinstance(input_paths, str):
         input_paths = [input_paths]
+    if cached_ids is None:
+        cached_ids = set()
 
     fs = s3fs.S3FileSystem()
     files = []
@@ -149,122 +151,76 @@ def load_data_shard(input_paths, rank: int, world_size: int, cached_ids: set = N
     if rank == 0:
         print(f"Found {len(files)} parquet files")
 
-    # ── Two-phase loading when cached_ids available ──
-    if cached_ids is not None and len(cached_ids) > 0:
-        # Phase 1: read only content_id column, find files with uncached rows for this rank
-        files_with_new = []
-        total_rows = 0
-        skipped_files = 0
-        seen_cids = set()        # dedup across files
-        my_new_cids = set()      # uncached unique cids hashing to this rank
+    # ── Phase 1: scan content_id column, dedup, find files with new rows ──
+    files_with_new = []
+    total_rows = 0
+    skipped_files = 0
+    seen_cids = set()        # dedup across files
+    my_new_cids = set()      # uncached unique cids hashing to this rank
 
-        for fi, f in enumerate(files):
-            with fs.open(f, 'rb') as file:
-                df_ids = pd.read_parquet(file, columns=['content_id'])
-            total_rows += len(df_ids)
-            cids = df_ids['content_id'].values
-            file_has_new = False
-            for cid in cids:
-                cid_str = str(cid)
-                if cid_str in seen_cids:
-                    continue
-                seen_cids.add(cid_str)
-                if cid_str not in cached_ids and cid_to_shard(cid, world_size) == rank:
-                    my_new_cids.add(cid_str)
-                    file_has_new = True
-            if file_has_new:
-                files_with_new.append(f)
-            else:
-                skipped_files += 1
-            if rank == 0 and ((fi + 1) % 50 == 0 or fi == len(files) - 1):
-                print(f"  Phase 1: scanned {fi+1}/{len(files)} files...")
+    for fi, f in enumerate(files):
+        with fs.open(f, 'rb') as file:
+            df_ids = pd.read_parquet(file, columns=['content_id'])
+        total_rows += len(df_ids)
+        file_has_new = False
+        for cid in df_ids['content_id'].values:
+            cid_str = str(cid)
+            if cid_str in seen_cids:
+                continue
+            seen_cids.add(cid_str)
+            if cid_str not in cached_ids and cid_to_shard(cid, world_size) == rank:
+                my_new_cids.add(cid_str)
+                file_has_new = True
+        if file_has_new:
+            files_with_new.append(f)
+        else:
+            skipped_files += 1
+        if rank == 0 and ((fi + 1) % 50 == 0 or fi == len(files) - 1):
+            print(f"  Phase 1: scanned {fi+1}/{len(files)} files...")
 
-        n_unique = len(seen_cids)
-        n_cached = len(seen_cids & cached_ids)
-        n_all_new = n_unique - n_cached
-        if rank == 0:
-            print(f"  Phase 1 summary: {total_rows:,} total rows, "
-                  f"{n_unique:,} unique content_ids")
-            print(f"    Cached: {n_cached:,}, New (all ranks): {n_all_new:,}")
-            print(f"    Files with new data for rank 0: "
-                  f"{len(files_with_new)}/{len(files)} "
-                  f"(skipped {skipped_files})")
-        print(f"  [Rank {rank}] New items in Phase 1: {len(my_new_cids):,}")
+    n_unique = len(seen_cids)
+    n_cached = len(seen_cids & cached_ids)
+    if rank == 0:
+        print(f"  Phase 1 summary: {total_rows:,} total rows, "
+              f"{n_unique:,} unique content_ids")
+        print(f"    Cached: {n_cached:,}, New (all ranks): {n_unique - n_cached:,}")
+        print(f"    Files to read: {len(files_with_new)}/{len(files)} "
+              f"(skipped {skipped_files})")
+    print(f"  [Rank {rank}] New items: {len(my_new_cids):,}")
 
-        if not files_with_new:
-            return np.array([]), []
-
-        # Phase 2: read files one-by-one, skip seen content_ids
-        seen_cids = set(cached_ids)  # treat cached as already seen
-        my_content_ids = []
-        my_texts = []
-        n_dup_skipped = 0
-
-        for f in files_with_new:
-            with fs.open(f, 'rb') as file:
-                df = pd.read_parquet(file)
-
-            text_col = None
-            for col in ['full_text', 'text', 'content']:
-                if col in df.columns:
-                    text_col = col
-                    break
-            if text_col is None:
-                raise ValueError(f"No text column found. Available: {list(df.columns)}")
-
-            for cid, text in zip(df['content_id'].values, df[text_col].fillna('').values):
-                cid_str = str(cid)
-                if cid_str in seen_cids:
-                    n_dup_skipped += 1
-                    continue
-                if cid_to_shard(cid, world_size) == rank:
-                    my_content_ids.append(cid)
-                    my_texts.append(text)
-                seen_cids.add(cid_str)
-
-        if rank == 0 and n_dup_skipped > 0:
-            print(f"  Phase 2: skipped {n_dup_skipped:,} duplicate rows")
-
-        content_ids = np.array(my_content_ids) if my_content_ids else np.array([])
-        texts = my_texts
-    else:
-        # ── No cache: load file-by-file, skip seen content_ids ──
-        seen_cids = set()
-        my_content_ids = []
-        my_texts = []
-        total_rows = 0
-
-        for f in files:
-            with fs.open(f, 'rb') as file:
-                df = pd.read_parquet(file)
-            total_rows += len(df)
-
-            text_col = None
-            for col in ['full_text', 'text', 'content']:
-                if col in df.columns:
-                    text_col = col
-                    break
-            if text_col is None:
-                raise ValueError(f"No text column found. Available: {list(df.columns)}")
-
-            for cid, text in zip(df['content_id'].values, df[text_col].fillna('').values):
-                cid_str = str(cid)
-                if cid_str in seen_cids:
-                    continue
-                if cid_to_shard(cid, world_size) == rank:
-                    my_content_ids.append(cid)
-                    my_texts.append(text)
-                seen_cids.add(cid_str)
-
-        if rank == 0:
-            print(f"Total rows: {total_rows:,}, unique: {len(seen_cids):,}")
-
-        content_ids = np.array(my_content_ids) if my_content_ids else np.array([])
-        texts = my_texts
-
-    if len(content_ids) == 0:
+    if not files_with_new:
         return np.array([]), []
 
+    # ── Phase 2: read files with new rows, collect this rank's data ──
+    seen_cids = set(cached_ids)  # reset: treat cached as seen
+    my_content_ids = []
+    my_texts = []
+
+    for f in files_with_new:
+        with fs.open(f, 'rb') as file:
+            df = pd.read_parquet(file)
+
+        text_col = None
+        for col in ['full_text', 'text', 'content']:
+            if col in df.columns:
+                text_col = col
+                break
+        if text_col is None:
+            raise ValueError(f"No text column found. Available: {list(df.columns)}")
+
+        for cid, text in zip(df['content_id'].values, df[text_col].fillna('').values):
+            cid_str = str(cid)
+            if cid_str in seen_cids:
+                continue
+            seen_cids.add(cid_str)
+            if cid_to_shard(cid, world_size) == rank:
+                my_content_ids.append(cid)
+                my_texts.append(text)
+
+    if not my_content_ids:
+        return np.array([]), []
+
+    content_ids = np.array(my_content_ids)
     print(f"[Rank {rank}] Got {len(content_ids):,} rows to process")
 
     return content_ids, texts
