@@ -9,12 +9,12 @@
 #   - Prefix n-gram match 定义难度 (Easy/Medium/Hard)
 #   - Progressive training: Easy → Medium → Hard
 #
-# Baseline: EXP-015 scale-04 (S-tier 17.5M, PPL=28.1, R@500=60.5%)
-# Data: EXP-013 preprocessed NTP data (4096×3, 31 days, 262M tokens)
+# Baseline: EXP-016 14d-S (S-tier 17.5M, PPL=27.05, R@500=58.5%)
+# Data: EXP-016 preprocessed NTP data (4096×3, 14 days, 130M tokens)
 #
 # Prerequisites:
-#   - EXP-015 scale-04 checkpoint
-#   - EXP-013 preprocessed NTP data
+#   - EXP-016 14d-S checkpoint (optimal data window per EXP-016)
+#   - EXP-016 14d preprocessed NTP data
 #   - rl/ module implemented (preference.py, dpo.py, trainer.py)
 # ============================================================
 set -euo pipefail
@@ -31,8 +31,8 @@ for arg in "$@"; do
 done
 
 N_GPUS="${N_GPUS:-$(python -c 'import torch; print(max(1, torch.cuda.device_count()))')}"
-NTP_DATA="experiments/ntp_data/exp013"
-SFT_CKPT="experiments/ntp_checkpoints/exp015-scale-04-11M"
+NTP_DATA="experiments/ntp_data/exp016-14d"
+SFT_CKPT="experiments/ntp_checkpoints/exp016-B-14d-S"
 PREF_DIR="experiments/sp_dpo_data/exp017"
 CKPT_DIR="experiments/ntp_checkpoints"
 
