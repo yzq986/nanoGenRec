@@ -218,6 +218,14 @@ def train_dpo(
 
     raw_policy = policy_model.module if isinstance(policy_model, DDP) else policy_model
 
+    # ── Auto-cap NTP batch_size (two models in memory → more conservative) ──
+    max_seq_len = max(len(t) for t in ntp_tokens_list) if ntp_tokens_list else 512
+    mem_safe_bs = max(64, 20_000_000 // (max_seq_len * max_seq_len))
+    if batch_size > mem_safe_bs:
+        log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
+                     f"(seq_len={max_seq_len}, 2 models in memory)")
+        batch_size = mem_safe_bs
+
     # ── NTP DataLoader ──
     ntp_dataset = UnifiedSequenceDataset(ntp_tokens_list, ntp_split_pos_list)
     ntp_loader = DataLoader(
