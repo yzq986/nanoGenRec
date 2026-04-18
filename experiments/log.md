@@ -39,6 +39,64 @@
 
 ---
 
+## EXP-018: RF-DPO — Real Feedback DPO Alignment
+
+**Date**: 2026-04-18
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+SP-DPO (EXP-017) 用模型 beam search 自博弈生成 rejected candidates。RF-DPO 进一步引入**真实用户反馈信号**，从 `action_bitmap` 位运算中区分信号强度：
+
+| Tier | 信号 | action_bitmap bits |
+|------|------|-------------------|
+| Strong positive | like, share, follow, comment, trade, order | 2,4,8,256,512,1024,2048,131072,262144,524288,1048576 |
+| Weak positive | click, coin/photo/profile click, video view | 1,16,64,128,8192,16384,32768,65536 |
+| Negative | 举报/不喜欢 | bit 31 (sign bit) |
+
+Preference pair 构造：同一用户内配对。Chosen = strong positive item，Rejected Easy = negative feedback items，Rejected Hard = weak positive items。
+
+来源：Align³GR (AAAI 2026 Oral) Phase 2。
+
+### Hypothesis
+
+1. RF-DPO Easy (negative feedback rejected) 对 Recall@10 有明确提升：模型学会避开用户明确讨厌的内容
+2. RF-DPO Hard (weak positive rejected) 精细化区分深度互动 vs 浅层点击
+3. Progressive Easy→Hard 优于单阶段
+4. 基于真实反馈的 RF-DPO 优于自博弈 SP-DPO（信号更真实，虽然量可能更少）
+5. RF-DPO on top of SP-DPO (作为 π_ref) 进一步叠加提升
+
+### Design
+
+- **Variable**: difficulty (Easy/Hard)、渐进 vs 单阶段、λ ablation
+- **Fixed**: S-tier 模型 (17.5M active), 14 天数据, 同用户配对
+- **Metric**: PPL, item_recall@{10,50,100,500}, depth_hit@10, DPO loss 曲线
+- **Data**: 14d behavior data (same window as EXP-016/017)
+- **Baseline**: SP-DPO progressive output (EXP-017), or SFT (EXP-016 14d-S) if SP-DPO not ready
+
+| Config | Difficulty | λ | β | Reference model |
+|--------|-----------|-----|-----|-----------------|
+| 1 | Easy | 0.1 | 0.1 | SP-DPO prog (or SFT) |
+| 2 | Hard | 0.1 | 0.1 | SP-DPO prog (or SFT) |
+| 3 | Progressive Easy→Hard | 0.1 | 0.1 | Easy→Hard chain |
+| 4 | Progressive Hard λ=0.05 | 0.05 | 0.1 | Easy output |
+| 5 | Progressive Hard λ=0.5 | 0.5 | 0.1 | Easy output |
+
+### Run
+`bash experiments/scripts/exp-018.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-017: SP-DPO — Self-Play DPO Alignment for NTP Model
 
 **Date**: 2026-04-17

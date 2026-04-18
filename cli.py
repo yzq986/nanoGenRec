@@ -29,7 +29,8 @@ def main():
         print("  preprocess-ntp  Build NTP data shards for DDP training")
         print("  train-ntp       Train NTP probe (supports DDP via torchrun)")
         print("  sp-dpo-prepare  Build SP-DPO preference pairs via beam search")
-        print("  sp-dpo-train    Joint NTP+DPO training (SP-DPO alignment)")
+        print("  rf-dpo-prepare  Build RF-DPO preference pairs from user feedback")
+        print("  sp-dpo-train    Joint NTP+DPO training (SP-DPO/RF-DPO alignment)")
         print("  pack            Pack model.tar.gz for deployment")
         sys.exit(1)
 
@@ -67,6 +68,9 @@ def main():
     elif command == 'sp-dpo-prepare':
         from gr_demo.rl.preference import main as spdpo_prepare_main
         spdpo_prepare_main()
+    elif command == 'rf-dpo-prepare':
+        from gr_demo.rl.feedback import main as rfdpo_prepare_main
+        rfdpo_prepare_main()
     elif command == 'sp-dpo-train':
         from gr_demo.rl.trainer import main as spdpo_train_main
         spdpo_train_main()
@@ -76,8 +80,8 @@ def main():
     else:
         print(f"Unknown command: {command}")
         print("Available commands: train, eval, eval-all, compare, hyperparam, "
-              "preprocess-sid, preprocess-ntp, train-ntp, sp-dpo-prepare, sp-dpo-train, "
-              "pack, migrate-shards")
+              "preprocess-sid, preprocess-ntp, train-ntp, sp-dpo-prepare, rf-dpo-prepare, "
+              "sp-dpo-train, pack, migrate-shards")
         sys.exit(1)
 
 
