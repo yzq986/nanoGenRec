@@ -400,6 +400,7 @@ class NTPModel(nn.Module):
             for _ in range(n_transformer_layers)
         ])
         self.final_norm = nn.LayerNorm(embed_dim)
+        self.gradient_checkpointing = False  # enabled by DPO trainer
 
         # Per-layer output projections (different codebook sizes)
         self.output_projs = nn.ModuleList([
@@ -423,7 +424,11 @@ class NTPModel(nn.Module):
     def _transformer_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run through all transformer layers + final norm."""
         for layer in self.layers:
-            x = layer(x)
+            if self.gradient_checkpointing and x.requires_grad:
+                x = torch.utils.checkpoint.checkpoint(
+                    layer, x, use_reentrant=False)
+            else:
+                x = layer(x)
         return self.final_norm(x)
 
     def forward(

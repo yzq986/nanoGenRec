@@ -343,7 +343,8 @@ def train_dpo(
             del ref_lp
             torch.cuda.empty_cache()
 
-            # Policy model log-probs (with grad, micro-batched)
+            # Policy model log-probs (with grad, micro-batched + gradient checkpointing)
+            raw_policy.gradient_checkpointing = True
             policy_lp = compute_sid_logprobs_batch(
                 raw_policy, ctx_padded, ctx_lengths, all_sids, n_layers)
             policy_chosen_lp = policy_lp[:, 0]
@@ -356,6 +357,7 @@ def train_dpo(
             )
 
             (dpo_weight * dpo_loss_val).backward()
+            raw_policy.gradient_checkpointing = False
             del ctx_padded, ctx_lengths, all_sids, chosen_sids, rej_sids, rej_mask
             del policy_lp, policy_chosen_lp, policy_rejected_lp
             del ref_chosen_lp, ref_rejected_lp
@@ -455,8 +457,8 @@ def parse_args():
                         help='Learning rate (default: 1e-4)')
     parser.add_argument('--batch_size', type=int, default=2048,
                         help='NTP batch size (default: 2048)')
-    parser.add_argument('--dpo_batch_size', type=int, default=32,
-                        help='DPO batch size (default: 32)')
+    parser.add_argument('--dpo_batch_size', type=int, default=8,
+                        help='DPO batch size (default: 8)')
     parser.add_argument('--max_steps', type=int, default=None,
                         help='Max training steps (default: full epoch)')
     parser.add_argument('--difficulty', type=str, default='all',
