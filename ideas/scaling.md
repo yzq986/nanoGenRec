@@ -11,21 +11,41 @@
 ```
 S-tier (39.5M params, 当前唯一实现)
 ├── IDEA-oneloc-4: Scaling Law 实验
-│   └── 序列长度收益 (13%+51%) >> 模型大小收益 (7%)
-│   └── 3×3 grid: 模型参数 × 序列长度
+│   ├── 模型 scaling → EXP-015 ✅ L(N)=2.522+2055/N^0.456, ~100M 趋平
+│   │   └── M+ 101M vs S 17.5M: loss 仅降 0.06, tokenizer 是瓶颈
+│   └── 序列长度 scaling → 待实验 (当前 max_seq_len=512, ~170 items/user)
 ├── IDEA-kunlun-0: Rec Scaling Laws (Meta Ads)
 │   └── MFU 17%→37%, GDPA + CompSkip, power-law scaling
+│   └── 重要性提升: tokenizer 瓶颈突破后成为 scale up 关键
 └── IDEA-hstu-0: Sparse Self-Attention Co-design (Meta)
     └── 5x 训练 / 21x 推理 scaling, 保留 self-attention 表达力
 ```
 
 ---
 
+## 当前结论 (2026-04-17)
+
+**模型参数 scaling 在 ~100M 趋平，tokenizer 32-bit 编码是当前瓶颈。序列长度 scaling 尚未验证。**
+
+### 关键实验数据
+
+| 模型 | Active Params | Eval Loss | PPL | R@500 |
+|------|--------------|-----------|-----|-------|
+| S-tier | 17.5M | 2.9960 | 27.05 | 58.5% |
+| M+-tier | 101M | 2.9371 | 25.12 | 60.7% |
+| Irreducible (fit) | ∞ | 2.522 | ~12.5 | — |
+
+**核心 insight**: M+ 比 S 多 6x 参数，但 loss 仅降 0.06。Scaling law 拟合 L(N)=2.522+2055/N^0.456 显示 irreducible loss=2.522 由 tokenizer 决定。突破瓶颈需要：(1) 更高 bits 的 SID (当前 32-bit)；(2) 更长序列 (尚未验证)。
+
+---
+
 ## IDEA-oneloc-4: Scaling Law — 序列长度 >> 模型大小
 
-**优先级**: P0
+**优先级**: ~~P0~~ → 部分完成 (模型 scaling 已验证, 序列长度待测)
 **来源**: OneLoc §4.4 Hyperparameter Experiments
-**状态**: 待讨论
+**状态**: EXP-015 模型 scaling 完成; 序列长度 scaling 待实验
+
+> **NTP 阶段更新 (2026-04-17)**: EXP-015 验证了模型参数 scaling law L(N)=2.522+2055/N^0.456。关键发现: M+ (101M active) 比 S (17.5M) 仅降低 loss 0.06，scaling law 在 ~100M 已严重平坦化——tokenizer 32-bit 编码是瓶颈。序列长度维度的 scaling 尚未实验 (当前 max_seq_len=512, ~170 items/user)，这是下阶段重要方向。
 
 ### 核心思想
 
@@ -71,9 +91,11 @@ OneLoc 的 scaling 实验揭示了一个关键发现: **序列长度的收益远
 
 ## IDEA-kunlun-0: Recommendation Scaling Laws (MFU 优化 + GDPA)
 
-**优先级**: P1
+**优先级**: P1 — 重要性因 scaling 平坦化而提升
 **来源**: Kunlun (Meta Ads, arxiv 2602.10016, Feb 2026)
 **状态**: 待讨论
+
+> **NTP 阶段更新 (2026-04-17)**: EXP-015 显示模型 scaling 在 ~100M 已趋平 (tokenizer 瓶颈)。Kunlun 的 MFU 优化和 GDPA 在当前阶段的价值不在于 scale up 模型，而在于：(1) 提高现有模型的训练效率 (更快迭代实验)；(2) 未来突破 tokenizer 瓶颈后 (如 OPQ 长 SID 或更高 bits)，GDPA 是 scale up 的关键技术。
 
 ### 核心思想
 
@@ -161,6 +183,6 @@ ULTRA-HSTU 通过 **end-to-end model-system co-design** 实现:
 
 | 优先级 | ID | 实验 | 原因 |
 |--------|-----|------|------|
-| P0 | IDEA-oneloc-4 | Scaling Law: 序列长度 vs 模型大小 | 直接决定资源分配策略；OneLoc 显示序列长度收益 7x > 模型大小收益 |
-| P1 | IDEA-kunlun-0 | Rec Scaling Laws (MFU + GDPA) | Meta Ads 部署验证，scale up 时必需 |
+| ~~P0~~ 部分完成 | IDEA-oneloc-4 | Scaling Law: 序列长度 vs 模型大小 | 模型 scaling EXP-015 ✅ (~100M 趋平); 序列长度 scaling 待验证 |
+| P1 | IDEA-kunlun-0 | Rec Scaling Laws (MFU + GDPA) | Meta Ads 部署验证; tokenizer 瓶颈突破后成 scale up 关键 |
 | P1 | IDEA-hstu-0 | Sparse Self-Attention Co-design | 21x inference scaling, 对比 Query-Former 路线 |

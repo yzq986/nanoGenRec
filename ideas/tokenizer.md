@@ -30,6 +30,8 @@ semantic_neighbor_HR: 0.078
 
 **核心 insight**: collision 越低 ≠ 行为质量越好。层级结构 (KMeans→KMeans→FSQ) 比扁平结构 (OPQ 并行子向量) 更好地保留 embedding 邻域，SID 前缀邻居的行为共现率更高。
 
+**NTP 阶段补充 (2026-04-17)**: EXP-015 scaling law 拟合 irreducible loss a=2.522 (PPL≈12.5)，该 floor 由 tokenizer 32-bit 编码决定。M+ (101M) 已达 loss=2.94，距 floor 仅 0.42。**tokenizer 是当前系统瓶颈**——模型 scale up 收益递减，突破需要更高 bits SID 或更好的量化结构。
+
 ---
 
 ## 演进路径
@@ -150,6 +152,8 @@ RKMeans 3×1024 (EXP-001 baseline, collision=1.75%)
 **状态**: 待定，降级
 
 > **降级原因 (2026-04-15)**: 前两层 KMeans Gini=0.31，balanced assignment 可改善码本利用率，collision 可能从 10.7% 降到 ~7-8%。但 EXP-008 证明 collision 不是核心指标（OPQ collision 0.06% 反而行为最差），收益不确定。等 NTP 端到端 Recall@K 出来后再决定是否投入。
+>
+> **NTP 阶段更新 (2026-04-17)**: EXP-015 scaling law 显示 irreducible loss a=2.522 由 tokenizer 32-bit 编码决定。提升码本利用率 (Balanced KMeans) 可能微降 collision 但无法突破 bit 数瓶颈。长期价值在突破 32-bit 上限后 (更多 token/更大码本) 再评估。
 
 ### 核心思想
 
@@ -354,6 +358,8 @@ Taobao "猜你喜欢" 在线验证: **交易量 +0.35%**。
 **状态**: 待定，降级
 
 > **降级原因 (2026-04-15)**: MLP-FSQ collision 10.7%，Hamming repulsion 可能降低有害碰撞。但 EXP-008 证明低 collision 不等于高行为质量（OPQ collision 0.06% 反而最差），需要先确认有害碰撞占比。前置: Phase 1 分析——碰撞 pair 的语义距离分布。等 NTP 端到端数据出来再决定。
+>
+> **NTP 阶段更新 (2026-04-17)**: EXP-014 ENTP 负样本导出发现 L0 层碰撞问题——部分负样本与正样本共享 L1 cluster token，导致 ENTP loss 在 coarse level 失效。这验证了 QuaSID 的核心 premise (有害碰撞存在且影响训练信号)。但优先级仍为 P2: 先推进 ENTP loss 集成，再决定是否需要 Hamming repulsion 从 tokenizer 端解决。
 
 ### 核心思想
 

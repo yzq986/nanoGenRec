@@ -14,8 +14,8 @@ AutoregressiveNTPModel (当前 6-layer decoder, beam=5)
 │   └── 推理吞吐翻倍，beam 共享 KV cache
 ├── IDEA-onemall-1: Query-Former (长序列 cross-attention 压缩)
 │   └── 1205→160 token, 3.7x FLOP 减少
-├── IDEA-onemall-4: Loss-Free MoE (动态 bias 替代 aux loss)
-│   └── 低风险改进 MoE load balancing
+├── IDEA-onemall-4: Loss-Free MoE → EXP-013 ✅ MoE 8E top-2 已实现
+│   └── aux_loss=0.01 工作良好, loss-free bias 为可选微优化
 ├── IDEA-glide-0: Soft Prompt Injection (user embedding → prefix)
 │   └── Spotify 验证, 非惯常收听 +5.4%, 新发现 +14.3%
 ├── IDEA-oneloc-0: Context-augmented Attention (side-info 注入)
@@ -134,9 +134,11 @@ class QueryFormer(nn.Module):
 
 ## IDEA-onemall-4: Loss-Free MoE Load Balancing
 
-**优先级**: P2
+**优先级**: ~~P2~~ → ✅ 完成 (MoE 基础已实现, loss-free 为可选优化)
 **来源**: OneMall §3.2 Decoder-Style Sparse MoE (引用 loss-free mechanism)
-**状态**: 待讨论
+**状态**: ✅ MoE 8E top-2 已实现于 EXP-013 S-tier (SparseMoEBlock + 0.01*aux_loss)
+
+> **完成记录 (2026-04-17)**: EXP-013 S-tier 模型已包含 MoE (8 experts, top-2, Switch Transformer aux loss)。`SparseMoEBlock` 实现于 `metrics/sid_prediction.py:69-143`。当前 aux_loss=0.01 工作良好，loss-free bias 机制是可选微优化。模型 17.5M active params (总 39.5M with all experts) 已建立 baseline。
 
 ### 核心思想
 
@@ -672,7 +674,7 @@ Huawei AppGallery 工业数据集 + 在线 A/B: **超越 HSTU 和 MTGR**, WWW 20
 | P1 | IDEA-oneranker-0 | 统一生成与排序 | Tencent WeiXin GMV +1.34%, DC Loss 可作辅助 loss |
 | P1 | IDEA-orec-think-0 | In-Text Reasoning for GR | 快手 +0.159%, multi-validity reward 可先用于 GRPO |
 | P1 | IDEA-reg4rec-0 | MoE 并行量化 + 推理自反思 | 阿里在线验证, CORP/MSRA 组件可独立落地 |
-| P2 | IDEA-onemall-4 | Loss-Free MoE Balancing | 低风险低成本，8 experts 下收益可能有限 |
+| ~~P2~~ ✅ | ~~IDEA-onemall-4~~ | ~~Loss-Free MoE Balancing~~ | ✅ MoE 已实现 (EXP-013), loss-free 为可选微优化 |
 | P2 | IDEA-oneloc-0 | Context-augmented Attention | 需要 encoder-decoder 架构，当前无落地场景 |
 | P2 | IDEA-oneloc-1 | Category Prompt | 需要 encoder-decoder 架构，泛化形式有价值 |
 | P2 | IDEA-oxygen-0 | Fast-Slow Thinking | 架构终极形态参考，当前阶段过于复杂 |
