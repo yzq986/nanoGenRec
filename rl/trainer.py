@@ -206,18 +206,11 @@ def train_dpo(
     for p in ref_model.parameters():
         p.requires_grad = False
 
-    # ── DDP wrap policy only (ref is inference-only, no gradient sync needed) ──
-    if world_size > 1:
-        ddp_kwargs = {}
-        if model_type == 's-tier' and hasattr(policy_model, 'layers'):
-            ffn0 = policy_model.layers[0].ffn
-            if hasattr(ffn0, 'n_experts') and ffn0.n_experts >= 2:
-                ddp_kwargs['find_unused_parameters'] = True
-                import warnings
-                warnings.filterwarnings('ignore', message='.*find_unused_parameters.*')
-        policy_model = DDP(policy_model, device_ids=[local_rank], **ddp_kwargs)
-
-    raw_policy = policy_model.module if isinstance(policy_model, DDP) else policy_model
+    # ── No DDP wrapper — manual gradient all-reduce instead ──
+    # DDP's automatic sync is incompatible with separate NTP/DPO backward
+    # passes through raw model (DPO accesses model internals directly).
+    # Manual all-reduce after both backward passes is simpler and correct.
+    raw_policy = policy_model
 
     # ── Auto-cap NTP batch_size (two models + DPO activations → conservative) ──
     max_seq_len = max(len(t) for t in ntp_tokens_list) if ntp_tokens_list else 512
@@ -317,14 +310,7 @@ def train_dpo(
 
         # ── DPO loss (separate backward, gradients accumulate) ──
         dpo_loss_val = torch.tensor(0.0, device=device)
-        has_dpo = dpo_weight > 0 and dpo_loader is not None
-
-        if has_dpo and world_size > 1:
-            # NTP backward WITHOUT DDP sync — DPO backward will sync both
-            with policy_model.no_sync():
-                ntp_loss.backward()
-        else:
-            ntp_loss.backward()
+        ntp_loss.backward()
         del padded, input_tokens, target_tokens, valid_mask, train_mask
         torch.cuda.empty_cache()
 
@@ -369,6 +355,12 @@ def train_dpo(
             del ctx_padded, ctx_lengths, all_sids, chosen_sids, rej_sids, rej_mask
             del policy_lp, policy_chosen_lp, policy_rejected_lp
             del ref_chosen_lp, ref_rejected_lp
+
+        # ── Manual gradient all-reduce (replaces DDP automatic sync) ──
+        if world_size > 1:
+            for p in policy_model.parameters():
+                if p.grad is not None:
+                    dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
 
         # ── Step (gradients from both NTP and DPO are accumulated) ──
         grad_norm = torch.nn.utils.clip_grad_norm_(policy_model.parameters(), 1.0).item()
@@ -418,9 +410,8 @@ def train_dpo(
     log(is_main, f"  Train done: ntp={avg_ntp:.4f}, dpo={avg_dpo:.4f}, "
                  f"total={avg_total:.4f}, {total_tokens:,} tokens ({elapsed:.1f}s)")
 
-    # Extract raw model for saving
-    raw_model = policy_model.module if isinstance(policy_model, DDP) else policy_model
-    raw_model.cpu()
+    # Move to CPU for saving
+    policy_model.cpu()
     ref_model.cpu()
 
     train_summary = {
@@ -440,7 +431,7 @@ def train_dpo(
         'n_dpo_pairs': len(dpo_dataset) if dpo_dataset else 0,
     }
 
-    return raw_model, avg_total, n_params, train_log, train_summary
+    return policy_model, avg_total, n_params, train_log, train_summary
 
 
 # ============================================================
