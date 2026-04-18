@@ -283,7 +283,9 @@ def train_dpo(
         if max_steps and step >= max_steps:
             break
 
-        # ── NTP loss ──
+        optimizer.zero_grad()
+
+        # ── NTP loss (backward immediately to free activations) ──
         padded, lengths, split_positions = ntp_batch
         padded = padded.to(device, non_blocking=True)
         lengths = lengths.to(device, non_blocking=True)
@@ -302,8 +304,10 @@ def train_dpo(
             packed_targets=target_tokens,
             packed_mask=train_mask,
         )
+        ntp_loss.backward()  # free NTP activations before DPO forward
+        del padded, input_tokens, target_tokens, valid_mask, train_mask
 
-        # ── DPO loss ──
+        # ── DPO loss (separate backward, gradients accumulate) ──
         dpo_loss_val = torch.tensor(0.0, device=device)
         if dpo_weight > 0 and dpo_loader is not None:
             dpo_batch = _next_dpo_batch()
@@ -328,7 +332,7 @@ def train_dpo(
             ref_chosen_lp = ref_lp[:, 0]       # (B,)
             ref_rejected_lp = ref_lp[:, 1:]    # (B, N_rej)
 
-            # Policy model log-probs (with grad)
+            # Policy model log-probs (with grad, micro-batched)
             policy_lp = compute_sid_logprobs_batch(
                 raw_policy, ctx_padded, ctx_lengths, all_sids, n_layers)
             policy_chosen_lp = policy_lp[:, 0]
@@ -340,11 +344,10 @@ def train_dpo(
                 rej_mask, beta=dpo_beta,
             )
 
-        # ── Combined loss ──
-        total_loss = ntp_loss + dpo_weight * dpo_loss_val
+            (dpo_weight * dpo_loss_val).backward()
+            del ctx_padded, all_sids, ref_lp, policy_lp
 
-        optimizer.zero_grad()
-        total_loss.backward()
+        # ── Step (gradients from both NTP and DPO are accumulated) ──
         grad_norm = torch.nn.utils.clip_grad_norm_(policy_model.parameters(), 1.0).item()
         optimizer.step()
         scheduler.step()

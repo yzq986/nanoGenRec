@@ -243,7 +243,7 @@ gr_demo/
 │   ├── similarity.py      # 相似度指标
 │   └── report.py          # 报告生成
 ├── experiments/
-│   ├── log.md             # 实验日志 (EXP-001 ~ EXP-015)
+│   ├── log.md             # 实验日志 (EXP-001 ~ EXP-016)
 │   ├── scripts/
 │   │   ├── tokenizer_grid_search.py  # 多 GPU tokenizer 搜索 (通用, 可复用)
 │   │   ├── exp-011.py     # EXP-011 codebook ablation
@@ -285,7 +285,7 @@ gr_demo/
 | EXP-013 | 完成 | **S-tier NTP 全面碾压 Probe**: PPL 70→29.6 (-58%), recall@500 37%→60% (1.6x) |
 | EXP-014 | 进行中 | ENTP-Loss: L0 token collision 导致退步，Round 2 collision 过滤中 |
 | EXP-015 | 完成 | **Scaling Law 成立**: `L(N) = 2.522 + 2055/N^0.456`, α≈OneRec-V2, M 档为甜点 |
-| EXP-016 | 计划中 | Data Scaling Law: 5 data sizes × 2 models → Chinchilla 双变量 L(N,D) |
+| EXP-016 | 完成 | **Chinchilla 不适用**: 14d 为最优数据窗口，更多数据 loss 反升 (U 型曲线) |
 
 详见 [experiments/log.md](experiments/log.md)。
 
@@ -311,15 +311,40 @@ L̂(N) = 2.522 + 2055.1 / N^0.456
 | 71.6M | 21 | 41.0% | 66.2% |
 | 101.1M | **19** | **43.2%** | **65.8%** |
 
+## Data Scaling Law (EXP-016)
+
+固定 S (17.5M) 和 M+ (101M) 模型，sweep 数据窗口 {7d, 14d, 31d, 62d, 90d}：
+
+**核心发现：Chinchilla data scaling 不适用于推荐序列。14d 是最优数据窗口，更多数据 loss 反升。**
+
+| Days | Tokens | Users | S PPL | S Loss | M+ PPL | M+ Loss |
+|------|--------|-------|-------|--------|--------|---------|
+| 7 | 65M | 1.0M | 30.60 | 3.421 | 19.31 | 2.960 |
+| **14** | **130M** | **1.7M** | **27.05** | **3.298** | **18.96** | **2.942** |
+| 31 | 262M | 3.0M | 28.05 | 3.334 | 19.39 | 2.965 |
+| 62 | 441M | 4.9M | 30.03 | 3.402 | 19.80 | 2.986 |
+| 90 | 553M | 6.2M | 31.89 | 3.462 | — | — |
+
+![Data Scaling Law](experiments/results/ntp/exp016-data-scaling.png)
+
+**为什么更多数据反而更差？**
+
+1. **增加天数 ≠ 更长序列**：avg items/user 从 21 (7d) → 30 (62d) 几乎不变，真正增加的是用户数 (1M→4.9M)
+2. **曝光窗口 3 天**：item pool 每 3 天完全刷新，30 天前的训练数据对应的 item pool 已不存在
+3. **新增用户引入分布偏移**：老用户的行为 pattern 与当前 eval 分布不一致
+4. **14d ≈ 4-5 个曝光周期**：刚好覆盖 item pool 多样性又不过多偏移
+
 ## 关键结论
 
 1. **Tokenizer 结构比 collision rate 更重要**: MLP-FSQ collision 10.7% 但 semantic_neighbor_HR 赢 OPQ (collision 0.06%) 2.4 倍
 2. **KMeans cluster size 主导语义质量**: snHR 随 cluster 递增但边际递减 (1024→0.078, 4096→0.095, 8192→0.104)
 3. **Binary FSQ 全面优于 multi-level**: collision 更低, Gini 更均匀, 尤其大 cluster 下优势显著
 4. **Embedding fine-tune 路线已关闭**: I2I contrastive 信号不足以弥补 semantic→behavior embedding gap
-5. **Scaling law 成立**: NTP loss 遵循 `L(N) = 2.522 + 2055/N^0.456`，α 接近 OneRec-V2 (0.489)
-6. **当前 pipeline**: Qwen3-0.6B (冻结) → 4096×3 binary MLP-FSQ `[2]×12` → 3-token SID → NTP 模型
-7. **RL 对齐路径已规划**: SP-DPO → RF-DPO → GRPO → ECPO 四阶段渐进，详见 [rl/README.md](rl/README.md)
+5. **Model scaling law 成立**: NTP loss 遵循 `L(N) = 2.522 + 2055/N^0.456`，α 接近 OneRec-V2 (0.489)
+6. **Data scaling law 不适用**: 推荐行为数据非 i.i.d.，最优训练窗口 ~14d，由曝光窗口周转速度决定
+7. **当前瓶颈是 tokenizer**: M+ loss=2.94 已逼近 irreducible floor 2.52 (PPL 12.5)，加数据/模型均无法突破
+8. **当前 pipeline**: Qwen3-0.6B (冻结) → 4096×3 binary MLP-FSQ `[2]×12` → 3-token SID → NTP 模型
+9. **RL 对齐路径已规划**: SP-DPO → RF-DPO → GRPO → ECPO 四阶段渐进，详见 [rl/README.md](rl/README.md)
 
 ## 数据规模与分布
 

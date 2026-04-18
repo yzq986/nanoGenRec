@@ -72,10 +72,12 @@ def compute_sid_logprobs_batch(
     context_lengths: Tensor,  # (B,) actual context lengths
     all_sids: Tensor,         # (B, K, n_layers)
     n_layers: int,
+    max_chunk: int = 64,
 ) -> Tensor:
     """Compute log-probs for K SID candidates per context.
 
-    Expands each context K times and calls compute_sid_logprobs.
+    Expands each context K times and calls compute_sid_logprobs in
+    micro-batches of max_chunk to avoid OOM on large B*K.
 
     Returns:
         (B, K) log-probabilities.
@@ -86,7 +88,23 @@ def compute_sid_logprobs_batch(
     len_exp = context_lengths.unsqueeze(1).expand(-1, K).reshape(B * K)
     sids_flat = all_sids.reshape(B * K, L)
 
-    lp = compute_sid_logprobs(model, ctx_exp, len_exp, sids_flat, n_layers)
+    total = B * K
+    if total <= max_chunk:
+        lp = compute_sid_logprobs(model, ctx_exp, len_exp, sids_flat, n_layers)
+    else:
+        chunks = []
+        for start in range(0, total, max_chunk):
+            end = min(start + max_chunk, total)
+            chunk_lp = compute_sid_logprobs(
+                model,
+                ctx_exp[start:end],
+                len_exp[start:end],
+                sids_flat[start:end],
+                n_layers,
+            )
+            chunks.append(chunk_lp)
+        lp = torch.cat(chunks, dim=0)
+
     return lp.reshape(B, K)
 
 
