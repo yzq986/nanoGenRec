@@ -314,7 +314,7 @@ def train_dpo(
         del padded, input_tokens, target_tokens, valid_mask, train_mask
         torch.cuda.empty_cache()
 
-        if has_dpo:
+        if dpo_weight > 0 and dpo_loader is not None:
             dpo_batch = _next_dpo_batch()
             ctx_padded, ctx_lengths, chosen_sids, rej_sids, rej_mask = dpo_batch
             ctx_padded = ctx_padded.to(device, non_blocking=True)
