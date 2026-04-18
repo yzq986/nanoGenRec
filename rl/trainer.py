@@ -314,13 +314,21 @@ def train_dpo(
             packed_targets=target_tokens,
             packed_mask=train_mask,
         )
-        ntp_loss.backward()  # free NTP activations before DPO forward
-        del padded, input_tokens, target_tokens, valid_mask, train_mask
-        torch.cuda.empty_cache()  # release cached blocks for DPO forward
 
         # ── DPO loss (separate backward, gradients accumulate) ──
         dpo_loss_val = torch.tensor(0.0, device=device)
-        if dpo_weight > 0 and dpo_loader is not None:
+        has_dpo = dpo_weight > 0 and dpo_loader is not None
+
+        if has_dpo and world_size > 1:
+            # NTP backward WITHOUT DDP sync — DPO backward will sync both
+            with policy_model.no_sync():
+                ntp_loss.backward()
+        else:
+            ntp_loss.backward()
+        del padded, input_tokens, target_tokens, valid_mask, train_mask
+        torch.cuda.empty_cache()
+
+        if has_dpo:
             dpo_batch = _next_dpo_batch()
             ctx_padded, ctx_lengths, chosen_sids, rej_sids, rej_mask = dpo_batch
             ctx_padded = ctx_padded.to(device, non_blocking=True)
