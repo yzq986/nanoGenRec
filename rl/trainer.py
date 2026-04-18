@@ -181,8 +181,8 @@ def train_dpo(
     dpo_beta=0.1,
     lr=1e-4,
     batch_size=2048,
-    dpo_batch_size=8,
-    dpo_n_rejected=10,
+    dpo_batch_size=4,
+    dpo_n_rejected=20,
     max_steps=None,
     wandb_run=None,
 ):
@@ -456,10 +456,10 @@ def parse_args():
                         help='Learning rate (default: 1e-4)')
     parser.add_argument('--batch_size', type=int, default=2048,
                         help='NTP batch size (default: 2048)')
-    parser.add_argument('--dpo_batch_size', type=int, default=8,
-                        help='DPO batch size (default: 8)')
-    parser.add_argument('--dpo_n_rejected', type=int, default=10,
-                        help='Max rejected candidates per DPO pair (default: 10)')
+    parser.add_argument('--dpo_batch_size', type=int, default=4,
+                        help='DPO batch size (default: 4)')
+    parser.add_argument('--dpo_n_rejected', type=int, default=20,
+                        help='Max rejected candidates per DPO pair (default: 20)')
     parser.add_argument('--max_steps', type=int, default=None,
                         help='Max training steps (default: full epoch)')
     parser.add_argument('--difficulty', type=str, default='all',
