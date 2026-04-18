@@ -127,11 +127,9 @@ generate_rf_preferences() {
     echo "[RF-Preference] Generating ${DIFFICULTY} pairs"
     echo "============================================================"
 
-    if [ -f "${OUTPUT}/preferences.npz" ] || [ -f "${OUTPUT}/meta.json" ] && [ "${FORCE}" != true ]; then
-        if [ -f "${OUTPUT}/meta.json" ]; then
-            echo "[RF-Preference] ${DIFFICULTY} pairs found, skipping (use --force to re-run)"
-            return 0
-        fi
+    if [ -f "${OUTPUT}/meta.json" ] && [ "${FORCE}" != true ]; then
+        echo "[RF-Preference] ${DIFFICULTY} pairs found, skipping (use --force to re-run)"
+        return 0
     fi
 
     python run.py rf-dpo-prepare \

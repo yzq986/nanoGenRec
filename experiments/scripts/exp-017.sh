@@ -117,7 +117,7 @@ generate_preferences() {
     echo "[Preference] Generating ${DIFFICULTY} pairs"
     echo "============================================================"
 
-    if [ -f "${OUTPUT}/preferences.npz" ] && [ "${FORCE}" != true ]; then
+    if [ -f "${OUTPUT}/meta.json" ] && [ "${FORCE}" != true ]; then
         echo "[Preference] ${DIFFICULTY} pairs found, skipping (use --force to re-run)"
         return 0
     fi
