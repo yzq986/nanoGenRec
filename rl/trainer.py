@@ -218,9 +218,9 @@ def train_dpo(
 
     raw_policy = policy_model.module if isinstance(policy_model, DDP) else policy_model
 
-    # ── Auto-cap NTP batch_size (two models in memory → more conservative) ──
+    # ── Auto-cap NTP batch_size (two models + DPO activations → conservative) ──
     max_seq_len = max(len(t) for t in ntp_tokens_list) if ntp_tokens_list else 512
-    mem_safe_bs = max(64, 20_000_000 // (max_seq_len * max_seq_len))
+    mem_safe_bs = max(32, 8_000_000 // (max_seq_len * max_seq_len))
     if batch_size > mem_safe_bs:
         log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
                      f"(seq_len={max_seq_len}, 2 models in memory)")
@@ -314,6 +314,7 @@ def train_dpo(
         )
         ntp_loss.backward()  # free NTP activations before DPO forward
         del padded, input_tokens, target_tokens, valid_mask, train_mask
+        torch.cuda.empty_cache()  # release cached blocks for DPO forward
 
         # ── DPO loss (separate backward, gradients accumulate) ──
         dpo_loss_val = torch.tensor(0.0, device=device)
