@@ -181,7 +181,7 @@ def train_dpo(
     dpo_beta=0.1,
     lr=1e-4,
     batch_size=2048,
-    dpo_batch_size=32,
+    dpo_batch_size=8,
     max_steps=None,
     wandb_run=None,
 ):
@@ -337,8 +337,10 @@ def train_dpo(
             with torch.no_grad():
                 ref_lp = compute_sid_logprobs_batch(
                     ref_model, ctx_padded, ctx_lengths, all_sids, n_layers)
-            ref_chosen_lp = ref_lp[:, 0]       # (B,)
-            ref_rejected_lp = ref_lp[:, 1:]    # (B, N_rej)
+            ref_chosen_lp = ref_lp[:, 0].clone()   # (B,)
+            ref_rejected_lp = ref_lp[:, 1:].clone() # (B, N_rej)
+            del ref_lp
+            torch.cuda.empty_cache()
 
             # Policy model log-probs (with grad, micro-batched)
             policy_lp = compute_sid_logprobs_batch(
@@ -353,7 +355,9 @@ def train_dpo(
             )
 
             (dpo_weight * dpo_loss_val).backward()
-            del ctx_padded, all_sids, ref_lp, policy_lp
+            del ctx_padded, ctx_lengths, all_sids, chosen_sids, rej_sids, rej_mask
+            del policy_lp, policy_chosen_lp, policy_rejected_lp
+            del ref_chosen_lp, ref_rejected_lp
 
         # ── Step (gradients from both NTP and DPO are accumulated) ──
         grad_norm = torch.nn.utils.clip_grad_norm_(policy_model.parameters(), 1.0).item()
