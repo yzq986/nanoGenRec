@@ -343,8 +343,7 @@ def train_dpo(
             del ref_lp
             torch.cuda.empty_cache()
 
-            # Policy model log-probs (with grad, micro-batched + gradient checkpointing)
-            raw_policy.gradient_checkpointing = True
+            # Policy model log-probs (with grad, micro-batched)
             policy_lp = compute_sid_logprobs_batch(
                 raw_policy, ctx_padded, ctx_lengths, all_sids, n_layers)
             policy_chosen_lp = policy_lp[:, 0]
@@ -357,7 +356,6 @@ def train_dpo(
             )
 
             (dpo_weight * dpo_loss_val).backward()
-            raw_policy.gradient_checkpointing = False
             del ctx_padded, ctx_lengths, all_sids, chosen_sids, rej_sids, rej_mask
             del policy_lp, policy_chosen_lp, policy_rejected_lp
             del ref_chosen_lp, ref_rejected_lp
