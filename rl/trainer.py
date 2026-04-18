@@ -181,8 +181,8 @@ def train_dpo(
     dpo_beta=0.1,
     lr=1e-4,
     batch_size=2048,
-    dpo_batch_size=4,
-    dpo_n_rejected=5,
+    dpo_batch_size=8,
+    dpo_n_rejected=10,
     max_steps=None,
     wandb_run=None,
 ):
@@ -214,7 +214,7 @@ def train_dpo(
 
     # ── Auto-cap NTP batch_size (two models + DPO activations → conservative) ──
     max_seq_len = max(len(t) for t in ntp_tokens_list) if ntp_tokens_list else 512
-    mem_safe_bs = max(32, 8_000_000 // (max_seq_len * max_seq_len))
+    mem_safe_bs = max(32, 12_000_000 // (max_seq_len * max_seq_len))
     if batch_size > mem_safe_bs:
         log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
                      f"(seq_len={max_seq_len}, 2 models in memory)")
@@ -456,10 +456,10 @@ def parse_args():
                         help='Learning rate (default: 1e-4)')
     parser.add_argument('--batch_size', type=int, default=2048,
                         help='NTP batch size (default: 2048)')
-    parser.add_argument('--dpo_batch_size', type=int, default=4,
-                        help='DPO batch size (default: 4)')
-    parser.add_argument('--dpo_n_rejected', type=int, default=5,
-                        help='Max rejected candidates per DPO pair (default: 5)')
+    parser.add_argument('--dpo_batch_size', type=int, default=8,
+                        help='DPO batch size (default: 8)')
+    parser.add_argument('--dpo_n_rejected', type=int, default=10,
+                        help='Max rejected candidates per DPO pair (default: 10)')
     parser.add_argument('--max_steps', type=int, default=None,
                         help='Max training steps (default: full epoch)')
     parser.add_argument('--difficulty', type=str, default='all',
