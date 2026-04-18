@@ -181,7 +181,8 @@ def train_dpo(
     dpo_beta=0.1,
     lr=1e-4,
     batch_size=2048,
-    dpo_batch_size=8,
+    dpo_batch_size=4,
+    dpo_n_rejected=5,
     max_steps=None,
     wandb_run=None,
 ):
@@ -241,7 +242,7 @@ def train_dpo(
     # ── DPO DataLoader (cyclic) ──
     dpo_dataset = PreferencePairDataset(
         preference_pairs, difficulty=difficulty,
-        n_rejected=20, n_layers=n_layers)
+        n_rejected=dpo_n_rejected, n_layers=n_layers)
     log(is_main, f"  DPO dataset: {len(dpo_dataset):,} pairs (difficulty={difficulty})")
 
     if len(dpo_dataset) == 0:
@@ -266,7 +267,8 @@ def train_dpo(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_batches)
 
     log(is_main, f"  Training: {n_batches} steps, NTP batch={batch_size}, "
-                 f"DPO batch={dpo_batch_size}, λ={dpo_weight}, β={dpo_beta}, lr={lr}")
+                 f"DPO batch={dpo_batch_size}, n_rej={dpo_n_rejected}, "
+                 f"λ={dpo_weight}, β={dpo_beta}, lr={lr}")
 
     # ── Training loop ──
     policy_model.train()
@@ -455,8 +457,10 @@ def parse_args():
                         help='Learning rate (default: 1e-4)')
     parser.add_argument('--batch_size', type=int, default=2048,
                         help='NTP batch size (default: 2048)')
-    parser.add_argument('--dpo_batch_size', type=int, default=8,
-                        help='DPO batch size (default: 8)')
+    parser.add_argument('--dpo_batch_size', type=int, default=4,
+                        help='DPO batch size (default: 4)')
+    parser.add_argument('--dpo_n_rejected', type=int, default=5,
+                        help='Max rejected candidates per DPO pair (default: 5)')
     parser.add_argument('--max_steps', type=int, default=None,
                         help='Max training steps (default: full epoch)')
     parser.add_argument('--difficulty', type=str, default='all',
@@ -539,6 +543,7 @@ def main():
         lr=args.lr,
         batch_size=args.batch_size,
         dpo_batch_size=args.dpo_batch_size,
+        dpo_n_rejected=args.dpo_n_rejected,
         max_steps=args.max_steps,
     )
 
