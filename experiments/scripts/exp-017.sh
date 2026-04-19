@@ -131,13 +131,23 @@ generate_preferences() {
         REF_CKPT="${CKPT_DIR}/exp017-spdpo-medium"
     fi
 
-    python run.py sp-dpo-prepare \
-        --sft_checkpoint "${REF_CKPT}" \
-        --preprocessed_dir "${NTP_DATA}" \
-        --output_dir "${OUTPUT}" \
-        --beam_size 50 \
-        --n_rejected 20 \
-        --difficulty "${DIFFICULTY}"
+    if [ "${N_GPUS}" -gt 1 ]; then
+        torchrun --nproc_per_node="${N_GPUS}" run.py sp-dpo-prepare \
+            --sft_checkpoint "${REF_CKPT}" \
+            --preprocessed_dir "${NTP_DATA}" \
+            --output_dir "${OUTPUT}" \
+            --beam_size 50 \
+            --n_rejected 20 \
+            --difficulty "${DIFFICULTY}"
+    else
+        python run.py sp-dpo-prepare \
+            --sft_checkpoint "${REF_CKPT}" \
+            --preprocessed_dir "${NTP_DATA}" \
+            --output_dir "${OUTPUT}" \
+            --beam_size 50 \
+            --n_rejected 20 \
+            --difficulty "${DIFFICULTY}"
+    fi
 
     echo "[Preference] ${DIFFICULTY} done → ${OUTPUT}"
 }
