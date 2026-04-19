@@ -271,9 +271,9 @@ def build_preference_pairs(
             eta = f"{hrs}h{mins:02d}m" if hrs else f"{mins}m{secs:02d}s"
             n_pairs = len(pairs)
             print(f"    [{idx+1}/{len(eval_items)}] {n_pairs} pairs, "
-                  f"E={stats['easy']//max(n_pairs,1):.1f}/pair, "
-                  f"M={stats['medium']//max(n_pairs,1):.1f}/pair, "
-                  f"H={stats['hard']//max(n_pairs,1):.1f}/pair, "
+                  f"E={stats['easy']/max(n_pairs,1):.1f}/pair, "
+                  f"M={stats['medium']/max(n_pairs,1):.1f}/pair, "
+                  f"H={stats['hard']/max(n_pairs,1):.1f}/pair, "
                   f"skip={stats['skipped']}, ETA {eta}")
 
     if verbose:
