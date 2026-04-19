@@ -72,7 +72,7 @@ def compute_sid_logprobs_batch(
     context_lengths: Tensor,  # (B,) actual context lengths
     all_sids: Tensor,         # (B, K, n_layers)
     n_layers: int,
-    max_chunk: int = 16,
+    max_chunk: int = 64,
 ) -> Tensor:
     """Compute log-probs for K SID candidates per context.
 

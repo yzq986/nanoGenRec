@@ -181,7 +181,7 @@ def train_dpo(
     dpo_beta=0.1,
     lr=1e-4,
     batch_size=2048,
-    dpo_batch_size=4,
+    dpo_batch_size=16,
     dpo_n_rejected=20,
     max_steps=None,
     wandb_run=None,
@@ -212,12 +212,21 @@ def train_dpo(
     # Manual all-reduce after both backward passes is simpler and correct.
     raw_policy = policy_model
 
-    # ── Auto-cap NTP batch_size (two models + DPO activations → conservative) ──
+    # ── Auto-cap NTP batch_size based on available GPU memory ──
     max_seq_len = max(len(t) for t in ntp_tokens_list) if ntp_tokens_list else 512
-    mem_safe_bs = max(32, 12_000_000 // (max_seq_len * max_seq_len))
+    gpu_mem_gb = torch.cuda.get_device_properties(device).total_mem / (1024 ** 3)
+    # Model params memory (2 models × params × 4 bytes + optimizer states ≈ 4x)
+    model_mem_gb = n_params * 4 * 4 / (1024 ** 3)  # policy weights + grads + adam states
+    ref_mem_gb = n_params * 4 / (1024 ** 3)         # ref weights only (frozen, no grads)
+    avail_gb = gpu_mem_gb * 0.85 - model_mem_gb - ref_mem_gb  # 85% usable
+    # Per-sample activation: seq_len × embed_dim × n_layers × ~12 bytes (fwd+bwd)
+    embed_dim = cfg.get('embed_dim', 256)
+    n_tf_layers = cfg.get('n_transformer_layers', 6)
+    bytes_per_sample = max_seq_len * embed_dim * n_tf_layers * 12
+    mem_safe_bs = max(32, int(avail_gb * 1024 ** 3 / bytes_per_sample))
     if batch_size > mem_safe_bs:
         log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
-                     f"(seq_len={max_seq_len}, 2 models in memory)")
+                     f"(seq_len={max_seq_len}, avail={avail_gb:.1f}GB)")
         batch_size = mem_safe_bs
 
     # ── NTP DataLoader ──
@@ -312,7 +321,6 @@ def train_dpo(
         dpo_loss_val = torch.tensor(0.0, device=device)
         ntp_loss.backward()
         del padded, input_tokens, target_tokens, valid_mask, train_mask
-        torch.cuda.empty_cache()
 
         if dpo_weight > 0 and dpo_loader is not None:
             dpo_batch = _next_dpo_batch()
@@ -337,7 +345,6 @@ def train_dpo(
             ref_chosen_lp = ref_lp[:, 0].clone()   # (B,)
             ref_rejected_lp = ref_lp[:, 1:].clone() # (B, N_rej)
             del ref_lp
-            torch.cuda.empty_cache()
 
             # Policy model log-probs (with grad, micro-batched)
             policy_lp = compute_sid_logprobs_batch(
@@ -356,11 +363,18 @@ def train_dpo(
             del policy_lp, policy_chosen_lp, policy_rejected_lp
             del ref_chosen_lp, ref_rejected_lp
 
-        # ── Manual gradient all-reduce (replaces DDP automatic sync) ──
+        # ── Bucketed gradient all-reduce ──
         if world_size > 1:
-            for p in policy_model.parameters():
-                if p.grad is not None:
-                    dist.all_reduce(p.grad, op=dist.ReduceOp.AVG)
+            grads = [p.grad for p in policy_model.parameters()
+                     if p.grad is not None]
+            if grads:
+                flat = torch.cat([g.reshape(-1) for g in grads])
+                dist.all_reduce(flat, op=dist.ReduceOp.AVG)
+                offset = 0
+                for g in grads:
+                    numel = g.numel()
+                    g.copy_(flat[offset:offset + numel].reshape(g.shape))
+                    offset += numel
 
         # ── Step (gradients from both NTP and DPO are accumulated) ──
         grad_norm = torch.nn.utils.clip_grad_norm_(policy_model.parameters(), 1.0).item()
@@ -456,8 +470,8 @@ def parse_args():
                         help='Learning rate (default: 1e-4)')
     parser.add_argument('--batch_size', type=int, default=2048,
                         help='NTP batch size (default: 2048)')
-    parser.add_argument('--dpo_batch_size', type=int, default=4,
-                        help='DPO batch size (default: 4)')
+    parser.add_argument('--dpo_batch_size', type=int, default=16,
+                        help='DPO batch size (default: 16)')
     parser.add_argument('--dpo_n_rejected', type=int, default=20,
                         help='Max rejected candidates per DPO pair (default: 20)')
     parser.add_argument('--max_steps', type=int, default=None,
