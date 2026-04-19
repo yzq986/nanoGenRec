@@ -12,6 +12,11 @@
 # Baseline: EXP-016 14d-S (S-tier 17.5M, PPL=27.05, R@500=58.5%)
 # Data: EXP-016 preprocessed NTP data (4096×3, 14 days, 130M tokens)
 #
+# Two-config ablation design:
+#   Config 1 (Fixed): SFT beam search → Easy→eval→Medium→eval→Hard→eval
+#   Config 2 (Self-play): SFT → Easy → Easy beam search → Medium→eval→Hard→eval
+#   Shared Easy stage. Difference: candidates for Medium/Hard from SFT vs Easy model.
+#
 # Prerequisites:
 #   - EXP-016 14d-S checkpoint (optimal data window per EXP-016)
 #   - EXP-016 14d preprocessed NTP data
@@ -103,37 +108,32 @@ if [ "${SKIP_SMOKE}" != true ] && [ "${START_FROM}" -le 1 ]; then
 fi
 
 # ============================================================
-# Phase 1: Generate Preference Pairs
+# Helper: Generate Preference Pairs
 # ============================================================
-# Beam search all eval items once, then filter by difficulty per stage.
-# This avoids redundant beam search across stages.
+# beam_search_model: which model to run beam search with
+# output_dir: where to save preference pairs
+# difficulty: easy, medium, hard
 
 generate_preferences() {
-    local DIFFICULTY=$1
-    local OUTPUT="${PREF_DIR}/${DIFFICULTY}"
+    local BEAM_MODEL=$1
+    local OUTPUT=$2
+    local DIFFICULTY=$3
 
     echo ""
     echo "============================================================"
     echo "[Preference] Generating ${DIFFICULTY} pairs"
+    echo "  Model: ${BEAM_MODEL}"
+    echo "  Output: ${OUTPUT}"
     echo "============================================================"
 
     if [ -f "${OUTPUT}/meta.json" ] && [ "${FORCE}" != true ]; then
-        echo "[Preference] ${DIFFICULTY} pairs found, skipping (use --force to re-run)"
+        echo "[Preference] ${DIFFICULTY} pairs found at ${OUTPUT}, skipping (use --force)"
         return 0
-    fi
-
-    # For progressive training, reference model changes per stage.
-    # Easy: use SFT checkpoint. Medium/Hard: use previous stage output.
-    local REF_CKPT="${SFT_CKPT}"
-    if [ "${DIFFICULTY}" = "medium" ] && [ -f "${CKPT_DIR}/exp017-spdpo-easy/probe.pt" ]; then
-        REF_CKPT="${CKPT_DIR}/exp017-spdpo-easy"
-    elif [ "${DIFFICULTY}" = "hard" ] && [ -f "${CKPT_DIR}/exp017-spdpo-medium/probe.pt" ]; then
-        REF_CKPT="${CKPT_DIR}/exp017-spdpo-medium"
     fi
 
     if [ "${N_GPUS}" -gt 1 ]; then
         torchrun --nproc_per_node="${N_GPUS}" run.py sp-dpo-prepare \
-            --sft_checkpoint "${REF_CKPT}" \
+            --sft_checkpoint "${BEAM_MODEL}" \
             --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${OUTPUT}" \
             --beam_size 50 \
@@ -141,7 +141,7 @@ generate_preferences() {
             --difficulty "${DIFFICULTY}"
     else
         python run.py sp-dpo-prepare \
-            --sft_checkpoint "${REF_CKPT}" \
+            --sft_checkpoint "${BEAM_MODEL}" \
             --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${OUTPUT}" \
             --beam_size 50 \
@@ -153,16 +153,16 @@ generate_preferences() {
 }
 
 # ============================================================
-# Phase 2: DPO Training
+# Helper: DPO Training
 # ============================================================
 
 train_dpo() {
     local NAME=$1
-    local DIFFICULTY=$2      # easy, medium, hard, or "progressive"
+    local DIFFICULTY=$2      # easy, medium, hard
     local DPO_WEIGHT=$3
     local DPO_BETA=$4
     local LR=$5
-    local REF_CKPT=$6        # reference model checkpoint
+    local REF_CKPT=$6        # reference model checkpoint (π_ref for training)
     local PREF_PATH=$7        # preference data dir
     local DESC=$8
 
@@ -209,150 +209,123 @@ train_dpo() {
 }
 
 # ============================================================
-# Config 1: Single-stage Easy (sanity check)
+# Shared: Easy stage (same for both configs)
+#   SFT beam search → Easy DPO training → eval
 # ============================================================
 if [ "${START_FROM}" -le 1 ]; then
-    generate_preferences "easy"
+    generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft/easy" "easy"
     train_dpo "spdpo-easy" "easy" 0.1 0.1 1e-4 \
-        "${SFT_CKPT}" "${PREF_DIR}/easy" \
-        "SP-DPO Easy only: λ=0.1, β=0.1"
+        "${SFT_CKPT}" "${PREF_DIR}/sft/easy" \
+        "Shared Easy: SFT beam search, λ=0.1, β=0.1"
 
     echo ""
     echo ">>> Committing Easy results..."
     git add experiments/
-    git commit -m "EXP-017 partial: SP-DPO Easy stage" || echo "Nothing to commit"
+    git commit -m "EXP-017 partial: SP-DPO Easy stage (shared)" || echo "Nothing to commit"
     ./push.sh
 fi
 
 # ============================================================
-# Config 2: Single-stage Hard (skip Easy/Medium)
+# Config 1: Fixed SFT candidates → Easy → Medium → Hard
+#   All beam search from SFT model. Progressive training only.
+#   Isolates curriculum effect (no self-play re-generation).
 # ============================================================
 if [ "${START_FROM}" -le 2 ]; then
-    generate_preferences "hard"
-    train_dpo "spdpo-hard" "hard" 0.1 0.1 1e-4 \
-        "${SFT_CKPT}" "${PREF_DIR}/hard" \
-        "SP-DPO Hard only (no progressive): λ=0.1, β=0.1"
+    echo ""
+    echo "============================================================"
+    echo "Config 1: Fixed SFT candidates (Easy → Medium → Hard)"
+    echo "============================================================"
+
+    # Reuse Easy from shared stage
+    if [ ! -f "${CKPT_DIR}/exp017-spdpo-easy/probe.pt" ]; then
+        echo "ERROR: Easy checkpoint missing. Run from --start-from=1"
+        exit 1
+    fi
+
+    # SFT beam search for Medium/Hard
+    generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft/medium" "medium"
+    generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft/hard" "hard"
+
+    # Medium (ref = Easy output, candidates from SFT)
+    train_dpo "fixed-medium" "medium" 0.1 0.1 1e-4 \
+        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sft/medium" \
+        "Config1 Medium: ref=Easy, SFT candidates"
+
+    # Hard (ref = fixed-Medium output, candidates from SFT)
+    train_dpo "fixed-hard" "hard" 0.1 0.1 1e-4 \
+        "${CKPT_DIR}/exp017-fixed-medium" "${PREF_DIR}/sft/hard" \
+        "Config1 Hard: ref=fixed-Medium, SFT candidates"
 
     echo ""
-    echo ">>> Committing Hard results..."
+    echo ">>> Committing Config 1 results..."
     git add experiments/
-    git commit -m "EXP-017 partial: SP-DPO Hard stage (non-progressive)" || echo "Nothing to commit"
+    git commit -m "EXP-017 partial: Config 1 Fixed SFT candidates (E→M→H)" || echo "Nothing to commit"
     ./push.sh
 fi
 
 # ============================================================
-# Config 3: Progressive Easy → Medium → Hard (core experiment)
+# Config 2: Self-play from Easy → Medium → Hard
+#   Easy model beam search once → use for Medium and Hard.
+#   Isolates self-play effect (candidates from improved model).
 # ============================================================
 if [ "${START_FROM}" -le 3 ]; then
     echo ""
     echo "============================================================"
-    echo "Progressive SP-DPO: Easy → Medium → Hard"
+    echo "Config 2: Self-play from Easy (Easy → Medium → Hard)"
     echo "============================================================"
 
-    # Stage 1: Easy (reuse if already done in Config 1)
+    # Reuse Easy from shared stage
     if [ ! -f "${CKPT_DIR}/exp017-spdpo-easy/probe.pt" ]; then
-        generate_preferences "easy"
-        train_dpo "spdpo-easy" "easy" 0.1 0.1 1e-4 \
-            "${SFT_CKPT}" "${PREF_DIR}/easy" \
-            "Progressive Stage 1/3: Easy"
-    else
-        echo "[Progressive] Reusing spdpo-easy checkpoint"
+        echo "ERROR: Easy checkpoint missing. Run from --start-from=1"
+        exit 1
     fi
 
-    # Stage 2: Medium (reference = Easy output)
-    # Re-generate preferences with the Easy-trained model
-    generate_preferences "medium"
-    train_dpo "spdpo-medium" "medium" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/medium" \
-        "Progressive Stage 2/3: Medium (ref=Easy output)"
+    # Easy model beam search for Medium/Hard
+    generate_preferences "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy/medium" "medium"
+    generate_preferences "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy/hard" "hard"
 
-    # Stage 3: Hard (reference = Medium output)
-    # Re-generate preferences with the Medium-trained model
-    generate_preferences "hard"
-    train_dpo "spdpo-prog" "hard" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-spdpo-medium" "${PREF_DIR}/hard" \
-        "Progressive Stage 3/3: Hard (ref=Medium output)"
+    # Medium (ref = Easy output, candidates from Easy model)
+    train_dpo "sp-medium" "medium" 0.1 0.1 1e-4 \
+        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy/medium" \
+        "Config2 Medium: ref=Easy, Easy-model candidates"
+
+    # Hard (ref = sp-Medium output, candidates from Easy model)
+    train_dpo "sp-hard" "hard" 0.1 0.1 1e-4 \
+        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy/hard" \
+        "Config2 Hard: ref=sp-Medium, Easy-model candidates"
 
     echo ""
-    echo ">>> Committing Progressive results..."
+    echo ">>> Committing Config 2 results..."
     git add experiments/
-    git commit -m "EXP-017 partial: SP-DPO Progressive (Easy→Medium→Hard)" || echo "Nothing to commit"
+    git commit -m "EXP-017 partial: Config 2 Self-play from Easy (E→M→H)" || echo "Nothing to commit"
     ./push.sh
 fi
 
 # ============================================================
-# Config 3b: Self-play ablation — Medium with SFT candidates
-#   Reuses Config 1 Easy checkpoint (same starting point as Config 3).
-#   Only difference: Medium beam search from SFT vs from Easy model.
-#   Compare spdpo-fixed-med vs spdpo-medium to isolate self-play effect.
+# Config 3-4: λ ablation on the better config
+#   (Run after comparing Config 1 vs Config 2)
 # ============================================================
 if [ "${START_FROM}" -le 4 ]; then
     echo ""
     echo "============================================================"
-    echo "Self-play ablation: Medium with fixed SFT candidates"
+    echo "λ ablation: λ=0.05 on self-play Hard"
     echo "============================================================"
 
-    # Generate Medium pairs from SFT model (not from Easy-trained model)
-    FIXED_MED="${PREF_DIR}/fixed-sft/medium"
-    if [ -f "${FIXED_MED}/meta.json" ] && [ "${FORCE}" != true ]; then
-        echo "[Fixed-SFT] Medium pairs found, skipping"
-    else
-        if [ "${N_GPUS}" -gt 1 ]; then
-            torchrun --nproc_per_node="${N_GPUS}" run.py sp-dpo-prepare \
-                --sft_checkpoint "${SFT_CKPT}" \
-                --preprocessed_dir "${NTP_DATA}" \
-                --output_dir "${FIXED_MED}" \
-                --beam_size 50 \
-                --n_rejected 20 \
-                --difficulty medium
-        else
-            python run.py sp-dpo-prepare \
-                --sft_checkpoint "${SFT_CKPT}" \
-                --preprocessed_dir "${NTP_DATA}" \
-                --output_dir "${FIXED_MED}" \
-                --beam_size 50 \
-                --n_rejected 20 \
-                --difficulty medium
-        fi
-    fi
-
-    # Train Medium from Easy checkpoint, using SFT-generated candidates
-    # (Easy checkpoint is same as Config 3 — reuse spdpo-easy)
-    train_dpo "spdpo-fixed-med" "medium" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-spdpo-easy" "${FIXED_MED}" \
-        "Ablation: Medium (ref=Easy, SFT candidates vs self-play)"
-
-    echo ""
-    echo ">>> Committing self-play ablation results..."
-    git add experiments/
-    git commit -m "EXP-017 partial: self-play ablation (Medium w/ SFT candidates)" || echo "Nothing to commit"
-    ./push.sh
+    # Uses self-play (Config 2) Medium checkpoint + Easy-model candidates
+    train_dpo "sp-hard-lam05" "hard" 0.05 0.1 1e-4 \
+        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy/hard" \
+        "λ ablation: Hard, λ=0.05 (self-play)"
 fi
 
-# ============================================================
-# Config 5-6: λ ablation on Progressive
-# ============================================================
 if [ "${START_FROM}" -le 5 ]; then
     echo ""
     echo "============================================================"
-    echo "λ ablation: Progressive SP-DPO with λ=0.05"
+    echo "λ ablation: λ=0.5 on self-play Hard"
     echo "============================================================"
 
-    # Reuse easy→medium checkpoints, only re-run hard with different λ
-    train_dpo "spdpo-prog-lam05" "hard" 0.05 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-spdpo-medium" "${PREF_DIR}/hard" \
-        "Progressive Hard, λ=0.05 (ablation)"
-fi
-
-if [ "${START_FROM}" -le 6 ]; then
-    echo ""
-    echo "============================================================"
-    echo "λ ablation: Progressive SP-DPO with λ=0.5"
-    echo "============================================================"
-
-    train_dpo "spdpo-prog-lam50" "hard" 0.5 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-spdpo-medium" "${PREF_DIR}/hard" \
-        "Progressive Hard, λ=0.5 (ablation)"
+    train_dpo "sp-hard-lam50" "hard" 0.5 0.1 1e-4 \
+        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy/hard" \
+        "λ ablation: Hard, λ=0.5 (self-play)"
 fi
 
 # ============================================================
@@ -372,12 +345,21 @@ git commit -m "EXP-017 results: SP-DPO Self-Play DPO Alignment" || echo "Nothing
 echo ""
 echo "EXP-017 done! Compare checkpoints:"
 echo "  Baseline (SFT):           ${SFT_CKPT}"
-echo "  SP-DPO Easy:              ${CKPT_DIR}/exp017-spdpo-easy"
-echo "  SP-DPO Hard (direct):     ${CKPT_DIR}/exp017-spdpo-hard"
-echo "  SP-DPO Progressive:       ${CKPT_DIR}/exp017-spdpo-prog"
-echo "  SP-DPO Med (SFT cands):   ${CKPT_DIR}/exp017-spdpo-fixed-med"
-echo "  SP-DPO λ=0.05:            ${CKPT_DIR}/exp017-spdpo-prog-lam05"
-echo "  SP-DPO λ=0.5:             ${CKPT_DIR}/exp017-spdpo-prog-lam50"
+echo "  SP-DPO Easy (shared):     ${CKPT_DIR}/exp017-spdpo-easy"
 echo ""
-echo "Self-play ablation: compare spdpo-medium vs spdpo-fixed-med"
-echo "  (same Easy init, different Medium candidates: self-play vs SFT)"
+echo "  Config 1 (Fixed SFT candidates):"
+echo "    Medium:                  ${CKPT_DIR}/exp017-fixed-medium"
+echo "    Hard:                    ${CKPT_DIR}/exp017-fixed-hard"
+echo ""
+echo "  Config 2 (Self-play from Easy):"
+echo "    Medium:                  ${CKPT_DIR}/exp017-sp-medium"
+echo "    Hard:                    ${CKPT_DIR}/exp017-sp-hard"
+echo ""
+echo "  λ ablation (self-play):"
+echo "    λ=0.05:                  ${CKPT_DIR}/exp017-sp-hard-lam05"
+echo "    λ=0.5:                   ${CKPT_DIR}/exp017-sp-hard-lam50"
+echo ""
+echo "Key comparison:"
+echo "  Config 1 vs Config 2 → isolates self-play re-generation effect"
+echo "  fixed-medium vs sp-medium → Medium stage comparison"
+echo "  fixed-hard vs sp-hard → Hard stage comparison"
