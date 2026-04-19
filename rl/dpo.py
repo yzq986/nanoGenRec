@@ -30,10 +30,17 @@ Memory design (gradient checkpointing):
   dpo_batch_size can scale to 32, 64, or higher — only time cost increases
   linearly, not memory.
 
+  Packed candidates (no padding waste):
+    Each DPO pair has 1 chosen + variable N_i rejected (not padded to max).
+    All valid candidates are packed flat with offset indices, so only real
+    candidates are forwarded — no wasted compute on zero-padded SIDs.
+    E.g., Hard difficulty averages 5.9 rejected/pair; without packing,
+    batches pad to max_rej≈20 → 3× wasted forward passes.
+
   NTP batch_size vs dpo_batch_size — two independent concepts:
     NTP batch_size (auto-capped ≈149): sequences for NTP loss via _forward_packed
     dpo_batch_size (default 16): preference pairs for DPO loss
-    Each DPO pair expands to K=1+N_rej candidates, each needing full forward.
+    Each DPO pair expands to 1+N_i candidates, each needing full forward.
     NTP backward finishes and releases memory before DPO forward starts,
     so the two batch sizes are independently constrained.
 """
@@ -135,91 +142,77 @@ def _compute_chunk_logprobs(
 
 def compute_sid_logprobs_batch(
     model,
-    context_tokens: Tensor,   # (B, T_ctx) right-padded
-    context_lengths: Tensor,  # (B,) actual context lengths
-    all_sids: Tensor,         # (B, K, n_layers)
+    context_tokens: Tensor,   # (N, T_ctx) right-padded, pre-expanded
+    context_lengths: Tensor,  # (N,) actual context lengths
+    sid_tokens: Tensor,       # (N, n_layers) flat candidates
     n_layers: int,
     max_chunk: int = 64,
 ) -> Tensor:
-    """Compute log-probs for K SID candidates per context.
+    """Compute log-probs for N flat SID candidates (packed, no padding).
 
-    Expands each context K times and calls compute_sid_logprobs in
-    micro-batches of max_chunk. Uses gradient checkpointing when
-    gradients are enabled (training) to bound peak GPU memory to
-    a single chunk's activations regardless of total B*K.
+    Caller is responsible for expanding contexts to match candidates.
+    Processes in micro-batches of max_chunk with gradient checkpointing
+    when gradients are enabled (training).
 
-    Without checkpointing (old behavior, causes OOM):
-        All chunks' computation graphs retained simultaneously.
-        dpo_batch=16, K=21, max_chunk=64 → 6 chunks × ~10GB = ~60GB
-
-    With checkpointing (current):
+    With checkpointing:
         Forward: intermediate activations discarded after each chunk.
         Backward: each chunk recomputed one at a time.
-        Peak memory = 1 chunk ≈ 10GB, constant for any dpo_batch_size.
+        Peak memory = 1 chunk ≈ 10GB, constant for any N.
 
     Checkpointing is only applied when torch.is_grad_enabled() is True
     (training). Reference model forward (under torch.no_grad) skips it.
 
+    NOTE: when checkpointing is active, the caller MUST wrap both this
+    call AND the subsequent backward() inside _freeze_moe_bias(model)
+    to ensure the recompute during backward sees the same MoE router
+    state. See trainer.py's DPO section and SparseMoEBlock docstring.
+
     Returns:
-        (B, K) log-probabilities.
+        (N,) log-probabilities.
     """
-    B, K, L = all_sids.shape
-    # Expand context: (B, T) -> (B, K, T) -> (B*K, T)
-    ctx_exp = context_tokens.unsqueeze(1).expand(-1, K, -1).reshape(B * K, -1)
-    len_exp = context_lengths.unsqueeze(1).expand(-1, K).reshape(B * K)
-    sids_flat = all_sids.reshape(B * K, L)
+    N = sid_tokens.size(0)
+    use_ckpt = torch.is_grad_enabled() and (N > max_chunk)
 
-    use_ckpt = torch.is_grad_enabled() and (B * K > max_chunk)
+    if N <= max_chunk:
+        return compute_sid_logprobs(
+            model, context_tokens, context_lengths, sid_tokens, n_layers)
 
-    total = B * K
-    if total <= max_chunk:
-        lp = compute_sid_logprobs(model, ctx_exp, len_exp, sids_flat, n_layers)
-    else:
-        # NOTE: when use_ckpt=True, the caller MUST wrap both this call AND
-        # the subsequent backward() inside _freeze_moe_bias(model) to ensure
-        # the recompute during backward sees the same MoE router state.
-        # See trainer.py's DPO section and SparseMoEBlock docstring.
-        chunks = []
-        for start in range(0, total, max_chunk):
-            end = min(start + max_chunk, total)
-            if use_ckpt:
-                # Gradient checkpointing: don't save intermediate activations
-                # during forward; recompute them during backward.
-                # Peak memory = 1 chunk (constant), not N_chunks.
-                chunk_lp = torch_checkpoint(
-                    _compute_chunk_logprobs,
-                    model,
-                    ctx_exp[start:end],
-                    len_exp[start:end],
-                    sids_flat[start:end],
-                    n_layers,
-                    use_reentrant=False,
-                )
-            else:
-                chunk_lp = compute_sid_logprobs(
-                    model,
-                    ctx_exp[start:end],
-                    len_exp[start:end],
-                    sids_flat[start:end],
-                    n_layers,
-                )
-            chunks.append(chunk_lp)
-        lp = torch.cat(chunks, dim=0)
-
-    return lp.reshape(B, K)
+    chunks = []
+    for start in range(0, N, max_chunk):
+        end = min(start + max_chunk, N)
+        if use_ckpt:
+            chunk_lp = torch_checkpoint(
+                _compute_chunk_logprobs,
+                model,
+                context_tokens[start:end],
+                context_lengths[start:end],
+                sid_tokens[start:end],
+                n_layers,
+                use_reentrant=False,
+            )
+        else:
+            chunk_lp = compute_sid_logprobs(
+                model,
+                context_tokens[start:end],
+                context_lengths[start:end],
+                sid_tokens[start:end],
+                n_layers,
+            )
+        chunks.append(chunk_lp)
+    return torch.cat(chunks, dim=0)
 
 
 def softmax_dpo_loss(
-    policy_chosen_lp: Tensor,     # (B,) log pi_theta(y_w | x)
-    policy_rejected_lp: Tensor,   # (B, N_rej) log pi_theta(y_l | x)
-    ref_chosen_lp: Tensor,        # (B,) log pi_ref(y_w | x)
-    ref_rejected_lp: Tensor,      # (B, N_rej) log pi_ref(y_l | x)
-    rejected_mask: Tensor,        # (B, N_rej) True = valid rejected
+    policy_lp: Tensor,       # (N,) flat log pi_theta for all candidates
+    ref_lp: Tensor,          # (N,) flat log pi_ref for all candidates
+    sample_offsets: Tensor,  # (B+1,) boundaries; [off[i]] = chosen, [off[i]+1:off[i+1]] = rejected
     beta: float = 0.1,
 ) -> Tensor:
-    """Softmax-DPO loss (Chen et al. 2024b, used in Align³GR).
+    """Softmax-DPO loss with packed candidates (no padding).
 
-    Supports 1 chosen vs N rejected per sample.
+    Supports 1 chosen vs variable N rejected per sample.
+    Each sample's candidates are contiguous in the flat arrays:
+      sample i: chosen at index offsets[i], rejected at offsets[i]+1 : offsets[i+1]
 
     Formula:
         r_l = beta * (log pi_theta(y_l)/pi_ref(y_l) - log pi_theta(y_w)/pi_ref(y_w))
@@ -230,23 +223,21 @@ def softmax_dpo_loss(
     Returns:
         Scalar loss.
     """
-    # Ensure fp32 for stable sigmoid/logsumexp
-    chosen_adv = (policy_chosen_lp - ref_chosen_lp).float()      # (B,)
-    rejected_adv = (policy_rejected_lp - ref_rejected_lp).float()  # (B, N_rej)
+    adv = (policy_lp - ref_lp).float()  # (N,)
+    offsets = sample_offsets.tolist()
+    B = len(offsets) - 1
 
-    # r_l = beta * (rejected_advantage - chosen_advantage)
-    r = beta * (rejected_adv - chosen_adv.unsqueeze(1))  # (B, N_rej)
+    losses = []
+    for i in range(B):
+        start, end = int(offsets[i]), int(offsets[i + 1])
+        if end - start <= 1:
+            continue  # no rejected for this sample
+        chosen_adv = adv[start]
+        rejected_adv = adv[start + 1:end]
+        r = beta * (rejected_adv - chosen_adv)
+        lse = torch.logsumexp(r, dim=0)
+        losses.append(-F.logsigmoid(-lse))
 
-    # Mask invalid rejected candidates to -inf for logsumexp
-    r = r.masked_fill(~rejected_mask, float('-inf'))
-
-    # Check for samples with no valid rejected candidates
-    has_valid = rejected_mask.any(dim=1)  # (B,)
-    if not has_valid.any():
-        return torch.tensor(0.0, device=policy_chosen_lp.device, requires_grad=True)
-
-    # logsumexp over rejected, then -logsigmoid(-lse)
-    lse = torch.logsumexp(r[has_valid], dim=1)  # (n_valid,)
-    loss = -F.logsigmoid(-lse).mean()
-
-    return loss
+    if not losses:
+        return torch.tensor(0.0, device=policy_lp.device, requires_grad=True)
+    return torch.stack(losses).mean()

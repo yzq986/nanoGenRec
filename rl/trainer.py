@@ -95,38 +95,41 @@ class PreferencePairDataset(Dataset):
 
 
 def preference_collate_fn(batch):
-    """Collate preference pairs with right-padded contexts and rejected mask.
+    """Collate preference pairs as packed flat candidates (no padding).
+
+    Each sample's candidates are packed contiguously: [chosen, rej_0, rej_1, ...]
+    with sample_offsets marking boundaries. This avoids wasting compute on
+    zero-padded rejected SIDs (significant when rejection counts vary, e.g.
+    Hard difficulty averages 5.9/pair but padding would expand to max≈20).
 
     Returns:
         context_padded: (B, max_ctx_len) — right-padded context tokens
         context_lengths: (B,) — actual context lengths
-        chosen_sids: (B, n_layers) — ground truth SIDs
-        rejected_sids: (B, max_n_rej, n_layers) — rejected SIDs, 0-padded
-        rejected_mask: (B, max_n_rej) — True for valid rejected entries
+        all_sids: (N_total, n_layers) — flat packed [chosen_0, rej_0_*, chosen_1, rej_1_*, ...]
+        sample_offsets: (B+1,) — sample i's candidates at [off[i]:off[i+1]], first is chosen
     """
     contexts, chosens, rejected_lists = zip(*batch)
 
-    # Pad contexts
+    # Pad contexts (same as before — contexts still need alignment)
     ctx_lengths = torch.tensor([len(c) for c in contexts], dtype=torch.long)
     max_ctx = ctx_lengths.max().item()
     ctx_padded = torch.zeros(len(batch), max_ctx, dtype=torch.long)
     for i, c in enumerate(contexts):
         ctx_padded[i, :len(c)] = c
 
-    # Stack chosen
-    chosen_sids = torch.stack(chosens)  # (B, n_layers)
+    # Pack all SIDs flat: [chosen_0, rej_0_*, chosen_1, rej_1_*, ...]
+    all_sids = []
+    sample_offsets = [0]
+    for chosen, rejected_list in zip(chosens, rejected_lists):
+        all_sids.append(chosen)
+        for r in rejected_list:
+            all_sids.append(r)
+        sample_offsets.append(len(all_sids))
 
-    # Pad rejected
-    max_rej = max(len(rl) for rl in rejected_lists)
-    n_layers = chosen_sids.size(1)
-    rej_padded = torch.zeros(len(batch), max_rej, n_layers, dtype=torch.long)
-    rej_mask = torch.zeros(len(batch), max_rej, dtype=torch.bool)
-    for i, rl in enumerate(rejected_lists):
-        for j, r in enumerate(rl):
-            rej_padded[i, j] = r
-            rej_mask[i, j] = True
+    all_sids = torch.stack(all_sids)  # (N_total, n_layers)
+    sample_offsets = torch.tensor(sample_offsets, dtype=torch.long)
 
-    return ctx_padded, ctx_lengths, chosen_sids, rej_padded, rej_mask
+    return ctx_padded, ctx_lengths, all_sids, sample_offsets
 
 
 # ============================================================
@@ -417,29 +420,15 @@ def train_dpo(
         # ── DPO loss (separate backward, gradients accumulate) ──
         #
         # Memory timeline per training step:
-        #   1. NTP forward: batch≈149 seqs → activations in GPU memory
+        #   1. NTP forward: batch≈136 seqs → activations in GPU memory
         #   2. NTP backward: compute gradients, FREE all NTP activations
-        #   3. DPO forward: dpo_batch=16 pairs × K=21 candidates = 336 forwards
-        #      → uses gradient checkpointing (see rl/dpo.py) so only 1 chunk
-        #        (max_chunk=64) of activations exists at any time
+        #   3. DPO forward: dpo_batch=16 pairs, packed flat (only valid candidates,
+        #      no padding waste). E.g. Hard avg 5.9 rej/pair → ~112 forwards
+        #      instead of 336 if padded to max_rej=20.
+        #      Uses gradient checkpointing (see rl/dpo.py) so only 1 chunk
+        #      (max_chunk=64) of activations exists at any time.
         #   4. DPO backward: recompute + backprop chunk by chunk
         #   5. Optimizer step: update params
-        #
-        # NTP batch_size ≠ dpo_batch_size:
-        #   NTP batch_size (auto-capped ≈149): controls sequences for NTP loss,
-        #     determined by GPU memory formula above (per-sample activation cost)
-        #   dpo_batch_size (default 16): controls preference pairs for DPO loss,
-        #     each pair expands to K=1+N_rej candidates. With gradient checkpointing,
-        #     DPO peak memory is independent of dpo_batch_size — only max_chunk
-        #     (64 by default) determines peak DPO memory. Larger dpo_batch_size
-        #     only costs more time (linear), not more memory.
-        #
-        # DPO OOM root cause (before checkpointing fix):
-        #   compute_sid_logprobs_batch chunks 336 samples into 6 chunks of 64.
-        #   Without checkpointing, ALL 6 chunks' computation graphs (~10GB each)
-        #   are retained simultaneously until backward() → 60GB total → OOM.
-        #   With checkpointing: peak = 1 chunk ≈ 10GB. DPO forward is computed
-        #   2× (forward + recompute in backward), adding ~25% to total step time.
         #
         dpo_loss_val = torch.tensor(0.0, device=device)
         ntp_loss.backward()
@@ -453,44 +442,33 @@ def train_dpo(
           # The freeze must cover backward() too, not just the forward call.
           with _freeze_moe_bias(raw_policy):
             dpo_batch = _next_dpo_batch()
-            ctx_padded, ctx_lengths, chosen_sids, rej_sids, rej_mask = dpo_batch
-            ctx_padded = ctx_padded.to(device, non_blocking=True)
-            ctx_lengths = ctx_lengths.to(device, non_blocking=True)
-            chosen_sids = chosen_sids.to(device, non_blocking=True)
-            rej_sids = rej_sids.to(device, non_blocking=True)
-            rej_mask = rej_mask.to(device, non_blocking=True)
+            ctx_padded_dpo, ctx_lengths_dpo, all_sids, sample_offsets = dpo_batch
+            ctx_padded_dpo = ctx_padded_dpo.to(device, non_blocking=True)
+            ctx_lengths_dpo = ctx_lengths_dpo.to(device, non_blocking=True)
+            all_sids = all_sids.to(device, non_blocking=True)
+            sample_offsets = sample_offsets.to(device, non_blocking=True)
 
-            B_dpo = ctx_padded.size(0)
-            N_rej = rej_sids.size(1)
-
-            # All SIDs: chosen (col 0) + rejected (cols 1..N_rej)
-            # Shape: (B, 1+N_rej, n_layers)
-            all_sids = torch.cat([chosen_sids.unsqueeze(1), rej_sids], dim=1)
+            # Expand contexts to match flat packed candidates
+            counts = sample_offsets[1:] - sample_offsets[:-1]  # (B,)
+            ctx_exp = torch.repeat_interleave(ctx_padded_dpo, counts, dim=0)
+            len_exp = torch.repeat_interleave(ctx_lengths_dpo, counts, dim=0)
 
             # Reference model log-probs (no grad)
             with torch.no_grad():
                 ref_lp = compute_sid_logprobs_batch(
-                    ref_model, ctx_padded, ctx_lengths, all_sids, n_layers)
-            ref_chosen_lp = ref_lp[:, 0].clone()   # (B,)
-            ref_rejected_lp = ref_lp[:, 1:].clone() # (B, N_rej)
-            del ref_lp
+                    ref_model, ctx_exp, len_exp, all_sids, n_layers)
 
             # Policy model log-probs (with grad, gradient-checkpointed)
             policy_lp = compute_sid_logprobs_batch(
-                raw_policy, ctx_padded, ctx_lengths, all_sids, n_layers)
-            policy_chosen_lp = policy_lp[:, 0]
-            policy_rejected_lp = policy_lp[:, 1:]
+                raw_policy, ctx_exp, len_exp, all_sids, n_layers)
 
             dpo_loss_val = softmax_dpo_loss(
-                policy_chosen_lp, policy_rejected_lp,
-                ref_chosen_lp, ref_rejected_lp,
-                rej_mask, beta=dpo_beta,
+                policy_lp, ref_lp, sample_offsets, beta=dpo_beta,
             )
 
             (dpo_weight * dpo_loss_val).backward()
-            del ctx_padded, ctx_lengths, all_sids, chosen_sids, rej_sids, rej_mask
-            del policy_lp, policy_chosen_lp, policy_rejected_lp
-            del ref_chosen_lp, ref_rejected_lp
+            del ctx_padded_dpo, ctx_lengths_dpo, all_sids, sample_offsets
+            del ctx_exp, len_exp, policy_lp, ref_lp
 
         # ── Bucketed gradient all-reduce (uses pre-allocated buffer) ──
         if world_size > 1:
