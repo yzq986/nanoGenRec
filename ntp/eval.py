@@ -14,6 +14,7 @@ Usage:
 import json
 import os
 import random
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -282,7 +283,7 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
 
     if verbose:
         print(f"  Beam search recall on {len(eval_items):,} items "
-              f"(beam_size={recall_beam_size})")
+              f"(beam_size={recall_beam_size})", flush=True)
 
     recall_ks = [10, 50, 100, 500]
     item_recall = {k: 0 for k in recall_ks}
@@ -344,10 +345,11 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
             print(f"    [sample {idx}] ctx_len={len(item['context'])} "
                   f"target_sid={target_sid_str} target_cid={target_cid} "
                   f"items_mapped={n_items_mapped} {found_str}")
-            print(f"      top5: {' | '.join(top5_strs)}")
+            print(f"      top5: {' | '.join(top5_strs)}", flush=True)
 
-        # Progress
-        if verbose and (idx + 1) % 500 == 0:
+        # Progress — adaptive interval so small sample sizes still show updates
+        progress_interval = max(50, min(500, len(eval_items) // 5))
+        if verbose and (idx + 1) % progress_interval == 0:
             elapsed = time.time() - t0
             rate = (idx + 1) / elapsed
             remaining = (len(eval_items) - idx - 1) / rate
@@ -360,7 +362,8 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
             print(f"    beam {idx+1:,}/{len(eval_items):,} "
                   f"({rate:.1f}/s, ETA {eta_m}m{eta_s:02d}s) "
                   f"R@10={r10:.4f} R@500={r500:.4f} "
-                  f"SID_found={sid_found_rate:.4f} depth_acc={d_acc_str}")
+                  f"SID_found={sid_found_rate:.4f} depth_acc={d_acc_str}",
+                  flush=True)
 
     n = len(eval_items)
     target_sid_found_rate = target_sid_found / max(n, 1)

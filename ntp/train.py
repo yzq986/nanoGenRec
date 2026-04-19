@@ -56,7 +56,7 @@ def cleanup_ddp():
 
 def log(is_main, msg):
     if is_main:
-        print(msg)
+        print(msg, flush=True)
 
 
 # ============================================================
@@ -1034,7 +1034,8 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
         print(f"  Depth hit@10 (prefix): {[f'{h:.3f}' for h in global_depth_h10]}")
         print(f"  Depth hit@10 (indep):  {[f'{h:.3f}' for h in global_depth_h10_indep]}")
         print(f"  Eval items: {int(total_eval_items):,}, "
-              f"positions: {int(total_positions):,} (across {world_size} ranks)")
+              f"positions: {int(total_positions):,} (across {world_size} ranks)",
+              flush=True)
 
     # ── Beam search recall (split 5K across ranks) ──
     log(is_main, f"  Building sid_to_items from {sid_cache_dir}")
