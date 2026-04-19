@@ -36,7 +36,7 @@ from gr_demo.ntp.train import (
     setup_ddp, cleanup_ddp, log, format_eta, save_checkpoint,
 )
 from gr_demo.rl.dpo import (
-    compute_sid_logprobs_batch, softmax_dpo_loss,
+    compute_sid_logprobs_batch, softmax_dpo_loss, _freeze_moe_bias,
 )
 from gr_demo.rl.preference import load_preference_shard
 
@@ -395,6 +395,12 @@ def train_dpo(
         del padded, input_tokens, target_tokens, valid_mask, train_mask
 
         if dpo_weight > 0 and dpo_loader is not None:
+          # Freeze MoE expert_bias for the ENTIRE DPO section (forward + backward).
+          # Gradient checkpointing recomputes forward during backward(); if
+          # expert_bias changed between the original forward and the recompute,
+          # MoE router decisions differ → intermediate tensor shapes differ → crash.
+          # The freeze must cover backward() too, not just the forward call.
+          with _freeze_moe_bias(raw_policy):
             dpo_batch = _next_dpo_batch()
             ctx_padded, ctx_lengths, chosen_sids, rej_sids, rej_mask = dpo_batch
             ctx_padded = ctx_padded.to(device, non_blocking=True)
@@ -418,7 +424,7 @@ def train_dpo(
             ref_rejected_lp = ref_lp[:, 1:].clone() # (B, N_rej)
             del ref_lp
 
-            # Policy model log-probs (with grad, micro-batched)
+            # Policy model log-probs (with grad, gradient-checkpointed)
             policy_lp = compute_sid_logprobs_batch(
                 raw_policy, ctx_padded, ctx_lengths, all_sids, n_layers)
             policy_chosen_lp = policy_lp[:, 0]

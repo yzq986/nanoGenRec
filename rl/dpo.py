@@ -175,37 +175,36 @@ def compute_sid_logprobs_batch(
     if total <= max_chunk:
         lp = compute_sid_logprobs(model, ctx_exp, len_exp, sids_flat, n_layers)
     else:
-        # Freeze MoE expert_bias updates during checkpointed forward to ensure
-        # idempotent forward: recompute in backward must produce identical shapes.
-        # See SparseMoEBlock docstring for details.
-        ctx_mgr = _freeze_moe_bias(model) if use_ckpt else contextmanager(lambda: (yield))()
-        with ctx_mgr:
-            chunks = []
-            for start in range(0, total, max_chunk):
-                end = min(start + max_chunk, total)
-                if use_ckpt:
-                    # Gradient checkpointing: don't save intermediate activations
-                    # during forward; recompute them during backward.
-                    # Peak memory = 1 chunk (constant), not N_chunks.
-                    chunk_lp = torch_checkpoint(
-                        _compute_chunk_logprobs,
-                        model,
-                        ctx_exp[start:end],
-                        len_exp[start:end],
-                        sids_flat[start:end],
-                        n_layers,
-                        use_reentrant=False,
-                    )
-                else:
-                    chunk_lp = compute_sid_logprobs(
-                        model,
-                        ctx_exp[start:end],
-                        len_exp[start:end],
-                        sids_flat[start:end],
-                        n_layers,
-                    )
-                chunks.append(chunk_lp)
-            lp = torch.cat(chunks, dim=0)
+        # NOTE: when use_ckpt=True, the caller MUST wrap both this call AND
+        # the subsequent backward() inside _freeze_moe_bias(model) to ensure
+        # the recompute during backward sees the same MoE router state.
+        # See trainer.py's DPO section and SparseMoEBlock docstring.
+        chunks = []
+        for start in range(0, total, max_chunk):
+            end = min(start + max_chunk, total)
+            if use_ckpt:
+                # Gradient checkpointing: don't save intermediate activations
+                # during forward; recompute them during backward.
+                # Peak memory = 1 chunk (constant), not N_chunks.
+                chunk_lp = torch_checkpoint(
+                    _compute_chunk_logprobs,
+                    model,
+                    ctx_exp[start:end],
+                    len_exp[start:end],
+                    sids_flat[start:end],
+                    n_layers,
+                    use_reentrant=False,
+                )
+            else:
+                chunk_lp = compute_sid_logprobs(
+                    model,
+                    ctx_exp[start:end],
+                    len_exp[start:end],
+                    sids_flat[start:end],
+                    n_layers,
+                )
+            chunks.append(chunk_lp)
+        lp = torch.cat(chunks, dim=0)
 
     return lp.reshape(B, K)
 
