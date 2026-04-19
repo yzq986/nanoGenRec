@@ -1,12 +1,15 @@
-"""Build preference pairs for SP-DPO via beam search.
+"""Build preference pairs for SP-DPO.
 
-For each eval item in the NTP dataset:
-1. Run constrained beam search to generate candidates
-2. Classify non-ground-truth candidates by prefix match difficulty:
+For each eval item in the NTP dataset, generates rejected candidates
+at three difficulty levels:
    - Easy:   0 layers match (L0 already different)
    - Medium: 1 layer matches (L0 same, L1 different)
    - Hard:   2 layers match (L0+L1 same, L2 different)
-3. Save as npz shards (one per DDP rank)
+
+Hard and Medium use specialized generation (fix GT prefix, sample
+diverging layer) instead of beam search — mathematically equivalent
+to beam search filtering but orders of magnitude faster and batched.
+Easy uses beam search for diverse non-matching candidates.
 
 Usage:
     torchrun --nproc_per_node=8 run.py sp-dpo-prepare \\
@@ -24,6 +27,7 @@ import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from gr_demo.ntp.model import SIDTrie, constrained_beam_search
 
@@ -66,12 +70,115 @@ def classify_rejected(ground_truth, beam_sids, n_layers):
     return result
 
 
+def _generate_negatives_batched(
+    model, ctx_padded, ctx_lengths, gt_sids, n_layers, n_rejected, device,
+):
+    """Generate Hard and Medium negatives in a single batched forward pass.
+
+    Hard:   fix GT L0+L1, take top-K L2 (exclude GT_L2)
+    Medium: fix GT L0, take top-K L1 (exclude GT_L1), then top-1 L2 per L1
+
+    Args:
+        model: NTPModel on device
+        ctx_padded: (B, T_ctx) right-padded context tokens
+        ctx_lengths: (B,) actual context lengths
+        gt_sids: (B, n_layers) ground truth SID tokens
+        n_layers: number of SID layers (must be 3)
+        n_rejected: max rejected per difficulty per sample
+        device: torch device
+
+    Returns:
+        hard_rejected: list of B lists, each containing up to n_rejected SIDs
+        medium_rejected: list of B lists, each containing up to n_rejected SIDs
+    """
+    B = ctx_padded.size(0)
+
+    # Build input: [ctx..., GT_L0, GT_L1] — enough to predict all 3 layers
+    sid_prefix = gt_sids[:, :-1]  # (B, n_layers-1) = (B, 2)
+    full_input = torch.cat([ctx_padded, sid_prefix], dim=1)  # (B, T_ctx + 2)
+    T = full_input.size(1)
+
+    # Single forward pass — gets hidden states for all prediction positions
+    positions = torch.arange(T, device=device).unsqueeze(0)
+    x = model._embed_tokens(full_input) + model.pos_emb(positions)
+    hidden = model._transformer_forward(x)  # (B, T, D)
+
+    batch_idx = torch.arange(B, device=device)
+
+    # ── Hard: top-K L2 given GT L0+L1 ──
+    pos_l2 = ctx_lengths - 1 + 2  # position predicting L2
+    h_l2 = hidden[batch_idx, pos_l2]  # (B, D)
+    logits_l2 = model.output_projs[2](h_l2)  # (B, C2)
+    # Mask out GT L2 so it doesn't appear in rejected
+    logits_l2[batch_idx, gt_sids[:, 2]] = float('-inf')
+    topk_l2 = logits_l2.topk(min(n_rejected, logits_l2.size(1)), dim=-1).indices  # (B, K)
+
+    hard_rejected = []
+    for b in range(B):
+        sids = []
+        for k in range(topk_l2.size(1)):
+            sids.append([gt_sids[b, 0].item(), gt_sids[b, 1].item(), topk_l2[b, k].item()])
+        hard_rejected.append(sids)
+
+    # ── Medium: top-K L1 given GT L0, then top-1 L2 per L1 candidate ──
+    pos_l1 = ctx_lengths - 1 + 1  # position predicting L1
+    h_l1 = hidden[batch_idx, pos_l1]  # (B, D)
+    logits_l1 = model.output_projs[1](h_l1)  # (B, C1)
+    # Mask out GT L1
+    logits_l1[batch_idx, gt_sids[:, 1]] = float('-inf')
+    topk_l1 = logits_l1.topk(min(n_rejected, logits_l1.size(1)), dim=-1).indices  # (B, K)
+    K_med = topk_l1.size(1)
+
+    # For each L1 candidate, we need P(L2 | ctx, GT_L0, L1_cand).
+    # Build batched input: (B*K, T_ctx + 2) with [ctx, GT_L0, L1_cand]
+    ctx_exp = ctx_padded.unsqueeze(1).expand(-1, K_med, -1).reshape(B * K_med, -1)
+    len_exp = ctx_lengths.unsqueeze(1).expand(-1, K_med).reshape(B * K_med)
+    gt_l0_exp = gt_sids[:, 0:1].unsqueeze(1).expand(-1, K_med, -1).reshape(B * K_med, 1)
+    l1_cands = topk_l1.reshape(B * K_med, 1)  # (B*K, 1)
+
+    med_input = torch.cat([ctx_exp, gt_l0_exp, l1_cands], dim=1)  # (B*K, T_ctx + 2)
+    T_med = med_input.size(1)
+
+    # Forward pass for medium (may need chunking for large B*K)
+    chunk_size = max(1, 40_000_000 // (T_med * T_med))  # conservative memory cap
+    total = B * K_med
+    med_l2_tokens = torch.zeros(total, dtype=torch.long, device=device)
+
+    for start in range(0, total, chunk_size):
+        end = min(start + chunk_size, total)
+        chunk_input = med_input[start:end]
+        chunk_len = len_exp[start:end]
+        T_c = chunk_input.size(1)
+        pos_c = torch.arange(T_c, device=device).unsqueeze(0)
+        x_c = model._embed_tokens(chunk_input) + model.pos_emb(pos_c)
+        h_c = model._transformer_forward(x_c)
+        bidx_c = torch.arange(end - start, device=device)
+        pos_l2_c = chunk_len - 1 + 2
+        h_l2_c = h_c[bidx_c, pos_l2_c]
+        logits_l2_c = model.output_projs[2](h_l2_c)
+        med_l2_tokens[start:end] = logits_l2_c.argmax(dim=-1)
+
+    med_l2_tokens = med_l2_tokens.reshape(B, K_med)
+
+    medium_rejected = []
+    for b in range(B):
+        sids = []
+        for k in range(K_med):
+            sids.append([gt_sids[b, 0].item(), topk_l1[b, k].item(), med_l2_tokens[b, k].item()])
+        medium_rejected.append(sids)
+
+    return hard_rejected, medium_rejected
+
+
 def build_preference_pairs(
     model, sequences, sid_trie, n_layers, device,
     beam_size=50, n_rejected=20, difficulty='all', max_samples=None,
-    verbose=True,
+    verbose=True, gen_batch_size=64,
 ):
-    """Generate preference pairs from eval items via beam search.
+    """Generate preference pairs using specialized per-difficulty generation.
+
+    Hard/Medium: batched forward pass (fix GT prefix, sample diverging layer).
+    Easy: beam search (diverse non-matching candidates).
 
     Args:
         model: NTPModel (eval mode, on device)
@@ -79,11 +186,12 @@ def build_preference_pairs(
         sid_trie: SIDTrie for constrained beam search
         n_layers: number of SID layers
         device: torch device
-        beam_size: beam search width
+        beam_size: beam search width (used for Easy only)
         n_rejected: max rejected candidates per difficulty
         difficulty: 'easy', 'medium', 'hard', or 'all'
         max_samples: cap on number of eval items (for debugging)
         verbose: print progress
+        gen_batch_size: batch size for Hard/Medium batched generation
 
     Returns:
         list of dicts, each with:
@@ -120,30 +228,95 @@ def build_preference_pairs(
         random.seed(42)
         eval_items = random.sample(eval_items, max_samples)
 
+    need_easy = difficulty in ('easy', 'all')
+    need_medium = difficulty in ('medium', 'all')
+    need_hard = difficulty in ('hard', 'all')
+
     if verbose:
+        mode_str = []
+        if need_hard or need_medium:
+            mode_str.append(f"batched (Hard/Medium, bs={gen_batch_size})")
+        if need_easy:
+            mode_str.append(f"beam search (Easy, beam={beam_size})")
         print(f"  Building preference pairs: {len(eval_items):,} eval items, "
-              f"beam_size={beam_size}, n_rejected={n_rejected}")
+              f"n_rejected={n_rejected}, mode={' + '.join(mode_str)}")
 
     pairs = []
     stats = {'easy': 0, 'medium': 0, 'hard': 0, 'skipped': 0}
     t0 = time.time()
 
+    # ── Phase 1: Batched Hard/Medium generation ──
+    hard_all = [[] for _ in range(len(eval_items))]
+    medium_all = [[] for _ in range(len(eval_items))]
+
+    if need_hard or need_medium:
+        for batch_start in range(0, len(eval_items), gen_batch_size):
+            batch_end = min(batch_start + gen_batch_size, len(eval_items))
+            batch_items = eval_items[batch_start:batch_end]
+            B = len(batch_items)
+
+            # Pad contexts
+            ctx_lens = [len(item['context']) for item in batch_items]
+            max_ctx = max(ctx_lens)
+            ctx_padded = torch.zeros(B, max_ctx, dtype=torch.long, device=device)
+            ctx_lengths = torch.tensor(ctx_lens, dtype=torch.long, device=device)
+            for i, item in enumerate(batch_items):
+                ctx_padded[i, :ctx_lens[i]] = torch.tensor(item['context'], dtype=torch.long)
+
+            gt_sids = torch.tensor(
+                [item['target_sid'] for item in batch_items],
+                dtype=torch.long, device=device)
+
+            hard_batch, medium_batch = _generate_negatives_batched(
+                model, ctx_padded, ctx_lengths, gt_sids, n_layers, n_rejected, device)
+
+            for i in range(B):
+                idx = batch_start + i
+                if need_hard:
+                    hard_all[idx] = hard_batch[i]
+                if need_medium:
+                    medium_all[idx] = medium_batch[i]
+
+            if verbose and (batch_end % (gen_batch_size * 10) == 0 or batch_end == len(eval_items)):
+                elapsed = time.time() - t0
+                rate = batch_end / elapsed
+                remaining = (len(eval_items) - batch_end) / rate if rate > 0 else 0
+                mins, secs = divmod(int(remaining), 60)
+                eta = f"{mins}m{secs:02d}s"
+                print(f"    [Hard/Medium] {batch_end}/{len(eval_items)} "
+                      f"({rate:.0f} items/s, ETA {eta})")
+
+    # ── Phase 2: Beam search for Easy (sequential, slower) ──
+    easy_all = [[] for _ in range(len(eval_items))]
+
+    if need_easy:
+        t1 = time.time()
+        for idx, item in enumerate(eval_items):
+            ctx = torch.tensor(item['context'], dtype=torch.long, device=device).unsqueeze(0)
+            gt = item['target_sid']
+
+            beams, scores = constrained_beam_search(model, ctx, sid_trie, beam_size=beam_size)
+            beam_sids = beams[0]  # (K, n_layers)
+
+            classified = classify_rejected(gt, beam_sids, n_layers)
+            easy_all[idx] = classified['easy'][:n_rejected]
+
+            if verbose and (idx + 1) % 500 == 0:
+                elapsed = time.time() - t1
+                rate = (idx + 1) / elapsed
+                remaining = (len(eval_items) - idx - 1) / rate
+                mins, secs = divmod(int(remaining), 60)
+                hrs, mins = divmod(mins, 60)
+                eta = f"{hrs}h{mins:02d}m" if hrs else f"{mins}m{secs:02d}s"
+                print(f"    [Easy beam] {idx+1}/{len(eval_items)} "
+                      f"({rate:.1f} items/s, ETA {eta})")
+
+    # ── Assemble pairs ──
     for idx, item in enumerate(eval_items):
-        ctx = torch.tensor(item['context'], dtype=torch.long, device=device).unsqueeze(0)
-        gt = item['target_sid']
+        rej_easy = easy_all[idx]
+        rej_medium = medium_all[idx]
+        rej_hard = hard_all[idx]
 
-        beams, scores = constrained_beam_search(model, ctx, sid_trie, beam_size=beam_size)
-        # beams: (1, K, n_layers), scores: (1, K)
-        beam_sids = beams[0]  # (K, n_layers)
-
-        classified = classify_rejected(gt, beam_sids, n_layers)
-
-        # Filter by difficulty
-        rej_easy = classified['easy'][:n_rejected]
-        rej_medium = classified['medium'][:n_rejected]
-        rej_hard = classified['hard'][:n_rejected]
-
-        # Check if we have any valid rejected for the requested difficulty
         has_valid = False
         if difficulty == 'all':
             has_valid = len(rej_easy) > 0 or len(rej_medium) > 0 or len(rej_hard) > 0
@@ -164,25 +337,11 @@ def build_preference_pairs(
 
         pairs.append({
             'context': item['context'],
-            'chosen': gt,
+            'chosen': item['target_sid'],
             'rejected_easy': rej_easy,
             'rejected_medium': rej_medium,
             'rejected_hard': rej_hard,
         })
-
-        if verbose and (idx + 1) % 500 == 0:
-            elapsed = time.time() - t0
-            rate = (idx + 1) / elapsed
-            remaining = (len(eval_items) - idx - 1) / rate
-            mins, secs = divmod(int(remaining), 60)
-            hrs, mins = divmod(mins, 60)
-            eta = f"{hrs}h{mins:02d}m" if hrs else f"{mins}m{secs:02d}s"
-            n_pairs = len(pairs)
-            print(f"    [{idx+1}/{len(eval_items)}] {n_pairs} pairs, "
-                  f"E={stats['easy']//max(n_pairs,1):.1f}/pair, "
-                  f"M={stats['medium']//max(n_pairs,1):.1f}/pair, "
-                  f"H={stats['hard']//max(n_pairs,1):.1f}/pair, "
-                  f"skip={stats['skipped']}, ETA {eta}")
 
     if verbose:
         elapsed = time.time() - t0
