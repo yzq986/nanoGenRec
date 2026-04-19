@@ -38,6 +38,8 @@ NTP_DATA="experiments/ntp_data/exp016-14d"
 SFT_CKPT="experiments/ntp_checkpoints/exp016-B-14d-S"
 PREF_DIR="experiments/rf_dpo_data/exp018"
 CKPT_DIR="experiments/ntp_checkpoints"
+DATE_START="2026-03-18"
+DATE_END="2026-03-31"
 
 # Use best SP-DPO output as reference (fixed-medium = best Recall)
 if [ -f "${CKPT_DIR}/exp017-fixed-medium/probe.pt" ]; then
@@ -57,6 +59,7 @@ echo "  SFT baseline:  ${SFT_CKPT}"
 echo "  Reference:      ${REF_CKPT}"
 echo "  NTP data:       ${NTP_DATA}"
 echo "  SID cache:      ${SID_CACHE}"
+echo "  Date range:     ${DATE_START} ~ ${DATE_END} (14d)"
 echo "  GPUs:           ${N_GPUS}"
 echo "  Start from:     config #${START_FROM}"
 echo "============================================================"
@@ -88,6 +91,8 @@ if [ "${SKIP_SMOKE}" != true ] && [ "${START_FROM}" -le 1 ]; then
     python run.py rf-dpo-prepare \
         --sid_cache "${SID_CACHE}" \
         --output_dir "${SMOKE_PREF}" \
+        --date_start "${DATE_START}" \
+        --date_end "${DATE_END}" \
         --n_rejected 5 \
         --max_samples 100 \
         --difficulty all
@@ -135,6 +140,8 @@ generate_rf_preferences() {
     python run.py rf-dpo-prepare \
         --sid_cache "${SID_CACHE}" \
         --output_dir "${OUTPUT}" \
+        --date_start "${DATE_START}" \
+        --date_end "${DATE_END}" \
         --n_rejected 20 \
         --difficulty "${DIFFICULTY}"
 
