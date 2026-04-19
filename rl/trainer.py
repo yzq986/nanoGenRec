@@ -215,14 +215,27 @@ def train_dpo(
     # ── Auto-cap NTP batch_size based on available GPU memory ──
     max_seq_len = max(len(t) for t in ntp_tokens_list) if ntp_tokens_list else 512
     gpu_mem_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
-    model_mem_gb = n_params * 4 * 4 / (1024 ** 3)  # policy weights + grads + adam states
-    ref_mem_gb = n_params * 4 / (1024 ** 3)         # ref weights only
+    # Static memory: policy (weights + grads + adam × 2) + ref (weights only)
+    #   45.8M params → model_mem = 45.8M×16/1G ≈ 0.7GB, ref = 0.18GB
+    model_mem_gb = n_params * 4 * 4 / (1024 ** 3)
+    ref_mem_gb = n_params * 4 / (1024 ** 3)
     avail_gb = gpu_mem_gb * 0.85 - model_mem_gb - ref_mem_gb
+    #   A100 40GB: avail = 39.5×0.85 - 0.7 - 0.18 ≈ 32.7 GB
+    #
     # Per-sample per-layer training memory (intermediates saved for backward):
-    #   Attention weights (pre+post dropout): H × S² × 8 bytes
-    #   Dropout mask:                         H × S² × 1 byte
-    #   QKV projections + attn_out + norms:   6 × S × D × 4 bytes
-    #   FFN intermediate + activation:        2 × S × 4D × 4 bytes
+    #   Component                              Formula              S=510,H=8,D=256
+    #   ─────────────────────────────────────────────────────────────────────────────
+    #   Attention weights (pre+post dropout)   H × S² × 8B         8×260K×8  = 16.6MB
+    #   Dropout mask                           H × S² × 1B         8×260K×1  =  2.1MB
+    #   QKV projections + attn_out + norms     6 × S × D × 4B      6×510×256×4= 3.1MB
+    #   FFN intermediate + activation (4×D)    2 × S × 4D × 4B     2×510×1K×4 = 4.2MB
+    #   ─────────────────────────────────────────────────────────────────────────────
+    #   Per layer total                                             ≈ 26 MB
+    #   × 6 layers                                                  ≈ 156 MB/sample
+    #
+    #   A100 40GB: 32.7GB / 156MB ≈ 213 samples
+    #   Verified: batch=267 OOM'd at 35.5GB allocated (actual ~133MB/sample),
+    #   formula overestimates by ~18% — safe margin for DPO forward + fragmentation.
     embed_dim = cfg.get('embed_dim', 256)
     n_tf_layers = cfg.get('n_transformer_layers', 6)
     n_heads = cfg.get('n_heads', 8)
