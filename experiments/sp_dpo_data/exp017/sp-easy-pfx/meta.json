@@ -1,0 +1,11 @@
+{
+  "n_shards": 8,
+  "n_layers": 3,
+  "beam_size": 50,
+  "n_rejected": 20,
+  "difficulty": "all",
+  "prefix_locked": true,
+  "sft_checkpoint": "experiments/ntp_checkpoints/exp017-spdpo-easy",
+  "preprocessed_dir": "experiments/ntp_data/exp016-14d",
+  "timestamp": "2026-04-19 14:43:18"
+}
