@@ -180,12 +180,9 @@ train_dpo() {
     echo "  λ=${DPO_WEIGHT}, β=${DPO_BETA}, lr=${LR}"
     echo "============================================================"
 
-    if [ -f "${OUTPUT}/probe.pt" ] && [ "${FORCE}" != true ]; then
-        echo "[${NAME}] Checkpoint found, skipping (use --force to re-run)"
-        return 0
+    if [ "${FORCE}" = true ] && [ -d "${OUTPUT}" ]; then
+        rm -rf "${OUTPUT}"
     fi
-
-    rm -rf "${OUTPUT}"
 
     local CMD_ARGS=(
         --sft_checkpoint "${REF_CKPT}"

@@ -514,57 +514,82 @@ def main():
             all_pairs.extend(pairs)
     log(is_main, f"  Preference pairs: {len(all_pairs):,} total from {n_pref_shards} shards")
 
-    # ── Determine difficulty from args or preference meta ──
-    difficulty = args.difficulty
-    pref_difficulty = pref_meta.get('difficulty', 'all') if os.path.exists(pref_meta_path) else 'all'
-    if difficulty == 'all' and pref_difficulty != 'all':
-        difficulty = pref_difficulty
-        log(is_main, f"  Using difficulty from preference meta: {difficulty}")
+    # ── Check if checkpoint already exists ──
+    ckpt_path = os.path.join(args.output_dir, 'probe.pt')
+    train_meta_path = os.path.join(args.output_dir, 'train_meta.json')
+    skip_train = os.path.exists(ckpt_path)
 
-    # ── Train ──
-    log(is_main, f"\n  Training SP-DPO (difficulty={difficulty})...")
-    model, avg_loss, n_params, train_log_data, train_summary = train_dpo(
-        ntp_tokens_list=tokens_list,
-        ntp_split_pos_list=split_pos_list,
-        preference_pairs=all_pairs,
-        n_clusters_per_layer=n_clusters_per_layer,
-        n_layers=n_layers,
-        sft_checkpoint=args.sft_checkpoint,
-        local_rank=local_rank,
-        world_size=world_size,
-        device=device,
-        is_main=is_main,
-        preprocessed_dir=args.preprocessed_dir,
-        sid_cache_dir=sid_cache_dir,
-        difficulty=difficulty,
-        dpo_weight=args.dpo_weight,
-        dpo_beta=args.dpo_beta,
-        lr=args.lr,
-        batch_size=args.batch_size,
-        dpo_batch_size=args.dpo_batch_size,
-        dpo_n_rejected=args.dpo_n_rejected,
-        max_steps=args.max_steps,
-    )
+    if skip_train:
+        log(is_main, f"\n  Checkpoint found at {args.output_dir}, skipping training.")
 
-    # ── Save checkpoint (rank 0 only) ──
-    if is_main:
-        log(is_main, f"\n  Saving checkpoint to {args.output_dir}")
-        save_checkpoint(
-            output_dir=args.output_dir,
-            probe=model,
+        # Check if eval already done
+        has_eval = False
+        if os.path.exists(train_meta_path):
+            with open(train_meta_path) as f:
+                existing_meta = json.load(f)
+            has_eval = 'eval' in existing_meta
+
+        if has_eval:
+            log(is_main, f"  Eval results already present, nothing to do.")
+            cleanup_ddp()
+            return
+
+        # Load existing checkpoint for eval
+        log(is_main, f"  Eval missing — loading checkpoint for eval...")
+        model, _ = load_model_from_checkpoint(args.output_dir, device)
+        model.eval()
+    else:
+        # ── Determine difficulty from args or preference meta ──
+        difficulty = args.difficulty
+        pref_difficulty = pref_meta.get('difficulty', 'all') if os.path.exists(pref_meta_path) else 'all'
+        if difficulty == 'all' and pref_difficulty != 'all':
+            difficulty = pref_difficulty
+            log(is_main, f"  Using difficulty from preference meta: {difficulty}")
+
+        # ── Train ──
+        log(is_main, f"\n  Training SP-DPO (difficulty={difficulty})...")
+        model, avg_loss, n_params, train_log_data, train_summary = train_dpo(
+            ntp_tokens_list=tokens_list,
+            ntp_split_pos_list=split_pos_list,
+            preference_pairs=all_pairs,
             n_clusters_per_layer=n_clusters_per_layer,
             n_layers=n_layers,
-            n_items=prep_meta['n_items'],
-            avg_loss=avg_loss,
-            n_params=n_params,
-            sid_cache_dir=sid_cache_dir,
+            sft_checkpoint=args.sft_checkpoint,
+            local_rank=local_rank,
+            world_size=world_size,
+            device=device,
+            is_main=is_main,
             preprocessed_dir=args.preprocessed_dir,
-            model_type=train_summary.get('model_type', 's-tier'),
-            n_train=prep_meta['n_seqs'],
-            n_eval=prep_meta['n_eval_items'],
-            train_log=train_log_data,
-            train_summary=train_summary,
+            sid_cache_dir=sid_cache_dir,
+            difficulty=difficulty,
+            dpo_weight=args.dpo_weight,
+            dpo_beta=args.dpo_beta,
+            lr=args.lr,
+            batch_size=args.batch_size,
+            dpo_batch_size=args.dpo_batch_size,
+            dpo_n_rejected=args.dpo_n_rejected,
+            max_steps=args.max_steps,
         )
+
+        # ── Save checkpoint (rank 0 only) ──
+        if is_main:
+            log(is_main, f"\n  Saving checkpoint to {args.output_dir}")
+            save_checkpoint(
+                output_dir=args.output_dir,
+                probe=model,
+                n_clusters_per_layer=n_clusters_per_layer,
+                n_layers=n_layers,
+                n_items=prep_meta['n_items'],
+                avg_loss=avg_loss,
+                n_params=n_params,
+                sid_cache_dir=sid_cache_dir,
+                preprocessed_dir=args.preprocessed_dir,
+                model_type=train_summary.get('model_type', 's-tier'),
+                n_train=prep_meta['n_seqs'],
+                n_eval=prep_meta['n_eval_items'],
+                train_log=train_log_data,
+                train_summary=train_summary,
+            )
 
     # ── Inline eval ──
     log(is_main, "\n  Running inline evaluation...")
@@ -584,14 +609,15 @@ def main():
 
     # ── Save eval results to train_meta ──
     if is_main and eval_results:
-        meta_path = os.path.join(args.output_dir, 'train_meta.json')
-        if os.path.exists(meta_path):
-            with open(meta_path) as f:
+        if os.path.exists(train_meta_path):
+            with open(train_meta_path) as f:
                 meta = json.load(f)
-            meta['eval'] = eval_results
-            with open(meta_path, 'w') as f:
-                json.dump(meta, f, indent=2)
-            log(is_main, f"  Eval results saved to train_meta.json")
+        else:
+            meta = {}
+        meta['eval'] = eval_results
+        with open(train_meta_path, 'w') as f:
+            json.dump(meta, f, indent=2)
+        log(is_main, f"  Eval results saved to train_meta.json")
 
     cleanup_ddp()
     log(is_main, "\nSP-DPO training complete!")
