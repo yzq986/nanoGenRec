@@ -188,6 +188,7 @@ train_dpo() {
         --preference_dir "${PREF_PATH}"
         --preprocessed_dir "${NTP_DATA}"
         --output_dir "${OUTPUT}"
+        --difficulty "${DIFFICULTY}"
         --dpo_weight "${DPO_WEIGHT}"
         --dpo_beta "${DPO_BETA}"
         --lr "${LR}"
@@ -209,13 +210,17 @@ train_dpo() {
 }
 
 # ============================================================
-# Shared: Easy stage (same for both configs)
-#   SFT beam search → Easy DPO training → eval
+# Shared: SFT beam search (once) + Easy stage
+#   One beam search with --difficulty all produces easy/medium/hard
+#   pairs in the same npz shards. No redundant beam search.
 # ============================================================
 if [ "${START_FROM}" -le 1 ]; then
-    generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft/easy" "easy"
+    # SFT beam search — all difficulties in one pass
+    generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft" "all"
+
+    # Easy training (shared by both configs)
     train_dpo "spdpo-easy" "easy" 0.1 0.1 1e-4 \
-        "${SFT_CKPT}" "${PREF_DIR}/sft/easy" \
+        "${SFT_CKPT}" "${PREF_DIR}/sft" \
         "Shared Easy: SFT beam search, λ=0.1, β=0.1"
 
     echo ""
@@ -227,7 +232,8 @@ fi
 
 # ============================================================
 # Config 1: Fixed SFT candidates → Easy → Medium → Hard
-#   All beam search from SFT model. Progressive training only.
+#   SFT beam search already done above (--difficulty all).
+#   Progressive training using SFT candidates for all stages.
 #   Isolates curriculum effect (no self-play re-generation).
 # ============================================================
 if [ "${START_FROM}" -le 2 ]; then
@@ -242,18 +248,16 @@ if [ "${START_FROM}" -le 2 ]; then
         exit 1
     fi
 
-    # SFT beam search for Medium/Hard
-    generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft/medium" "medium"
-    generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft/hard" "hard"
+    # SFT candidates already in ${PREF_DIR}/sft (from shared stage)
 
     # Medium (ref = Easy output, candidates from SFT)
     train_dpo "fixed-medium" "medium" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sft/medium" \
+        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sft" \
         "Config1 Medium: ref=Easy, SFT candidates"
 
     # Hard (ref = fixed-Medium output, candidates from SFT)
     train_dpo "fixed-hard" "hard" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-fixed-medium" "${PREF_DIR}/sft/hard" \
+        "${CKPT_DIR}/exp017-fixed-medium" "${PREF_DIR}/sft" \
         "Config1 Hard: ref=fixed-Medium, SFT candidates"
 
     echo ""
@@ -265,8 +269,8 @@ fi
 
 # ============================================================
 # Config 2: Self-play from Easy → Medium → Hard
-#   Easy model beam search once → use for Medium and Hard.
-#   Isolates self-play effect (candidates from improved model).
+#   Easy model beam search once (--difficulty all) → all difficulties.
+#   Same npz, trainer picks the right difficulty column.
 # ============================================================
 if [ "${START_FROM}" -le 3 ]; then
     echo ""
@@ -280,18 +284,17 @@ if [ "${START_FROM}" -le 3 ]; then
         exit 1
     fi
 
-    # Easy model beam search for Medium/Hard
-    generate_preferences "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy/medium" "medium"
-    generate_preferences "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy/hard" "hard"
+    # Easy model beam search — one pass, all difficulties
+    generate_preferences "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy" "all"
 
     # Medium (ref = Easy output, candidates from Easy model)
     train_dpo "sp-medium" "medium" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy/medium" \
+        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy" \
         "Config2 Medium: ref=Easy, Easy-model candidates"
 
     # Hard (ref = sp-Medium output, candidates from Easy model)
     train_dpo "sp-hard" "hard" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy/hard" \
+        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy" \
         "Config2 Hard: ref=sp-Medium, Easy-model candidates"
 
     echo ""
@@ -313,7 +316,7 @@ if [ "${START_FROM}" -le 4 ]; then
 
     # Uses self-play (Config 2) Medium checkpoint + Easy-model candidates
     train_dpo "sp-hard-lam05" "hard" 0.05 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy/hard" \
+        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy" \
         "λ ablation: Hard, λ=0.05 (self-play)"
 fi
 
@@ -324,7 +327,7 @@ if [ "${START_FROM}" -le 5 ]; then
     echo "============================================================"
 
     train_dpo "sp-hard-lam50" "hard" 0.5 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy/hard" \
+        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy" \
         "λ ablation: Hard, λ=0.5 (self-play)"
 fi
 
