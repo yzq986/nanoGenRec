@@ -131,18 +131,12 @@ generate_preferences() {
         REF_CKPT="${CKPT_DIR}/exp017-spdpo-medium"
     fi
 
-    # Hard needs wider beam to find enough L0+L1-matching candidates
-    local BEAM_SIZE=50
-    if [ "${DIFFICULTY}" = "hard" ]; then
-        BEAM_SIZE=200
-    fi
-
     if [ "${N_GPUS}" -gt 1 ]; then
         torchrun --nproc_per_node="${N_GPUS}" run.py sp-dpo-prepare \
             --sft_checkpoint "${REF_CKPT}" \
             --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${OUTPUT}" \
-            --beam_size "${BEAM_SIZE}" \
+            --beam_size 50 \
             --n_rejected 20 \
             --difficulty "${DIFFICULTY}"
     else
@@ -150,7 +144,7 @@ generate_preferences() {
             --sft_checkpoint "${REF_CKPT}" \
             --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${OUTPUT}" \
-            --beam_size "${BEAM_SIZE}" \
+            --beam_size 50 \
             --n_rejected 20 \
             --difficulty "${DIFFICULTY}"
     fi
@@ -287,9 +281,70 @@ if [ "${START_FROM}" -le 3 ]; then
 fi
 
 # ============================================================
-# Config 4-5: λ ablation on Progressive
+# Config 3b: Progressive Easy→Medium→Hard, NO re-generation
+#   (all preference pairs from SFT model, curriculum only)
+#   Ablation: isolate curriculum effect from self-play effect
 # ============================================================
 if [ "${START_FROM}" -le 4 ]; then
+    echo ""
+    echo "============================================================"
+    echo "Progressive SP-DPO (fixed SFT candidates, no re-generation)"
+    echo "============================================================"
+
+    # Generate all difficulties from SFT model (override REF_CKPT)
+    for DIFF in easy medium hard; do
+        FIXED_OUTPUT="${PREF_DIR}/fixed-sft/${DIFF}"
+        if [ -f "${FIXED_OUTPUT}/meta.json" ] && [ "${FORCE}" != true ]; then
+            echo "[Fixed-SFT] ${DIFF} pairs found, skipping"
+        else
+            if [ "${N_GPUS}" -gt 1 ]; then
+                torchrun --nproc_per_node="${N_GPUS}" run.py sp-dpo-prepare \
+                    --sft_checkpoint "${SFT_CKPT}" \
+                    --preprocessed_dir "${NTP_DATA}" \
+                    --output_dir "${FIXED_OUTPUT}" \
+                    --beam_size 50 \
+                    --n_rejected 20 \
+                    --difficulty "${DIFF}"
+            else
+                python run.py sp-dpo-prepare \
+                    --sft_checkpoint "${SFT_CKPT}" \
+                    --preprocessed_dir "${NTP_DATA}" \
+                    --output_dir "${FIXED_OUTPUT}" \
+                    --beam_size 50 \
+                    --n_rejected 20 \
+                    --difficulty "${DIFF}"
+            fi
+        fi
+    done
+
+    # Stage 1: Easy (reuse spdpo-easy if available, same SFT candidates)
+    if [ ! -f "${CKPT_DIR}/exp017-spdpo-fixed-easy/probe.pt" ]; then
+        train_dpo "spdpo-fixed-easy" "easy" 0.1 0.1 1e-4 \
+            "${SFT_CKPT}" "${PREF_DIR}/fixed-sft/easy" \
+            "Fixed-SFT Progressive 1/3: Easy"
+    fi
+
+    # Stage 2: Medium (ref=Easy output, but same SFT-generated candidates)
+    train_dpo "spdpo-fixed-medium" "medium" 0.1 0.1 1e-4 \
+        "${CKPT_DIR}/exp017-spdpo-fixed-easy" "${PREF_DIR}/fixed-sft/medium" \
+        "Fixed-SFT Progressive 2/3: Medium (ref=Easy, SFT candidates)"
+
+    # Stage 3: Hard (ref=Medium output, but same SFT-generated candidates)
+    train_dpo "spdpo-fixed-prog" "hard" 0.1 0.1 1e-4 \
+        "${CKPT_DIR}/exp017-spdpo-fixed-medium" "${PREF_DIR}/fixed-sft/hard" \
+        "Fixed-SFT Progressive 3/3: Hard (ref=Medium, SFT candidates)"
+
+    echo ""
+    echo ">>> Committing Fixed-SFT Progressive results..."
+    git add experiments/
+    git commit -m "EXP-017 partial: SP-DPO Progressive (fixed SFT candidates)" || echo "Nothing to commit"
+    ./push.sh
+fi
+
+# ============================================================
+# Config 5-6: λ ablation on Progressive
+# ============================================================
+if [ "${START_FROM}" -le 5 ]; then
     echo ""
     echo "============================================================"
     echo "λ ablation: Progressive SP-DPO with λ=0.05"
@@ -301,7 +356,7 @@ if [ "${START_FROM}" -le 4 ]; then
         "Progressive Hard, λ=0.05 (ablation)"
 fi
 
-if [ "${START_FROM}" -le 5 ]; then
+if [ "${START_FROM}" -le 6 ]; then
     echo ""
     echo "============================================================"
     echo "λ ablation: Progressive SP-DPO with λ=0.5"
@@ -328,9 +383,10 @@ git commit -m "EXP-017 results: SP-DPO Self-Play DPO Alignment" || echo "Nothing
 
 echo ""
 echo "EXP-017 done! Compare checkpoints:"
-echo "  Baseline (SFT):       ${SFT_CKPT}"
-echo "  SP-DPO Easy:          ${CKPT_DIR}/exp017-spdpo-easy"
-echo "  SP-DPO Hard (direct): ${CKPT_DIR}/exp017-spdpo-hard"
-echo "  SP-DPO Progressive:   ${CKPT_DIR}/exp017-spdpo-prog"
-echo "  SP-DPO λ=0.05:        ${CKPT_DIR}/exp017-spdpo-prog-lam05"
-echo "  SP-DPO λ=0.5:         ${CKPT_DIR}/exp017-spdpo-prog-lam50"
+echo "  Baseline (SFT):         ${SFT_CKPT}"
+echo "  SP-DPO Easy:            ${CKPT_DIR}/exp017-spdpo-easy"
+echo "  SP-DPO Hard (direct):   ${CKPT_DIR}/exp017-spdpo-hard"
+echo "  SP-DPO Progressive:     ${CKPT_DIR}/exp017-spdpo-prog"
+echo "  SP-DPO Prog (fixed):    ${CKPT_DIR}/exp017-spdpo-fixed-prog"
+echo "  SP-DPO λ=0.05:          ${CKPT_DIR}/exp017-spdpo-prog-lam05"
+echo "  SP-DPO λ=0.5:           ${CKPT_DIR}/exp017-spdpo-prog-lam50"
