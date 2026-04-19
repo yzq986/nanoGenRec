@@ -74,6 +74,9 @@ def main():
     elif command == 'sp-dpo-train':
         from gr_demo.rl.trainer import main as spdpo_train_main
         spdpo_train_main()
+    elif command == 'eval-ntp':
+        from gr_demo.rl.trainer import eval_main
+        eval_main()
     elif command == 'migrate-shards':
         from gr_demo.data.migrate_shards import main as migrate_main
         migrate_main()
@@ -81,7 +84,7 @@ def main():
         print(f"Unknown command: {command}")
         print("Available commands: train, eval, eval-all, compare, hyperparam, "
               "preprocess-sid, preprocess-ntp, train-ntp, sp-dpo-prepare, rf-dpo-prepare, "
-              "sp-dpo-train, pack, migrate-shards")
+              "sp-dpo-train, eval-ntp, pack, migrate-shards")
         sys.exit(1)
 
 

@@ -597,5 +597,83 @@ def main():
     log(is_main, "\nSP-DPO training complete!")
 
 
+def eval_main():
+    """Standalone eval for an existing checkpoint (no training)."""
+    parser = argparse.ArgumentParser(description='Eval NTP/DPO checkpoint')
+    parser.add_argument('--checkpoint', type=str, required=True,
+                        help='Path to checkpoint directory (containing probe.pt)')
+    parser.add_argument('--preprocessed_dir', type=str, default=None,
+                        help='Path to preprocessed NTP data (default: from train_meta)')
+    parser.add_argument('--sid_cache', type=str, default=None,
+                        help='Path to SID cache (default: from train_meta)')
+    parser.add_argument('--n_recall', type=int, default=1000,
+                        help='Total beam search recall samples (default: 1000)')
+    args = parser.parse_args()
+
+    local_rank, world_size, device, is_main = setup_ddp()
+
+    log(is_main, "=" * 60)
+    log(is_main, f"Eval checkpoint: {args.checkpoint}" +
+                 (f" (DDP x{world_size})" if world_size > 1 else ""))
+    log(is_main, "=" * 60)
+
+    # Load checkpoint
+    model, cfg = load_model_from_checkpoint(args.checkpoint, device)
+    model.eval()
+
+    # Resolve preprocessed_dir and sid_cache from train_meta if not given
+    meta_path = os.path.join(args.checkpoint, 'train_meta.json')
+    meta = {}
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            meta = json.load(f)
+
+    preprocessed_dir = args.preprocessed_dir or meta.get('preprocessed_dir')
+    sid_cache_dir = args.sid_cache or meta.get('sid_cache')
+    if not preprocessed_dir:
+        raise ValueError("--preprocessed_dir required (not found in train_meta)")
+    if not sid_cache_dir:
+        raise ValueError("--sid_cache required (not found in train_meta)")
+
+    # Load NTP data meta for n_layers / n_clusters
+    ntp_meta_path = os.path.join(preprocessed_dir, 'meta.json')
+    with open(ntp_meta_path) as f:
+        ntp_meta = json.load(f)
+    n_layers = ntp_meta['n_layers']
+    n_clusters_per_layer = ntp_meta['n_clusters_per_layer']
+
+    log(is_main, f"  preprocessed_dir: {preprocessed_dir}")
+    log(is_main, f"  sid_cache:        {sid_cache_dir}")
+    log(is_main, f"  n_recall:         {args.n_recall}")
+
+    # Run eval
+    from gr_demo.ntp.train import _run_inline_eval
+    eval_results = _run_inline_eval(
+        probe=model,
+        sid_cache_dir=sid_cache_dir,
+        preprocessed_dir=preprocessed_dir,
+        n_layers=n_layers,
+        n_clusters_per_layer=n_clusters_per_layer,
+        local_rank=local_rank,
+        world_size=world_size,
+        device=device,
+        is_main=is_main,
+        n_recall_total=args.n_recall,
+    )
+
+    # Save eval results to train_meta
+    if is_main and eval_results:
+        if os.path.exists(meta_path):
+            with open(meta_path) as f:
+                meta = json.load(f)
+        meta['eval'] = eval_results
+        with open(meta_path, 'w') as f:
+            json.dump(meta, f, indent=2)
+        log(is_main, f"\n  Eval results saved to {meta_path}")
+
+    cleanup_ddp()
+    log(is_main, "Eval complete!")
+
+
 if __name__ == '__main__':
     main()
