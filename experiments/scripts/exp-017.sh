@@ -119,10 +119,11 @@ generate_preferences() {
     local OUTPUT=$2
     local DIFFICULTY=$3
     local BEAM_SIZE=${4:-200}
+    local EXTRA_ARGS=${5:-}   # e.g. "--prefix_locked"
 
     echo ""
     echo "============================================================"
-    echo "[Preference] Generating ${DIFFICULTY} pairs (beam_size=${BEAM_SIZE})"
+    echo "[Preference] Generating ${DIFFICULTY} pairs (beam_size=${BEAM_SIZE}${EXTRA_ARGS:+ $EXTRA_ARGS})"
     echo "  Model: ${BEAM_MODEL}"
     echo "  Output: ${OUTPUT}"
     echo "============================================================"
@@ -139,7 +140,8 @@ generate_preferences() {
             --output_dir "${OUTPUT}" \
             --beam_size "${BEAM_SIZE}" \
             --n_rejected 20 \
-            --difficulty "${DIFFICULTY}"
+            --difficulty "${DIFFICULTY}" \
+            ${EXTRA_ARGS}
     else
         python run.py sp-dpo-prepare \
             --sft_checkpoint "${BEAM_MODEL}" \
@@ -147,7 +149,8 @@ generate_preferences() {
             --output_dir "${OUTPUT}" \
             --beam_size "${BEAM_SIZE}" \
             --n_rejected 20 \
-            --difficulty "${DIFFICULTY}"
+            --difficulty "${DIFFICULTY}" \
+            ${EXTRA_ARGS}
     fi
 
     echo "[Preference] ${DIFFICULTY} done → ${OUTPUT}"
@@ -306,10 +309,48 @@ if [ "${START_FROM}" -le 3 ]; then
 fi
 
 # ============================================================
-# Config 3-4: λ ablation on the better config
-#   (Run after comparing Config 1 vs Config 2)
+# Config 3: Prefix-locked sampling → Easy → Medium → Hard
+#   Same as Config 2 (self-play from Easy) but uses --prefix_locked
+#   to guarantee sufficient Medium/Hard candidates.
+#   Comparison: paper beam search (Config 2) vs prefix-locked (Config 3)
 # ============================================================
 if [ "${START_FROM}" -le 4 ]; then
+    echo ""
+    echo "============================================================"
+    echo "Config 3: Prefix-locked sampling from Easy model"
+    echo "============================================================"
+
+    if [ ! -f "${CKPT_DIR}/exp017-spdpo-easy/probe.pt" ]; then
+        echo "ERROR: Easy checkpoint missing. Run from --start-from=1"
+        exit 1
+    fi
+
+    # Easy model prefix-locked beam search — guaranteed M/H candidates
+    generate_preferences "${CKPT_DIR}/exp017-spdpo-easy" \
+        "${PREF_DIR}/sp-easy-pfx" "all" 200 "--prefix_locked"
+
+    # Medium (ref = Easy, prefix-locked candidates)
+    train_dpo "pfx-medium" "medium" 0.1 0.1 1e-4 \
+        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy-pfx" \
+        "Config3 Medium: ref=Easy, prefix-locked candidates"
+
+    # Hard (ref = pfx-Medium, prefix-locked candidates)
+    train_dpo "pfx-hard" "hard" 0.1 0.1 1e-4 \
+        "${CKPT_DIR}/exp017-pfx-medium" "${PREF_DIR}/sp-easy-pfx" \
+        "Config3 Hard: ref=pfx-Medium, prefix-locked candidates"
+
+    echo ""
+    echo ">>> Committing Config 3 results..."
+    git add experiments/
+    git commit -m "EXP-017 partial: Config 3 Prefix-locked sampling (E→M→H)" || echo "Nothing to commit"
+    ./push.sh
+fi
+
+# ============================================================
+# Config 4-5: λ ablation on the better config
+#   (Run after comparing Config 1 vs Config 2 vs Config 3)
+# ============================================================
+if [ "${START_FROM}" -le 5 ]; then
     echo ""
     echo "============================================================"
     echo "λ ablation: λ=0.05 on self-play Hard"
@@ -321,7 +362,7 @@ if [ "${START_FROM}" -le 4 ]; then
         "λ ablation: Hard, λ=0.05 (self-play)"
 fi
 
-if [ "${START_FROM}" -le 5 ]; then
+if [ "${START_FROM}" -le 6 ]; then
     echo ""
     echo "============================================================"
     echo "λ ablation: λ=0.5 on self-play Hard"
@@ -355,15 +396,20 @@ echo "  Config 1 (Fixed SFT candidates):"
 echo "    Medium:                  ${CKPT_DIR}/exp017-fixed-medium"
 echo "    Hard:                    ${CKPT_DIR}/exp017-fixed-hard"
 echo ""
-echo "  Config 2 (Self-play from Easy):"
+echo "  Config 2 (Self-play from Easy, paper beam search):"
 echo "    Medium:                  ${CKPT_DIR}/exp017-sp-medium"
 echo "    Hard:                    ${CKPT_DIR}/exp017-sp-hard"
+echo ""
+echo "  Config 3 (Self-play from Easy, prefix-locked):"
+echo "    Medium:                  ${CKPT_DIR}/exp017-pfx-medium"
+echo "    Hard:                    ${CKPT_DIR}/exp017-pfx-hard"
 echo ""
 echo "  λ ablation (self-play):"
 echo "    λ=0.05:                  ${CKPT_DIR}/exp017-sp-hard-lam05"
 echo "    λ=0.5:                   ${CKPT_DIR}/exp017-sp-hard-lam50"
 echo ""
-echo "Key comparison:"
-echo "  Config 1 vs Config 2 → isolates self-play re-generation effect"
-echo "  fixed-medium vs sp-medium → Medium stage comparison"
-echo "  fixed-hard vs sp-hard → Hard stage comparison"
+echo "Key comparisons:"
+echo "  Config 1 vs 2 → self-play re-generation effect"
+echo "  Config 2 vs 3 → prefix-locked vs paper beam search"
+echo "  fixed-medium vs sp-medium vs pfx-medium → Medium stage"
+echo "  fixed-hard vs sp-hard vs pfx-hard → Hard stage"

@@ -58,6 +58,7 @@ def constrained_beam_search(
     input_tokens: torch.Tensor,
     trie: SIDTrie,
     beam_size: int = 500,
+    prefix: torch.Tensor = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Trie-constrained beam search — every beam is a real SID.
 
@@ -72,6 +73,9 @@ def constrained_beam_search(
         input_tokens: (B, T) context tokens
         trie: SIDTrie built from sid_to_items
         beam_size: number of beams to keep
+        prefix: (B, P) optional fixed prefix tokens. Beam search starts from
+                layer P instead of 0. Use to lock L0 (P=1) or L0+L1 (P=2)
+                for targeted Medium/Hard candidate generation.
 
     Returns:
         beams: (B, actual_beams, n_layers) — token indices
@@ -81,10 +85,17 @@ def constrained_beam_search(
     device = input_tokens.device
     L = trie.n_layers
 
-    beams = torch.zeros(B, 1, 0, dtype=torch.long, device=device)
-    scores = torch.zeros(B, 1, device=device)
+    if prefix is not None:
+        P = prefix.size(1)
+        beams = prefix.unsqueeze(1)  # (B, 1, P)
+        scores = torch.zeros(B, 1, device=device)
+        start_step = P
+    else:
+        beams = torch.zeros(B, 1, 0, dtype=torch.long, device=device)
+        scores = torch.zeros(B, 1, device=device)
+        start_step = 0
 
-    for step in range(L):
+    for step in range(start_step, L):
         n_beams = beams.size(1)
         input_exp = input_tokens.unsqueeze(1).expand(-1, n_beams, -1).reshape(B * n_beams, -1)
         gen_exp = beams.reshape(B * n_beams, -1) if step > 0 else None

@@ -66,42 +66,78 @@ def classify_rejected(ground_truth, beam_sids, n_layers):
     return result
 
 
-def build_preference_pairs(
-    model, sequences, sid_trie, n_layers, device,
-    beam_size=50, n_rejected=20, difficulty='all', max_samples=None,
-    verbose=True,
+def _prefix_locked_generate(
+    model, ctx, gt, sid_trie, n_layers, device,
+    beam_size=50, n_rejected=20,
 ):
-    """Generate preference pairs from eval items via beam search.
+    """Progressive prefix-locked beam search for one eval item.
 
-    One beam search per eval item, classify results by prefix match.
-
-    Args:
-        model: NTPModel (eval mode, on device)
-        sequences: list of dicts from load_shard_full()
-        sid_trie: SIDTrie for constrained beam search
-        n_layers: number of SID layers
-        device: torch device
-        beam_size: beam search width
-        n_rejected: max rejected candidates per difficulty
-        difficulty: 'easy', 'medium', 'hard', or 'all'
-        max_samples: cap on number of eval items (for debugging)
-        verbose: print progress
+    Runs up to 3 beam searches with increasing prefix lock:
+    1. Full beam (no prefix) → Easy candidates (L0 ≠ GT)
+    2. Lock L0=GT → all results have L0 match → Medium (L1 ≠ GT) + Hard (L1=GT, L2≠GT)
+    3. Lock L0+L1=GT → all results have L0+L1 match → Hard (L2 ≠ GT)
 
     Returns:
-        list of dicts, each with:
-            'context': list[int] — context tokens
-            'chosen': list[int] — ground truth SID (n_layers)
-            'rejected_easy': list[list[int]] — easy rejected SIDs
-            'rejected_medium': list[list[int]] — medium rejected SIDs
-            'rejected_hard': list[list[int]] — hard rejected SIDs
+        (rej_easy, rej_medium, rej_hard) — each a list of SID lists, capped at n_rejected.
     """
-    # Extract eval items (same pattern as ntp/eval.py:252-273)
+    gt_tensor = torch.tensor(gt, dtype=torch.long, device=device)
+    seen = set()  # dedup across runs
+    seen.add(tuple(gt))  # exclude ground truth
+
+    rej_easy = []
+    rej_medium = []
+    rej_hard = []
+
+    def _collect(beam_sids):
+        for k in range(beam_sids.size(0)):
+            sid = beam_sids[k].tolist()
+            key = tuple(sid)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            match_depth = 0
+            for li in range(n_layers):
+                if sid[li] == gt[li]:
+                    match_depth += 1
+                else:
+                    break
+
+            if match_depth == 0 and len(rej_easy) < n_rejected:
+                rej_easy.append(sid)
+            elif match_depth == 1 and len(rej_medium) < n_rejected:
+                rej_medium.append(sid)
+            elif 2 <= match_depth < n_layers and len(rej_hard) < n_rejected:
+                rej_hard.append(sid)
+
+    # Pass 1: full beam → mostly Easy candidates
+    beams, _ = constrained_beam_search(model, ctx, sid_trie, beam_size=beam_size)
+    _collect(beams[0])
+
+    # Pass 2: lock L0 → Medium + Hard candidates
+    if len(rej_medium) < n_rejected or len(rej_hard) < n_rejected:
+        prefix_l0 = gt_tensor[:1].unsqueeze(0)  # (1, 1)
+        beams2, _ = constrained_beam_search(
+            model, ctx, sid_trie, beam_size=beam_size, prefix=prefix_l0)
+        _collect(beams2[0])
+
+    # Pass 3: lock L0+L1 → Hard candidates only
+    if len(rej_hard) < n_rejected and n_layers >= 3:
+        prefix_l01 = gt_tensor[:2].unsqueeze(0)  # (1, 2)
+        beams3, _ = constrained_beam_search(
+            model, ctx, sid_trie, beam_size=beam_size, prefix=prefix_l01)
+        _collect(beams3[0])
+
+    return rej_easy, rej_medium, rej_hard
+
+
+def _extract_eval_items(sequences, n_layers, max_samples=None):
+    """Extract eval items from NTP data sequences."""
     eval_items = []
     for seq in sequences:
         split_pos = seq['split_pos']
         tokens = seq['tokens']
         eval_cids = seq['eval_cids']
-        n_items_in_seq = len(tokens) // n_layers
         split_item_idx = split_pos // n_layers
 
         for ei in range(len(eval_cids)):
@@ -121,10 +157,52 @@ def build_preference_pairs(
     if max_samples and len(eval_items) > max_samples:
         random.seed(42)
         eval_items = random.sample(eval_items, max_samples)
+    return eval_items
 
+
+def build_preference_pairs(
+    model, sequences, sid_trie, n_layers, device,
+    beam_size=50, n_rejected=20, difficulty='all', max_samples=None,
+    verbose=True, prefix_locked=False,
+):
+    """Generate preference pairs from eval items via beam search.
+
+    Two modes:
+    - prefix_locked=False (paper): one beam search from L0, classify by prefix match.
+    - prefix_locked=True (ours): progressive prefix-locked beam search.
+      For each eval item, runs up to 3 beam searches:
+        1. Full beam (no prefix) → Easy candidates
+        2. Lock L0=GT → Medium+Hard candidates (guaranteed L0 match)
+        3. Lock L0+L1=GT → Hard candidates (guaranteed L0+L1 match)
+      Dedup across runs. Guarantees sufficient Medium/Hard candidates.
+
+    Args:
+        model: NTPModel (eval mode, on device)
+        sequences: list of dicts from load_shard_full()
+        sid_trie: SIDTrie for constrained beam search
+        n_layers: number of SID layers
+        device: torch device
+        beam_size: beam search width
+        n_rejected: max rejected candidates per difficulty
+        difficulty: 'easy', 'medium', 'hard', or 'all'
+        max_samples: cap on number of eval items (for debugging)
+        verbose: print progress
+        prefix_locked: if True, use progressive prefix-locked beam search
+
+    Returns:
+        list of dicts, each with:
+            'context': list[int] — context tokens
+            'chosen': list[int] — ground truth SID (n_layers)
+            'rejected_easy': list[list[int]] — easy rejected SIDs
+            'rejected_medium': list[list[int]] — medium rejected SIDs
+            'rejected_hard': list[list[int]] — hard rejected SIDs
+    """
+    eval_items = _extract_eval_items(sequences, n_layers, max_samples)
+
+    mode_str = "prefix-locked" if prefix_locked else "paper (full beam)"
     if verbose:
         print(f"  Building preference pairs: {len(eval_items):,} eval items, "
-              f"beam_size={beam_size}, n_rejected={n_rejected}")
+              f"beam_size={beam_size}, n_rejected={n_rejected}, mode={mode_str}")
 
     pairs = []
     stats = {'easy': 0, 'medium': 0, 'hard': 0, 'skipped': 0}
@@ -135,16 +213,21 @@ def build_preference_pairs(
         ctx = torch.tensor(item['context'], dtype=torch.long, device=device).unsqueeze(0)
         gt = item['target_sid']
 
-        beams, scores = constrained_beam_search(model, ctx, sid_trie, beam_size=beam_size)
-        # beams: (1, K, n_layers), scores: (1, K)
-        beam_sids = beams[0]  # (K, n_layers)
-
-        classified = classify_rejected(gt, beam_sids, n_layers)
-
-        # Filter by difficulty
-        rej_easy = classified['easy'][:n_rejected]
-        rej_medium = classified['medium'][:n_rejected]
-        rej_hard = classified['hard'][:n_rejected]
+        if prefix_locked:
+            # Progressive prefix-locked beam search
+            rej_easy, rej_medium, rej_hard = _prefix_locked_generate(
+                model, ctx, gt, sid_trie, n_layers, device,
+                beam_size=beam_size, n_rejected=n_rejected,
+            )
+        else:
+            # Paper: one beam search, classify by prefix match
+            beams, scores = constrained_beam_search(
+                model, ctx, sid_trie, beam_size=beam_size)
+            beam_sids = beams[0]  # (K, n_layers)
+            classified = classify_rejected(gt, beam_sids, n_layers)
+            rej_easy = classified['easy'][:n_rejected]
+            rej_medium = classified['medium'][:n_rejected]
+            rej_hard = classified['hard'][:n_rejected]
 
         # Check if we have any valid rejected for the requested difficulty
         has_valid = False
@@ -198,6 +281,7 @@ def build_preference_pairs(
         n = len(pairs)
         total_items = len(eval_items)
         print(f"  Done: {n:,} pairs from {total_items:,} eval items in {elapsed:.1f}s")
+        print(f"    Mode: {mode_str}")
         print(f"    Per-difficulty pair counts:")
         print(f"      Easy:   {pairs_with['easy']:,} pairs, {stats['easy']:,} rejected total "
               f"(avg {stats['easy']/max(pairs_with['easy'],1):.1f}/pair)")
@@ -362,6 +446,8 @@ def parse_args():
                         help='Which difficulty levels to include')
     parser.add_argument('--max_samples', type=int, default=None,
                         help='Cap on eval items (for debugging)')
+    parser.add_argument('--prefix_locked', action='store_true',
+                        help='Use prefix-locked beam search for guaranteed M/H candidates')
     return parser.parse_args()
 
 
@@ -386,6 +472,7 @@ def main():
         print(f"  Beam size:      {args.beam_size}")
         print(f"  N rejected:     {args.n_rejected}")
         print(f"  Difficulty:     {args.difficulty}")
+        print(f"  Prefix locked:  {args.prefix_locked}")
         print(f"  World size:     {world_size}")
 
     # Load meta
@@ -428,6 +515,7 @@ def main():
             difficulty=args.difficulty,
             max_samples=args.max_samples,
             verbose=is_main,
+            prefix_locked=args.prefix_locked,
         )
 
     # Save shard
@@ -446,6 +534,7 @@ def main():
             'beam_size': args.beam_size,
             'n_rejected': args.n_rejected,
             'difficulty': args.difficulty,
+            'prefix_locked': args.prefix_locked,
             'sft_checkpoint': args.sft_checkpoint,
             'preprocessed_dir': args.preprocessed_dir,
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
