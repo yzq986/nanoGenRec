@@ -185,6 +185,10 @@ Config 1, 2 及 λ 消融待完成。
 2. **L2 PPL 大幅改善** (-48.7%): Easy DPO 的 rejected 主要是 L0 就不同的候选，但训练过程中 chosen 的 L2 判别也被加强了 — 可能因为 DPO loss 对整个 SID 序列的 log-prob 做优化。
 3. **R@500 下降**: 长尾 recall 依赖绝对概率分布的广度，DPO 压缩了概率分布（集中在 top candidates），牺牲了长尾。
 
+**Engineering: KV cache beam search acceleration** (2026-04-19):
+
+Preference pair 生成是 beam search 密集任务。实现了 3 层 KV cache 优化，将 context encoding 冗余从 ~153C/item 降至 ~C/3/item。详见 [discussions/005](../discussions/005-beam-search-kv-cache.md)。预估 8xA100 上 45min → 3-5min。
+
 ### Next Steps
 
 1. 完成 Config 1 & 2 对比 — 渐进模型 vs 固定模型
