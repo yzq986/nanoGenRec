@@ -218,13 +218,15 @@ def train_dpo(
     model_mem_gb = n_params * 4 * 4 / (1024 ** 3)  # policy weights + grads + adam states
     ref_mem_gb = n_params * 4 / (1024 ** 3)         # ref weights only
     avail_gb = gpu_mem_gb * 0.85 - model_mem_gb - ref_mem_gb
-    # Per-sample: activations + attention matrices (dominant at long seq_len)
+    # Per-sample training memory (forward + backward):
+    #   Attention: n_heads × S² × (4B fwd + 4B grad + 1B dropout mask) × n_layers
+    #   Activations: S × D × ~24B (fwd + grad + optimizer) × n_layers
     embed_dim = cfg.get('embed_dim', 256)
     n_tf_layers = cfg.get('n_transformer_layers', 6)
     n_heads = cfg.get('n_heads', 8)
-    activation_bytes = max_seq_len * embed_dim * n_tf_layers * 12
-    attention_bytes = n_heads * max_seq_len * max_seq_len * n_tf_layers * 4
-    bytes_per_sample = activation_bytes + attention_bytes
+    attention_bytes = n_heads * max_seq_len * max_seq_len * 9 * n_tf_layers
+    activation_bytes = max_seq_len * embed_dim * 24 * n_tf_layers
+    bytes_per_sample = attention_bytes + activation_bytes
     mem_safe_bs = max(32, int(avail_gb * 1024 ** 3 / bytes_per_sample))
     if batch_size > mem_safe_bs:
         log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
