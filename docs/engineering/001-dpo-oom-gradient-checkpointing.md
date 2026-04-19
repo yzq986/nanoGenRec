@@ -153,8 +153,20 @@ NTP batch_size auto-cap 公式在 DPO 启用时额外扣除 3 GB：
 GPU util: 79-84% (stable, no wave peaks/valleys)
 GPU mem:  37.4-38.9 GB (91-95%)
 Rank variance: ~1.4 GB (normal)
-No OOM across 1420 steps.
+No OOM across 1555 steps.
+Throughput: ~17k tok/s — training time reduced by ~50% vs pre-fix.
 ```
+
+**意外收益：吞吐量翻倍**
+
+Gradient checkpointing 虽然让 DPO forward 算了两遍（理论上增加计算量），但实际训练速度反而翻倍。原因：修复前 6 个 chunk 的计算图（~60 GB）同时在显存中，CUDA 分配器处于极端内存压力下，导致：
+- 频繁 cache thrashing（分配器反复尝试合并/拆分碎片块）
+- GPU 计算被内存分配 stall 打断
+- 有效 GPU 利用率远低于理论值
+
+修复后峰值仅 ~10 GB（1 chunk），分配器压力消失，GPU 利用率稳定 79-84%。重算的计算开销远小于省下来的内存管理开销。
+
+**Lesson**: 显存优化不只是避免 OOM — 降低 peak memory 可以显著提升吞吐量，即使增加了计算量。
 
 ---
 
@@ -165,5 +177,7 @@ No OOM across 1420 steps.
 2. **freeze 的范围必须覆盖 backward()**：checkpoint 的 recompute 发生在 `backward()` 内部，不是 forward 循环内部。Context manager 必须包裹到 backward 之后。
 
 3. **CUDA 碎片化是隐性杀手**：即使峰值显存理论上够用，交替分配/释放不同大小的 tensor 会导致碎片化，使得小内存分配也可能失败。预分配和留余量比 empty_cache 更好。
+
+5. **降低 peak memory 可能提升吞吐量**：即使增加了计算量（checkpoint recompute），减轻内存压力消除了 CUDA allocator thrashing，实际吞吐量反而翻倍。显存优化不只是避免 OOM。
 
 4. **NTP batch 和 DPO batch 是独立概念**：auto-cap 公式只管 NTP batch。DPO 的显存开销需要单独考虑，通过 reserve 机制扣除。
