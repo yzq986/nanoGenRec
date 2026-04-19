@@ -1,0 +1,32 @@
+{
+  "n_train": 1692758,
+  "n_eval": 49399,
+  "n_clusters_per_layer": [
+    4096,
+    4096,
+    4096
+  ],
+  "n_layers": 3,
+  "n_items": 10,
+  "n_params": 45781504,
+  "train_loss": 2.956946,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "preprocessed_dir": "experiments/ntp_data/exp016-14d",
+  "timestamp": "2026-04-18 20:45:37",
+  "train": {
+    "n_params": 45781504,
+    "avg_ntp_loss": 2.790428,
+    "avg_dpo_loss": 1.665178,
+    "avg_total_loss": 2.956946,
+    "dpo_weight": 0.1,
+    "dpo_beta": 0.1,
+    "difficulty": "easy",
+    "total_tokens": 129949992,
+    "wall_time_s": 14377.3,
+    "batch_size": 46,
+    "dpo_batch_size": 4,
+    "world_size": 8,
+    "n_steps": 4599,
+    "n_dpo_pairs": 7655
+  }
+}
