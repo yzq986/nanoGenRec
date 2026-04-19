@@ -12,10 +12,10 @@
 # Baseline: EXP-016 14d-S (S-tier 17.5M, PPL=27.05, R@500=58.5%)
 # Data: EXP-016 preprocessed NTP data (4096×3, 14 days, 130M tokens)
 #
-# Two-config ablation design:
-#   Config 1 (Fixed): SFT beam search → Easy→eval→Medium→eval→Hard→eval
-#   Config 2 (Self-play): SFT → Easy → Easy beam search → Medium→eval→Hard→eval
-#   Shared Easy stage. Difference: candidates for Medium/Hard from SFT vs Easy model.
+# Two-config ablation (all prefix-locked sampling):
+#   Config 1: SFT prefix-locked → Easy → Medium → Hard (fixed model)
+#   Config 2: Easy model prefix-locked → Easy → Medium → Hard (progressive model)
+#   Shared Easy stage. Key question: does progressive model help?
 #
 # Prerequisites:
 #   - EXP-016 14d-S checkpoint (optimal data window per EXP-016)
@@ -232,142 +232,101 @@ if [ "${START_FROM}" -le 1 ]; then
 fi
 
 # ============================================================
-# Config 1: Fixed SFT candidates → Easy → Medium → Hard
-#   SFT beam search already done above (--difficulty all).
-#   Progressive training using SFT candidates for all stages.
-#   Isolates curriculum effect (no self-play re-generation).
+# Config 1: SFT prefix-locked → Easy → Medium → Hard
+#   SFT model generates M/H candidates via prefix-locked beam search.
+#   Isolates: progressive sampling without progressive model.
 # ============================================================
 if [ "${START_FROM}" -le 2 ]; then
     echo ""
     echo "============================================================"
-    echo "Config 1: Fixed SFT candidates (Easy → Medium → Hard)"
+    echo "Config 1: SFT prefix-locked (Easy → Medium → Hard)"
     echo "============================================================"
 
-    # Reuse Easy from shared stage
     if [ ! -f "${CKPT_DIR}/exp017-spdpo-easy/probe.pt" ]; then
         echo "ERROR: Easy checkpoint missing. Run from --start-from=1"
         exit 1
     fi
 
-    # SFT candidates already in ${PREF_DIR}/sft (from shared stage)
+    # SFT prefix-locked beam search for M/H candidates
+    generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft-pfx" "all" 200 "--prefix_locked"
 
-    # Medium (ref = Easy output, candidates from SFT)
+    # Medium (ref = Easy output, candidates from SFT prefix-locked)
     train_dpo "fixed-medium" "medium" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sft" \
-        "Config1 Medium: ref=Easy, SFT candidates"
+        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sft-pfx" \
+        "Config1 Medium: ref=Easy, SFT prefix-locked candidates"
 
-    # Hard (ref = fixed-Medium output, candidates from SFT)
+    # Hard (ref = fixed-Medium, candidates from SFT prefix-locked)
     train_dpo "fixed-hard" "hard" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-fixed-medium" "${PREF_DIR}/sft" \
-        "Config1 Hard: ref=fixed-Medium, SFT candidates"
+        "${CKPT_DIR}/exp017-fixed-medium" "${PREF_DIR}/sft-pfx" \
+        "Config1 Hard: ref=fixed-Medium, SFT prefix-locked candidates"
 
     echo ""
     echo ">>> Committing Config 1 results..."
     git add experiments/
-    git commit -m "EXP-017 partial: Config 1 Fixed SFT candidates (E→M→H)" || echo "Nothing to commit"
+    git commit -m "EXP-017 partial: Config 1 SFT prefix-locked (E→M→H)" || echo "Nothing to commit"
     ./push.sh
 fi
 
 # ============================================================
-# Config 2: Self-play from Easy → Medium → Hard
-#   Easy model beam search once (--difficulty all) → all difficulties.
-#   Same npz, trainer picks the right difficulty column.
+# Config 2: Easy model prefix-locked → Easy → Medium → Hard
+#   Easy model generates M/H candidates via prefix-locked beam search.
+#   Tests: does progressive model + progressive sampling help?
 # ============================================================
 if [ "${START_FROM}" -le 3 ]; then
     echo ""
     echo "============================================================"
-    echo "Config 2: Self-play from Easy (Easy → Medium → Hard)"
+    echo "Config 2: Easy model prefix-locked (Easy → Medium → Hard)"
     echo "============================================================"
 
-    # Reuse Easy from shared stage
     if [ ! -f "${CKPT_DIR}/exp017-spdpo-easy/probe.pt" ]; then
         echo "ERROR: Easy checkpoint missing. Run from --start-from=1"
         exit 1
     fi
 
-    # Easy model beam search — one pass, all difficulties
-    generate_preferences "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy" "all"
+    # Easy model prefix-locked beam search for M/H candidates
+    generate_preferences "${CKPT_DIR}/exp017-spdpo-easy" \
+        "${PREF_DIR}/sp-easy-pfx" "all" 200 "--prefix_locked"
 
-    # Medium (ref = Easy output, candidates from Easy model)
+    # Medium (ref = Easy, Easy-model prefix-locked candidates)
     train_dpo "sp-medium" "medium" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy" \
-        "Config2 Medium: ref=Easy, Easy-model candidates"
+        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy-pfx" \
+        "Config2 Medium: ref=Easy, Easy-model prefix-locked candidates"
 
-    # Hard (ref = sp-Medium output, candidates from Easy model)
+    # Hard (ref = sp-Medium, Easy-model prefix-locked candidates)
     train_dpo "sp-hard" "hard" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy" \
-        "Config2 Hard: ref=sp-Medium, Easy-model candidates"
+        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy-pfx" \
+        "Config2 Hard: ref=sp-Medium, Easy-model prefix-locked candidates"
 
     echo ""
     echo ">>> Committing Config 2 results..."
     git add experiments/
-    git commit -m "EXP-017 partial: Config 2 Self-play from Easy (E→M→H)" || echo "Nothing to commit"
+    git commit -m "EXP-017 partial: Config 2 Easy prefix-locked (E→M→H)" || echo "Nothing to commit"
     ./push.sh
 fi
 
 # ============================================================
-# Config 3: Prefix-locked sampling → Easy → Medium → Hard
-#   Same as Config 2 (self-play from Easy) but uses --prefix_locked
-#   to guarantee sufficient Medium/Hard candidates.
-#   Comparison: paper beam search (Config 2) vs prefix-locked (Config 3)
+# Config 3-4: λ ablation on the better config
 # ============================================================
 if [ "${START_FROM}" -le 4 ]; then
     echo ""
     echo "============================================================"
-    echo "Config 3: Prefix-locked sampling from Easy model"
+    echo "λ ablation: λ=0.05 on Easy prefix-locked Hard"
     echo "============================================================"
 
-    if [ ! -f "${CKPT_DIR}/exp017-spdpo-easy/probe.pt" ]; then
-        echo "ERROR: Easy checkpoint missing. Run from --start-from=1"
-        exit 1
-    fi
-
-    # Easy model prefix-locked beam search — guaranteed M/H candidates
-    generate_preferences "${CKPT_DIR}/exp017-spdpo-easy" \
-        "${PREF_DIR}/sp-easy-pfx" "all" 200 "--prefix_locked"
-
-    # Medium (ref = Easy, prefix-locked candidates)
-    train_dpo "pfx-medium" "medium" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-spdpo-easy" "${PREF_DIR}/sp-easy-pfx" \
-        "Config3 Medium: ref=Easy, prefix-locked candidates"
-
-    # Hard (ref = pfx-Medium, prefix-locked candidates)
-    train_dpo "pfx-hard" "hard" 0.1 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-pfx-medium" "${PREF_DIR}/sp-easy-pfx" \
-        "Config3 Hard: ref=pfx-Medium, prefix-locked candidates"
-
-    echo ""
-    echo ">>> Committing Config 3 results..."
-    git add experiments/
-    git commit -m "EXP-017 partial: Config 3 Prefix-locked sampling (E→M→H)" || echo "Nothing to commit"
-    ./push.sh
+    train_dpo "sp-hard-lam05" "hard" 0.05 0.1 1e-4 \
+        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy-pfx" \
+        "λ ablation: Hard, λ=0.05"
 fi
 
-# ============================================================
-# Config 4-5: λ ablation on the better config
-#   (Run after comparing Config 1 vs Config 2 vs Config 3)
-# ============================================================
 if [ "${START_FROM}" -le 5 ]; then
     echo ""
     echo "============================================================"
-    echo "λ ablation: λ=0.05 on self-play Hard"
-    echo "============================================================"
-
-    # Uses self-play (Config 2) Medium checkpoint + Easy-model candidates
-    train_dpo "sp-hard-lam05" "hard" 0.05 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy" \
-        "λ ablation: Hard, λ=0.05 (self-play)"
-fi
-
-if [ "${START_FROM}" -le 6 ]; then
-    echo ""
-    echo "============================================================"
-    echo "λ ablation: λ=0.5 on self-play Hard"
+    echo "λ ablation: λ=0.5 on Easy prefix-locked Hard"
     echo "============================================================"
 
     train_dpo "sp-hard-lam50" "hard" 0.5 0.1 1e-4 \
-        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy" \
-        "λ ablation: Hard, λ=0.5 (self-play)"
+        "${CKPT_DIR}/exp017-sp-medium" "${PREF_DIR}/sp-easy-pfx" \
+        "λ ablation: Hard, λ=0.5"
 fi
 
 # ============================================================
@@ -389,24 +348,18 @@ echo "EXP-017 done! Compare checkpoints:"
 echo "  Baseline (SFT):           ${SFT_CKPT}"
 echo "  SP-DPO Easy (shared):     ${CKPT_DIR}/exp017-spdpo-easy"
 echo ""
-echo "  Config 1 (Fixed SFT candidates):"
+echo "  Config 1 (SFT prefix-locked):"
 echo "    Medium:                  ${CKPT_DIR}/exp017-fixed-medium"
 echo "    Hard:                    ${CKPT_DIR}/exp017-fixed-hard"
 echo ""
-echo "  Config 2 (Self-play from Easy, paper beam search):"
+echo "  Config 2 (Easy model prefix-locked):"
 echo "    Medium:                  ${CKPT_DIR}/exp017-sp-medium"
 echo "    Hard:                    ${CKPT_DIR}/exp017-sp-hard"
 echo ""
-echo "  Config 3 (Self-play from Easy, prefix-locked):"
-echo "    Medium:                  ${CKPT_DIR}/exp017-pfx-medium"
-echo "    Hard:                    ${CKPT_DIR}/exp017-pfx-hard"
-echo ""
-echo "  λ ablation (self-play):"
+echo "  λ ablation:"
 echo "    λ=0.05:                  ${CKPT_DIR}/exp017-sp-hard-lam05"
 echo "    λ=0.5:                   ${CKPT_DIR}/exp017-sp-hard-lam50"
 echo ""
-echo "Key comparisons:"
-echo "  Config 1 vs 2 → self-play re-generation effect"
-echo "  Config 2 vs 3 → prefix-locked vs paper beam search"
-echo "  fixed-medium vs sp-medium vs pfx-medium → Medium stage"
-echo "  fixed-hard vs sp-hard vs pfx-hard → Hard stage"
+echo "Key comparison: Config 1 vs 2"
+echo "  Same prefix-locked sampling, different model (SFT vs Easy)"
+echo "  → isolates progressive model effect"
