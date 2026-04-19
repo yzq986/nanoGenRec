@@ -29,6 +29,7 @@ experiments/hyperparam/**/embeddings/
 experiments/hyperparam/**/smoke_test/
 *.pt
 *.bin
+*.npz
 *.safetensors
 
 # W&B logs
