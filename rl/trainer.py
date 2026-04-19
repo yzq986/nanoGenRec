@@ -237,20 +237,29 @@ def train_dpo(
     #    Per layer subtotal                                          ≈ 26.0 MB
     #    × 6 layers = formula_bytes                                  ≈ 156 MB/sample
     #
-    # 3) Safety factor × 1.2 for uncounted overhead:
+    # 3) Safety factor × 1.5 for uncounted overhead:
     #    - Norm layer inputs saved for backward (residual tensors)
     #    - Embedding lookup + position embedding tensors
-    #    - PyTorch allocator fragmentation & bookkeeping
-    #    formula_bytes × 1.2                                         ≈ 187 MB/sample
+    #    - PyTorch allocator fragmentation (grows non-linearly with batch size)
+    #    formula_bytes × 1.5                                         ≈ 234 MB/sample
     #
-    # Empirical validation (A100 40GB, S≈491, H=8, D=256, L=6):
-    #    batch=591 → OOM at 35.5GB alloc (tried +4.56GB)  ← no safety, no backward
-    #    batch=267 → OOM at 35.5GB alloc (tried +2.06GB)  ← 9B attn, no QKV/FFN
-    #    batch=224 → OOM at 38.3GB alloc (tried +1.73GB)  ← 9B attn + QKV + FFN
-    #    batch=46  → OK, ~8.6GB total                      ← old formula (too conservative)
-    #    Actual per-sample from batch=224 OOM: (38.3-0.9)/224 ≈ 167 MB
-    #    Formula with 1.2×: 187 MB → batch ≈ 32.7GB/187MB ≈ 179
-    #    Predicted usage: 179 × 167MB + 0.9 = 30.8GB (leaves 8.7GB for DPO + headroom)
+    # Empirical validation (A100 40GB, H=8, D=256, L=6):
+    #
+    #    batch | alloc   | +tried  | OOM point    | per-sample/layer
+    #    ──────┼─────────┼─────────┼──────────────┼─────────────────
+    #    591   | 35.5 GB | +4.56GB | dropout      |   —
+    #    267   | 35.5 GB | +2.06GB | dropout      |   —
+    #    224   | 38.3 GB | +1.73GB | softmax      |   —
+    #    187   | 38.0 GB | +1.45GB | baddbmm(Q@K) |  ~37 MB
+    #    46    |  8.6 GB |   OK    |   —          |  ~28.5 MB
+    #
+    #    Key finding: per-sample memory is NOT constant — it increases with batch
+    #    size due to allocator fragmentation on large tensors (e.g. 187×8×510²×4
+    #    = 1.45GB per attention layer allocation). batch=46: 28.5 MB/sample/layer,
+    #    batch=187: 37 MB/sample/layer (+30%).
+    #
+    #    With 1.5× safety: formula 156MB × 1.5 = 234MB → batch ≈ 143
+    #    Predicted: 143 × ~34MB/layer × 6 + 0.9 = ~30 GB (leaves ~9.5GB headroom)
     #
     embed_dim = cfg.get('embed_dim', 256)
     n_tf_layers = cfg.get('n_transformer_layers', 6)
@@ -259,7 +268,7 @@ def train_dpo(
     attn_bytes = n_heads * S2 * 9 * n_tf_layers
     linear_bytes = 6 * max_seq_len * embed_dim * 4 * n_tf_layers
     ffn_bytes = 2 * max_seq_len * embed_dim * 4 * 4 * n_tf_layers
-    bytes_per_sample = int((attn_bytes + linear_bytes + ffn_bytes) * 1.2)
+    bytes_per_sample = int((attn_bytes + linear_bytes + ffn_bytes) * 1.5)
     mem_safe_bs = max(32, int(avail_gb * 1024 ** 3 / bytes_per_sample))
     if batch_size > mem_safe_bs:
         log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
