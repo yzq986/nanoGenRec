@@ -131,12 +131,18 @@ generate_preferences() {
         REF_CKPT="${CKPT_DIR}/exp017-spdpo-medium"
     fi
 
+    # Hard needs wider beam to find enough L0+L1-matching candidates
+    local BEAM_SIZE=50
+    if [ "${DIFFICULTY}" = "hard" ]; then
+        BEAM_SIZE=200
+    fi
+
     if [ "${N_GPUS}" -gt 1 ]; then
         torchrun --nproc_per_node="${N_GPUS}" run.py sp-dpo-prepare \
             --sft_checkpoint "${REF_CKPT}" \
             --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${OUTPUT}" \
-            --beam_size 200 \
+            --beam_size "${BEAM_SIZE}" \
             --n_rejected 20 \
             --difficulty "${DIFFICULTY}"
     else
@@ -144,7 +150,7 @@ generate_preferences() {
             --sft_checkpoint "${REF_CKPT}" \
             --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${OUTPUT}" \
-            --beam_size 200 \
+            --beam_size "${BEAM_SIZE}" \
             --n_rejected 20 \
             --difficulty "${DIFFICULTY}"
     fi
