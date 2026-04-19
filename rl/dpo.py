@@ -38,10 +38,38 @@ Memory design (gradient checkpointing):
     so the two batch sizes are independently constrained.
 """
 
+from contextlib import contextmanager
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
+
+from gr_demo.ntp.model import SparseMoEBlock
+
+
+@contextmanager
+def _freeze_moe_bias(model):
+    """Temporarily freeze expert_bias updates in all SparseMoEBlock modules.
+
+    Required for gradient checkpointing compatibility: MoE's Loss-Free
+    bias update modifies expert_bias in-place during forward(), making
+    it non-idempotent. Checkpoint recomputes forward() during backward,
+    and the changed bias produces different router decisions → different
+    intermediate tensor shapes → RuntimeError.
+
+    This context manager sets freeze_bias=True on all SparseMoEBlock
+    modules, preventing bias updates during forward. NTP forward (not
+    checkpointed) still updates bias normally outside this context.
+    """
+    moe_blocks = [m for m in model.modules() if isinstance(m, SparseMoEBlock)]
+    for m in moe_blocks:
+        m.freeze_bias = True
+    try:
+        yield
+    finally:
+        for m in moe_blocks:
+            m.freeze_bias = False
 
 
 def compute_sid_logprobs(
@@ -147,32 +175,37 @@ def compute_sid_logprobs_batch(
     if total <= max_chunk:
         lp = compute_sid_logprobs(model, ctx_exp, len_exp, sids_flat, n_layers)
     else:
-        chunks = []
-        for start in range(0, total, max_chunk):
-            end = min(start + max_chunk, total)
-            if use_ckpt:
-                # Gradient checkpointing: don't save intermediate activations
-                # during forward; recompute them during backward.
-                # Peak memory = 1 chunk (constant), not N_chunks.
-                chunk_lp = torch_checkpoint(
-                    _compute_chunk_logprobs,
-                    model,
-                    ctx_exp[start:end],
-                    len_exp[start:end],
-                    sids_flat[start:end],
-                    n_layers,
-                    use_reentrant=False,
-                )
-            else:
-                chunk_lp = compute_sid_logprobs(
-                    model,
-                    ctx_exp[start:end],
-                    len_exp[start:end],
-                    sids_flat[start:end],
-                    n_layers,
-                )
-            chunks.append(chunk_lp)
-        lp = torch.cat(chunks, dim=0)
+        # Freeze MoE expert_bias updates during checkpointed forward to ensure
+        # idempotent forward: recompute in backward must produce identical shapes.
+        # See SparseMoEBlock docstring for details.
+        ctx_mgr = _freeze_moe_bias(model) if use_ckpt else contextmanager(lambda: (yield))()
+        with ctx_mgr:
+            chunks = []
+            for start in range(0, total, max_chunk):
+                end = min(start + max_chunk, total)
+                if use_ckpt:
+                    # Gradient checkpointing: don't save intermediate activations
+                    # during forward; recompute them during backward.
+                    # Peak memory = 1 chunk (constant), not N_chunks.
+                    chunk_lp = torch_checkpoint(
+                        _compute_chunk_logprobs,
+                        model,
+                        ctx_exp[start:end],
+                        len_exp[start:end],
+                        sids_flat[start:end],
+                        n_layers,
+                        use_reentrant=False,
+                    )
+                else:
+                    chunk_lp = compute_sid_logprobs(
+                        model,
+                        ctx_exp[start:end],
+                        len_exp[start:end],
+                        sids_flat[start:end],
+                        n_layers,
+                    )
+                chunks.append(chunk_lp)
+            lp = torch.cat(chunks, dim=0)
 
     return lp.reshape(B, K)
 

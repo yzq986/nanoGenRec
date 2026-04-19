@@ -303,6 +303,14 @@ class SparseMoEBlock(nn.Module):
     logits to steer token allocation toward uniform expert utilization.
 
     Reference: DeepSeek-V2 (arxiv 2405.04434), IDEA-onemall-4
+
+    Note on gradient checkpointing compatibility:
+        expert_bias is updated in-place during forward (Loss-Free balancing).
+        This makes forward non-idempotent: recomputing forward() produces
+        different router decisions → different intermediate tensor shapes → crash.
+        Set freeze_bias=True during gradient-checkpointed regions (e.g., DPO
+        logprob computation) to prevent bias updates. NTP forward (not
+        checkpointed) still updates bias normally.
     """
 
     def __init__(
@@ -318,6 +326,7 @@ class SparseMoEBlock(nn.Module):
         self.n_experts = n_experts
         self.top_k = top_k
         self.bias_lr = bias_lr
+        self.freeze_bias = False  # Set True during gradient-checkpointed forward
 
         self.router = nn.Linear(embed_dim, n_experts, bias=False)
         self.experts = nn.ModuleList([
@@ -357,7 +366,10 @@ class SparseMoEBlock(nn.Module):
                 output[mask] += weights[mask].unsqueeze(-1) * expert_out
 
         # Loss-Free bias update (training only, no gradient)
-        if self.training:
+        # Skipped when freeze_bias=True (gradient checkpointing compatibility):
+        # in-place bias update makes forward() non-idempotent, causing shape
+        # mismatch when checkpoint recomputes forward during backward.
+        if self.training and not self.freeze_bias:
             with torch.no_grad():
                 expert_mask = F.one_hot(top_k_indices, self.n_experts).float()
                 freq = expert_mask.sum(dim=1).mean(dim=0)  # (n_experts,)
