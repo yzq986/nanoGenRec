@@ -214,7 +214,7 @@ def train_dpo(
 
     # ── Auto-cap NTP batch_size based on available GPU memory ──
     max_seq_len = max(len(t) for t in ntp_tokens_list) if ntp_tokens_list else 512
-    gpu_mem_gb = torch.cuda.get_device_properties(device).total_mem / (1024 ** 3)
+    gpu_mem_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
     # Model params memory (2 models × params × 4 bytes + optimizer states ≈ 4x)
     model_mem_gb = n_params * 4 * 4 / (1024 ** 3)  # policy weights + grads + adam states
     ref_mem_gb = n_params * 4 / (1024 ** 3)         # ref weights only (frozen, no grads)
