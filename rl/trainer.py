@@ -602,7 +602,8 @@ def main():
     local_rank, world_size, device, is_main = setup_ddp()
 
     log(is_main, "=" * 60)
-    log(is_main, f"SP-DPO Training — {args.name}" +
+    label = "RF-DPO" if "rf" in args.name.lower() else "SP-DPO"
+    log(is_main, f"{label} Training — {args.name}" +
                  (f" (DDP x{world_size})" if world_size > 1 else ""))
     log(is_main, "=" * 60)
 
@@ -674,7 +675,7 @@ def main():
             log(is_main, f"  Using difficulty from preference meta: {difficulty}")
 
         # ── Train ──
-        log(is_main, f"\n  Training SP-DPO (difficulty={difficulty})...")
+        log(is_main, f"\n  Training {label} (difficulty={difficulty})...")
         model, avg_loss, n_params, train_log_data, train_summary = train_dpo(
             ntp_tokens_list=tokens_list,
             ntp_split_pos_list=split_pos_list,
@@ -747,7 +748,7 @@ def main():
         log(is_main, f"  Eval results saved to train_meta.json")
 
     cleanup_ddp()
-    log(is_main, "\nSP-DPO training complete!")
+    log(is_main, f"\n{label} training complete!")
 
 
 def eval_main():
