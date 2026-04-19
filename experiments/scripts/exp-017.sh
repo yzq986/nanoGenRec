@@ -118,10 +118,11 @@ generate_preferences() {
     local BEAM_MODEL=$1
     local OUTPUT=$2
     local DIFFICULTY=$3
+    local BEAM_SIZE=${4:-200}
 
     echo ""
     echo "============================================================"
-    echo "[Preference] Generating ${DIFFICULTY} pairs"
+    echo "[Preference] Generating ${DIFFICULTY} pairs (beam_size=${BEAM_SIZE})"
     echo "  Model: ${BEAM_MODEL}"
     echo "  Output: ${OUTPUT}"
     echo "============================================================"
@@ -136,7 +137,7 @@ generate_preferences() {
             --sft_checkpoint "${BEAM_MODEL}" \
             --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${OUTPUT}" \
-            --beam_size 50 \
+            --beam_size "${BEAM_SIZE}" \
             --n_rejected 20 \
             --difficulty "${DIFFICULTY}"
     else
@@ -144,7 +145,7 @@ generate_preferences() {
             --sft_checkpoint "${BEAM_MODEL}" \
             --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${OUTPUT}" \
-            --beam_size 50 \
+            --beam_size "${BEAM_SIZE}" \
             --n_rejected 20 \
             --difficulty "${DIFFICULTY}"
     fi
