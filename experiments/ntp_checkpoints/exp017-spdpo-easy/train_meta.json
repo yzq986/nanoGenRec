@@ -28,5 +28,37 @@
     "world_size": 8,
     "n_steps": 4599,
     "n_dpo_pairs": 7655
+  },
+  "eval": {
+    "ppl": 28.4894,
+    "layer_ppl": [
+      464.9958,
+      20.373,
+      2.4821
+    ],
+    "avg_loss": 3.349532,
+    "depth_hit@10": [
+      0.2086,
+      0.181,
+      0.18
+    ],
+    "depth_hit@10_indep": [
+      0.2078,
+      0.8007,
+      0.9247
+    ],
+    "depth_acc_beam": [
+      0.041,
+      0.029,
+      0.029
+    ],
+    "target_sid_found_rate": 0.551,
+    "n_eval_positions": 147902,
+    "n_eval_items": 49104,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.125,
+    "item_recall@50": 0.271,
+    "item_recall@100": 0.352,
+    "item_recall@500": 0.55
   }
 }
