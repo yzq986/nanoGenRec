@@ -635,6 +635,7 @@ def main():
         print(f"  Rank {local_rank}: {len(sequences)} sequences with eval items")
 
     # Build preference pairs
+    gen_t0 = time.time()
     with torch.no_grad():
         pairs = build_preference_pairs(
             model, sequences, sid_trie, n_layers, device,
@@ -645,6 +646,7 @@ def main():
             verbose=is_main,
             prefix_locked=args.prefix_locked,
         )
+    gen_elapsed = time.time() - gen_t0
 
     # Save shard
     os.makedirs(args.output_dir, exist_ok=True)
@@ -665,6 +667,8 @@ def main():
             'prefix_locked': args.prefix_locked,
             'sft_checkpoint': args.sft_checkpoint,
             'preprocessed_dir': args.preprocessed_dir,
+            'n_pairs_rank0': len(pairs),
+            'wall_time_s': round(gen_elapsed, 1),
             'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         }
         with open(os.path.join(args.output_dir, 'meta.json'), 'w') as f:
