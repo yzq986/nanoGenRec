@@ -147,24 +147,33 @@ NTP batch_size auto-cap 公式在 DPO 启用时额外扣除 3 GB：
 
 ## 验证结果
 
-8×A100 40GB, 45.8M params, seq_len=510, DPO batch=16, K=21:
+### Before vs After 对比
 
-```
-GPU util: 79-84% (stable, no wave peaks/valleys)
-GPU mem:  37.4-38.9 GB (91-95%)
-Rank variance: ~1.4 GB (normal)
-No OOM across 1555 steps.
-Throughput: ~17k tok/s — training time reduced by ~50% vs pre-fix.
-```
+数据来源：exp017-spdpo-easy（修复前，train_meta.json）vs exp017-fixed-hard（修复后，实时日志）。
+同一数据集（~130M tokens），同一硬件（8×A100 40GB），同一模型（45.8M params）。
 
-**意外收益：吞吐量翻倍**
+|  | Easy（修复前） | Fixed-hard（修复后） | 变化 |
+|---|---|---|---|
+| NTP batch | 46 | 136 | 3× |
+| DPO batch | 4 | 16 | 4× |
+| tok/s | 9,038 | 17,123 | **1.9×** |
+| 总训练时间 | ~4.0h (14,377s) | ~2.0h | **-50%** |
+| Steps | 4,599 | 1,555 | -66% (更大 batch → 更少 steps) |
+| GPU util | 不稳定（内存压力） | 79-84% (stable) | |
+| GPU mem | 极限（反复 OOM） | 91-95% (37.4-38.9 GB) | |
+| OOM | 多次，需反复调参 | 无 | |
 
-Gradient checkpointing 虽然让 DPO forward 算了两遍（理论上增加计算量），但实际训练速度反而翻倍。原因：修复前 6 个 chunk 的计算图（~60 GB）同时在显存中，CUDA 分配器处于极端内存压力下，导致：
-- 频繁 cache thrashing（分配器反复尝试合并/拆分碎片块）
-- GPU 计算被内存分配 stall 打断
-- 有效 GPU 利用率远低于理论值
+### 速度翻倍的原因分析
 
-修复后峰值仅 ~10 GB（1 chunk），分配器压力消失，GPU 利用率稳定 79-84%。重算的计算开销远小于省下来的内存管理开销。
+修复前 NTP batch 只能到 46（auto-cap 公式不完善 + DPO 计算图占满显存），修复后提升到 136，这是最大的加速来源。具体因素：
+
+1. **NTP batch 3× 更大**（46 → 136）：auto-cap 公式经过 5 轮修正（漏算 attention matrix → 漏算 dropout mask → 漏算 QKV/FFN → 安全系数不足 → DPO reserve），最终准确建模了 per-sample 显存开销。更大的 batch = 更少的 steps = 更少的 optimizer/通信开销。
+
+2. **Gradient checkpointing 消除 allocator thrashing**：修复前 6 个 chunk 的计算图（~60 GB）同时在显存中，CUDA 分配器处于极端内存压力下。修复后峰值仅 ~10 GB（1 chunk），分配器不再反复碎片化/回收，GPU 计算不被内存分配 stall 打断。虽然 DPO forward 算了两遍（checkpoint 代价），省下来的内存管理开销远超重算成本。
+
+3. **DPO batch 4× 更大**（4 → 16）：修复前为避免 OOM 被迫压到 4，每步只 4 个 preference pair。修复后 checkpointing 让 DPO 显存与 batch 解耦，可安全使用 16。更大的 DPO batch 不仅更快（amortize overhead），梯度信号也更稳定。
+
+4. **预分配 all_reduce buffer**：避免碎片化时刻的内存分配失败，消除 NCCL 通信中断。
 
 **Lesson**: 显存优化不只是避免 OOM — 降低 peak memory 可以显著提升吞吐量，即使增加了计算量。
 
