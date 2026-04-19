@@ -128,6 +128,7 @@ def build_preference_pairs(
 
     pairs = []
     stats = {'easy': 0, 'medium': 0, 'hard': 0, 'skipped': 0}
+    pairs_with = {'easy': 0, 'medium': 0, 'hard': 0}  # pairs with ≥1 rejected
     t0 = time.time()
 
     for idx, item in enumerate(eval_items):
@@ -163,6 +164,12 @@ def build_preference_pairs(
         stats['easy'] += len(rej_easy)
         stats['medium'] += len(rej_medium)
         stats['hard'] += len(rej_hard)
+        if rej_easy:
+            pairs_with['easy'] += 1
+        if rej_medium:
+            pairs_with['medium'] += 1
+        if rej_hard:
+            pairs_with['hard'] += 1
 
         pairs.append({
             'context': item['context'],
@@ -189,10 +196,15 @@ def build_preference_pairs(
     if verbose:
         elapsed = time.time() - t0
         n = len(pairs)
-        print(f"  Done: {n:,} pairs in {elapsed:.1f}s")
-        if n > 0:
-            print(f"    Avg per pair: easy={stats['easy']/n:.1f}, "
-                  f"medium={stats['medium']/n:.1f}, hard={stats['hard']/n:.1f}")
+        total_items = len(eval_items)
+        print(f"  Done: {n:,} pairs from {total_items:,} eval items in {elapsed:.1f}s")
+        print(f"    Per-difficulty pair counts:")
+        print(f"      Easy:   {pairs_with['easy']:,} pairs, {stats['easy']:,} rejected total "
+              f"(avg {stats['easy']/max(pairs_with['easy'],1):.1f}/pair)")
+        print(f"      Medium: {pairs_with['medium']:,} pairs, {stats['medium']:,} rejected total "
+              f"(avg {stats['medium']/max(pairs_with['medium'],1):.1f}/pair)")
+        print(f"      Hard:   {pairs_with['hard']:,} pairs, {stats['hard']:,} rejected total "
+              f"(avg {stats['hard']/max(pairs_with['hard'],1):.1f}/pair)")
         print(f"    Skipped (no valid rejected): {stats['skipped']}")
 
     return pairs
