@@ -364,6 +364,32 @@ def train_dpo(
         )
 
         # ── DPO loss (separate backward, gradients accumulate) ──
+        #
+        # Memory timeline per training step:
+        #   1. NTP forward: batch≈149 seqs → activations in GPU memory
+        #   2. NTP backward: compute gradients, FREE all NTP activations
+        #   3. DPO forward: dpo_batch=16 pairs × K=21 candidates = 336 forwards
+        #      → uses gradient checkpointing (see rl/dpo.py) so only 1 chunk
+        #        (max_chunk=64) of activations exists at any time
+        #   4. DPO backward: recompute + backprop chunk by chunk
+        #   5. Optimizer step: update params
+        #
+        # NTP batch_size ≠ dpo_batch_size:
+        #   NTP batch_size (auto-capped ≈149): controls sequences for NTP loss,
+        #     determined by GPU memory formula above (per-sample activation cost)
+        #   dpo_batch_size (default 16): controls preference pairs for DPO loss,
+        #     each pair expands to K=1+N_rej candidates. With gradient checkpointing,
+        #     DPO peak memory is independent of dpo_batch_size — only max_chunk
+        #     (64 by default) determines peak DPO memory. Larger dpo_batch_size
+        #     only costs more time (linear), not more memory.
+        #
+        # DPO OOM root cause (before checkpointing fix):
+        #   compute_sid_logprobs_batch chunks 336 samples into 6 chunks of 64.
+        #   Without checkpointing, ALL 6 chunks' computation graphs (~10GB each)
+        #   are retained simultaneously until backward() → 60GB total → OOM.
+        #   With checkpointing: peak = 1 chunk ≈ 10GB. DPO forward is computed
+        #   2× (forward + recompute in backward), adding ~25% to total step time.
+        #
         dpo_loss_val = torch.tensor(0.0, device=device)
         ntp_loss.backward()
         del padded, input_tokens, target_tokens, valid_mask, train_mask

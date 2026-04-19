@@ -9,11 +9,39 @@ input [ctx..., sid_L0, sid_L1], causal masking ensures:
   - Position T-1 predicts P(L0 | ctx)
   - Position T   predicts P(L1 | ctx, L0)
   - Position T+1 predicts P(L2 | ctx, L0, L1)
+
+Memory design (gradient checkpointing):
+  compute_sid_logprobs_batch processes B×K candidates in chunks of max_chunk.
+  Without checkpointing, ALL chunks' computation graphs are retained in GPU
+  memory simultaneously until backward() — causing OOM:
+
+    dpo_batch=16, K=21 → 336 samples, max_chunk=64 → 6 chunks
+    Each chunk: ~10 GB activations (full transformer forward, seq_len≈510)
+    Total: 6 × 10 GB = 60 GB → OOM on A100 40GB
+
+  With gradient checkpointing (torch.utils.checkpoint):
+    Forward: each chunk runs without saving intermediate activations
+    Backward: chunks are recomputed one at a time to get gradients
+    Peak memory: 1 chunk ≈ 10 GB (constant, independent of total chunks)
+    Cost: DPO forward computed 2× (forward + recompute), ~25% total step slowdown
+
+  This decouples GPU memory from dpo_batch_size entirely. Only max_chunk
+  (the micro-batch size per forward call) determines peak memory.
+  dpo_batch_size can scale to 32, 64, or higher — only time cost increases
+  linearly, not memory.
+
+  NTP batch_size vs dpo_batch_size — two independent concepts:
+    NTP batch_size (auto-capped ≈149): sequences for NTP loss via _forward_packed
+    dpo_batch_size (default 16): preference pairs for DPO loss
+    Each DPO pair expands to K=1+N_rej candidates, each needing full forward.
+    NTP backward finishes and releases memory before DPO forward starts,
+    so the two batch sizes are independently constrained.
 """
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 
 def compute_sid_logprobs(
@@ -66,6 +94,17 @@ def compute_sid_logprobs(
     return total_logprob
 
 
+def _compute_chunk_logprobs(
+    model,
+    ctx_chunk: Tensor,
+    len_chunk: Tensor,
+    sids_chunk: Tensor,
+    n_layers: int,
+) -> Tensor:
+    """Thin wrapper for checkpointing — must be a plain function, not lambda."""
+    return compute_sid_logprobs(model, ctx_chunk, len_chunk, sids_chunk, n_layers)
+
+
 def compute_sid_logprobs_batch(
     model,
     context_tokens: Tensor,   # (B, T_ctx) right-padded
@@ -77,7 +116,21 @@ def compute_sid_logprobs_batch(
     """Compute log-probs for K SID candidates per context.
 
     Expands each context K times and calls compute_sid_logprobs in
-    micro-batches of max_chunk to avoid OOM on large B*K.
+    micro-batches of max_chunk. Uses gradient checkpointing when
+    gradients are enabled (training) to bound peak GPU memory to
+    a single chunk's activations regardless of total B*K.
+
+    Without checkpointing (old behavior, causes OOM):
+        All chunks' computation graphs retained simultaneously.
+        dpo_batch=16, K=21, max_chunk=64 → 6 chunks × ~10GB = ~60GB
+
+    With checkpointing (current):
+        Forward: intermediate activations discarded after each chunk.
+        Backward: each chunk recomputed one at a time.
+        Peak memory = 1 chunk ≈ 10GB, constant for any dpo_batch_size.
+
+    Checkpointing is only applied when torch.is_grad_enabled() is True
+    (training). Reference model forward (under torch.no_grad) skips it.
 
     Returns:
         (B, K) log-probabilities.
@@ -88,6 +141,8 @@ def compute_sid_logprobs_batch(
     len_exp = context_lengths.unsqueeze(1).expand(-1, K).reshape(B * K)
     sids_flat = all_sids.reshape(B * K, L)
 
+    use_ckpt = torch.is_grad_enabled() and (B * K > max_chunk)
+
     total = B * K
     if total <= max_chunk:
         lp = compute_sid_logprobs(model, ctx_exp, len_exp, sids_flat, n_layers)
@@ -95,13 +150,27 @@ def compute_sid_logprobs_batch(
         chunks = []
         for start in range(0, total, max_chunk):
             end = min(start + max_chunk, total)
-            chunk_lp = compute_sid_logprobs(
-                model,
-                ctx_exp[start:end],
-                len_exp[start:end],
-                sids_flat[start:end],
-                n_layers,
-            )
+            if use_ckpt:
+                # Gradient checkpointing: don't save intermediate activations
+                # during forward; recompute them during backward.
+                # Peak memory = 1 chunk (constant), not N_chunks.
+                chunk_lp = torch_checkpoint(
+                    _compute_chunk_logprobs,
+                    model,
+                    ctx_exp[start:end],
+                    len_exp[start:end],
+                    sids_flat[start:end],
+                    n_layers,
+                    use_reentrant=False,
+                )
+            else:
+                chunk_lp = compute_sid_logprobs(
+                    model,
+                    ctx_exp[start:end],
+                    len_exp[start:end],
+                    sids_flat[start:end],
+                    n_layers,
+                )
             chunks.append(chunk_lp)
         lp = torch.cat(chunks, dim=0)
 
