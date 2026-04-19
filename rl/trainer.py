@@ -269,6 +269,35 @@ def train_dpo(
     linear_bytes = 6 * max_seq_len * embed_dim * 4 * n_tf_layers
     ffn_bytes = 2 * max_seq_len * embed_dim * 4 * 4 * n_tf_layers
     bytes_per_sample = int((attn_bytes + linear_bytes + ffn_bytes) * 1.5)
+    #
+    # 4) DPO memory reserve (when dpo_weight > 0):
+    #
+    #    NTP and DPO run sequentially within each step:
+    #      NTP forward → NTP backward (free activations) → DPO forward → DPO backward
+    #    NTP activations are freed before DPO starts, so they don't overlap.
+    #    However, CUDA's caching allocator retains freed blocks in fragmented chunks.
+    #    After NTP backward, ~30 GB of cached blocks exist in varying sizes.
+    #    DPO (gradient-checkpointed) then allocates/frees 1 chunk at a time,
+    #    further fragmenting the cache. By the time all_reduce needs to allocate
+    #    a contiguous flat gradient tensor (~183 MB for 45.8M params), the cache
+    #    may not have a contiguous region available → OOM.
+    #
+    #    Empirical: NTP batch=149 (using ~30 GB) + DPO checkpoint + all_reduce
+    #    → OOM at all_reduce (NCCL cuda OOM) on A100 40GB.
+    #
+    #    Fix: reserve 3 GB from available memory when DPO is active.
+    #    This accounts for:
+    #      - DPO checkpoint peak: 1 chunk (max_chunk=64) ≈ needs headroom for
+    #        allocations that can't reuse fragmented NTP cache blocks
+    #      - NCCL internal buffers: ~256 MB (32 MB × 8 connections)
+    #      - Flat gradient tensor for all_reduce: ~183 MB
+    #      - General fragmentation margin
+    #    Result: NTP batch drops from ~149 to ~136, leaving room for DPO.
+    #
+    if dpo_weight > 0:
+        dpo_reserve_gb = 3.0
+        avail_gb -= dpo_reserve_gb
+        log(is_main, f"  DPO active: reserving {dpo_reserve_gb}GB → avail={avail_gb:.1f}GB")
     mem_safe_bs = max(32, int(avail_gb * 1024 ** 3 / bytes_per_sample))
     if batch_size > mem_safe_bs:
         log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
@@ -325,6 +354,23 @@ def train_dpo(
     total_tokens = 0
     train_log = []
     t0 = time.time()
+
+    # ── Pre-allocate flat gradient buffer for all-reduce ──
+    #
+    # Why pre-allocate: at the point of all_reduce, CUDA memory is heavily
+    # fragmented from NTP forward/backward + DPO checkpoint forward/backward.
+    # The caching allocator may hold ~30 GB of freed blocks in varying sizes,
+    # but cannot assemble a contiguous ~183 MB region for the flat tensor.
+    # By allocating once before training (when memory is clean), we guarantee
+    # the buffer exists and avoid fragmentation-induced OOM at all_reduce.
+    #
+    if world_size > 1:
+        total_params = sum(p.numel() for p in policy_model.parameters())
+        grad_flat_buffer = torch.zeros(total_params, device=device)
+        log(is_main, f"  Pre-allocated grad all-reduce buffer: "
+                     f"{total_params * 4 / 1024 ** 2:.0f} MB")
+    else:
+        grad_flat_buffer = None
 
     # Cyclic DPO iterator
     dpo_iter = iter(dpo_loader) if dpo_loader else None
@@ -441,17 +487,23 @@ def train_dpo(
             del policy_lp, policy_chosen_lp, policy_rejected_lp
             del ref_chosen_lp, ref_rejected_lp
 
-        # ── Bucketed gradient all-reduce ──
+        # ── Bucketed gradient all-reduce (uses pre-allocated buffer) ──
         if world_size > 1:
             grads = [p.grad for p in policy_model.parameters()
                      if p.grad is not None]
             if grads:
-                flat = torch.cat([g.reshape(-1) for g in grads])
-                dist.all_reduce(flat, op=dist.ReduceOp.AVG)
+                # Copy gradients into pre-allocated flat buffer instead of
+                # torch.cat (which allocates new memory at a fragmented time).
                 offset = 0
                 for g in grads:
                     numel = g.numel()
-                    g.copy_(flat[offset:offset + numel].reshape(g.shape))
+                    grad_flat_buffer[offset:offset + numel].copy_(g.reshape(-1))
+                    offset += numel
+                dist.all_reduce(grad_flat_buffer[:offset], op=dist.ReduceOp.AVG)
+                offset = 0
+                for g in grads:
+                    numel = g.numel()
+                    g.copy_(grad_flat_buffer[offset:offset + numel].reshape(g.shape))
                     offset += numel
 
         # ── Step (gradients from both NTP and DPO are accumulated) ──
