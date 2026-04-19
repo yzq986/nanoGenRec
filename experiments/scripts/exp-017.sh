@@ -136,7 +136,7 @@ generate_preferences() {
             --sft_checkpoint "${REF_CKPT}" \
             --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${OUTPUT}" \
-            --beam_size 50 \
+            --beam_size 200 \
             --n_rejected 20 \
             --difficulty "${DIFFICULTY}"
     else
@@ -144,7 +144,7 @@ generate_preferences() {
             --sft_checkpoint "${REF_CKPT}" \
             --preprocessed_dir "${NTP_DATA}" \
             --output_dir "${OUTPUT}" \
-            --beam_size 50 \
+            --beam_size 200 \
             --n_rejected 20 \
             --difficulty "${DIFFICULTY}"
     fi
