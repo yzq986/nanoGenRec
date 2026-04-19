@@ -216,19 +216,23 @@ train_dpo() {
 #   pairs in the same npz shards. No redundant beam search.
 # ============================================================
 if [ "${START_FROM}" -le 1 ]; then
-    # SFT beam search — all difficulties in one pass
-    generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft" "all"
+    if [ -f "${CKPT_DIR}/exp017-spdpo-easy/probe.pt" ]; then
+        echo "[Shared Easy] Checkpoint already exists, skipping beam search + training."
+    else
+        # SFT beam search — all difficulties in one pass
+        generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft" "all"
 
-    # Easy training (shared by both configs)
-    train_dpo "spdpo-easy" "easy" 0.1 0.1 1e-4 \
-        "${SFT_CKPT}" "${PREF_DIR}/sft" \
-        "Shared Easy: SFT beam search, λ=0.1, β=0.1"
+        # Easy training (shared by both configs)
+        train_dpo "spdpo-easy" "easy" 0.1 0.1 1e-4 \
+            "${SFT_CKPT}" "${PREF_DIR}/sft" \
+            "Shared Easy: SFT beam search, λ=0.1, β=0.1"
 
-    echo ""
-    echo ">>> Committing Easy results..."
-    git add experiments/
-    git commit -m "EXP-017 partial: SP-DPO Easy stage (shared)" || echo "Nothing to commit"
-    ./push.sh
+        echo ""
+        echo ">>> Committing Easy results..."
+        git add experiments/
+        git commit -m "EXP-017 partial: SP-DPO Easy stage (shared)" || echo "Nothing to commit"
+        ./push.sh
+    fi
 fi
 
 # ============================================================
