@@ -425,6 +425,8 @@ def main():
         'difficulty': args.difficulty,
         'n_rejected': args.n_rejected,
         'sid_cache': args.sid_cache,
+        'date_start': args.date_start,
+        'date_end': args.date_end,
         'source': 'rf-dpo',
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
     }
