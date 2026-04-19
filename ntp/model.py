@@ -59,8 +59,10 @@ def constrained_beam_search(
     trie: SIDTrie,
     beam_size: int = 500,
     prefix: torch.Tensor = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Trie-constrained beam search — every beam is a real SID.
+    ctx_kv_caches=None,
+    initial_logits: torch.Tensor = None,
+) -> Tuple[torch.Tensor, torch.Tensor, list]:
+    """Trie-constrained beam search with KV cache — every beam is a real SID.
 
     At each decoding step, masks out tokens not in the trie given the
     current beam prefix. This guarantees every output beam corresponds
@@ -69,74 +71,95 @@ def constrained_beam_search(
     Optimized for B=1 (eval processes one sample at a time).
 
     Args:
-        model: NTPModel or NTPProbe with forward(input, generated, return_last_n=1)
+        model: NTPModel with forward_cached() for KV-cached inference.
         input_tokens: (B, T) context tokens
         trie: SIDTrie built from sid_to_items
         beam_size: number of beams to keep
         prefix: (B, P) optional fixed prefix tokens. Beam search starts from
                 layer P instead of 0. Use to lock L0 (P=1) or L0+L1 (P=2)
                 for targeted Medium/Hard candidate generation.
+        ctx_kv_caches: pre-computed KV caches for the context. If None,
+                the context is encoded from input_tokens.
+        initial_logits: (B, C) logits from the last context position.
+                Required when ctx_kv_caches is provided and prefix is None.
 
     Returns:
         beams: (B, actual_beams, n_layers) — token indices
         scores: (B, actual_beams) — log-probabilities
+        ctx_kv_caches: context KV caches (for reuse across passes/items)
     """
     B = input_tokens.size(0)
     device = input_tokens.device
     L = trie.n_layers
 
+    # ── Phase 0: context encoding (or reuse) ──
+    use_kv_cache = hasattr(model, 'forward_cached')
+    if not use_kv_cache:
+        # Fallback for NTPProbe or models without forward_cached
+        return _constrained_beam_search_legacy(
+            model, input_tokens, trie, beam_size, prefix)
+
+    if ctx_kv_caches is None:
+        initial_logits, ctx_kv_caches = model.forward_cached(input_tokens)
+
+    # ── Phase 1: beam init ──
     if prefix is not None:
         P = prefix.size(1)
         beams = prefix.unsqueeze(1)  # (B, 1, P)
-        scores = torch.zeros(B, 1, device=device)
         start_step = P
+        step_kv = [c.clone() for c in ctx_kv_caches]
+        current_logits, step_kv = model.forward_cached(
+            generated_tokens=prefix, kv_caches=step_kv)
     else:
         beams = torch.zeros(B, 1, 0, dtype=torch.long, device=device)
-        scores = torch.zeros(B, 1, device=device)
         start_step = 0
+        step_kv = [c.clone() for c in ctx_kv_caches]
+        current_logits = initial_logits
+    scores = torch.zeros(B, 1, device=device)
 
+    # ── Phase 2: decode ──
     for step in range(start_step, L):
         n_beams = beams.size(1)
-        input_exp = input_tokens.unsqueeze(1).expand(-1, n_beams, -1).reshape(B * n_beams, -1)
-        gen_exp = beams.reshape(B * n_beams, -1) if step > 0 else None
 
-        logits = model.forward(input_exp, gen_exp)
-        log_probs = F.log_softmax(logits, dim=-1)  # (B*n_beams, C)
+        if step > start_step:
+            last_tokens = beams[:, :, -1].reshape(B * n_beams, 1)
+            current_logits, step_kv = model.forward_cached(
+                generated_tokens=last_tokens, kv_caches=step_kv)
+
+        log_probs = F.log_softmax(
+            current_logits.view(B, n_beams, -1), dim=-1)
         C = log_probs.size(-1)
 
         # Build trie mask: group beams by prefix to minimize dict lookups
         mask = torch.zeros(B * n_beams, C, dtype=torch.bool, device=device)
         beams_cpu = beams.cpu()
 
-        # Group beams by prefix → valid tokens (avoids redundant trie lookups)
         prefix_to_valid: Dict[tuple, List[int]] = {}
         for bi in range(B):
             for ki in range(n_beams):
-                prefix = tuple(beams_cpu[bi, ki].tolist())
-                if prefix not in prefix_to_valid:
-                    valid = trie.valid_tokens(step, prefix)
-                    prefix_to_valid[prefix] = list(valid) if valid else []
+                pfx = tuple(beams_cpu[bi, ki].tolist())
+                if pfx not in prefix_to_valid:
+                    valid = trie.valid_tokens(step, pfx)
+                    prefix_to_valid[pfx] = list(valid) if valid else []
 
-        # Apply masks using cached prefix lookups
         for bi in range(B):
             for ki in range(n_beams):
-                prefix = tuple(beams_cpu[bi, ki].tolist())
-                valid_list = prefix_to_valid[prefix]
+                pfx = tuple(beams_cpu[bi, ki].tolist())
+                valid_list = prefix_to_valid[pfx]
                 if valid_list:
                     idx = bi * n_beams + ki
                     mask[idx, valid_list] = True
 
-        # Mask invalid tokens to -inf
-        log_probs = log_probs.masked_fill(~mask, float('-inf'))
+        # Mask invalid tokens
+        log_probs = log_probs.masked_fill(
+            ~mask.view(B, n_beams, C), float('-inf'))
 
-        log_probs = log_probs.view(B, n_beams, C)
-        candidate_scores = scores.unsqueeze(-1) + log_probs  # (B, n_beams, C)
+        candidate_scores = scores.unsqueeze(-1) + log_probs
         flat_scores = candidate_scores.view(B, -1)
 
-        # Top-k — cap at number of valid candidates (trie subtree count)
         n_valid = int(mask.sum().item())
         if n_valid == 0:
-            break  # no valid continuations
+            break
         k = min(beam_size, n_valid, flat_scores.size(1))
         topk_scores, topk_idx = flat_scores.topk(k, dim=-1)
 
@@ -150,14 +173,104 @@ def constrained_beam_search(
         beams = torch.cat([prev_beams, token_idx.unsqueeze(-1)], dim=-1)
         scores = topk_scores
 
-        # Trim dead beams (-inf score)
+        # ── KV cache beam gather ──
+        for li in range(len(step_kv)):
+            c = step_kv[li]  # (B*n_beams_old, T_cached, D)
+            T_c, D = c.size(1), c.size(2)
+            c = c.view(B, n_beams, T_c, D)
+            c = torch.gather(
+                c, 1,
+                beam_idx.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, T_c, D))
+            step_kv[li] = c.reshape(B * k, T_c, D)
+
+        # Trim dead beams
         valid_beam_mask = scores > float('-inf')
-        n_alive = valid_beam_mask.sum(dim=1).max().item()
+        n_alive = int(valid_beam_mask.sum(dim=1).max().item())
+        if n_alive < beams.size(1):
+            n_keep = max(n_alive, 1)
+            beams = beams[:, :n_keep]
+            scores = scores[:, :n_keep]
+            for li in range(len(step_kv)):
+                step_kv[li] = step_kv[li][:B * n_keep]
+
+    return beams, scores, ctx_kv_caches
+
+
+def _constrained_beam_search_legacy(
+    model, input_tokens, trie, beam_size=500, prefix=None,
+):
+    """Legacy beam search without KV cache (for NTPProbe or verification)."""
+    B = input_tokens.size(0)
+    device = input_tokens.device
+    L = trie.n_layers
+
+    if prefix is not None:
+        P = prefix.size(1)
+        beams = prefix.unsqueeze(1)
+        scores = torch.zeros(B, 1, device=device)
+        start_step = P
+    else:
+        beams = torch.zeros(B, 1, 0, dtype=torch.long, device=device)
+        scores = torch.zeros(B, 1, device=device)
+        start_step = 0
+
+    for step in range(start_step, L):
+        n_beams = beams.size(1)
+        input_exp = input_tokens.unsqueeze(1).expand(
+            -1, n_beams, -1).reshape(B * n_beams, -1)
+        gen_exp = beams.reshape(B * n_beams, -1) if step > 0 else None
+
+        logits = model.forward(input_exp, gen_exp)
+        log_probs = F.log_softmax(logits, dim=-1)
+        C = log_probs.size(-1)
+
+        mask = torch.zeros(B * n_beams, C, dtype=torch.bool, device=device)
+        beams_cpu = beams.cpu()
+
+        prefix_to_valid: Dict[tuple, List[int]] = {}
+        for bi in range(B):
+            for ki in range(n_beams):
+                pfx = tuple(beams_cpu[bi, ki].tolist())
+                if pfx not in prefix_to_valid:
+                    valid = trie.valid_tokens(step, pfx)
+                    prefix_to_valid[pfx] = list(valid) if valid else []
+
+        for bi in range(B):
+            for ki in range(n_beams):
+                pfx = tuple(beams_cpu[bi, ki].tolist())
+                valid_list = prefix_to_valid[pfx]
+                if valid_list:
+                    idx = bi * n_beams + ki
+                    mask[idx, valid_list] = True
+
+        log_probs = log_probs.masked_fill(~mask, float('-inf'))
+        log_probs = log_probs.view(B, n_beams, C)
+        candidate_scores = scores.unsqueeze(-1) + log_probs
+        flat_scores = candidate_scores.view(B, -1)
+
+        n_valid = int(mask.sum().item())
+        if n_valid == 0:
+            break
+        k = min(beam_size, n_valid, flat_scores.size(1))
+        topk_scores, topk_idx = flat_scores.topk(k, dim=-1)
+
+        beam_idx = topk_idx // C
+        token_idx = topk_idx % C
+
+        prev_beams = torch.gather(
+            beams, 1, beam_idx.unsqueeze(-1).expand(-1, -1, step)
+        ) if step > 0 else torch.zeros(B, k, 0, dtype=torch.long, device=device)
+
+        beams = torch.cat([prev_beams, token_idx.unsqueeze(-1)], dim=-1)
+        scores = topk_scores
+
+        valid_beam_mask = scores > float('-inf')
+        n_alive = int(valid_beam_mask.sum(dim=1).max().item())
         if n_alive < beams.size(1):
             beams = beams[:, :max(n_alive, 1)]
             scores = scores[:, :max(n_alive, 1)]
 
-    return beams, scores
+    return beams, scores, None
 
 
 # ============================================================
@@ -334,21 +447,42 @@ class TransformerLayer(nn.Module):
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, kv_cache=None, use_cache: bool = False):
         # Pre-norm self-attention
         x_norm = self.norm1(x)
+
+        if kv_cache is not None:
+            kv = torch.cat([kv_cache, x_norm], dim=1)
+        else:
+            kv = x_norm
+
         if self.causal:
-            T = x_norm.size(1)
-            attn_mask = nn.Transformer.generate_square_subsequent_mask(
-                T, device=x.device,
-            )
-            attn_out, _ = self.attn(x_norm, x_norm, x_norm, attn_mask=attn_mask)
+            Q_len = x_norm.size(1)
+            KV_len = kv.size(1)
+            if Q_len == KV_len:
+                # Full sequence (no cache) — standard square mask
+                attn_mask = nn.Transformer.generate_square_subsequent_mask(
+                    KV_len, device=x.device,
+                )
+                attn_out, _ = self.attn(x_norm, kv, kv, attn_mask=attn_mask)
+            elif Q_len == 1:
+                # Single new token attends to all prior — no mask needed
+                attn_out, _ = self.attn(x_norm, kv, kv)
+            else:
+                # Rectangular causal mask: (Q_len, KV_len)
+                attn_mask = torch.full(
+                    (Q_len, KV_len), float('-inf'), device=x.device)
+                for i in range(Q_len):
+                    attn_mask[i, :KV_len - Q_len + i + 1] = 0.0
+                attn_out, _ = self.attn(x_norm, kv, kv, attn_mask=attn_mask)
         else:
             attn_out, _ = self.attn(x_norm, x_norm, x_norm)
         x = x + attn_out
 
         # Pre-norm FFN/MoE
         x = x + self.ffn(self.norm2(x))
+        if use_cache:
+            return x, kv
         return x
 
 
@@ -436,6 +570,74 @@ class NTPModel(nn.Module):
         for layer in self.layers:
             x = layer(x)
         return self.final_norm(x)
+
+    # ── KV-cached inference ──
+
+    def _embed_tokens_at_offset(self, tokens: torch.Tensor, offset: int) -> torch.Tensor:
+        """Embed tokens where position 0 corresponds to global position ``offset``."""
+        B, T = tokens.size()
+        device = tokens.device
+        L = self.n_sid_layers
+        layer_ids = (torch.arange(T, device=device) + offset) % L
+        x = torch.zeros(B, T, self.embed_dim, device=device)
+        for l in range(L):
+            mask = (layer_ids == l)
+            if mask.any():
+                x[:, mask] = self.token_embs[l](tokens[:, mask])
+        return x
+
+    def _transformer_forward_cached(self, x: torch.Tensor, kv_caches=None):
+        """Transformer forward with per-layer KV cache.
+
+        Returns:
+            out: (B, T_new, D) — output hidden states for new positions only.
+            new_kv_caches: list of 6 tensors, each (B, T_cached + T_new, D).
+        """
+        new_caches = []
+        for i, layer in enumerate(self.layers):
+            cache_i = kv_caches[i] if kv_caches is not None else None
+            x, new_cache = layer(x, kv_cache=cache_i, use_cache=True)
+            new_caches.append(new_cache)
+        return self.final_norm(x), new_caches
+
+    @torch.no_grad()
+    def forward_cached(self, input_tokens=None, generated_tokens=None, kv_caches=None):
+        """Inference-only forward with KV cache.
+
+        Calling patterns:
+            Cold start: ``forward_cached(input_tokens)`` — encodes full context.
+            Incremental: ``forward_cached(generated_tokens=new, kv_caches=kv)``
+                — encodes only *new* tokens using cached context.
+
+        Returns:
+            logits: (B, C) logits for the next token.
+            kv_caches: list of per-layer caches for reuse.
+        """
+        if kv_caches is None:
+            # Cold start — encode full sequence
+            tokens = input_tokens
+            if generated_tokens is not None and generated_tokens.size(1) > 0:
+                tokens = torch.cat([input_tokens, generated_tokens], dim=1)
+            T = tokens.size(1)
+            device = tokens.device
+            x = self._embed_tokens(tokens) + self.pos_emb(
+                torch.arange(T, device=device).unsqueeze(0))
+            out, kv_caches = self._transformer_forward_cached(x)
+        else:
+            # Incremental — only new tokens
+            offset = kv_caches[0].size(1)
+            new_tokens = generated_tokens
+            T_new = new_tokens.size(1)
+            device = new_tokens.device
+            x = self._embed_tokens_at_offset(new_tokens, offset)
+            x = x + self.pos_emb(
+                torch.arange(offset, offset + T_new, device=device).unsqueeze(0))
+            out, kv_caches = self._transformer_forward_cached(x, kv_caches)
+
+        T_total = kv_caches[0].size(1)
+        target_layer = T_total % self.n_sid_layers
+        logits = self.output_projs[target_layer](out[:, -1, :])
+        return logits, kv_caches
 
     def forward(
         self,

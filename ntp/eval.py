@@ -296,7 +296,7 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
         target_cid = item['cid']
         target_sid_str = '_'.join(str(t) for t in target)
 
-        beams, scores = constrained_beam_search(
+        beams, scores, _ = constrained_beam_search(
             probe, ctx, sid_trie, beam_size=recall_beam_size)
 
         # Check if target SID appears in any beam

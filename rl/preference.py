@@ -69,6 +69,7 @@ def classify_rejected(ground_truth, beam_sids, n_layers):
 def _prefix_locked_generate(
     model, ctx, gt, sid_trie, n_layers, device,
     beam_size=50, n_rejected=20,
+    ctx_kv_caches=None, initial_logits=None,
 ):
     """Progressive prefix-locked beam search for one eval item.
 
@@ -77,8 +78,10 @@ def _prefix_locked_generate(
     2. Lock L0=GT → all results have L0 match → Medium (L1 ≠ GT) + Hard (L1=GT, L2≠GT)
     3. Lock L0+L1=GT → all results have L0+L1 match → Hard (L2 ≠ GT)
 
+    When ctx_kv_caches is provided, context encoding is shared across all 3 passes.
+
     Returns:
-        (rej_easy, rej_medium, rej_hard) — each a list of SID lists, capped at n_rejected.
+        (rej_easy, rej_medium, rej_hard, ctx_kv_caches, initial_logits)
     """
     gt_tensor = torch.tensor(gt, dtype=torch.long, device=device)
     seen = set()  # dedup across runs
@@ -110,25 +113,29 @@ def _prefix_locked_generate(
             elif 2 <= match_depth < n_layers and len(rej_hard) < n_rejected:
                 rej_hard.append(sid)
 
-    # Pass 1: full beam → mostly Easy candidates
-    beams, _ = constrained_beam_search(model, ctx, sid_trie, beam_size=beam_size)
+    # Pass 1: full beam → mostly Easy candidates (also produces ctx_kv_caches)
+    beams, _, ctx_kv_caches = constrained_beam_search(
+        model, ctx, sid_trie, beam_size=beam_size,
+        ctx_kv_caches=ctx_kv_caches, initial_logits=initial_logits)
     _collect(beams[0])
 
-    # Pass 2: lock L0 → Medium + Hard candidates
+    # Pass 2: lock L0 → Medium + Hard candidates (reuse ctx_kv_caches)
     if len(rej_medium) < n_rejected or len(rej_hard) < n_rejected:
         prefix_l0 = gt_tensor[:1].unsqueeze(0)  # (1, 1)
-        beams2, _ = constrained_beam_search(
-            model, ctx, sid_trie, beam_size=beam_size, prefix=prefix_l0)
+        beams2, _, _ = constrained_beam_search(
+            model, ctx, sid_trie, beam_size=beam_size, prefix=prefix_l0,
+            ctx_kv_caches=ctx_kv_caches)
         _collect(beams2[0])
 
-    # Pass 3: lock L0+L1 → Hard candidates only
+    # Pass 3: lock L0+L1 → Hard candidates only (reuse ctx_kv_caches)
     if len(rej_hard) < n_rejected and n_layers >= 3:
         prefix_l01 = gt_tensor[:2].unsqueeze(0)  # (1, 2)
-        beams3, _ = constrained_beam_search(
-            model, ctx, sid_trie, beam_size=beam_size, prefix=prefix_l01)
+        beams3, _, _ = constrained_beam_search(
+            model, ctx, sid_trie, beam_size=beam_size, prefix=prefix_l01,
+            ctx_kv_caches=ctx_kv_caches)
         _collect(beams3[0])
 
-    return rej_easy, rej_medium, rej_hard
+    return rej_easy, rej_medium, rej_hard, ctx_kv_caches, initial_logits
 
 
 def _extract_eval_items(sequences, n_layers, max_samples=None):
@@ -160,6 +167,58 @@ def _extract_eval_items(sequences, n_layers, max_samples=None):
     return eval_items
 
 
+def _extract_eval_items_grouped(sequences, n_layers, max_samples=None):
+    """Extract eval items grouped by sequence for cross-item KV cache sharing.
+
+    Returns list of (seq_tokens, items) where items within each group
+    are ordered by increasing context length.
+    """
+    groups = []
+    total_items = 0
+    for seq in sequences:
+        split_pos = seq['split_pos']
+        tokens = seq['tokens']
+        eval_cids = seq['eval_cids']
+        split_item_idx = split_pos // n_layers
+
+        items = []
+        for ei in range(len(eval_cids)):
+            item_idx = split_item_idx + ei
+            if item_idx < 1:
+                continue
+            ctx_end = item_idx * n_layers
+            target_sid = tokens[ctx_end:ctx_end + n_layers]
+            if len(target_sid) < n_layers:
+                continue
+            items.append({
+                'ctx_end': ctx_end,
+                'target_sid': target_sid,
+            })
+        if items:
+            groups.append((tokens, items))
+            total_items += len(items)
+
+    if max_samples and total_items > max_samples:
+        # Subsample items across groups, preserving within-group order
+        random.seed(42)
+        all_indices = []
+        for gi, (_, items) in enumerate(groups):
+            for ii in range(len(items)):
+                all_indices.append((gi, ii))
+        sampled = set(random.sample(all_indices, max_samples))
+
+        new_groups = []
+        for gi, (tokens, items) in enumerate(groups):
+            new_items = [items[ii] for ii in range(len(items))
+                         if (gi, ii) in sampled]
+            if new_items:
+                new_groups.append((tokens, new_items))
+        groups = new_groups
+        total_items = max_samples
+
+    return groups, total_items
+
+
 def build_preference_pairs(
     model, sequences, sid_trie, n_layers, device,
     beam_size=50, n_rejected=20, difficulty='all', max_samples=None,
@@ -175,6 +234,12 @@ def build_preference_pairs(
         2. Lock L0=GT → Medium+Hard candidates (guaranteed L0 match)
         3. Lock L0+L1=GT → Hard candidates (guaranteed L0+L1 match)
       Dedup across runs. Guarantees sufficient Medium/Hard candidates.
+
+    Uses KV cache for three levels of compute reuse:
+    - Cross-step: context encoded once per beam search call
+    - Cross-pass: 3 prefix-locked passes share context KV
+    - Cross-item: consecutive eval items from the same sequence share
+      incrementally extended context KV
 
     Args:
         model: NTPModel (eval mode, on device)
@@ -197,39 +262,57 @@ def build_preference_pairs(
             'rejected_medium': list[list[int]] — medium rejected SIDs
             'rejected_hard': list[list[int]] — hard rejected SIDs
     """
-    eval_items = _extract_eval_items(sequences, n_layers, max_samples)
+    use_kv_cache = hasattr(model, 'forward_cached')
+
+    if use_kv_cache and not max_samples:
+        # Grouped mode: cross-item KV cache sharing
+        groups, total_items = _extract_eval_items_grouped(
+            sequences, n_layers, max_samples)
+    else:
+        # Flat mode: fallback when max_samples shuffles ordering
+        eval_items = _extract_eval_items(sequences, n_layers, max_samples)
+        groups = None
+        total_items = len(eval_items)
 
     mode_str = "prefix-locked" if prefix_locked else "paper (full beam)"
+    cache_str = " + KV cache" if use_kv_cache else ""
     if verbose:
-        print(f"  Building preference pairs: {len(eval_items):,} eval items, "
-              f"beam_size={beam_size}, n_rejected={n_rejected}, mode={mode_str}")
+        print(f"  Building preference pairs: {total_items:,} eval items, "
+              f"beam_size={beam_size}, n_rejected={n_rejected}, "
+              f"mode={mode_str}{cache_str}")
 
     pairs = []
     stats = {'easy': 0, 'medium': 0, 'hard': 0, 'skipped': 0}
-    pairs_with = {'easy': 0, 'medium': 0, 'hard': 0}  # pairs with ≥1 rejected
+    pairs_with = {'easy': 0, 'medium': 0, 'hard': 0}
     t0 = time.time()
+    idx = 0  # global item counter for progress
 
-    for idx, item in enumerate(eval_items):
-        ctx = torch.tensor(item['context'], dtype=torch.long, device=device).unsqueeze(0)
-        gt = item['target_sid']
+    def _process_item(context_tokens, gt, ctx_kv_caches=None, initial_logits=None):
+        """Run beam search for one eval item, return (pair_or_None, kv, logits)."""
+        ctx = torch.tensor(
+            context_tokens, dtype=torch.long, device=device).unsqueeze(0)
 
         if prefix_locked:
-            # Progressive prefix-locked beam search
-            rej_easy, rej_medium, rej_hard = _prefix_locked_generate(
-                model, ctx, gt, sid_trie, n_layers, device,
-                beam_size=beam_size, n_rejected=n_rejected,
-            )
+            rej_easy, rej_medium, rej_hard, ctx_kv_caches, initial_logits = \
+                _prefix_locked_generate(
+                    model, ctx, gt, sid_trie, n_layers, device,
+                    beam_size=beam_size, n_rejected=n_rejected,
+                    ctx_kv_caches=ctx_kv_caches,
+                    initial_logits=initial_logits,
+                )
         else:
-            # Paper: one beam search, classify by prefix match
-            beams, scores = constrained_beam_search(
-                model, ctx, sid_trie, beam_size=beam_size)
-            beam_sids = beams[0]  # (K, n_layers)
+            beams, scores, ctx_kv_caches = constrained_beam_search(
+                model, ctx, sid_trie, beam_size=beam_size,
+                ctx_kv_caches=ctx_kv_caches, initial_logits=initial_logits)
+            beam_sids = beams[0]
             classified = classify_rejected(gt, beam_sids, n_layers)
             rej_easy = classified['easy'][:n_rejected]
             rej_medium = classified['medium'][:n_rejected]
             rej_hard = classified['hard'][:n_rejected]
+            if initial_logits is None and ctx_kv_caches is not None:
+                initial_logits = None  # not needed for non-prefix-locked
 
-        # Check if we have any valid rejected for the requested difficulty
+        # Check validity
         has_valid = False
         if difficulty == 'all':
             has_valid = len(rej_easy) > 0 or len(rej_medium) > 0 or len(rej_hard) > 0
@@ -241,9 +324,22 @@ def build_preference_pairs(
             has_valid = len(rej_hard) > 0
 
         if not has_valid:
-            stats['skipped'] += 1
-            continue
+            return None, rej_easy, rej_medium, rej_hard, ctx_kv_caches, initial_logits
 
+        pair = {
+            'context': context_tokens,
+            'chosen': gt,
+            'rejected_easy': rej_easy,
+            'rejected_medium': rej_medium,
+            'rejected_hard': rej_hard,
+        }
+        return pair, rej_easy, rej_medium, rej_hard, ctx_kv_caches, initial_logits
+
+    def _record(pair, rej_easy, rej_medium, rej_hard):
+        """Update stats and pairs list."""
+        if pair is None:
+            stats['skipped'] += 1
+            return
         stats['easy'] += len(rej_easy)
         stats['medium'] += len(rej_medium)
         stats['hard'] += len(rej_hard)
@@ -253,35 +349,67 @@ def build_preference_pairs(
             pairs_with['medium'] += 1
         if rej_hard:
             pairs_with['hard'] += 1
+        pairs.append(pair)
 
-        pairs.append({
-            'context': item['context'],
-            'chosen': gt,
-            'rejected_easy': rej_easy,
-            'rejected_medium': rej_medium,
-            'rejected_hard': rej_hard,
-        })
+    def _print_progress(idx):
+        if not verbose or (idx + 1) % 500 != 0:
+            return
+        elapsed = time.time() - t0
+        rate = (idx + 1) / elapsed
+        remaining = (total_items - idx - 1) / rate
+        mins, secs = divmod(int(remaining), 60)
+        hrs, mins = divmod(mins, 60)
+        eta = f"{hrs}h{mins:02d}m" if hrs else f"{mins}m{secs:02d}s"
+        n_pairs = len(pairs)
+        print(f"    [{idx+1}/{total_items}] {n_pairs} pairs, "
+              f"E={stats['easy']/max(n_pairs,1):.1f}/pair, "
+              f"M={stats['medium']/max(n_pairs,1):.1f}/pair, "
+              f"H={stats['hard']/max(n_pairs,1):.1f}/pair, "
+              f"skip={stats['skipped']}, ETA {eta}")
 
-        if verbose and (idx + 1) % 500 == 0:
-            elapsed = time.time() - t0
-            rate = (idx + 1) / elapsed
-            remaining = (len(eval_items) - idx - 1) / rate
-            mins, secs = divmod(int(remaining), 60)
-            hrs, mins = divmod(mins, 60)
-            eta = f"{hrs}h{mins:02d}m" if hrs else f"{mins}m{secs:02d}s"
-            n_pairs = len(pairs)
-            print(f"    [{idx+1}/{len(eval_items)}] {n_pairs} pairs, "
-                  f"E={stats['easy']/max(n_pairs,1):.1f}/pair, "
-                  f"M={stats['medium']/max(n_pairs,1):.1f}/pair, "
-                  f"H={stats['hard']/max(n_pairs,1):.1f}/pair, "
-                  f"skip={stats['skipped']}, ETA {eta}")
+    if groups is not None:
+        # ── Grouped mode: cross-item KV cache sharing ──
+        for seq_tokens, items in groups:
+            shared_kv = None
+            shared_logits = None
+            prev_ctx_len = 0
+
+            for item in items:
+                ctx_end = item['ctx_end']
+                context_tokens = seq_tokens[:ctx_end]
+                gt = item['target_sid']
+
+                if use_kv_cache and shared_kv is not None:
+                    # Extend cache with new tokens
+                    new_tokens = seq_tokens[prev_ctx_len:ctx_end]
+                    if new_tokens:
+                        new_tensor = torch.tensor(
+                            new_tokens, dtype=torch.long,
+                            device=device).unsqueeze(0)
+                        shared_logits, shared_kv = model.forward_cached(
+                            generated_tokens=new_tensor, kv_caches=shared_kv)
+
+                pair, re, rm, rh, shared_kv, shared_logits = _process_item(
+                    context_tokens, gt,
+                    ctx_kv_caches=shared_kv, initial_logits=shared_logits)
+                _record(pair, re, rm, rh)
+                prev_ctx_len = ctx_end
+
+                _print_progress(idx)
+                idx += 1
+    else:
+        # ── Flat mode ──
+        for idx, item in enumerate(eval_items):
+            pair, re, rm, rh, _, _ = _process_item(
+                item['context'], item['target_sid'])
+            _record(pair, re, rm, rh)
+            _print_progress(idx)
 
     if verbose:
         elapsed = time.time() - t0
         n = len(pairs)
-        total_items = len(eval_items)
         print(f"  Done: {n:,} pairs from {total_items:,} eval items in {elapsed:.1f}s")
-        print(f"    Mode: {mode_str}")
+        print(f"    Mode: {mode_str}{cache_str}")
         print(f"    Per-difficulty pair counts:")
         print(f"      Easy:   {pairs_with['easy']:,} pairs, {stats['easy']:,} rejected total "
               f"(avg {stats['easy']/max(pairs_with['easy'],1):.1f}/pair)")
