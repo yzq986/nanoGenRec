@@ -187,13 +187,15 @@ def train_dpo(
     dpo_batch_size=16,
     dpo_n_rejected=20,
     max_steps=None,
+    pure_dpo=False,
+    dpo_epochs=1,
     wandb_run=None,
 ):
-    """Joint NTP + DPO training.
+    """Joint NTP + DPO training, or pure DPO (when pure_dpo=True).
 
-    Two DataLoaders alternate: NTP (large batches) and DPO (small batches).
-    Each step:
+    Joint mode: NTP (large batches) and DPO (small batches) each step.
         total_loss = ntp_loss + dpo_weight * dpo_loss
+    Pure DPO mode: only DPO loss, steps driven by DPO pair epochs.
     """
     # ── Load policy model (from SFT checkpoint) ──
     log(is_main, f"  Loading policy model from {sft_checkpoint}...")
@@ -302,29 +304,18 @@ def train_dpo(
     #      GPU mem:  37.4-38.9 GB (91-95%), rank variance ~1.4 GB (normal)
     #      No OOM across 1420 steps.
     #
-    if dpo_weight > 0:
-        dpo_reserve_gb = 3.0
-        avail_gb -= dpo_reserve_gb
-        log(is_main, f"  DPO active: reserving {dpo_reserve_gb}GB → avail={avail_gb:.1f}GB")
-    mem_safe_bs = max(32, int(avail_gb * 1024 ** 3 / bytes_per_sample))
-    if batch_size > mem_safe_bs:
-        log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
-                     f"(seq_len={max_seq_len}, avail={avail_gb:.1f}GB)")
-        batch_size = mem_safe_bs
+    if not pure_dpo:
+        if dpo_weight > 0:
+            dpo_reserve_gb = 3.0
+            avail_gb -= dpo_reserve_gb
+            log(is_main, f"  DPO active: reserving {dpo_reserve_gb}GB → avail={avail_gb:.1f}GB")
+        mem_safe_bs = max(32, int(avail_gb * 1024 ** 3 / bytes_per_sample))
+        if batch_size > mem_safe_bs:
+            log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
+                         f"(seq_len={max_seq_len}, avail={avail_gb:.1f}GB)")
+            batch_size = mem_safe_bs
 
-    # ── NTP DataLoader ──
-    ntp_dataset = UnifiedSequenceDataset(ntp_tokens_list, ntp_split_pos_list)
-    ntp_loader = DataLoader(
-        ntp_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=2,
-        pin_memory=True,
-        drop_last=True,
-        collate_fn=unified_collate_fn,
-    )
-
-    # ── DPO DataLoader (cyclic) ──
+    # ── DPO DataLoader ──
     dpo_dataset = PreferencePairDataset(
         preference_pairs, difficulty=difficulty,
         n_rejected=dpo_n_rejected, n_layers=n_layers)
@@ -333,6 +324,7 @@ def train_dpo(
     if len(dpo_dataset) == 0:
         log(is_main, "  WARNING: No valid DPO pairs! Training NTP-only.")
         dpo_weight = 0.0
+        pure_dpo = False
 
     dpo_loader = DataLoader(
         dpo_dataset,
@@ -344,16 +336,44 @@ def train_dpo(
         collate_fn=preference_collate_fn,
     ) if len(dpo_dataset) > 0 else None
 
+    # ── NTP DataLoader (skipped in pure_dpo mode) ──
+    ntp_loader = None
+    if not pure_dpo:
+        ntp_dataset = UnifiedSequenceDataset(ntp_tokens_list, ntp_split_pos_list)
+        ntp_loader = DataLoader(
+            ntp_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=2,
+            pin_memory=True,
+            drop_last=True,
+            collate_fn=unified_collate_fn,
+        )
+
+    # ── Compute total steps ──
+    if pure_dpo:
+        n_dpo_batches = len(dpo_loader) if dpo_loader else 0
+        n_batches = n_dpo_batches * dpo_epochs
+        if max_steps:
+            n_batches = min(n_batches, max_steps)
+        log(is_main, f"  Pure DPO mode: {n_dpo_batches} batches/epoch × {dpo_epochs} epochs = {n_batches} steps")
+    else:
+        n_batches = len(ntp_loader)
+        if max_steps:
+            n_batches = min(n_batches, max_steps)
+
     # ── Optimizer ──
     optimizer = torch.optim.AdamW(policy_model.parameters(), lr=lr, weight_decay=0.01)
-    n_batches = len(ntp_loader)
-    if max_steps:
-        n_batches = min(n_batches, max_steps)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_batches)
 
-    log(is_main, f"  Training: {n_batches} steps, NTP batch={batch_size}, "
-                 f"DPO batch={dpo_batch_size}, n_rej={dpo_n_rejected}, "
-                 f"λ={dpo_weight}, β={dpo_beta}, lr={lr}")
+    if pure_dpo:
+        log(is_main, f"  Training: {n_batches} steps (pure DPO), "
+                     f"DPO batch={dpo_batch_size}, n_rej={dpo_n_rejected}, "
+                     f"β={dpo_beta}, lr={lr}")
+    else:
+        log(is_main, f"  Training: {n_batches} steps, NTP batch={batch_size}, "
+                     f"DPO batch={dpo_batch_size}, n_rej={dpo_n_rejected}, "
+                     f"λ={dpo_weight}, β={dpo_beta}, lr={lr}")
 
     # ── Training loop ──
     policy_model.train()
@@ -380,162 +400,205 @@ def train_dpo(
     else:
         grad_flat_buffer = None
 
-    # Cyclic DPO iterator
-    dpo_iter = iter(dpo_loader) if dpo_loader else None
-
-    def _next_dpo_batch():
-        nonlocal dpo_iter
-        try:
-            return next(dpo_iter)
-        except StopIteration:
-            dpo_iter = iter(dpo_loader)
-            return next(dpo_iter)
-
-    for step, ntp_batch in enumerate(ntp_loader):
-        if max_steps and step >= max_steps:
-            break
-
-        optimizer.zero_grad()
-
-        # ── NTP loss (backward immediately to free activations) ──
-        padded, lengths, split_positions = ntp_batch
-        padded = padded.to(device, non_blocking=True)
-        lengths = lengths.to(device, non_blocking=True)
-        split_positions = split_positions.to(device, non_blocking=True)
-        B_ntp, T = padded.shape
-
-        input_tokens = padded[:, :-1]
-        target_tokens = padded[:, 1:]
-
-        arange = torch.arange(T - 1, device=device).unsqueeze(0)
-        valid_mask = arange < (lengths.unsqueeze(1) - 1)
-        train_mask = valid_mask & (arange < (split_positions.unsqueeze(1) - 1))
-
-        ntp_loss = policy_model(
-            input_tokens,
-            packed_targets=target_tokens,
-            packed_mask=train_mask,
-        )
-
-        # ── DPO loss (separate backward, gradients accumulate) ──
-        #
-        # Memory timeline per training step:
-        #   1. NTP forward: batch≈136 seqs → activations in GPU memory
-        #   2. NTP backward: compute gradients, FREE all NTP activations
-        #   3. DPO forward: dpo_batch=16 pairs, packed flat (only valid candidates,
-        #      no padding waste). E.g. Hard avg 5.9 rej/pair → ~112 forwards
-        #      instead of 336 if padded to max_rej=20.
-        #      Uses gradient checkpointing (see rl/dpo.py) so only 1 chunk
-        #      (max_chunk=64) of activations exists at any time.
-        #   4. DPO backward: recompute + backprop chunk by chunk
-        #   5. Optimizer step: update params
-        #
-        dpo_loss_val = torch.tensor(0.0, device=device)
-        ntp_loss.backward()
-        del padded, input_tokens, target_tokens, valid_mask, train_mask
-
-        if dpo_weight > 0 and dpo_loader is not None:
-          # Freeze MoE expert_bias for the ENTIRE DPO section (forward + backward).
-          # Gradient checkpointing recomputes forward during backward(); if
-          # expert_bias changed between the original forward and the recompute,
-          # MoE router decisions differ → intermediate tensor shapes differ → crash.
-          # The freeze must cover backward() too, not just the forward call.
-          with _freeze_moe_bias(raw_policy):
-            dpo_batch = _next_dpo_batch()
+    # ── DPO step helper (shared by both modes) ──
+    def _dpo_step(dpo_batch):
+        """Compute DPO loss and backward. Returns loss tensor."""
+        with _freeze_moe_bias(raw_policy):
             ctx_padded_dpo, ctx_lengths_dpo, all_sids, sample_offsets = dpo_batch
             ctx_padded_dpo = ctx_padded_dpo.to(device, non_blocking=True)
             ctx_lengths_dpo = ctx_lengths_dpo.to(device, non_blocking=True)
             all_sids = all_sids.to(device, non_blocking=True)
             sample_offsets = sample_offsets.to(device, non_blocking=True)
 
-            # Expand contexts to match flat packed candidates
-            counts = sample_offsets[1:] - sample_offsets[:-1]  # (B,)
+            counts = sample_offsets[1:] - sample_offsets[:-1]
             ctx_exp = torch.repeat_interleave(ctx_padded_dpo, counts, dim=0)
             len_exp = torch.repeat_interleave(ctx_lengths_dpo, counts, dim=0)
 
-            # Reference model log-probs (no grad)
             with torch.no_grad():
                 ref_lp = compute_sid_logprobs_batch(
                     ref_model, ctx_exp, len_exp, all_sids, n_layers)
 
-            # Policy model log-probs (with grad, gradient-checkpointed)
             policy_lp = compute_sid_logprobs_batch(
                 raw_policy, ctx_exp, len_exp, all_sids, n_layers)
 
-            dpo_loss_val = softmax_dpo_loss(
+            dpo_loss = softmax_dpo_loss(
                 policy_lp, ref_lp, sample_offsets, beta=dpo_beta,
             )
 
-            (dpo_weight * dpo_loss_val).backward()
+            dpo_loss.backward()
             del ctx_padded_dpo, ctx_lengths_dpo, all_sids, sample_offsets
             del ctx_exp, len_exp, policy_lp, ref_lp
+        return dpo_loss
 
-        # ── Bucketed gradient all-reduce (uses pre-allocated buffer) ──
-        if world_size > 1:
-            grads = [p.grad for p in policy_model.parameters()
-                     if p.grad is not None]
-            if grads:
-                # Copy gradients into pre-allocated flat buffer instead of
-                # torch.cat (which allocates new memory at a fragmented time).
-                offset = 0
-                for g in grads:
-                    numel = g.numel()
-                    grad_flat_buffer[offset:offset + numel].copy_(g.reshape(-1))
-                    offset += numel
-                dist.all_reduce(grad_flat_buffer[:offset], op=dist.ReduceOp.AVG)
-                offset = 0
-                for g in grads:
-                    numel = g.numel()
-                    g.copy_(grad_flat_buffer[offset:offset + numel].reshape(g.shape))
-                    offset += numel
+    # ── Gradient all-reduce helper ──
+    def _allreduce_grads():
+        if world_size <= 1:
+            return
+        grads = [p.grad for p in policy_model.parameters() if p.grad is not None]
+        if grads:
+            offset = 0
+            for g in grads:
+                numel = g.numel()
+                grad_flat_buffer[offset:offset + numel].copy_(g.reshape(-1))
+                offset += numel
+            dist.all_reduce(grad_flat_buffer[:offset], op=dist.ReduceOp.AVG)
+            offset = 0
+            for g in grads:
+                numel = g.numel()
+                g.copy_(grad_flat_buffer[offset:offset + numel].reshape(g.shape))
+                offset += numel
 
-        # ── Step (gradients from both NTP and DPO are accumulated) ──
-        grad_norm = torch.nn.utils.clip_grad_norm_(policy_model.parameters(), 1.0).item()
-        optimizer.step()
-        scheduler.step()
+    # ── Build step iterator ──
+    if pure_dpo:
+        def _step_iter():
+            """Yield (step, dpo_batch) for dpo_epochs over dpo_loader."""
+            step = 0
+            for _epoch in range(dpo_epochs):
+                for batch in dpo_loader:
+                    yield step, batch
+                    step += 1
+        step_iterator = _step_iter()
+    else:
+        # Cyclic DPO iterator (for joint NTP+DPO)
+        dpo_iter = iter(dpo_loader) if dpo_loader else None
 
-        step_ntp = ntp_loss.item()
-        step_dpo = dpo_loss_val.item()
-        total_ntp_loss += step_ntp
-        total_dpo_loss += step_dpo
-        step_tokens = int(lengths.sum().item()) * world_size
-        total_tokens += step_tokens
+        def _next_dpo_batch():
+            nonlocal dpo_iter
+            try:
+                return next(dpo_iter)
+            except StopIteration:
+                dpo_iter = iter(dpo_loader)
+                return next(dpo_iter)
 
-        if is_main:
-            cur_lr = scheduler.get_last_lr()[0]
-            train_log.append({
-                'step': step,
-                'ntp_loss': round(step_ntp, 6),
-                'dpo_loss': round(step_dpo, 6),
-                'total_loss': round(step_ntp + dpo_weight * step_dpo, 6),
-                'lr': round(cur_lr, 8),
-                'grad_norm': round(grad_norm, 4),
-                'tokens': total_tokens,
-                'wall_s': round(time.time() - t0, 2),
-            })
+    # ── Main training loop ──
+    if pure_dpo:
+        # Pure DPO: iterate over DPO pairs only
+        for step, dpo_batch in step_iterator:
+            if max_steps and step >= max_steps:
+                break
 
-        if is_main and (step + 1) % 50 == 0:
-            elapsed = time.time() - t0
-            toks_per_sec = total_tokens / elapsed
-            remaining = (n_batches - step - 1) / ((step + 1) / elapsed)
-            eta = format_eta(remaining)
-            avg_ntp = total_ntp_loss / (step + 1)
-            avg_dpo = total_dpo_loss / (step + 1)
-            print(f"    step {step+1}/{n_batches}: "
-                  f"ntp={avg_ntp:.4f}, dpo={avg_dpo:.4f}, "
-                  f"total={avg_ntp + dpo_weight * avg_dpo:.4f}, "
-                  f"lr={scheduler.get_last_lr()[0]:.2e}, "
-                  f"gnorm={grad_norm:.2f}, "
-                  f"{toks_per_sec:.0f} tok/s, ETA {eta}")
+            optimizer.zero_grad()
+            dpo_loss_val = _dpo_step(dpo_batch)
+            _allreduce_grads()
+
+            grad_norm = torch.nn.utils.clip_grad_norm_(policy_model.parameters(), 1.0).item()
+            optimizer.step()
+            scheduler.step()
+
+            step_dpo = dpo_loss_val.item()
+            total_dpo_loss += step_dpo
+
+            if is_main:
+                cur_lr = scheduler.get_last_lr()[0]
+                train_log.append({
+                    'step': step,
+                    'ntp_loss': 0.0,
+                    'dpo_loss': round(step_dpo, 6),
+                    'total_loss': round(step_dpo, 6),
+                    'lr': round(cur_lr, 8),
+                    'grad_norm': round(grad_norm, 4),
+                    'tokens': 0,
+                    'wall_s': round(time.time() - t0, 2),
+                })
+
+            if is_main and (step + 1) % 10 == 0:
+                elapsed = time.time() - t0
+                remaining = (n_batches - step - 1) / ((step + 1) / elapsed)
+                eta = format_eta(remaining)
+                avg_dpo = total_dpo_loss / (step + 1)
+                print(f"    step {step+1}/{n_batches}: "
+                      f"dpo={avg_dpo:.4f}, "
+                      f"lr={scheduler.get_last_lr()[0]:.2e}, "
+                      f"gnorm={grad_norm:.2f}, ETA {eta}")
+
+    else:
+        # Joint NTP + DPO: iterate over NTP loader, sample DPO each step
+        for step, ntp_batch in enumerate(ntp_loader):
+            if max_steps and step >= max_steps:
+                break
+
+            optimizer.zero_grad()
+
+            # NTP loss (backward immediately to free activations)
+            padded, lengths, split_positions = ntp_batch
+            padded = padded.to(device, non_blocking=True)
+            lengths = lengths.to(device, non_blocking=True)
+            split_positions = split_positions.to(device, non_blocking=True)
+            B_ntp, T = padded.shape
+
+            input_tokens = padded[:, :-1]
+            target_tokens = padded[:, 1:]
+
+            arange = torch.arange(T - 1, device=device).unsqueeze(0)
+            valid_mask = arange < (lengths.unsqueeze(1) - 1)
+            train_mask = valid_mask & (arange < (split_positions.unsqueeze(1) - 1))
+
+            ntp_loss = policy_model(
+                input_tokens,
+                packed_targets=target_tokens,
+                packed_mask=train_mask,
+            )
+
+            ntp_loss.backward()
+            del padded, input_tokens, target_tokens, valid_mask, train_mask
+
+            # DPO loss (separate backward, gradients accumulate)
+            dpo_loss_val = torch.tensor(0.0, device=device)
+            if dpo_weight > 0 and dpo_loader is not None:
+                dpo_batch = _next_dpo_batch()
+                dpo_loss_val = _dpo_step(dpo_batch)
+
+            _allreduce_grads()
+
+            grad_norm = torch.nn.utils.clip_grad_norm_(policy_model.parameters(), 1.0).item()
+            optimizer.step()
+            scheduler.step()
+
+            step_ntp = ntp_loss.item()
+            step_dpo = dpo_loss_val.item()
+            total_ntp_loss += step_ntp
+            total_dpo_loss += step_dpo
+            step_tokens = int(lengths.sum().item()) * world_size
+            total_tokens += step_tokens
+
+            if is_main:
+                cur_lr = scheduler.get_last_lr()[0]
+                train_log.append({
+                    'step': step,
+                    'ntp_loss': round(step_ntp, 6),
+                    'dpo_loss': round(step_dpo, 6),
+                    'total_loss': round(step_ntp + dpo_weight * step_dpo, 6),
+                    'lr': round(cur_lr, 8),
+                    'grad_norm': round(grad_norm, 4),
+                    'tokens': total_tokens,
+                    'wall_s': round(time.time() - t0, 2),
+                })
+
+            if is_main and (step + 1) % 50 == 0:
+                elapsed = time.time() - t0
+                toks_per_sec = total_tokens / elapsed
+                remaining = (n_batches - step - 1) / ((step + 1) / elapsed)
+                eta = format_eta(remaining)
+                avg_ntp = total_ntp_loss / (step + 1)
+                avg_dpo = total_dpo_loss / (step + 1)
+                print(f"    step {step+1}/{n_batches}: "
+                      f"ntp={avg_ntp:.4f}, dpo={avg_dpo:.4f}, "
+                      f"total={avg_ntp + dpo_weight * avg_dpo:.4f}, "
+                      f"lr={scheduler.get_last_lr()[0]:.2e}, "
+                      f"gnorm={grad_norm:.2f}, "
+                      f"{toks_per_sec:.0f} tok/s, ETA {eta}")
 
     actual_steps = min(step + 1, n_batches) if 'step' in dir() else 0
     avg_ntp = total_ntp_loss / max(actual_steps, 1)
     avg_dpo = total_dpo_loss / max(actual_steps, 1)
-    avg_total = avg_ntp + dpo_weight * avg_dpo
+    avg_total = avg_dpo if pure_dpo else (avg_ntp + dpo_weight * avg_dpo)
     elapsed = time.time() - t0
 
-    log(is_main, f"  Train done: ntp={avg_ntp:.4f}, dpo={avg_dpo:.4f}, "
-                 f"total={avg_total:.4f}, {total_tokens:,} tokens ({elapsed:.1f}s)")
+    if pure_dpo:
+        log(is_main, f"  Train done: dpo={avg_dpo:.4f}, {actual_steps} steps ({elapsed:.1f}s)")
+    else:
+        log(is_main, f"  Train done: ntp={avg_ntp:.4f}, dpo={avg_dpo:.4f}, "
+                     f"total={avg_total:.4f}, {total_tokens:,} tokens ({elapsed:.1f}s)")
 
     # Move to CPU for saving
     policy_model.cpu()
@@ -546,9 +609,11 @@ def train_dpo(
         'avg_ntp_loss': round(avg_ntp, 6),
         'avg_dpo_loss': round(avg_dpo, 6),
         'avg_total_loss': round(avg_total, 6),
-        'dpo_weight': dpo_weight,
+        'dpo_weight': 0.0 if pure_dpo else dpo_weight,
         'dpo_beta': dpo_beta,
         'difficulty': difficulty,
+        'pure_dpo': pure_dpo,
+        'dpo_epochs': dpo_epochs if pure_dpo else 0,
         'total_tokens': total_tokens,
         'wall_time_s': round(elapsed, 1),
         'batch_size': batch_size,
@@ -589,6 +654,10 @@ def parse_args():
                         help='Max rejected candidates per DPO pair (default: 20)')
     parser.add_argument('--max_steps', type=int, default=None,
                         help='Max training steps (default: full epoch)')
+    parser.add_argument('--dpo_epochs', type=int, default=1,
+                        help='Number of epochs over DPO pairs (pure_dpo mode, default: 1)')
+    parser.add_argument('--pure_dpo', action='store_true',
+                        help='Pure DPO mode: no NTP loss, steps driven by DPO pairs')
     parser.add_argument('--difficulty', type=str, default='all',
                         choices=['easy', 'medium', 'hard', 'all'],
                         help='Difficulty filter for preference pairs')
@@ -616,14 +685,18 @@ def main():
     n_clusters_per_layer = prep_meta['n_clusters_per_layer']
     sid_cache_dir = prep_meta['sid_cache']
 
-    # ── Load NTP shard (this rank) ──
-    from gr_demo.ntp.preprocess import load_shard
-    shard_path = os.path.join(args.preprocessed_dir, f'train_shard_{local_rank}.npz')
-    if not os.path.exists(shard_path):
-        shard_path = os.path.join(args.preprocessed_dir, 'train_shard_0.npz')
-    shard_data = load_shard(shard_path)
-    tokens_list, split_pos_list = shard_data[0], shard_data[1]
-    log(is_main, f"  NTP shard: {len(tokens_list):,} seqs (rank {local_rank})")
+    # ── Load NTP shard (this rank) — skipped in pure_dpo mode ──
+    if args.pure_dpo:
+        tokens_list, split_pos_list = [], []
+        log(is_main, f"  Pure DPO mode: skipping NTP shard load")
+    else:
+        from gr_demo.ntp.preprocess import load_shard
+        shard_path = os.path.join(args.preprocessed_dir, f'train_shard_{local_rank}.npz')
+        if not os.path.exists(shard_path):
+            shard_path = os.path.join(args.preprocessed_dir, 'train_shard_0.npz')
+        shard_data = load_shard(shard_path)
+        tokens_list, split_pos_list = shard_data[0], shard_data[1]
+        log(is_main, f"  NTP shard: {len(tokens_list):,} seqs (rank {local_rank})")
 
     # ── Load preference pairs (all shards on each rank for simplicity) ──
     pref_meta_path = os.path.join(args.preference_dir, 'meta.json')
@@ -697,6 +770,8 @@ def main():
             dpo_batch_size=args.dpo_batch_size,
             dpo_n_rejected=args.dpo_n_rejected,
             max_steps=args.max_steps,
+            pure_dpo=args.pure_dpo,
+            dpo_epochs=args.dpo_epochs,
         )
 
         # ── Save checkpoint (rank 0 only) ──

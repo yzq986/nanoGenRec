@@ -97,17 +97,16 @@ if [ "${SKIP_SMOKE}" != true ] && [ "${START_FROM}" -le 1 ]; then
         --max_samples 100 \
         --difficulty all
 
-    # 2) Train one DPO step (reuse sp-dpo-train)
+    # 2) Train one DPO step (pure DPO mode)
     echo "[Smoke] Training RF-DPO (1 step)..."
     python run.py sp-dpo-train \
         --sft_checkpoint "${REF_CKPT}" \
         --preference_dir "${SMOKE_PREF}" \
         --preprocessed_dir "${NTP_DATA}" \
         --output_dir "${SMOKE_CKPT}" \
-        --dpo_weight 0.1 \
+        --pure_dpo \
         --dpo_beta 0.1 \
         --lr 1e-4 \
-        --batch_size 64 \
         --max_steps 5 \
         --name exp018-smoke
 
@@ -149,14 +148,14 @@ generate_rf_preferences() {
 }
 
 # ============================================================
-# Phase 2: DPO Training (reuse sp-dpo-train)
+# Phase 2: Pure DPO Training (no NTP loss, per paper)
 # ============================================================
 train_rf_dpo() {
     local NAME=$1
     local DIFFICULTY=$2
-    local DPO_WEIGHT=$3
-    local DPO_BETA=$4
-    local LR=$5
+    local DPO_BETA=$3
+    local LR=$4
+    local DPO_EPOCHS=$5
     local THIS_REF=$6
     local PREF_PATH=$7
     local DESC=$8
@@ -168,7 +167,7 @@ train_rf_dpo() {
     echo "[${NAME}] ${DESC}"
     echo "  REF:  ${THIS_REF}"
     echo "  PREF: ${PREF_PATH}"
-    echo "  λ=${DPO_WEIGHT}, β=${DPO_BETA}, lr=${LR}"
+    echo "  β=${DPO_BETA}, lr=${LR}, epochs=${DPO_EPOCHS} (pure DPO)"
     echo "============================================================"
 
     if [ -f "${OUTPUT}/probe.pt" ] && [ "${FORCE}" != true ]; then
@@ -183,10 +182,10 @@ train_rf_dpo() {
         --preference_dir "${PREF_PATH}"
         --preprocessed_dir "${NTP_DATA}"
         --output_dir "${OUTPUT}"
-        --dpo_weight "${DPO_WEIGHT}"
+        --pure_dpo
+        --dpo_epochs "${DPO_EPOCHS}"
         --dpo_beta "${DPO_BETA}"
         --lr "${LR}"
-        --batch_size 2048
         --difficulty "${DIFFICULTY}"
         --name "exp018-${NAME}"
     )
@@ -209,14 +208,14 @@ train_rf_dpo() {
 # ============================================================
 if [ "${START_FROM}" -le 1 ]; then
     generate_rf_preferences "easy"
-    train_rf_dpo "rfdpo-easy" "easy" 0.1 0.1 1e-4 \
+    train_rf_dpo "rfdpo-easy" "easy" 0.1 1e-4 3 \
         "${REF_CKPT}" "${PREF_DIR}/easy" \
         "RF-DPO Easy only: negative feedback rejected"
 
     echo ""
     echo ">>> Committing Easy results..."
     git add experiments/
-    git commit -m "EXP-018 partial: RF-DPO Easy stage" || echo "Nothing to commit"
+    git commit -m "EXP-018 partial: RF-DPO Easy stage (pure DPO)" || echo "Nothing to commit"
     ./push.sh
 fi
 
@@ -225,14 +224,14 @@ fi
 # ============================================================
 if [ "${START_FROM}" -le 2 ]; then
     generate_rf_preferences "hard"
-    train_rf_dpo "rfdpo-hard" "hard" 0.1 0.1 1e-4 \
+    train_rf_dpo "rfdpo-hard" "hard" 0.1 1e-4 3 \
         "${REF_CKPT}" "${PREF_DIR}/hard" \
         "RF-DPO Hard only: weak positive rejected"
 
     echo ""
     echo ">>> Committing Hard results..."
     git add experiments/
-    git commit -m "EXP-018 partial: RF-DPO Hard stage" || echo "Nothing to commit"
+    git commit -m "EXP-018 partial: RF-DPO Hard stage (pure DPO)" || echo "Nothing to commit"
     ./push.sh
 fi
 
@@ -248,7 +247,7 @@ if [ "${START_FROM}" -le 3 ]; then
     # Stage 1: Easy (reuse if done in Config 1)
     if [ ! -f "${CKPT_DIR}/exp018-rfdpo-easy/probe.pt" ]; then
         generate_rf_preferences "easy"
-        train_rf_dpo "rfdpo-easy" "easy" 0.1 0.1 1e-4 \
+        train_rf_dpo "rfdpo-easy" "easy" 0.1 1e-4 3 \
             "${REF_CKPT}" "${PREF_DIR}/easy" \
             "Progressive Stage 1/2: Easy"
     else
@@ -257,30 +256,30 @@ if [ "${START_FROM}" -le 3 ]; then
 
     # Stage 2: Hard (reference = Easy output)
     generate_rf_preferences "hard"
-    train_rf_dpo "rfdpo-prog" "hard" 0.1 0.1 1e-4 \
+    train_rf_dpo "rfdpo-prog" "hard" 0.1 1e-4 3 \
         "${CKPT_DIR}/exp018-rfdpo-easy" "${PREF_DIR}/hard" \
         "Progressive Stage 2/2: Hard (ref=Easy output)"
 
     echo ""
     echo ">>> Committing Progressive results..."
     git add experiments/
-    git commit -m "EXP-018 partial: RF-DPO Progressive (Easy→Hard)" || echo "Nothing to commit"
+    git commit -m "EXP-018 partial: RF-DPO Progressive (Easy→Hard, pure DPO)" || echo "Nothing to commit"
     ./push.sh
 fi
 
 # ============================================================
-# Config 4-5: λ ablation on Progressive
+# Config 4-5: β ablation on Progressive Hard
 # ============================================================
 if [ "${START_FROM}" -le 4 ]; then
-    train_rf_dpo "rfdpo-prog-lam05" "hard" 0.05 0.1 1e-4 \
+    train_rf_dpo "rfdpo-prog-beta01" "hard" 0.01 1e-4 3 \
         "${CKPT_DIR}/exp018-rfdpo-easy" "${PREF_DIR}/hard" \
-        "Progressive Hard, λ=0.05 (ablation)"
+        "Progressive Hard, β=0.01 (ablation)"
 fi
 
 if [ "${START_FROM}" -le 5 ]; then
-    train_rf_dpo "rfdpo-prog-lam50" "hard" 0.5 0.1 1e-4 \
+    train_rf_dpo "rfdpo-prog-beta50" "hard" 0.5 1e-4 3 \
         "${CKPT_DIR}/exp018-rfdpo-easy" "${PREF_DIR}/hard" \
-        "Progressive Hard, λ=0.5 (ablation)"
+        "Progressive Hard, β=0.5 (ablation)"
 fi
 
 # ============================================================
@@ -304,5 +303,5 @@ echo "  SP-DPO reference:     ${REF_CKPT}"
 echo "  RF-DPO Easy:          ${CKPT_DIR}/exp018-rfdpo-easy"
 echo "  RF-DPO Hard:          ${CKPT_DIR}/exp018-rfdpo-hard"
 echo "  RF-DPO Progressive:   ${CKPT_DIR}/exp018-rfdpo-prog"
-echo "  RF-DPO λ=0.05:        ${CKPT_DIR}/exp018-rfdpo-prog-lam05"
-echo "  RF-DPO λ=0.5:         ${CKPT_DIR}/exp018-rfdpo-prog-lam50"
+echo "  RF-DPO β=0.01:        ${CKPT_DIR}/exp018-rfdpo-prog-beta01"
+echo "  RF-DPO β=0.5:         ${CKPT_DIR}/exp018-rfdpo-prog-beta50"
