@@ -294,6 +294,11 @@ def train_dpo(
     #      - General fragmentation margin
     #    Result: NTP batch drops from ~149 to ~136, leaving room for DPO.
     #
+    #    Validated (8×A100 40GB, 45.8M params, seq_len=510, DPO batch=16, K=21):
+    #      GPU util: 79-84% (stable, no wave peaks/valleys)
+    #      GPU mem:  37.4-38.9 GB (91-95%), rank variance ~1.4 GB (normal)
+    #      No OOM across 1420 steps.
+    #
     if dpo_weight > 0:
         dpo_reserve_gb = 3.0
         avail_gb -= dpo_reserve_gb
