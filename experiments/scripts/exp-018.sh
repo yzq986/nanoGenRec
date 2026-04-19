@@ -39,13 +39,13 @@ SFT_CKPT="experiments/ntp_checkpoints/exp016-B-14d-S"
 PREF_DIR="experiments/rf_dpo_data/exp018"
 CKPT_DIR="experiments/ntp_checkpoints"
 
-# Use SP-DPO output as reference if available, otherwise SFT
-if [ -f "${CKPT_DIR}/exp017-spdpo-prog/probe.pt" ]; then
-    REF_CKPT="${CKPT_DIR}/exp017-spdpo-prog"
-    echo "  Using SP-DPO progressive output as reference model"
-elif [ -f "${CKPT_DIR}/exp017-spdpo-easy/probe.pt" ]; then
-    REF_CKPT="${CKPT_DIR}/exp017-spdpo-easy"
-    echo "  Using SP-DPO easy output as reference model"
+# Use best SP-DPO output as reference (fixed-medium = best Recall)
+if [ -f "${CKPT_DIR}/exp017-fixed-medium/probe.pt" ]; then
+    REF_CKPT="${CKPT_DIR}/exp017-fixed-medium"
+    echo "  Using SP-DPO fixed-medium as reference (R@10=15.4%, R@500=68.3%)"
+elif [ -f "${CKPT_DIR}/exp017-fixed-hard/probe.pt" ]; then
+    REF_CKPT="${CKPT_DIR}/exp017-fixed-hard"
+    echo "  Using SP-DPO fixed-hard as reference"
 else
     REF_CKPT="${SFT_CKPT}"
     echo "  No SP-DPO checkpoint found, using SFT baseline as reference"
