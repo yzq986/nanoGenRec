@@ -118,7 +118,7 @@ generate_preferences() {
     local BEAM_MODEL=$1
     local OUTPUT=$2
     local DIFFICULTY=$3
-    local BEAM_SIZE=${4:-200}
+    local BEAM_SIZE=${4:-50}
     local EXTRA_ARGS=${5:-}   # e.g. "--prefix_locked"
 
     echo ""
@@ -248,7 +248,7 @@ if [ "${START_FROM}" -le 2 ]; then
     fi
 
     # SFT prefix-locked beam search for M/H candidates
-    generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft-pfx" "all" 200 "--prefix_locked"
+    generate_preferences "${SFT_CKPT}" "${PREF_DIR}/sft-pfx" "all" 50 "--prefix_locked"
 
     # Medium (ref = Easy output, candidates from SFT prefix-locked)
     train_dpo "fixed-medium" "medium" 0.1 0.1 1e-4 \
@@ -285,7 +285,7 @@ if [ "${START_FROM}" -le 3 ]; then
 
     # Easy model prefix-locked beam search for M/H candidates
     generate_preferences "${CKPT_DIR}/exp017-spdpo-easy" \
-        "${PREF_DIR}/sp-easy-pfx" "all" 200 "--prefix_locked"
+        "${PREF_DIR}/sp-easy-pfx" "all" 50 "--prefix_locked"
 
     # Medium (ref = Easy, Easy-model prefix-locked candidates)
     train_dpo "sp-medium" "medium" 0.1 0.1 1e-4 \
