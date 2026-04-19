@@ -213,29 +213,45 @@ def train_dpo(
     raw_policy = policy_model
 
     # ── Auto-cap NTP batch_size based on available GPU memory ──
+    #
+    # Memory model: total_gpu = static + B × bytes_per_sample
+    #
+    # 1) Static memory: policy (weights + grads + adam m,v) + ref (weights only, frozen)
+    #    45.8M params: policy = 45.8M × (4+4+4+4) = 0.73GB, ref = 45.8M × 4 = 0.18GB
     max_seq_len = max(len(t) for t in ntp_tokens_list) if ntp_tokens_list else 512
     gpu_mem_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
-    # Static memory: policy (weights + grads + adam × 2) + ref (weights only)
-    #   45.8M params → model_mem = 45.8M×16/1G ≈ 0.7GB, ref = 0.18GB
     model_mem_gb = n_params * 4 * 4 / (1024 ** 3)
     ref_mem_gb = n_params * 4 / (1024 ** 3)
     avail_gb = gpu_mem_gb * 0.85 - model_mem_gb - ref_mem_gb
-    #   A100 40GB: avail = 39.5×0.85 - 0.7 - 0.18 ≈ 32.7 GB
+    #    A100 40GB: avail = 39.5 × 0.85 - 0.73 - 0.18 = 32.7 GB
     #
-    # Per-sample per-layer training memory (intermediates saved for backward):
-    #   Component                              Formula              S=510,H=8,D=256
-    #   ─────────────────────────────────────────────────────────────────────────────
-    #   Attention weights (pre+post dropout)   H × S² × 8B         8×260K×8  = 16.6MB
-    #   Dropout mask                           H × S² × 1B         8×260K×1  =  2.1MB
-    #   QKV projections + attn_out + norms     6 × S × D × 4B      6×510×256×4= 3.1MB
-    #   FFN intermediate + activation (4×D)    2 × S × 4D × 4B     2×510×1K×4 = 4.2MB
-    #   ─────────────────────────────────────────────────────────────────────────────
-    #   Per layer total                                             ≈ 26 MB
-    #   × 6 layers                                                  ≈ 156 MB/sample
+    # 2) Per-sample activation memory (all layers' intermediates saved for backward):
     #
-    #   A100 40GB: 32.7GB / 156MB ≈ 213 samples
-    #   Verified: batch=267 OOM'd at 35.5GB allocated (actual ~133MB/sample),
-    #   formula overestimates by ~18% — safe margin for DPO forward + fragmentation.
+    #    Component                              Formula              S=510, H=8, D=256
+    #    ─────────────────────────────────────────────────────────────────────────────
+    #    Attn weights (pre+post dropout)        H × S² × 8B         8×260K×8  = 16.6MB
+    #    Dropout mask                           H × S² × 1B         8×260K×1  =  2.1MB
+    #    QKV projections + attn_out + norms     6 × S × D × 4B      6×510×256×4= 3.1MB
+    #    FFN intermediate + activation (4×D)    2 × S × 4D × 4B     2×510×1K×4 = 4.2MB
+    #    ─────────────────────────────────────────────────────────────────────────────
+    #    Per layer subtotal                                          ≈ 26.0 MB
+    #    × 6 layers = formula_bytes                                  ≈ 156 MB/sample
+    #
+    # 3) Safety factor × 1.2 for uncounted overhead:
+    #    - Norm layer inputs saved for backward (residual tensors)
+    #    - Embedding lookup + position embedding tensors
+    #    - PyTorch allocator fragmentation & bookkeeping
+    #    formula_bytes × 1.2                                         ≈ 187 MB/sample
+    #
+    # Empirical validation (A100 40GB, S≈491, H=8, D=256, L=6):
+    #    batch=591 → OOM at 35.5GB alloc (tried +4.56GB)  ← no safety, no backward
+    #    batch=267 → OOM at 35.5GB alloc (tried +2.06GB)  ← 9B attn, no QKV/FFN
+    #    batch=224 → OOM at 38.3GB alloc (tried +1.73GB)  ← 9B attn + QKV + FFN
+    #    batch=46  → OK, ~8.6GB total                      ← old formula (too conservative)
+    #    Actual per-sample from batch=224 OOM: (38.3-0.9)/224 ≈ 167 MB
+    #    Formula with 1.2×: 187 MB → batch ≈ 32.7GB/187MB ≈ 179
+    #    Predicted usage: 179 × 167MB + 0.9 = 30.8GB (leaves 8.7GB for DPO + headroom)
+    #
     embed_dim = cfg.get('embed_dim', 256)
     n_tf_layers = cfg.get('n_transformer_layers', 6)
     n_heads = cfg.get('n_heads', 8)
@@ -243,7 +259,7 @@ def train_dpo(
     attn_bytes = n_heads * S2 * 9 * n_tf_layers
     linear_bytes = 6 * max_seq_len * embed_dim * 4 * n_tf_layers
     ffn_bytes = 2 * max_seq_len * embed_dim * 4 * 4 * n_tf_layers
-    bytes_per_sample = attn_bytes + linear_bytes + ffn_bytes
+    bytes_per_sample = int((attn_bytes + linear_bytes + ffn_bytes) * 1.2)
     mem_safe_bs = max(32, int(avail_gb * 1024 ** 3 / bytes_per_sample))
     if batch_size > mem_safe_bs:
         log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
