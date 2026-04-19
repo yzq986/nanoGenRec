@@ -15,6 +15,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SENSITIVE_DIR="${SCRIPT_DIR}/sensitive"
 
+# Load private config (company git identity, etc.)
+source "${SENSITIVE_DIR}/config.sh"
+
 COMMIT_MSG=""
 SENSITIVE_ONLY=false
 MAIN_ONLY=false
@@ -105,8 +108,8 @@ push_main() {
         return 0
     fi
     echo "  Mirroring to company (rewriting author)..."
-    local COMPANY_NAME="Company User"
-    local COMPANY_EMAIL="user@company.com"
+    local COMPANY_NAME="${GIT_AUTHOR_NAME:?Missing GIT_AUTHOR_NAME in config/config.sh}"
+    local COMPANY_EMAIL="${GIT_AUTHOR_EMAIL:?Missing GIT_AUTHOR_EMAIL in config/config.sh}"
     local TEMP_BRANCH="_mirror_company_$$"
 
     # 找到 company 和 personal 的分叉点，只重写之后的 commits
@@ -198,8 +201,8 @@ push_config() {
     fi
 
     # Company identity for private config
-    local COMPANY_NAME="Company User"
-    local COMPANY_EMAIL="user@company.com"
+    local COMPANY_NAME="${GIT_AUTHOR_NAME:?Missing GIT_AUTHOR_NAME in config/config.sh}"
+    local COMPANY_EMAIL="${GIT_AUTHOR_EMAIL:?Missing GIT_AUTHOR_EMAIL in config/config.sh}"
 
     # Commit if message provided (使用公司身份)
     if [ -n "$COMMIT_MSG" ]; then
