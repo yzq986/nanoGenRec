@@ -215,14 +215,16 @@ def train_dpo(
     # ── Auto-cap NTP batch_size based on available GPU memory ──
     max_seq_len = max(len(t) for t in ntp_tokens_list) if ntp_tokens_list else 512
     gpu_mem_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
-    # Model params memory (2 models × params × 4 bytes + optimizer states ≈ 4x)
     model_mem_gb = n_params * 4 * 4 / (1024 ** 3)  # policy weights + grads + adam states
-    ref_mem_gb = n_params * 4 / (1024 ** 3)         # ref weights only (frozen, no grads)
-    avail_gb = gpu_mem_gb * 0.85 - model_mem_gb - ref_mem_gb  # 85% usable
-    # Per-sample activation: seq_len × embed_dim × n_layers × ~12 bytes (fwd+bwd)
+    ref_mem_gb = n_params * 4 / (1024 ** 3)         # ref weights only
+    avail_gb = gpu_mem_gb * 0.85 - model_mem_gb - ref_mem_gb
+    # Per-sample: activations + attention matrices (dominant at long seq_len)
     embed_dim = cfg.get('embed_dim', 256)
     n_tf_layers = cfg.get('n_transformer_layers', 6)
-    bytes_per_sample = max_seq_len * embed_dim * n_tf_layers * 12
+    n_heads = cfg.get('n_heads', 8)
+    activation_bytes = max_seq_len * embed_dim * n_tf_layers * 12
+    attention_bytes = n_heads * max_seq_len * max_seq_len * n_tf_layers * 4
+    bytes_per_sample = activation_bytes + attention_bytes
     mem_safe_bs = max(32, int(avail_gb * 1024 ** 3 / bytes_per_sample))
     if batch_size > mem_safe_bs:
         log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
