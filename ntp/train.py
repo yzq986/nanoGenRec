@@ -42,7 +42,7 @@ def setup_ddp():
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     if world_size > 1:
         from datetime import timedelta
-        dist.init_process_group('nccl', timeout=timedelta(minutes=30))
+        dist.init_process_group('nccl', timeout=timedelta(minutes=120))
         torch.cuda.set_device(local_rank)
     device = torch.device(f'cuda:{local_rank}')
     is_main = (local_rank == 0)
@@ -1050,6 +1050,11 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
             probe, eval_sequences, sid_trie, sid_to_items, n_layers,
             device, recall_beam_size=500, n_recall_samples=n_recall_per_rank,
             verbose=is_main)
+
+    # Barrier: beam search time varies per rank (different eval data + context lengths).
+    # Without this, fast ranks hit all_reduce while slow ranks are still searching → NCCL timeout.
+    if world_size > 1:
+        dist.barrier()
 
     # All-reduce beam search recall counts
     recall_ks = [10, 50, 100, 500]
