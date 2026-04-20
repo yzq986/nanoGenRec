@@ -830,15 +830,17 @@ def main():
     if skip_train:
         log(is_main, f"\n  Checkpoint found at {args.output_dir}, skipping training.")
 
-        # Check if eval already done
+        # Check which evals are already done
         has_eval = False
+        has_align_eval = False
         if os.path.exists(train_meta_path):
             with open(train_meta_path) as f:
                 existing_meta = json.load(f)
             has_eval = 'eval' in existing_meta
+            has_align_eval = 'alignment_eval' in existing_meta
 
-        if has_eval:
-            log(is_main, f"  Eval results already present, nothing to do.")
+        if has_eval and has_align_eval:
+            log(is_main, f"  All evals already present, nothing to do.")
             if wandb_run is not None:
                 wandb_run.finish()
             cleanup_ddp()
@@ -907,39 +909,127 @@ def main():
                 train_summary=train_summary,
             )
 
-    # ── Inline eval ──
-    log(is_main, "\n  Running inline evaluation...")
-    from gr_demo.ntp.train import _run_inline_eval
-    model.to(device)
-    eval_results = _run_inline_eval(
-        probe=model,
-        sid_cache_dir=sid_cache_dir,
-        preprocessed_dir=args.preprocessed_dir,
-        n_layers=n_layers,
-        n_clusters_per_layer=n_clusters_per_layer,
-        local_rank=local_rank,
-        world_size=world_size,
-        device=device,
-        is_main=is_main,
-    )
+    # ── Check existing evals ──
+    existing_meta = {}
+    if os.path.exists(train_meta_path):
+        with open(train_meta_path) as f:
+            existing_meta = json.load(f)
 
-    # ── Save eval results to train_meta ──
-    if is_main and eval_results:
-        if os.path.exists(train_meta_path):
-            with open(train_meta_path) as f:
-                meta = json.load(f)
-        else:
-            meta = {}
-        meta['eval'] = eval_results
-        with open(train_meta_path, 'w') as f:
-            json.dump(meta, f, indent=2)
-        log(is_main, f"  Eval results saved to train_meta.json")
+    # ── Inline NTP eval ──
+    if 'eval' not in existing_meta:
+        log(is_main, "\n  Running inline evaluation...")
+        from gr_demo.ntp.train import _run_inline_eval
+        model.to(device)
+        eval_results = _run_inline_eval(
+            probe=model,
+            sid_cache_dir=sid_cache_dir,
+            preprocessed_dir=args.preprocessed_dir,
+            n_layers=n_layers,
+            n_clusters_per_layer=n_clusters_per_layer,
+            local_rank=local_rank,
+            world_size=world_size,
+            device=device,
+            is_main=is_main,
+        )
 
-    if wandb_run is not None:
-        if eval_results:
+        if is_main and eval_results:
+            existing_meta['eval'] = eval_results
+            with open(train_meta_path, 'w') as f:
+                json.dump(existing_meta, f, indent=2)
+            log(is_main, f"  Eval results saved to train_meta.json")
+
+        if wandb_run is not None and eval_results:
             for k, v in eval_results.items():
                 if isinstance(v, (int, float)):
                     wandb_run.summary[f'eval/{k}'] = v
+    else:
+        log(is_main, "\n  NTP eval already present, skipping.")
+
+    # ── Inline alignment eval ──
+    if 'alignment_eval' not in existing_meta and len(all_pairs) > 0:
+        log(is_main, "\n  Running alignment evaluation...")
+        model.to(device)
+
+        ref_model_eval, _ = load_model_from_checkpoint(args.sft_checkpoint, device)
+        ref_model_eval.eval()
+
+        difficulty = args.difficulty
+        if difficulty == 'all' and os.path.exists(pref_meta_path):
+            pref_difficulty = pref_meta.get('difficulty', 'all')
+            if pref_difficulty != 'all':
+                difficulty = pref_difficulty
+
+        align_dataset = PreferencePairDataset(
+            all_pairs, difficulty=difficulty,
+            n_rejected=args.dpo_n_rejected, n_layers=n_layers)
+        align_loader = DataLoader(
+            align_dataset, batch_size=args.dpo_batch_size, shuffle=False,
+            num_workers=0, pin_memory=True, collate_fn=preference_collate_fn)
+
+        a_chosen, a_rejected, a_margins = [], [], []
+        a_wins, a_total = 0, 0
+
+        with torch.no_grad():
+            for bi, batch in enumerate(align_loader):
+                ctx_p, ctx_l, sids, offsets = batch
+                ctx_p = ctx_p.to(device)
+                ctx_l = ctx_l.to(device)
+                sids = sids.to(device)
+                offsets = offsets.to(device)
+
+                counts = offsets[1:] - offsets[:-1]
+                ctx_exp = torch.repeat_interleave(ctx_p, counts, dim=0)
+                len_exp = torch.repeat_interleave(ctx_l, counts, dim=0)
+
+                ref_lp = compute_sid_logprobs_batch(
+                    ref_model_eval, ctx_exp, len_exp, sids, n_layers)
+                policy_lp = compute_sid_logprobs_batch(
+                    model, ctx_exp, len_exp, sids, n_layers)
+
+                _, diag = softmax_dpo_loss(
+                    policy_lp, ref_lp, offsets,
+                    beta=args.dpo_beta, return_diagnostics=True)
+
+                if diag:
+                    a_chosen.append(diag['chosen_reward'])
+                    a_rejected.append(diag['rejected_reward'])
+                    a_margins.append(diag['reward_margin'])
+                    bs = int((offsets.size(0) - 1))
+                    a_wins += int(diag['preference_acc'] * bs)
+                    a_total += bs
+
+                if is_main and (bi + 1) % 50 == 0:
+                    log(is_main, f"    alignment batch {bi+1}/{len(align_loader)}, "
+                        f"margin={diag['reward_margin']:.3f}, acc={diag['preference_acc']:.1%}")
+
+        del ref_model_eval
+
+        if a_total > 0 and is_main:
+            align_results = {
+                'chosen_reward': round(float(np.mean(a_chosen)), 4),
+                'rejected_reward': round(float(np.mean(a_rejected)), 4),
+                'reward_margin': round(float(np.mean(a_margins)), 4),
+                'preference_acc': round(a_wins / a_total, 4),
+                'n_pairs': a_total,
+                'difficulty': difficulty,
+                'dpo_beta': args.dpo_beta,
+            }
+            existing_meta['alignment_eval'] = align_results
+            with open(train_meta_path, 'w') as f:
+                json.dump(existing_meta, f, indent=2)
+            log(is_main, f"  Alignment eval: margin={align_results['reward_margin']:.4f}, "
+                         f"acc={align_results['preference_acc']:.2%}")
+            log(is_main, f"  Saved to train_meta.json ['alignment_eval']")
+
+            if wandb_run is not None:
+                for k, v in align_results.items():
+                    if isinstance(v, (int, float)):
+                        wandb_run.summary[f'alignment/{k}'] = v
+    else:
+        if 'alignment_eval' in existing_meta:
+            log(is_main, "\n  Alignment eval already present, skipping.")
+
+    if wandb_run is not None:
         wandb_run.finish()
 
     cleanup_ddp()
