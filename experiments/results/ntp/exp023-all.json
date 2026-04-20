@@ -1,0 +1,41 @@
+{
+  "name": "exp023-all",
+  "model_type": "s-tier",
+  "n_params": 45700096,
+  "n_active_params": 17388544,
+  "total_tokens": 132625080,
+  "total_flops": 13836942234501120,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "eval": {
+    "ppl": 55.1656,
+    "layer_ppl": [
+      453.5979,
+      21.6309,
+      17.3236
+    ],
+    "avg_loss": 4.010339,
+    "depth_hit@10": [
+      0.1688,
+      0.1345,
+      0.1275
+    ],
+    "depth_hit@10_indep": [
+      0.1681,
+      0.7383,
+      0.7416
+    ],
+    "depth_acc_beam": [
+      0.02,
+      0.008,
+      0.008
+    ],
+    "target_sid_found_rate": 0.466,
+    "n_eval_positions": 148078,
+    "n_eval_items": 49166,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.067,
+    "item_recall@50": 0.164,
+    "item_recall@100": 0.23,
+    "item_recall@500": 0.465
+  }
+}
