@@ -132,8 +132,7 @@ train_joint_rf_dpo() {
     echo "============================================================"
 
     if [ -f "${OUTPUT}/probe.pt" ] && [ "${FORCE}" != true ]; then
-        echo "[${NAME}] Checkpoint found, skipping (use --force to re-run)"
-        return 0
+        echo "[${NAME}] Checkpoint found, running eval-only (use --force to re-train)"
     fi
 
     # archive_if_exists is handled by trainer — no rm -rf needed
