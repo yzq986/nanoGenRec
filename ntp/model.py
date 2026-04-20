@@ -829,7 +829,7 @@ class NTPModel(nn.Module):
         return ntp_loss
 
     def _compute_contrastive_loss(self, hidden, target_mask, item_embeddings, temperature,
-                                   max_pairs=4096):
+                                   max_pairs=2048):
         """InfoNCE between s₃ hidden states and item embeddings (local in-batch).
 
         s₃ positions: where input layer = L-1 (position i % L == L-1).
@@ -838,7 +838,7 @@ class NTPModel(nn.Module):
         Uses only local (per-GPU) negatives to avoid OOM from cross-GPU gather.
         Each GPU samples up to max_pairs from its B×n_s3 pool.
         Memory: (max_pairs, max_pairs) * 4 bytes * ~3 (fwd+bwd+softmax)
-        = 4096² * 12 ≈ 192 MB peak, fits in <1 GiB headroom.
+        = 2048² * 12 ≈ 48 MB peak.
         """
         B, S, D = hidden.shape
         L = self.n_sid_layers
