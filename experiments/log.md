@@ -42,8 +42,8 @@
 ## EXP-022: NTP In-Batch Contrastive Loss (IDEA-onemall-0)
 
 **Date**: 2026-04-20
-**Status**: planned
-**Results**: TBD
+**Status**: running
+**Results**: [./ntp_checkpoints/exp022-alpha001/](./ntp_checkpoints/exp022-alpha001/)
 
 ### Background
 
@@ -57,25 +57,42 @@
 
 1. Contrastive loss 作为正则化，应降低 PPL 并提升 Recall（特别是 R@500）
 2. α 过大会与 NTP loss 竞争梯度，需要 sweet spot
-3. DDP 8 卡天然提供 8×batch_size 的 in-batch negatives，对 InfoNCE 有利
+3. 每 GPU 2048 local in-batch negatives 足够 InfoNCE 学到对齐
 
 ### Design
 - **Variable**: contrastive weight α ∈ {0.01, 0.1, 0.5}; temperature τ ∈ {0.05, 0.07}; projection dim ∈ {128, 256}
-- **Fixed**: S-tier model (6L, 8E top-2, 256d), batch_size=4096, 1 epoch, same NTP data (EXP-016 14d)
-- **Metric**: PPL, R@10, R@50, R@500, contrastive accuracy@1
+- **Fixed**: S-tier model (6L, 8E top-2, 256d), batch_size=152 (packed), 1 epoch, same NTP data (EXP-016 14d)
+- **Metric**: PPL, R@10, R@50, R@100, R@500
 - **Data**: experiments/ntp_data/exp016-14d (14-day, 8 shards)
+- **Implementation**: local in-batch InfoNCE, max_pairs=2048/GPU, expandable_segments=True
 
 ### Run
 `bash experiments/scripts/exp-022.sh`
 
 ### Results
-TBD
+
+Phase 1 partial (α sweep, τ=0.07, dim=128):
+
+| Config | α | PPL | R@10 | R@50 | R@100 | R@500 | Wall(s) |
+|--------|---|-----|------|------|-------|-------|---------|
+| Baseline (EXP-016 14d-S) | 0 | **27.05** | 9.9% | **26.1%** | 35.0% | 58.5% | 1144 |
+| exp022-alpha001 | 0.01 | 27.89 | **10.3%** | 25.1% | **36.4%** | **59.2%** | 1278 |
+| exp022-alpha01 | 0.1 | — | — | — | — | — | — |
+| exp022-alpha05 | 0.5 | — | — | — | — | — | — |
 
 ### Analysis
-TBD
+
+α=0.01 初步结果：
+- R@100 (+1.4pp) 和 R@500 (+0.7pp) 有提升，R@10 也微升 (+0.4pp)
+- R@50 反降 1pp，指标不完全一致
+- PPL 变差 (+0.84)，尤其 L2 layer PPL 从 4.84 升到 5.26 — contrastive 梯度可能干扰了最后一层 token 预测
+- 训练慢 12%（embedding lookup + contrastive overhead）
+- 待 α=0.1, 0.5 出来看趋势
 
 ### Next Steps
-TBD
+- 等待 α=0.1, 0.5 结果确认最优 α
+- 如果 recall 提升确认，进入 Phase 2 (temperature sweep) 和 Phase 3 (dim sweep)
+- 考虑是否 contrastive loss 应 detach backbone 只训 projection head（避免 PPL 退化）
 
 ---
 
