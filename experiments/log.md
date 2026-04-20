@@ -39,6 +39,46 @@
 
 ---
 
+## EXP-022: NTP In-Batch Contrastive Loss (IDEA-onemall-0)
+
+**Date**: 2026-04-20
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+当前 NTP 模型仅有离散 CE loss + MoE balance aux loss。OneMall §3.2 Eq.7 表明在 s₃ 位置加 in-batch contrastive auxiliary loss（对齐 decoder hidden state 与 target item embedding）可显著提升性能，报告 98% accuracy@1。
+
+该辅助 loss 为 decoder 提供连续 embedding 空间的监督信号，防止 SID 表示退化为只关心 token 分类而丢失语义连续性。与 DPO 互补：onemall-0 强化基础表征，DPO 在此之上做偏好对齐。
+
+基线: EXP-016 14d-S (PPL=27.05, R@500=58.5%)
+
+### Hypothesis
+
+1. Contrastive loss 作为正则化，应降低 PPL 并提升 Recall（特别是 R@500）
+2. α 过大会与 NTP loss 竞争梯度，需要 sweet spot
+3. DDP 8 卡天然提供 8×batch_size 的 in-batch negatives，对 InfoNCE 有利
+
+### Design
+- **Variable**: contrastive weight α ∈ {0.01, 0.1, 0.5}; temperature τ ∈ {0.05, 0.07}; projection dim ∈ {128, 256}
+- **Fixed**: S-tier model (6L, 8E top-2, 256d), batch_size=4096, 1 epoch, same NTP data (EXP-016 14d)
+- **Metric**: PPL, R@10, R@50, R@500, contrastive accuracy@1
+- **Data**: experiments/ntp_data/exp016-14d (14-day, 8 shards)
+
+### Run
+`bash experiments/scripts/exp-022.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-021: Qwen3-4B vs 0.6B Embedding Quality for SID Tokenizer
 
 **Date**: 2026-04-20

@@ -1,0 +1,1390 @@
+OneMall: One Architecture, More Scenarios — End-to-End
+Generative Recommender Family at Kuaishou E-Commerce
+Kun Zhang*, Jingming Zhang*, Wei Cheng*, Yansong Cheng*, Jiaqi Zhang*, Hao Lu, Xu Zhang,
+Haixiang Gan, Jiangxia Cao★, Tenglong Wang, Ximing Zhang, Boyang Xia, Kuo Cai, Shiyao Wang,
+Hongjian Dou, Jinkai Yu, Mingxing Wen, Qiang Luo, Dongxu Liang, Chenyi Lei, Jun Wang, Runan
+Liu, Zhaojie Liu, Ruiming Tang, Tingting Gao, Shaoguo Liu, Yuqing Ding, Hui Kong,
+Han Li, Guorui Zhou, Wenwu Ou, Kun Gai
+Kuaishou Technology, Beijing, China
+{zhangkun10, zhangjingming, chengwei07, chengyansong, zhangjiaqi15, luhao, zhangxu20, ganhaixiang03, caojiangxia,
+wangtenglong, zhangximing, xiaboyang, caikuo, wangshiyao08, douhongjian, yujinkai, wenmingxing, luoqiang,
+liangdongxu, yangyifan12, wangjun03, liurunnan zhaotianxing, tangruiming, lisize, liushaoguo, dingyuqin03, konghui,
+lihan08, zhouguorui, luocheng10}@kuaishou.com, kun.gai@qq.com
+Abstract
+In the wave of generative recommendation, we present OneMall,
+an end-to-end generative recommendation framework tailored for
+e-commerce services at Kuaishou. Our OneMall systematically uni-
+fies the e-commerce’s multiple item distribution scenarios, such as
+Product-card, short-video and live-streaming. Specifically, it com-
+prises three key components, aligning the entire model training
+pipeline to the LLM’s pre-training/post-training: (1) E-commerce
+Semantic Tokenizer: we provide a tokenizer solution that captures
+both real-world semantics and business-specific item relations
+across different scenarios; (2) Transformer-based Architecture: we
+largely utilize Transformer as our model backbone, e.g., employ-
+ing Query-Former for long sequence compression, Cross-Attention
+for multi-behavior sequence fusion, and Sparse MoE for scalable
+auto-regressive generation; (3) Reinforcement Learning Pipeline: we
+further connect retrieval and ranking models via RL, enabling the
+ranking model to serve as a reward signal for end-to-end policy re-
+trieval model optimization. Extensive experiments demonstrate that
+OneMall achieves consistent improvements across all e-commerce
+scenarios: +14.7% GMV in Product-Card, +10.3% GMV in Short-
+Video, and +4.9% GMV in Live-Streaming. OneMall has been de-
+ployed, serving over 400 million daily active users at Kuaishou.
+1
+Introduction
+LLM Success Lesson. As is well known, OpenAI’s scaling laws [1]
+have significantly contributed to technique routing for LLM scaling
+in natural language processing (NLP). These laws have directly
+motivated numerous researchers to pursue the ceiling performance
+of LLM intelligence, from the data volume, model size, computa-
+tion resource and reasoning perspectives. Retrospectively, the LLM
+success can be attributed to the following progresses:
+• Pre-training Next-Token Prediction with Large Data-Volume/Model-
+Parameter: Thanks to the NTP loss unifying all tasks in the same
+prediction paradigm, therefore LLM could support extensive
+Trillion-tokens internet training corpus data and model param-
+eter scalings. E.g., evolving from early dense-activation models
+with 0.03B parameters (such as GPT-2 [32]) to sparse-activation
+models containing 671B parameters (like Deepseek V3 [24]).
+* Equal Contributions, Jiangxia Cao is the corresponding author.
+• Post-training Reasoning Reinforcement Learning: Based on the
+pre-trained base model, the Reinforcement learning [36] further
+aligns the model’s behavior more closely to human taste. E.g.,
+from the early high-quality data SFT to the DPO/GRPO/GSPO
+series fine-tuning [12, 33, 48].
+• Infrastructure Parallel Techniques: Due to Transformer’s elegant
+GPU-friendly architecture, which has inspired the development
+of various parallel techniques in distributed systems, including:
+(1) Fully Sharded Data Parallel (ZeRO series) [34, 47]; (2) Tensor
+Parallel [38]; (3) Sequence Parallel [16]; (4) Pipeline Parallel [15];
+(5) Context Parallel and so on [19], to accelerate the model train-
+ing/inference efficiency [20, 49].
+With advances in pre-training, post-training, and infrastructure,
+the bottleneck of training on tons of Tokens at hundreds of Bil-
+lion parameters within acceptable time and computation resource
+limitations has been significantly reduced and possible, enabling
+the LLM community to continuously incubate advanced artificial
+intelligence toward human-level performance, rise to many super-
+intelligent systems such as Chat-Bot [41], Vision-Generator [43],
+Code-Agent [40] and others. Given such success of LLMs, many
+industrial researchers have been pondering one thing: can we repli-
+cate the LLM evolution trace at pre-/post-training in RecSys?
+Background of RecSys. In fact, this is a challenging open prob-
+lem, since the industry RecSys and LLM are not entirely consistent
+in the task definitions, making it difficult to directly upgrade the
+model structure [8, 29] to entire Transformer blocks. For a better
+understanding the difference, we first introduce the two important
+recommendation models designing insights in (current) RecSys
+chain, and their goals:
+• Stage 1, Generative retrieval model [4, 25, 45]: this series of mod-
+els focuses on utilizing user-side historical interaction logs to
+predict other daily-hot items that users have not interacted with
+yet. For instance, retrieve 1,000 items from the total daily-hot
+item pool based on user’s latest 100 interaction log. In general, it
+can be seen as multi-targets ‘Next-Item prediction’.
+• Stage 2, Discriminate ranking model [7, 13]: this series of mod-
+els focuses on estimating the precise probabilities of behaviors
+that will happen, according to user-side and candidate item-side
+arXiv:2601.21770v2  [cs.IR]  2 Feb 2026
+
+
+Conference’17, July 2017, Washington, DC, USA
+Kun Zhang et al.
+features. For instance, prediction the click rate (CTR), conver-
+sion rate (CVR) and so on, it can be seen as a multiple-objective
+paradigm to judge which item will attract user more [3].
+Under these two paradigms with completely different objectives,
+these two types of models are usually optimized independently of
+each other, and supporting our recommendation chain in a cascaded
+manner for a long time, and widely accepted by large companies.
+Therefore, the common wisdom in RecSys community has two
+different scaling technique routes.
+Ranking Model Scaling? Roughly speaking, over the past sev-
+eral years, many well-known advancements in industrial RecSys
+have come from the Stage 2 discriminative ranking models, such as
+how to search the evidence user sub-history log sequence accord-
+ing to item candidate information (e.g., DIN/SIM/TWIN [6, 31, 51])
+and multiple objective optimization (e.g., MMoE [29], HoME [42]).
+We acknowledge that discriminative ranking model served as the
+core growth engine in past years [5, 11], especially the cascading
+GSU/ESU architecture to extend the historical sequence to life-long
+level. However, while bringing significant benefits, the current dis-
+criminative technique route has its internal limitations:
+• Un-balanced computation: Unlike Transformers, where all
+input tokens have the same parameter space and computation
+cost [9], e.g, all parameter will interact with all input tokens. In
+ranking models, the parameters of different components are al-
+ways separate from each other. This leads to a problem where dif-
+ferent modules contribute unevenly to the overall computational
+load. For example, approximately 30% of the total computation
+is allocated to TWIN-like ESU modules that require end-to-end
+lifelong-sequence inference, while only about 10% is allocated to
+other ESU modules on top-k sequences inference.
+• Complex computation: unlike the pure generative Transformer-
+based models with plain computational units that can be split
+into parallel computing units with balanced loads across distri-
+bution training nodes, the discriminative series RecSys model
+computations workflow is too complex, making it difficult to
+leverage state-of-the-art parallel computing techniques [14, 17].
+With the two limitations, some pioneering works were proposed
+to scale ranking model, such as MARM [28], Rank-Mixer [52], etc.
+However, their architectures are significantly different from the
+classic Transformer, making it hard to leverage the successful expe-
+rience from the LLM area directly.
+Retrieval Model Scaling? In contrast, the retrieval model’s
+generative ‘Next-item prediction’ paradigm closely aligns with the
+‘next-token prediction’ paradigm in LLMs [18]. The difference is
+that: the retrieval model always has multiple next ground-truth
+items, while NLP almost have only one ground-truth token for the
+given item-sequence/token-sequence. This is because industrial sys-
+tems always send a batch of items to user device at same time (e.g.,
+10 short-videos per request), thus those next-items will share same
+pre-filling user interaction item sequence in retrieval model. In this
+characteristic, for quite a long time, the retrieval models’ research
+focus has been on modeling the diversity [23]. With the recent ad-
+vances in Transformer-based sequence modeling, there revealed a
+promising alternative: diversity can be inherently achieved through
+controlled exploration (e.g., via adequate temperature) within the
+Figure 1: Three major shopping item categories at Kuaishou,
+where the product-card represents one specific product, the
+short-video typically connects to only one product-card, live-
+streaming can sell multiple product-cards simultaneously.
+generative beam search process [35]. This paradigm shift has moti-
+vated researchers to explore auto-regressive generative frameworks
+for a generative retrieval, which can naturally balance depth (rel-
+evance) and breadth (diversity) of interest exploration. Currently,
+two dominant frameworks have emerged:
+• Multiple Interests ANN-based framework: This is the most com-
+mon and classical architecture, where user interests are com-
+pressed into multiple embeddings via a user tower, and item
+properties are compressed as a single embedding by item tower,
+which then uses the InfoNCE loss to fit the data distribution. Dur-
+ing inference, these multiple user embeddings are used to retrieve
+the other nearest neighbor items in the embedding space. E.g., As-
+signing an equal quota (e.g., 100) to each interest head/embedding,
+e.g, Kuaiformer [26], MIND [21].
+• Auto-regressive-based framework: inspired by the LLM, this
+branch of methods first tokenizes each item into a multi-level
+semantic IDs, and then utilize the users’ historical sequence as
+input to generate next item multi-level Semantic ID in a regres-
+sive training manner. In inference, we could employ the beam
+search technique to generate hundreds of multi-level Semantic
+IDs to decode corresponding item candidates, e.g, TIGER [35].
+Actually, both architectures contribute substantial progress to the
+RecSys community, while the ANN paradigm [2] has supported
+many early traditional retrieval methods. The auto-regressive beam-
+search paradigm, aligning with LLM beam-search inference tech-
+nique, opening a new direction for the generative retrieval.
+Motivation. Inspired by the scaling-friendly auto-regressive
+paradigm TIGER, many researchers have started to deploy it at
+real industrial business services, to explore the GPT-moment in
+RecSys. The most influential effort is the OneRec series [10, 50],
+which provides a unified end-to-end generative recommendation
+framework aligned with advanced LLM technique:
+• Employing pure Transformer architecture (pre-training) backbone
+to generate next items candidates with beam search technique.
+• Applying the RL (post-training) to connect the retrieval base model
+and ranking reward model as an end-to-end system.
+While OneRec has preliminarily validated the feasibility of lever-
+aging LLM-derived generative paradigms in RecSys, its design is
+
+
+OneMall
+Conference’17, July 2017, Washington, DC, USA
+inherently tailored to entertainment short-video service. Neverthe-
+less, for revenue e-commerce services, there are many incompatible
+demands with entertainment short-video services, including:
+• Instead of the Short-video, the E-commerce service has diverse item
+types such as product-cards, short-videos, live-streamings (as shown
+in Figure 1), it is required to consider inherent selling products
+attributes and content watching experience at same time.
+• In short-video services, users have a higher tolerance for watching
+various content and left enough positive behaviours, while in E-
+commerce content that users have higher decision-making costs,
+relying a long funnel of exposure to click to conversion, thus the
+positive behaviors are always extremely sparse.
+• Different from multiple objective optimization, e-commerce focuses
+on improving the Gross Merchandise Value (GMV) objective only,
+this singular objective imposes significantly higher demands on the
+model’s capabilities.
+These issues have not been adequately addressed in previous works
+and need to be further explored.
+Contribution. To this end, we present our first-hand practi-
+cal experience in e-commerce, and propose an end-to-end genera-
+tive recommendation solution family for various item categories,
+termed as OneMall. In OneMall, we deeply investigated (i) the
+adaptation of item semantic tokenizers for e-commerce, and (ii)
+the generative model architectures to fuse long/short user interests
+and item attributes, and (iii) the design of reinforcement learning
+paradigms to connect reward ranking model, for richer positive be-
+havior feedback and accuracy optimization direction. Our OneMall
+key modification insights are as follows:
+• Item Tokenizers for e-commerce: As the foundation of gen-
+erative recommendation, how to tokenize an item as multiple
+level Semantic IDs is extremely important, which should reflect
+both real-world item relations and business item relations simul-
+taneously. Specifically, different item categories play different
+roles in our system: (1) the product-card items are only exposed
+to users at the Shop Tab, serving only shopping purposes; (2)
+the short-video and live-streaming items are exposed at both
+the Shop Tab and Entertainment Tab, and should consider both
+shopping and user-watch-experience simultaneously; (3) The
+live-streaming side Semantic IDs should be dynamically updated
+along with selling product changes.
+• Generative Model Architecture: At the model designing stage,
+we mainly employ several Transformer variants as the back-
+bone architecture, including the (1) Query Transformers [22]
+for longer sequence compression, (2) Cross Transformers for
+information extraction, and (3) Decoder-Style Sparse Mixture-
+of-Experts Transformers [24] for the auto-regressive sequence
+generation. Meanwhile, to alleviate the semantic IDs conflict, we
+also conduct an in-batch contrastive learning with real target
+items as auxiliary objective, which significantly enhances our
+model prediction performance.
+• Reinforcement Learning: In NLP area, how to encourage LLM
+to generate the high-quality response that aligned with human
+preference is a vital topic. Similarly, from the RecSys perspective,
+how to encourage the retrieval model to generate items that
+interest users with higher CTR/CVR rates (i.e., reward) is also
+important to our system. To address the long-standing issue of
+UserFea
+ItemID1
+Neural Networks
+Multi-Task 
+Prediction
+User Tower
+UserFea
+ItemFea
+CrossFea
+̂yctr
+̂ycvr
+…
+UserFea
+Item Tower
+ItemFea
+Similarity Func
+̂yctr
+(a) Retrieval Model Training 
+(b) Ranking Model Training 
+(c) Inference/Reward Pipeline
+User Tower
+. . .
+ItemID100
+UserFea, ItemFeai, CrossFeai,
+Ranking Model
+̂yctr
+i
+̂ycvr
+i
+…
+. . .
+ItemIDi
+Stage 1
+Stage 2
+Reward 
+Policy
+r = α × ̂ycvr
+i
++ β × ̂ycvr
+i
++ …
+Figure 2: The model structure in industrial RecSys chain: (a)
+two-tower retrieval model; (b) more feature ranking model;
+(c) RecSys chain, first pass the user tower of retrieval model,
+and then feed to ranking model to get a fusion score.
+isolation in traditional cascaded retrieval-ranking pipelines, we
+thereby introduce the online ranking model as a reward model,
+enabling fine-grained supervision to perceive the relative quality
+among different items in real time end-to-end manner.
+The main contributions of our work are as follows:
+• We elaborate an end-to-end generative recommendation frame-
+work for e-commerce services, including (i) diverse product cat-
+egory Tokenizer design, (ii) pure Transformer design, (iii) RL
+supervised by ranking model rewards. To the best of our knowl-
+edge, this is the first work that aligned with up-to-date NLP
+technology for e-commerce services, which will shed light on
+other researchers to explore a more robust e-commerce.
+• We conduct extensive offline and online experiments at Kuaishou
+e-commerce service. The offline experiments show that all pre-
+diction tasks get significant improvements, and the online experi-
+ments +14.7% GMV in Product-Card, +10.3% GMV in Short-Video,
+and +4.9% GMV in Live-Streaming.
+• Our OneMall has been widely deployed on various services, sup-
+porting 400 million active users daily.
+2
+Preliminary
+2.1
+Feature, Retrieval and Ranking Pipeline
+Figure 2 illustrates a naive prototype of industry RecSys chain. It
+consists of three basic elements: the Feature Engineer, Retrieval
+Model and Ranking Model:
+(1) Feature Engineer: for each user-item exposure at our applica-
+tion, it will be assembled features and real labels as a sample to
+feed to our model in one-epoch training setting [46]. Actually,
+those features can be divided into three groups: (i) user features,
+e.g., latest clicked/buy sequences; (ii) target item features, e.g.,
+item tag, Semantic IDs; (iii) user-item cross features, e.g., latest
+clicked/buy sequences with same target item tag.
+(2) Retrieval Model: Although there exists three sets features,
+however, only the user and item set of features Retrieval models
+can used, since we can only utilize the user feature/component
+in RecSys chain (in Figure 2(c)). Therefore, Retrieval model
+always follow Two-Tower paradigm with a single supervised
+objective, and skip user-item cross feature to avoid information
+leakage in Figure 2(a).
+(3) Ranking Model: In ranking model designing, to ensure the
+most precise prediction, all the features and labels will involved
+
+
+Conference’17, July 2017, Washington, DC, USA
+Kun Zhang et al.
+to support model training (as shown in Figure 2(b)), hence the
+ranking model’s prediction accuracy is significantly higher than
+retrieval model, and those prediction score will fuse as one joint
+score to sort item candidates, e.g., Pantheon enemble sort [3].
+2.2
+Res-Kmeans Semantic Tokenizer
+Tokenizer is the cornerstone of auto-regressive token prediction
+paradigm, it aims at utilizing token ID to represent a specific unique
+semantic [39]. In RecSys, how to transform an item of RecSys to
+a token sequence (i.e., Semantic IDs) is an opening topic, there
+are many works explored learnable/heuristic parallel/residual tech-
+niques in recent [27, 37]. In OneMall, we largely apply the QARM’s
+Res-Kmeans heuristic residual technique as Tokenizer to mapping
+an item embedding into multi-level Semantic IDs. Particularly, the
+Res-Kmeans method has the following steps:
+(1) Data collection: Randomly sampled tens of millions of item em-
+beddings set M ∈R𝑁×𝑑, where the item embeddings could
+generate by finetuned-LLM or Item-Tower of Two-tower re-
+trieval model.
+(2) Residual codebook training: According to item embedding set M,
+next conduct several layer Kmeans algorithm to obtain residual
+codebooks {C1, C2, . . . , C𝐿}, where C· ∈R𝐾×𝑑.
+C1 = Kmeans(M, 𝐾),
+M1 = M −NearestRep(M, C1)
+C2 = Kmeans(M1, 𝐾),
+M2 = M1 −NearestRep(M1, C2)
+. . . ,
+C𝐿= Kmeans(M𝐿−1, 𝐾)
+(1)
+where the NearestRep denotes the nearest representation of
+corresponding codebook.
+(3) Semantic ID inference: Once the residual codebooks {C1, . . . , C𝐿}
+is trained, it will be freezed to inference the existing and new-
+upload items to produce their Semantic IDs. For each item em-
+bedding m, the workflow as follows:
+𝑐1 = NearestCode(m, C1),
+m1 = m −C1
+𝑐1
+𝑐2 = NearestCode(m1, C2),
+m2 = m1 −C1
+𝑐2
+. . . ,
+𝑐𝐿= NearestCode(m𝐿−1, C𝐿)
+(2)
+where the NearestCode denotes the nearest representation index
+of corresponding codebook, and its multi-level Semantic IDs can
+be formed as {𝑐1,𝑐2, . . . ,𝑐𝐿}.
+3
+OneMall Workflow
+This Section express our OneMall designing insights for e-commerce.
+3.1
+Semantic Tokenizer for E-commerce
+In e-commerce, each item is a distinct physical entity with spe-
+cific semantic meaning, thus a fundamental requirement for Tok-
+enizer is that it must be capable of preserving and explicitly general
+world Semantic. Meanwhile, for business perspective, e-commerce
+items typically come in three different categories: product-cards,
+short-videos, live-streamings in Figure 1. Those follow different rec-
+ommendation logics: (i) the product cards are only exposed when
+users enter the Shop Tab, which indicates users have a purchase
+intention. (ii) For the short-videos and live streamings, however,
+are exposed across multiple channels (Shop Tab, Entertainment
+Tab, etc.). Therefore, it is necessary to consider both the user’s
+watching experience and whether the products being sold are of
+interest to them. Further, the short-video typically sells only one
+item, but live streaming can sell multiple different items simultane-
+ously. (iii) The live streaming’s selling products may change over
+time, and the underlying semantics behind them should also evolve
+accordingly. How to reflect the general real world item semantic
+relation and its business purpose, is the key point to build a ro-
+bust Tokenizer for e-commerce, e.g., product-card (Commercial),
+Short-video (Commercial&Watching), Live Streaming (Commer-
+cial&Watching&Dynamic).
+To reach those limitations, we choose to fine-tune LLMs with
+business data as the Tokenizer, since LLM could provide fairness
+business knowledge and precise world semantic for all popular/long-
+tail items. Here we mainly extend QARM’s Item2Item contrastive
+tuning pipeline [27]: (1) Business Item2Item Data Filter, (2) Semantic
+Compression Backbone, (3) Training/Inference Pipeline.
+3.1.1
+Business Item2Item Data Filter. Specifically, we collect two
+types of Item2Item data to consider the product intrinsic Commer-
+cial and Watching value.
+• Product-Card Intrinsic Commercial Relation: To capture the busi-
+ness product intrinsic commercial relation, we export a large
+volume Item2Item pair with higher similarity within product-
+card items, e.g., nearest other items in two-tower retrieval model
+item embedding space, or Swing Item2Item statistics algorithm.
+According to the (product-card ID, product-card ID) corpus, we
+apply a naive downsample filter to ensure each item appears no
+more than 40 times to avoid exposure bias, and finally collect 70
+million samples.
+• Short-Video Watching Relation: In order to inject the watching
+experience into the tokenizer, we further collect a corpus of
+entertainment short-video and e-commerce product-card pairs.
+Specifically, for each positively clicked product item, we select
+the latest entertainment short-videos that were long-viewed with
+interval more than 1 minute and less than 5 minutes as a posi-
+tive (short-video ID, product-card ID). Note that the short-video
+ID includes entertainment short-video and e-commerce short-
+video. To ensure the quality of the constructed dataset, we further
+implement three filtering strategies: (1) filtering ‘News’, ‘Com-
+edy’ ‘Dance’ ‘Film/TV’ and ‘Selfie’ Entertainment Short-video,
+(2) down-sample high-frequency products, (3) down-sample the
+Item2Item pair from same user, and collect 12 million samples.
+3.1.2
+Semantic Compression Backbone. Based on the filtered Com-
+mercial (product-card ID, product-card ID) and Watching (short-
+video ID, product-card ID) Item2Item corpus, we next utilize them
+as alignment supervision signal to fine-tune an LLM to adapt e-
+commerce business. For the LLM inputs, we only consider the
+Product and Short-Video information:
+• Product: The main image (224*224) and its title.
+• Short-Video: Sample 6 image (224*224) and its title/OCR/ASR.
+Based on them, we apply the Swin-Transformer as vision encoder
+and Qwen2.5 1.5B as Text encoder, the organization of those visual
+and text tokens are shown in the Figure 3(a). Note that we freeze the
+ViT and fine-tune the Projector and LLM a with InfoNCE contrastive
+objective, and the last hidden state of the special token <EMB> served
+as the final representation.
+
+
+OneMall
+Conference’17, July 2017, Washington, DC, USA
+Figure 3: (a) LLM fine-tuning process in Product-Card/Short-Video Item2Item dataset; (c) Live-Streaming embedding generation
+with selling product Semantic IDs; (b) ResKmeansFSQ Tokenizer, different scenarios utilize different embedding candidates.
+3.1.3
+Semantic ID Generation Pipeline. Up to now, we have intro-
+duced how to train an LLM to generate the semantic embedding m
+that with general real world semantic and business knowledge. To
+transform them as Semantic IDs, we devise an elaborate pipeline for
+the Product-card, Short-Video and Live-streaming inference, which
+includes two quantization techniques: Res-Kmeans and FSQ [30].
+For the first two layers’ Res-Kmeans, we run it as follows:
+• Product-card: for the product-card, since it only represent com-
+merce intent, thus we only use the LLM generated product-card
+embedding as m to quantify.
+• Short-video: for the e-commerce short-video, it needs to reflect
+both commerce and watching experience simultaneously, thus
+we concatenate the LLM generated product-card embedding and
+the short-video embedding as m to quantify.
+• Live-streaming: for live-streaming, its content and selling items
+dynamically change, thus we could not generate its Semantic
+ID directly. In OneMall, we utilize the two-tower style retrieval
+model’s item tower generated embedding to quantify, and the
+real-time selling products’ Semantic IDs served as additional fea-
+ture. Moreover, to alleviate the excessive change rate of semantic
+codes, we used a lower learning rate for the item tower.
+For the last layer FSQ [30], we train a binary 16-bit MLP to quan-
+tify the Residual embedding m −C1
+𝑐1 −C2
+𝑐2 as a 4096 code, it can
+significantly reduce the conflict rate. For the sake of readability, we
+do not elaborate on the specific formulas here; an overview of the
+entire process is illustrated in the accompanying in Figure 3(b)(c).
+3.2
+Decoder-Only Model Architecture
+At OneMall, we employ several Transformer variants served as
+the backbone architecture, including the Query-Former [22], Cross-
+Attention, Casual-Self-Attention, as shown in Figure 4. Here we list
+the designing insights as follows:
+• Query Transformers for Longer Sequence Compression: In e-commerce
+service, users always have higher decision-making costs, relying
+a long funnel of exposure to click to buy an item. As a result,
+our OneMall needs to utilize a variety of different behavioral se-
+quences to enrich user’s preference from different aspects, such
+as Exposure/Click/Buy sequences and so on. In sequence model-
+ing, if those sequences are concatenated into one, it becomes too
+long to afford the complexity of Transformer. To alleviate it, we
+first apply the Query-Former technique to compress the longer
+User Exposure Sequence 
+Compression
+Query-Former
+Q
+K/V
+Cross Attention
+Casual Self-Attention
+Sparse MoE
+Query-Former
+Q
+K/V
+Query-Former
+Q
+K/V
+…
+<Bos>
+SID1 SID2 SID3
+Query-Former
+Q
+K/V
+N ̂
+[B, 4, D]
+[B, S, D]
+[B, 4, D]
+[B, 4, D]
+[B, 4, D]
+MLP
+SID1 SID2
+SID3
+In-Batch Contrastive
+User Click Sequence 
+Compression
+User Buy Sequence 
+Compression
+Item 
+Rep
+Item Feature 
+Compression
+Concat
+Figure 4: The Transformer backbone of OneMall.
+sequence into dozens continuous representation:
+Fclick = QFormerclick(Qclick, Hclick, Hclick)
+(3)
+where the Fclick ∈R𝑀×𝐷, Qclick ∈R𝑀×𝐷, Hclick ∈R𝐻×𝐷, 𝑀
+denotes the query token number (e.g., 10), 𝐻indicates the input
+sequence length (e.g., 500), 𝐷is the embedding dimension (e.g.,
+128). In this way, our OneMall could consider multiple different
+sequences with a lower computation cost, such as FBuy, FExposure.
+Besides, we also utilize the Query-Former to compress item side
+features to generate its representations:
+fitem = MLP(Flatten(Fitem)), Fitem = QFormeritem(Qitem, Iitem, Iitem)
+(4)
+where the fitem ∈R𝐷is the final item embedding, Flatten(·) is
+a naive operation to flatten model inputs, Iitem is the item-side
+feature sequence.
+• Cross Transformers for historical information extraction: Next, to
+fuse the historical user side information {Fclick, Fexposure, FBuy,...}
+to predict next item Semantic IDs {𝑠1,𝑠2,𝑠3}, we further employ
+the Cross Attention mechanism for the low latency extraction:
+{ˆs𝐿
+0 , ˆs𝐿
+1 , ˆs𝐿
+2 , ˆs𝐿
+3 } = Cross-Att𝐿({s𝐿−1
+0
+, s𝐿−1
+1
+, s𝐿−1
+2
+, s𝐿−1
+3
+} · W𝐿
+𝑞,
+{Fclick, Fexposure, Fbuy, . . . } · W𝐿
+𝑘,
+{Fclick, Fexposure, Fbuy, . . . } · W𝐿
+𝑣)
+(5)
+
+
+Conference’17, July 2017, Washington, DC, USA
+Kun Zhang et al.
+αβ
+Policy Model
+Request 
+Reference Model
+αβref
+Completions
+...
+Ranking 
+Model
+o1
+o2
+o3
+o4
+on
+...
+A1
+A2
+A3
+A4
+An
+Parameter Sync
+q
+Reward
+Gradient update
+Figure 5: The RL workflow of our OneMall.
+where the W𝐿
+𝑞/W𝐿
+𝑘/W𝐿
+𝑣∈R𝐷×𝐷are the learnable parameter
+matrices of 𝐿-th layer Cross-Attention, {s𝐿−1
+0
+, s𝐿−1
+1
+, s𝐿−1
+2
+, s𝐿−1
+3
+}
+denotes the corresponding inputs. Note that the {s0
+0, s0
+1, s0
+2, s0
+3} is
+the LookUp embedding of {<BOS>,𝑠1,𝑠2,𝑠3}.
+• Decoder-Style Sparse MoE Transformers for auto-regressive se-
+quence generation: To further scale the model capacity while
+maintaining efficient inference, we adopt a Decoder-Style Sparse
+Mixture-of-Experts (MoE) Transformer [24] as the core of the
+auto-regressive generation module. For each layer of the decoder,
+we first apply causal self-attention to the Semantic ID sequence
+to preserve auto-regressive constraints, then pass the output
+through the sparse MoE to capture complex semantic patterns in
+Semantic IDs:
+{¯s𝐿
+0 , ¯s𝐿
+1 , ¯s𝐿
+2 , ¯s𝐿
+3 } = Casual-Self-Att({ˆs𝐿
+0 , ˆs𝐿
+1 , ˆs𝐿
+2 , ˆs𝐿
+3 }),
+{s𝐿
+0 , s𝐿
+1 , s𝐿
+2 , s𝐿
+3 } =Sparse-MoE({¯s𝐿
+0 , ¯s𝐿
+1 , ¯s𝐿
+2 , ¯s𝐿
+3 }) + {s𝐿−1
+0
+, s𝐿−1
+1
+, s𝐿−1
+2
+, s𝐿−1
+3
+}
+(6)
+where the Casual-Self-Att(·) indicates the standard masked
+self-attention, and the Sparse-MoE(·) is the key component to
+scaling model parameter. For the expert load-balancing, we use
+the loss-free mechanism to constrain it.
+• Supervised Objectives: For the model supervision signals, we con-
+sider the auto-regressive next item’s Semantic IDs generation
+as main training objective and a two-tower style in-batch con-
+trastive task as an auxiliary objective at same time:
+LNTP = Softmax({s𝐿
+0 , s𝐿
+1 , s𝐿
+2 }, {𝑠1,𝑠2,𝑠3}),
+Lcontrastive =In-batch-contrastive(s𝐿
+3 , fitem)
+(7)
+where the LNTP denotes the auto-regressive next-token prediction
+training objective, and the Lcontrastive follows the traditional
+ANN methods in-batch contrastive settings. The difference is that:
+s𝐿
+3 already encodes the full target item’s Semantic ID sequence,
+which results in very high accuracy (over 98% in accuracy@1)
+for contrastive learning. Therefore, in online inference, we only
+employ beam search for retrieval.
+3.3
+Reinforcement Learning Policy
+From the early PPO/DPO (DPO is an approximate reinforcement
+learning approach) to the later GRPO/GSPO [12, 33, 48], the RL
+driven post-training paradigm provides a new impressive data scal-
+ing direction to enhance LLM understanding and reasoning abil-
+ity [44]. To fully unleash the potential of reinforcement learning
+and align with advanced LLM post-training techniques in RecSys,
+we further design a retrieval-ranking connection pipeline. This
+enables OneMall to generate items that better match user interests
+and achieve higher rewards. Formally, we take the online rank-
+ing model (could utilize all the user/item/cross features and in-
+teraction labels) as a reward model, thereby it can provide more
+fine-grained prediction probabilities from different aspects, e.g.,
+CTR/CVR/CTCVR/EGPM and others. Based on those multiple pre-
+diction probabilities, we first apply a simple F1 scoring formula to
+fuse them to estimate the reward score 𝑟:
+𝑟= 𝛼× ˆ𝑦ctr + 𝛽× ˆ𝑦ctcvr + 𝛾× ˆ𝑦egpm + . . .
+(8)
+where the ˆ𝑦ctr/ˆ𝑦ctcvr/ˆ𝑦egpm are the ranking model outputs, 𝛼, 𝛽, 𝛾
+are the hand-craft factors, which reflect the e-commerce worth of
+each user-item pair. For notation brevity, our RL pipeline can be
+described as follows:
+• Policy model 𝜋𝜃: the NTP model parameter in streaming training.
+• Reference model 𝜋𝜃𝑟𝑒𝑓: parameters are synchronized from the pol-
+icy model periodically, for each query 𝑞, the 𝜋𝜃𝑟𝑒𝑓could sample
+a set of response {𝑜1,𝑜2, · · · ,𝑜𝑛}.
+• Reward model: according to those responses {𝑜1,𝑜2, · · · ,𝑜𝑛}, the
+reward model further normalized as the advantage scores for
+each response as {𝐴1,𝐴2, · · · ,𝐴𝑛} (𝐴𝑖= 𝑟𝑖−mean(𝑟)
+std(𝑟)
+), to supervise
+which responses are encouraged or need to punish.
+• Optimize Strategy: regarding to the responses and their advan-
+tages, we can utilize different training strategies to optimize the
+Policy model parameters 𝜋𝜃.
+The overall training sketches is shown in Figure 5, while we first
+employing the Reference model to produce completions, then the
+ranking model to generate corresponding the Reward advantages,
+and finally to optimize our base policy retrieval model in end-to-end
+manner, breaking the barrier of retrieval and ranking model. We
+sample 2% offline training samples as the simulate request 𝑞to run
+the RL policy, and have attempted the DPO/GRPO policy to inject
+the e-commerce reward knowledge to optimize our OneMall:
+• DPO: We rank the sampled responses according to their advan-
+tage scores 𝐴, treating the highest-scoring response as the pos-
+itive Semantic IDs 𝑜𝑝𝑜𝑠and the lower-scoring ones as negative
+Semantic IDs 𝑜𝑛𝑒𝑔, which are then used to supervise the optimiza-
+tion of the policy model.
+LDPO = −𝜎(𝜆log
+𝜋𝜃(𝑜𝑝𝑜𝑠|𝑞)
+𝜋𝜃𝑟𝑒𝑓(𝑜𝑝𝑜𝑠|𝑞) + 𝛿−𝜆log
+𝜋𝜃(𝑜𝑛𝑒𝑔|𝑞)
+𝜋𝜃𝑟𝑒𝑓(𝑜𝑛𝑒𝑔|𝑞) + 𝛿)
+(9)
+where the 𝜆is a hand-craft hyper-coefficient, e.g., 0.1-0.5, 𝛿is a
+small to avoid zero division.
+• GRPO: We randomly sample 𝑚completions from 𝑛candidates:
+LGRPO = −
+𝑚
+∑︁
+𝑖
+min(clip(
+𝜋𝜃(𝑜𝑖|𝑞)
+𝜋𝜃𝑟𝑒𝑓(𝑜𝑖|𝑞) + 𝛿, 1 −𝜖, 1 + 𝜖) × 𝐴𝑖)
+(10)
+where the clip(·) function truncates the gradients to prevent
+a few exceptionally samples from dominating the entire batch,
+thereby ensuring training stability.
+Finally, the RL loss is jointly optimized together with the NTP
+loss and the two-tower contrastive learning loss in Eq.(7), thereby
+injecting richer positive behavior feedback and accuracy optimiza-
+tion direction: L = 0.5 · LRL + LNTP + Lcontrastive.
+4
+Experiments
+In this Section, we conduct extensive offline and online experiments
+across Product-Card, Short-Video and Live-Streamings e-commerce
+
+
+OneMall
+Conference’17, July 2017, Washington, DC, USA
+Table 1: Parameter Scaling Validation at Scaling Performance at the E-commerce Short-video scenario.
+Parameter
+Layer
+Att-Dim
+FFN-Dim
+Head
+Expert
+Acc-SID1
+Acc-SID2
+Acc-SID3
+HR@50
+HR@100
+HR@500
+0.05B
+2
+1024
+4096
+8
+-
+14.5%
+43.9%
+61.0%
+32.9%
+41.3%
+60.5%
+0.1B
+4
+1024
+4096
+8
+-
+14.9%
+46.2%
+63.6%
+34.7%
+43.8%
+63.2%
+0.5B-A0.1B
+4
+1024
+4096
+8
+12/2
+16.0%
+50.6%
+69.3%
+44.7%
+56.0%
+74.2%
+1.3B-A0.1B
+4
+1024
+4096
+8
+24/2
+16.2%
+51.7%
+71.7%
+45.6%
+57.3%
+76.0%
+Figure 6: OneMall scaling trend at the Short-video scenario.
+services. For a fair performance estimation, we apply three metrics
+to compare with baselines and our model variants:
+• Offline SID Accuracy: The Accuracy metrics are used to measure
+the offline performance of same series models variants, here we
+shown the Accuracy@1 at three-level SID NTP precision.
+• Simulation Hit Rate: For a fair comparison with different methods,
+we replay the online user request as a simulation environment to
+collect the hit rate between the real viewed items whether they
+are retrieved by the corresponding models, e.g., does the viewed
+item is retrieved in the top 50/100/500 results.
+• Online A/B Metrics: These metrics evaluate the real-world per-
+formance of our System through controlled online experiments.
+Key indicators include Orders, Gross Merchandise Value (GMV),
+Click-Through Rate (CTR), Conversion Rate (CVR), and Gross
+Profit Margin (GPM).
+4.1
+Offline Scaling Experiments
+As a generative recommendation paradigm, we first validate the
+scaling behavior of OneMall, with results shown in Table 1 and Fig-
+ure 6. Specifically, we explore model scaling from 0.05B to 1.3B total
+parameters. However, due to computational resource constraints
+in online serving, we limit the maximum activated parameters
+to 0.1B, while scaling the remaining parameters through Sparse
+Mixture-of-Experts (MoE) with loss-free load balancing.
+From Table 1, we observe consistent improvements across all
+metrics as model capacity increases: (1) SID Accuracy: The three-
+level Semantic ID prediction accuracy (Acc-SID1/2/3) steadily im-
+proves from 14.5%/43.9%/61.0% at 0.05B to 16.2%/51.7%/71.7% at
+1.3B-A0.1B, demonstrating that larger models better capture the
+hierarchical semantic structure. (2) Hit Rate: The simulation hit
+rate metrics (HR@50/100/500) show significant gains, improving
+from 32.9%/41.3%/60.5% to 45.6%/57.3%/76.0%, indicating enhanced
+retrieval quality. Notably, the transition from dense 0.1B to sparse
+0.5B-A0.1B yields the most substantial improvement (+10% HR@50),
+suggesting that MoE architecture effectively expands model capac-
+ity while maintaining inference efficiency.
+Table 2: Simulation Replay Performance Comparison.
+Scenario
+Parameter
+HR@50 HR@100 HR@500
+Product-Card
+SASRec-0.5B-A0.1B
+23.2%
+30.4%
+45.1%
+TIGER-0.5B-A0.1B
+29.5%
+37.1%
+53.7%
+OneMall-0.5B-A0.1B 34.3%
+40.9%
+59.3%
+Short-Video
+SASRec-0.5B-A0.1B
+30.2%
+41.9%
+66.3%
+TIGER-0.5B-A0.1B
+35.1%
+47.8%
+72.5%
+OneMall-0.5B-A0.1B 44.7%
+56.0%
+74.2%
+Live-Streaming
+SASRec-0.5B-A0.1B
+53.9%
+58.8%
+68.4%
+TIGER-0.5B-A0.1B
+57.3%
+63.5%
+73.7%
+OneMall-0.5B-A0.1B 65.9%
+69.1%
+80.5%
+4.2
+Simulation Experiments
+We deploy the 0.5B-A0.1B version of OneMall across all e-commerce
+scenarios. To validate the effectiveness of our approach, we conduct
+fair comparisons on replayed online traffic, with results shown in
+Table 2. All compared methods use identical input features, but
+differ in their modeling paradigms: (1) SASRec-0.5B-A0.1B: A classic
+ANN-based retrieval method that compresses user interests into
+embeddings for nearest neighbor search. (2) TIGER-0.5B-A0.1B: An
+Encoder-Decoder generative retrieval method with a pre-trained
+RQ-VAE tokenizer strategy. From Table 2, we observe that OneMall
+consistently achieves the best performance across all scenarios:
+These results validate the effectiveness of our e-commerce semantic
+tokenizer design, the Decoder-Only architecture, and RL.
+4.3
+Online Experiments
+To validate the real business contribution that OneMall brings to our
+e-commerce services, we conducted online A/B testing experiments
+across Product-Card, Short-Video, and Live-Streaming scenarios.
+We evaluate model performance using core e-commerce metrics,
+including Exposure, Click, Order, and Gross Merchandise Volume
+(GMV), as shown in Table 3.
+From the results, OneMall achieves significant improvements
+across all scenarios: (1) In Product-Card, OneMall obtains +2.851%
+Exposure, +13.01% Click, +8.35% Order, and +14.71% GMV, demon-
+strating strong commercial value in the Mall Tab where users have
+explicit purchase intent. (2) In Short-Video, we observe +5.76% Click
+and +11.65% Order and 10.33% GMV improvements, indicating
+that our tokenizer effectively captures both watching experience
+and commercial intent for e-commerce short-videos. (3) In Live-
+Streaming, OneMall achieves +4.47% Order and +4.90% GMV im-
+provements, validating the effectiveness of our dynamic Semantic
+ID generation strategy for live-streaming content. Overall, these
+
+
+Conference’17, July 2017, Washington, DC, USA
+Kun Zhang et al.
+Table 3: Online A/B testing results of E-commerce services.
+Scenarios
+Exposure
+Click
+Order
+GMV
+Product-Card
++2.851%
++13.01%
++8.35%
++14.71%
+Short-Video
++15.32%
++5.76%
++11.65% +10.33%
+Live-Streaming
++2.78%
++2.53%
++4.47%
++4.90%
+Table 4: RL Ablation Study.
+Beam Top
+Strategy
+CTR
+CTCVR
+GPM
+Reward
+Top10
+Base
+7.816%
+0.243%
+0.0983
+0.2493
+DPO
+7.834%
+0.254%
+0.0997
+0.2543
+GRPO
+7.874%
+0.266%
+0.1020
+0.2607
+Top100
+Base
+4.369%
+0.106%
+0.0390
+0.1147
+DPO
+4.396%
+0.110%
+0.0399
+0.1169
+GRPO
+4.403%
+0.112%
+0.03998
+0.1177
+Top500
+Base
+2.188%
+0.038%
+0.0127
+0.0463
+DPO
+2.210%
+0.039%
+0.0130
+0.0470
+GRPO
+2.225%
+0.041%
+0.0132
+0.0476
+online results confirm that OneMall successfully bridges the gap be-
+tween user interest modeling and commercial conversion, bringing
+substantial business value to Kuaishou’s e-commerce platform.
+4.4
+RL Effectiveness Analysis
+In this section, we thoroughly validate the effectiveness of reinforce-
+ment learning in e-commerce recommendation. The core business
+objectives in e-commerce are CTR, CTCVR, and EGPM. We first
+perform score fusion as defined in Eq.(8), with 𝛼= 1.0, 𝛽= 30.0,
+𝛾= 1.0 to maintain consistent magnitude across different objectives.
+We sample 2% of training traffic for RL training with a beam size of
+768 for candidate generation. Additionally, we set the loss weight
+ratio (LNTP + 0.5LRL). We empirically find that excessively large
+RL loss weights degrade the SID accuracy metrics and affect the
+validity rate of generated candidates; thus we balance generation
+efficiency and quality with the hand-craft weight. From Table 4,
+we have: (1) DPO/GRPO vs. Base: Both DPO and GRPO achieve
+consistent improvements over the Base model across all candidate
+segments (Top10/100/500). The reward term and score also improve
+at different degrees, demonstrating the effectiveness of RL in gener-
+ating high-quality candidates and its capability to optimize multiple
+objectives simultaneously in recommendation. (2) GRPO vs. DPO:
+GRPO outperforms DPO across all candidate segments, with partic-
+ularly notable improvements in Top10 (e.g., +0.040% CTR, +0.012%
+CTCVR, +0.228% GPM over DPO). The reason might be that GRPO
+normalizes rewards across all 768 sampled candidates to compute
+advantage scores, enabling the model to learn the quality distri-
+bution within each group. In contrast, DPO only uses pairwise
+positive-negative samples, providing less training feedback.
+4.5
+Component Analyses
+Tokenizer Strategy. In our early version, we directly applied the
+vanilla three-layer 4096 Res-Kmeans codebook for model training,
+but encountered severe code collision problem (i.e., one set of Seman-
+tic IDs maps to multiple items). We hypothesize that this is because
+Table 5: Code Conflict Component Analysis.
+Variants-0.3B-A0.1B Conflict Exclusive HR@50 HR@100 HR@500
+ResKmeans
+36%
+86%
+33.9%
+43.0%
+62.6%
+ResKmeansFSQ
+11%
+95%
+35.4%
+45.3%
+66.7%
++Aux Loss
+11%
+95%
++1.5%
++1.7%
++1.7%
+Table 6: Query-Former Component Analysis.
+Variants
+SeqLen GFLOPs HR@50 HR@100 HR@500
+QFormer
+160
+9.2
+44.7%
+56.0%
+74.2%
+w/o QFormer
+1205
+34.4
++0.5%
++0.3%
++0.4%
+K-means optimization objective minimizes the average intra-cluster
+distance to centroids, without considering inter-cluster distances.
+This leads to cluster center collapse, resulting in high tokenizer
+collision rates and uneven code distribution.
+To address this issue, we introduce FSQ (Finite Scalar Quan-
+tization) at the last quantization layer. FSQ fixes the cluster cen-
+ters in advance, ensuring uniform distribution of codes. Although
+this sacrifices some semantic information, it makes the partitioned
+space more regular. As shown in Table 5, ResKmeansFSQ combines
+the advantages of both approaches: it preserves semantic informa-
+tion from the first two Res-Kmeans layers while ensuring uniform
+cluster center distribution through FSQ. Auxiliary Contrastive
+Loss. Since Semantic IDs are relatively coarse-grained and lack
+item-specific fine-grained features, we introduce additional item-
+side information into the model. Specifically, we feed important
+item attributes (e.g., product category, price, shop information)
+into an item tower and apply in-batch contrastive learning as an
+auxiliary objective. Our experiments show that this auxiliary loss
+yields consistent improvements in hit rate (+1.5%/+1.7%/+1.7% on
+HR@50/100/500), demonstrating the effectiveness of incorporat-
+ing fine-grained item features to complement the coarse-grained
+Semantic ID representation. Query-Former Compression. To
+avoid the higher computation cost by long sequence, we introduce
+the Q-former for early sequence compression. Fortunately, we find
+that its performance is on par with the longer sequence version,
+as shown in Table 6, the GFLOPs (calculation cost per sample) is
+largely reduced with only minor performance degradation.
+5
+Conclusion
+In this paper, we present OneMall, an end-to-end generative rec-
+ommendation framework specifically designed for e-commerce
+services. By aligning with the successful paradigms of LLMs, One-
+Mall integrates three key innovations: (1) unified semantic tok-
+enizer solution, (2) Pure Transformer-based network designing,
+and (3) RL paradigm to distill ranking model knowledge. Exten-
+sive experiments on Kuaishou’s e-commerce platform demonstrate
+significant improvements across product cards, short-videos, and
+live-streaming scenarios. We hope our practical experience will
+inspire future research on applying LLM techniques to industrial
+e-commerce recommendation. In the future, we will explore: (1)
+unifying retrieval and ranking ability to OneMall, (2) text-based
+reasoning ability, (3) shared backbone for multi-service data scaling.
+
+
+OneMall
+Conference’17, July 2017, Washington, DC, USA
+References
+[1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Floren-
+cia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal
+Anadkat, et al. 2023. Gpt-4 technical report. arXiv (2023).
+[2] Alexandr Andoni, Piotr Indyk, and Ilya Razenshteyn. 2018. Approximate nearest
+neighbor search in high dimensions. In Proceedings of the International Congress
+of Mathematicians: Rio de Janeiro 2018. World Scientific, 3287–3318.
+[3] Jiangxia Cao, Pengbo Xu, Yin Cheng, Kaiwei Guo, Jian Tang, Shijun Wang, Dewei
+Leng, Shuang Yang, Zhaojie Liu, Yanan Niu, et al. 2025. Pantheon: Personalized
+multi-objective ensemble sort via iterative pareto policy optimization. In Pro-
+ceedings of the 34th ACM International Conference on Information and Knowledge
+Management. 5575–5582.
+[4] Yukuo Cen, Jianwei Zhang, Xu Zou, Chang Zhou, Hongxia Yang, and Jie Tang.
+2020. Controllable multi-interest framework for recommendation. In Proceedings
+of the 26th ACM SIGKDD international conference on knowledge discovery & data
+mining. 2942–2951.
+[5] Zheng Chai, Qin Ren, Xijun Xiao, Huizhi Yang, Bo Han, Sijun Zhang, Di Chen,
+Hui Lu, Wenlin Zhao, Lele Yu, et al. 2025. Longer: Scaling up long sequence
+modeling in industrial recommenders. In Proceedings of the Nineteenth ACM
+Conference on Recommender Systems. 247–256.
+[6] Jianxin Chang, Chenbin Zhang, Zhiyi Fu, Xiaoxue Zang, Lin Guan, Jing Lu, Yiqun
+Hui, Dewei Leng, Yanan Niu, Yang Song, et al. 2023. TWIN: TWo-stage interest
+network for lifelong user behavior modeling in CTR prediction at kuaishou. In
+Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining. 3785–3794.
+[7] Wei Cheng, Yucheng Lu, Boyang Xia, Jiangxia Cao, Kuan Xu, Mingxing Wen,
+Wei Jiang, Jiaming Zhang, Zhaojie Liu, Liyin Hong, et al. 2025. ChorusCVR:
+Chorus Supervision for Entire Space Post-Click Conversion Rate Modeling. arXiv
+preprint arXiv:2502.08277 (2025).
+[8] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep neural networks for
+youtube recommendations. In ACM Conference on Recommender Systems (RecSys).
+[9] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. Flashat-
+tention: Fast and memory-efficient exact attention with io-awareness. Advances
+in neural information processing systems 35 (2022), 16344–16359.
+[10] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[11] Lin Guan, Jia-Qi Yang, Zhishan Zhao, Beichuan Zhang, Bo Sun, Xuanyuan Luo,
+Jinan Ni, Xiaowen Li, Yuhang Qi, Zhifang Fan, et al. 2025. Make It Long, Keep
+It Fast: End-to-End 10k-Sequence Modeling at Billion Scale on Douyin. arXiv
+preprint arXiv:2511.06077 (2025).
+[12] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin
+Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al. 2025. Deepseek-r1:
+Incentivizing reasoning capability in llms via reinforcement learning. arXiv
+preprint arXiv:2501.12948 (2025).
+[13] Huifeng Guo, Ruiming Tang, Yunming Ye, Zhenguo Li, and Xiuqiang He. 2017.
+DeepFM: a factorization-machine based neural network for CTR prediction. arXiv
+preprint arXiv:1703.04247 (2017).
+[14] Aaron Harlap, Deepak Narayanan, Amar Phanishayee, Vivek Seshadri, Nikhil
+Devanur, Greg Ganger, and Phil Gibbons. 2018. Pipedream: Fast and efficient
+pipeline parallel dnn training. arXiv preprint arXiv:1806.03377 (2018).
+[15] Yanping Huang, Youlong Cheng, Ankur Bapna, Orhan Firat, Dehao Chen, Mia
+Chen, HyoukJoong Lee, Jiquan Ngiam, Quoc V Le, Yonghui Wu, et al. 2019. Gpipe:
+Efficient training of giant neural networks using pipeline parallelism. Advances
+in neural information processing systems 32 (2019).
+[16] Sam Ade Jacobs, Masahiro Tanaka, Chengming Zhang, Minjia Zhang, Shuai-
+wen Leon Song, Samyam Rajbhandari, and Yuxiong He. 2023. Deepspeed ulysses:
+System optimizations for enabling training of extreme long sequence transformer
+models. arXiv preprint arXiv:2309.14509 (2023).
+[17] Ziheng Jiang, Haibin Lin, Yinmin Zhong, Qi Huang, Yangrui Chen, Zhi Zhang,
+Yanghua Peng, Xiang Li, Cong Xie, Shibiao Nong, et al. 2024. {MegaScale}:
+Scaling large language model training to more than 10,000 {GPUs}. In 21st
+USENIX Symposium on Networked Systems Design and Implementation (NSDI 24).
+745–760.
+[18] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In IEEE international conference on data mining (ICDM).
+[19] Vijay Anand Korthikanti, Jared Casper, Sangkug Lym, Lawrence McAfee, Michael
+Andersch, Mohammad Shoeybi, and Bryan Catanzaro. 2023. Reducing activation
+recomputation in large transformer models. Proceedings of Machine Learning and
+Systems 5 (2023), 341–353.
+[20] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng,
+Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient Mem-
+ory Management for Large Language Model Serving with PagedAttention. In
+Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles.
+[21] Chao Li, Zhiyuan Liu, Mengmeng Wu, Yuchi Xu, Huan Zhao, Pipei Huang,
+Guoliang Kang, Qiwei Chen, Wei Li, and Dik Lun Lee. 2019. Multi-interest
+network with dynamic routing for recommendation at Tmall. In Proceedings of
+the 28th ACM international conference on information and knowledge management.
+2615–2623.
+[22] Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi. 2023. Blip-2: Bootstrapping
+language-image pre-training with frozen image encoders and large language
+models. In International conference on machine learning. PMLR, 19730–19742.
+[23] Zihao Li, Qiang Chen, Lixin Zou, Aixin Sun, and Chenliang Li. 2025. Multi-
+Interest Recommendation: A Survey. arXiv preprint arXiv:2506.15284 (2025).
+[24] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Cheng-
+gang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. 2024. Deepseek-v3
+technical report. arXiv preprint arXiv:2412.19437 (2024).
+[25] Chi Liu, Jiangxia Cao, Rui Huang, Kuo Cai, Weifeng Ding, Qiang Luo, Kun Gai,
+and Guorui Zhou. 2024. CRM: Retrieval Model with Controllable Condition.
+arXiv preprint arXiv:2412.13844 (2024).
+[26] Chi Liu, Jiangxia Cao, Rui Huang, Kai Zheng, Qiang Luo, Kun Gai, and Guorui
+Zhou. 2024. KuaiFormer: Transformer-Based Retrieval at Kuaishou. (2024).
+[27] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, et al. 2024. QARM: Quantitative
+Alignment Multi-Modal Recommendation at Kuaishou. arXiv (2024).
+[28] Xiao Lv, Jiangxia Cao, Shijie Guan, Xiaoyou Zhou, Zhiguang Qi, Yaqiang Zang,
+Ming Li, Ben Wang, Kun Gai, and Guorui Zhou. 2024. MARM: Unlocking the
+Future of Recommendation Systems through Memory Augmentation and Scalable
+Complexity. arXiv preprint arXiv:2411.09425 (2024).
+[29] Jiaqi Ma, Zhe Zhao, Xinyang Yi, Jilin Chen, Lichan Hong, and Ed H Chi. 2018.
+Modeling task relationships in multi-task learning with multi-gate mixture-of-
+experts. In Proceedings of the 24th ACM SIGKDD international conference on
+knowledge discovery & data mining. 1930–1939.
+[30] Fabian Mentzer, David Minnen, Eirikur Agustsson, and Michael Tschannen. 2023.
+Finite scalar quantization: Vq-vae made simple. arXiv preprint arXiv:2309.15505
+(2023).
+[31] Qi Pi, Guorui Zhou, Yujing Zhang, Zhe Wang, Lejian Ren, Ying Fan, Xiaoqiang
+Zhu, and Kun Gai. 2020. Search-based user interest modeling with lifelong
+sequential behavior data for click-through rate prediction. In Proceedings of the
+29th ACM International Conference on Information & Knowledge Management.
+2685–2692.
+[32] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever,
+et al. 2019. Language models are unsupervised multitask learners. OpenAI blog
+1, 8 (2019), 9.
+[33] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano
+Ermon, and Chelsea Finn. 2023. Direct preference optimization: Your language
+model is secretly a reward model. Advances in neural information processing
+systems 36 (2023), 53728–53741.
+[34] Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. 2020. Zero:
+Memory optimizations toward training trillion parameter models. In SC20: Inter-
+national Conference for High Performance Computing, Networking, Storage and
+Analysis. IEEE, 1–16.
+[35] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[36] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov.
+2017. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347
+(2017).
+[37] Teng Shi, Chenglei Shen, Weijie Yu, Shen Nie, Chongxuan Li, Xiao Zhang, Ming
+He, Yan Han, and Jun Xu. 2025. LLaDA-Rec: Discrete Diffusion for Parallel Seman-
+tic ID Generation in Generative Recommendation. arXiv preprint arXiv:2511.06254
+(2025).
+[38] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper,
+and Bryan Catanzaro. 2019. Megatron-lm: Training multi-billion parameter
+language models using model parallelism. arXiv preprint arXiv:1909.08053 (2019).
+[39] Xinying Song, Alex Salcianu, Yang Song, Dave Dopson, and Denny Zhou. 2021.
+Fast wordpiece tokenization. In Proceedings of the 2021 conference on empirical
+methods in natural language processing. 2089–2103.
+[40] GLM Team, Aohan Zeng, Xin Lv, Qinkai Zheng, et al. 2025. GLM-4.5: Agentic,
+Reasoning, and Coding (ARC) Foundation Models. arXiv:2508.06471 [cs.CL]
+https://arxiv.org/abs/2508.06471
+[41] Kimi Team, Yifan Bai, Yiping Bao, Guanduo Chen, Jiahao Chen, Ningxin Chen,
+Ruijue Chen, Yanru Chen, Yuankun Chen, Yutian Chen, et al. 2025. Kimi k2:
+Open agentic intelligence. arXiv preprint arXiv:2507.20534 (2025).
+[42] Xu Wang, Jiangxia Cao, Zhiyi Fu, Kun Gai, and Guorui Zhou. 2024. HoME:
+Hierarchy of Multi-Gate Experts for Multi-Task Learning at Kuaishou. (2024).
+[43] Chenfei Wu, Jiahao Li, Jingren Zhou, Junyang Lin, Kaiyuan Gao, Kun Yan, Sheng-
+ming Yin, Shuai Bai, Xiao Xu, Yilei Chen, et al. 2025. Qwen-image technical
+report. arXiv preprint arXiv:2508.02324 (2025).
+[44] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng,
+Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. 2025. Qwen3 technical
+report. arXiv preprint arXiv:2505.09388 (2025).
+[45] Xinyang Yi, Ji Yang, Lichan Hong, Derek Zhiyuan Cheng, Lukasz Heldt, Aditee
+Kumthekar, Zhe Zhao, Li Wei, and Ed Chi. 2019. Sampling-bias-corrected neural
+
+
+Conference’17, July 2017, Washington, DC, USA
+Kun Zhang et al.
+modeling for large corpus item recommendations. In Proceedings of the 13th ACM
+conference on recommender systems. 269–277.
+[46] Zhao-Yu Zhang, Xiang-Rong Sheng, Yujing Zhang, Biye Jiang, Shuguang Han,
+Hongbo Deng, and Bo Zheng. 2022. Towards understanding the overfitting
+phenomenon of deep click-through rate models. In Proceedings of the 31st ACM
+international conference on information & knowledge management. 2671–2680.
+[47] Yanli Zhao, Andrew Gu, Rohan Varma, Liang Luo, Chien-Chin Huang, Min Xu,
+Less Wright, Hamid Shojanazeri, Myle Ott, Sam Shleifer, et al. 2023. Pytorch fsdp:
+experiences on scaling fully sharded data parallel. arXiv preprint arXiv:2304.11277
+(2023).
+[48] Chujie Zheng, Shixuan Liu, Mingze Li, Xiong-Hui Chen, Bowen Yu, Chang Gao,
+Kai Dang, Yuqiong Liu, Rui Men, An Yang, et al. 2025. Group sequence policy
+optimization. arXiv preprint arXiv:2507.18071 (2025).
+[49] Lianmin Zheng, Liangsheng Yin, Zhiqiang Xie, Chuyue Livia Sun, Jeff Huang,
+Cody Hao Yu, Shiyi Cao, Christos Kozyrakis, Ion Stoica, Joseph E Gonzalez,
+et al. 2024. Sglang: Efficient execution of structured language model programs.
+Advances in neural information processing systems 37 (2024), 62557–62583.
+[50] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv preprint arXiv:2506.13695 (2025).
+[51] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD international conference
+on knowledge discovery & data mining. 1059–1068.
+[52] Jie Zhu, Zhifang Fan, Xiaoxie Zhu, Yuchen Jiang, Hangyu Wang, Xintian Han,
+Haoran Ding, Xinmin Wang, Wenlin Zhao, Zhen Gong, et al. 2025. Rankmixer:
+Scaling up ranking models in industrial recommenders. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+6309–6316.
+
+
+OneMall
+Conference’17, July 2017, Washington, DC, USA
+Semantic IDs (0, * *) Women Cloths/女装
+Semantic IDs (0, 1220, *) Dress/连衣裙
+Semantic IDs (0, 1220, 378) Black Dress /黑色连衣裙
+Sleeveless
+Top/
+无袖上衣
+Shirt/
+衬衣
+Long-Sleeve
+Top/
+长袖上衣
+Brown
+Dress/
+棕色连衣裙
+Purple
+Dress/
+紫色连衣裙
+Black
+Dress/
+黑色连衣裙
+Black
+Dress/
+黑色连衣裙
+Black
+Dress/
+黑色连衣裙
+Semantic IDs (158, * *) Lantern/灯笼
+Semantic IDs (158, 3577, *) Paper Lantern/纸灯笼
+Semantic IDs (158, 3577, 2880) Paper Lantern/纸灯笼
+Blessing
+Lantern/
+祈福灯笼
+Decoration
+Lantern/
+装饰灯笼
+LED
+Lantern/
+电子灯笼
+Paper
+Lantern/
+纸灯笼
+Paper
+Lantern/
+纸灯笼
+Paper
+Lantern/
+纸灯笼
+Paper
+Lantern/
+纸灯笼
+Paper
+Lantern/
+纸灯笼
