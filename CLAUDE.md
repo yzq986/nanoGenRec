@@ -37,14 +37,14 @@ cd "${REPO_ROOT}"
 
 ## 写实验脚本的硬性要求
 
-写新的 `experiments/scripts/exp-*.sh` 时，**必须先用 Grep/Read 查看最近 2-3 个已有实验脚本**，确认以下信息后再写：
+写新的 `experiments/scripts/exp-*.sh` 时，**必须先 Grep/Read 最近 2-3 个已有实验脚本**（按编号最大的优先），从中确认：
 
-1. **SID cache 路径** — 当前标准路径是 `experiments/sid_cache/exp013-4096x3-12d-binary`（0.6B, 4096×3, FSQ 12d_4096 binary）
-2. **NTP 数据窗口** — 当前最优是 14d (2026-03-18 ~ 2026-03-31)，embedding cache 覆盖到 03-31
-3. **Tokenizer 参数** — 如果要训练新 tokenizer，必须从已有脚本复制完整参数（num_clusters, fsq_levels, fsq_projection, fsq_mlp_hidden, fsq_epochs）
+1. **SID cache 路径** — grep `SID_CACHE=` 找到当前标准路径
+2. **NTP 数据日期窗口** — grep `date_start` 找到当前使用的日期范围
+3. **Tokenizer 完整参数** — 如果要训练新 tokenizer，从已有 `preprocess-sid` 调用复制完整参数
 4. **已有 baseline** — 如果 baseline 已训练过（有 checkpoint），直接引用，不要重训
 
-**绝对禁止凭记忆编造路径、日期、参数。** 所有这些必须从已有脚本或 log.md 中复制。
+**绝对禁止凭记忆编造路径、日期、参数。** 所有这些必须从已有脚本中 grep 得到。
 
 ## Git remotes
 
