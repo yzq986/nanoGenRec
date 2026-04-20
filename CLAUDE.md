@@ -29,7 +29,7 @@ For DDP/torchrun, use `torchrun ... run.py <command>`, NOT `torchrun -m gr_demo.
 
 ```bash
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="$(dirname "${REPO_ROOT}"):${PYTHONPATH:-}"
 cd "${REPO_ROOT}"
 ```
 

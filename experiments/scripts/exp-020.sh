@@ -16,7 +16,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+export PYTHONPATH="$(dirname "${REPO_ROOT}"):${PYTHONPATH:-}"
 cd "${REPO_ROOT}"
 
 SKIP_SMOKE=false
