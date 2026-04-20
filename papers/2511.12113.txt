@@ -1,0 +1,3661 @@
+MetaGDPO: Alleviating Catastrophic Forgetting with Metacognitive Knowledge
+through Group Direct Preference Optimization
+Lanxue Zhang1,2*, Yuqiang Xie3 *, Fang Fang 1,2† Fanglong Dong1,2, Rui Liu4, Yanan Cao1,2
+1 Institute of Information Engineering, Chinese Academy of Sciences, Beijing, China
+2 School of Cyber Security, University of Chinese Academy of Sciences, Beijing, China
+3 Independent Researcher
+4 JIUTIAN Research, Beijing, China
+{zhanglanxue,fangfang0703}@iie.ac.cn
+Abstract
+Large Language Models demonstrate strong reasoning ca-
+pabilities, which can be effectively compressed into smaller
+models. However, existing datasets and fine-tuning ap-
+proaches still face challenges that lead to catastrophic for-
+getting, particularly for models smaller than 8B. First, most
+datasets typically ignore the relationship between training
+data knowledge and the model’s inherent abilities, making it
+difficult to preserve prior knowledge. Second, conventional
+training objectives often fail to constrain inherent knowl-
+edge preservation, which can result in forgetting of previ-
+ously learned skills. To address these issues, we propose a
+comprehensive solution that alleviates catastrophic forgetting
+from both the data and fine-tuning approach perspectives. On
+the data side, we construct a dataset of 5K instances that
+covers multiple reasoning tasks and incorporates metacog-
+nitive knowledge, making it more tolerant and effective for
+distillation into smaller models. We annotate the metacogni-
+tive knowledge required to solve each question and filter the
+data based on task knowledge and the model’s inherent skills.
+On the training side, we introduce GDPO (Group Direction
+Preference Optimization), which is better suited for resource-
+limited scenarios and can efficiently approximate the perfor-
+mance of GRPO. Guided by the large model and by implicitly
+constraining the optimization path through a reference model,
+GDPO enables more effective knowledge transfer from the
+large model and constrains excessive parameter drift. Exten-
+sive experiments demonstrate that our approach significantly
+alleviates catastrophic forgetting and improves reasoning per-
+formance on smaller models.
+Code — https://github.com/Qlanxue/MetaGDPO
+1
+Introduction
+Large Language Models (LLMs) have demonstrated strong
+capabilities, enhanced by advanced reasoning skills that
+enable them to solve complex tasks (Jaech et al. 2024;
+Guo et al. 2025; Yang et al. 2025; Anthropic 2025). How-
+ever, enabling excellent reasoning capabilities typically re-
+quires models with a large number of parameters, which
+*These authors contributed equally.
+†Corresponding author.
+Copyright © 2026, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+Figure 1: Small-scale fine-tuning on challenging mathemat-
+ical data such as LIMO can enhance the performance of 32B
+models, whereas 8B models tend to suffer from severe per-
+formance degradation.
+presents practical challenges for deployment, particularly
+in resource-constrained training or inference environments.
+This highlights the need to compress reasoning capabilities
+into smaller models with limited resources.
+Existing studies usually compress reasoning abilities into
+smaller models through large-scale datasets or small-scale
+but high-quality data. DeepSeek R1 (Guo et al. 2025) em-
+ploys large-scale data (800K) to distill the reasoning abil-
+ities. In contrast, LIMO (Ye et al. 2025) and s1k (Muen-
+nighoff et al. 2025) utilize high-quality and small-scale dis-
+tilling data to 32B models based on question difficulty. How-
+ever, compressing reasoning abilities into models smaller
+than 8B remains challenging, especially as fine-tuning with
+multi-perspective objectives to support broader applications
+often leads to performance degradation (Zheng et al. 2025;
+Arora and Zanette 2025; Wang et al. 2025). As shown in Fig-
+ure 1, fine-tuning smaller models with small-scale but high-
+quality data often results in substantial performance degra-
+dation across multiple evaluation dimensions, especially on
+difficult tasks like AIME24. Even when trained on math-
+ematical data, these models still exhibit decreased perfor-
+mance on simple math problems. These degradation are usu-
+ally caused by the catastrophic forgetting during fine-tuning.
+Therefore, we desire to discuss one research question in
+this paper: How to improve the model’s reasoning ability
+arXiv:2511.12113v1  [cs.AI]  15 Nov 2025
+
+
+while decreasing the catastrophic forgetting under limited
+resources?
+According to previous studies, it is effective to alleviate
+this issue from data (Resta and Bacciu 2024; Rebuffi et al.
+2017) and fine-tuning (Hu et al. 2022; Houlsby et al. 2019;
+Zheng et al. 2025) perspective. From the data side, previous
+methods usually utilize difficulty-based dataset collection or
+experience replay. However, datasets (Ye et al. 2025; Muen-
+nighoff et al. 2025) using difficulty as the selection principle
+ignore the relationship between the data and the base mod-
+els’ inherent knowledge, leading the model to forget sim-
+ple knowledge for difficult data learning. Experience replay
+(Resta and Bacciu 2024) involves constructing appropriate
+datasets aligned with the training set, which can be chal-
+lenging when training data is unknown (Xiao et al. 2024).
+From the fine-tuning perspective, previous researches usu-
+ally choose to freeze part of the models’ parameters to pre-
+serve existing experience, like PEFT (Houlsby et al. 2019),
+LoRA (Hu et al. 2022), and freezing layers (Zheng et al.
+2025). They focus on learning new tasks while ignoring
+constraints from prior knowledge, which easily leads to for-
+getting during training. Although GRPO (Shao et al. 2024)
+demonstrates strong performance in reasoning tasks with pa-
+rameter constraints, it requires more resources for online
+sampling and model-based reward calculation.
+To solve the above issues, we propose METAGDPO to
+improve models’ entire performance during training from
+the data and fine-tuning perspective.
+To enhance the relationship between training data and
+models’ inherent capabilities, we propose a knowledge-
+based data construction approach that leverages metacog-
+nitive knowledge as the selection principle, referring to the
+learner’s accumulated understanding of specific knowledge
+types (Didolkar et al. 2024). To support comprehensive anal-
+ysis, we collect different reasoning tasks that occurred in
+real applications. We label the metacognitive knowledge re-
+quired to solve each question and analyze the base models’
+performance across different types of knowledge. Based on
+this analysis, we retain complex questions that combine mul-
+tiple knowledge units and select representative questions for
+each knowledge unit according to the base models’ profi-
+ciency. For knowledge that the model is already proficient
+in, we can retain only a small number of instances to serve
+as a reminder to keep the inherent abilities. Finally, we ob-
+tain METAKL with 5K training questions covering a wider
+knowledge range. This data collection method includes not
+only new knowledge that the model lacks but also previously
+acquired knowledge, thereby reinforcing existing capabili-
+ties and mitigating forgetting.
+To enhance the improvement during fine-tuning progress,
+we propose Group Direct Preference Optimization (GDPO),
+which enables base models to learn group-wise response dis-
+tributions guided by advantages derived from high-quality
+response groups generated by the capable model. By pre-
+serving constraints on prior knowledge, the model can al-
+leviate catastrophic forgetting. Specifically, we sample a
+group of responses from the strong model and compute their
+corresponding advantages. The small model is then updated
+based on the preferences of nearby responses within the
+sorted group, which reduces the inter-group preference com-
+putation from O(G2) to O(G). This method enables the
+small model to learn the response distribution along with
+the corresponding preferences. Besides, GDPO is suitable
+for source-limited training scenarios compared with GRPO.
+As demonstrated in Figure 1, our approach effectively en-
+hances the performance of smaller models across multiple
+dimensions.
+To further demonstrate the effectiveness of our method,
+we provide a detailed analysis with proof and conduct
+thorough experiments across 12 benchmarks and differ-
+ent training methods. Experimental results demonstrating
+METAGDPO can further improve the model’s performance
+with little disturbance to inherent reasoning abilities.
+Our contribution can be summarized as follows:
+• We first introduce the METAKL, a dataset that pro-
+vides diverse reasoning tasks from a metacognitive knowl-
+edge perspective to associate training data with models’ in-
+herent knowledge.
+• We propose the Group Direct Preference Optimization
+to improve the performance of models while alleviating the
+catastrophic forgetting of efficient models.
+• We conduct extensive experiments to demonstrate the
+effectiveness of METAGDPO.
+2
+Related Works
+Unlike traditional large language models (LLMs) that prior-
+itize immediate answer generation, large reasoning models
+(LRMs) distinguish themselves by leveraging a long chain-
+of-thought to solve complex tasks with thorough thinking.
+Since the release of OpenAI’s o1 series in late 2024 (Jaech
+et al. 2024), which marked a significant leap in AI reason-
+ing, several advanced LRMs have emerged. OpenAI’s o3
+series (OpenAI 2025) demonstrated doctoral-level problem-
+solving across disciplines, while Google’s Gemini 2.5 Pro
+(DeepMind 2025) and XAI’s Grok-3 (xAI 2025) further
+pushed state-of-the-art performance in reasoning-intensive
+tasks. Anthropic’s Claude 3.7 Sonnet (Anthropic 2025) com-
+bines dual reasoning modes to excel in code generation and
+multi-step logic. In the open-source domain, DeepSeek-R1
+(Guo et al. 2025) and Qwen3 (Yang et al. 2025) represent
+notable advances, with Qwen3 pioneering a hybrid fast/s-
+low mode architecture that rivals closed-source systems on
+challenging benchmarks. These developments highlight the
+rapid evolution of LRMs and their growing impact on real-
+world complex reasoning tasks.
+There are some studies devoted to compressing large
+models’ reasoning abilities into smaller models. Some stud-
+ies collect LLMs’ distillation datasets like LaMini (Wu et al.
+2024), UltraChat (Ding et al. 2023), NuminaMath (LI et al.
+2024), and SYNTHETIC-1 (Mattern et al. 2025), focusing
+on providing large-scale datasets to cover diverse instruc-
+tions. These datasets usually need more resources to fine-
+tune the LLM. Therefore, there are also works advocating
+for utilizing small-scale high-quality datasets to enhance
+the LLMs’ performance. STILL-2 (Min et al. 2024) con-
+structed a 4.9k-sample long-form reasoning dataset through
+DeepSeek-R1 and QwQ (Team 2025). O1-journey-part2
+
+
+all
+wrong
+Complicate:
+K-1
+Knowledge unit:
+>= 5 keep
+Question-1
+1
+priori  
+select
+ Response
+K-5
+...
+K-1
+Q-2
+Q-*
+...
+Q-3
+Q-*
+...
+Q-4
+Q-*
+...
+K-6
+K-7
+K-2
+Average
+proficiency
+offline
+sample
+y2
+yG
+...
+p-6
+p-7
+Q
+Q
+Q
+y1
+y1
+y1
+yG
+yG
+yG
+...
+...
+...
+correct
+/safe
+p-1
+7/8B
+Ranking
+yi
+yi+1
+5K
+MetaKL
+filter
+Q
+Golden Solution
+Reason  Answer
+A1
+A2...
+AG
+r1
+r2...
+rG
+Accuracy
+Format
+Length
+y1
+y2
+yG
+...
+update
+nearby pairs
+y1
+Data collection
+Math
+General
+Safety
+Consider this math question. Label this
+question with math skills that would be
+required to solve the question. ...
+Question: In triangle $ABC$, $BC = 10$.
+The length of median $AD$ is 6. Find the
+exact value of $AB^2 + AC^2$.
+"geometry_median": "Understanding the
+properties of medians in a triangle is
+necessary to solve the problem.",
+"algebra_manipulation": "Algebraic
+manipulation is required to express and solve
+equations involving the sides of the triangle."
+Metacognitive knowledge acquire
+Knowledge-based data construction
+Knowledge-based selection
+2
+GDPO
+R1
+R1
+Figure 2: The framework of our paper. We first construct the data based on metacognitive knowledge with analyzing base
+models’ inherent ability. Then, we utilize the Group Direct Preference Optimization to fine-tune the base model.
+(Huang et al. 2024) involved the direct utilization of the
+OpenAI O1’s API to synthesize lengthy thought chains.
+LIMO (Ye et al. 2025) and s1k (Muennighoff et al. 2025)
+identify 817 and 1K datasets of high-quality mathematical
+reasoning datasets. STAR-1 (Wang et al. 2025) filters out
+1K to improve the safeguard ability of reasoning models.
+However, these works usually adopt supervised fine-tuning
+based on difficult datasets, which leads to the catastrophic
+forgetting phenomenon.
+3
+Method
+To comprehensively alleviate catastrophic forgetting during
+distillation in small LLMs, we design our approach from
+both the data and training perspectives. On the data side, we
+collect training instances based on the metacognitive knowl-
+edge required to solve each question and the model’s inher-
+ent knowledge. This helps align the small model’s metacog-
+nitive understanding with that of the large model. On the
+training side, we propose Group Direction Preference Op-
+timization (GDPO), which further enhances model perfor-
+mance while preserving as much inherent knowledge as pos-
+sible.
+3.1
+Knowledge-based Data Construction
+Data Collection
+To support real-world applications from
+multiple perspectives, we collect existing training datasets
+targeting mathematical reasoning (NuminaMath-CoT (LI
+et al. 2024)), non-mathematical / general reasoning (MMLU
+(Hendrycks et al. 2021a), CommonsenseQA (Talmor et al.
+2019), CommonsenseQA 2.0 (Talmor et al. 2022), LogiQA
+(Liu et al. 2023)), and safety-related tasks. Detailed infor-
+mation on these datasets is provided in the Appendix. To re-
+duce the number of similar prompts, we first perform coarse
+filtering following the steps in STAR-1 (Wang et al. 2025),
+including n-gram filtering, TF-IDF similarity filtering, and
+semantic embedding similarity filtering. To ensure fair eval-
+uation, we strictly avoid using any data similar to the evalu-
+ation benchmarks and only adopt existing training datasets.
+After this process, we obtain 38,838 data instances and care-
+fully check for any overlap between these prompts and the
+benchmarks used in our experiments, removing any dupli-
+cates to prevent data leakage.
+Metacognitive knowledge acquire
+To determine the
+metacognitive knowledge required to solve each question
+and to better control the scope of training data, we identify
+the relevant metacognitive knowledge for each question us-
+ing a similar approach to (Didolkar et al. 2024). We first in-
+struct GPT-4o to extract the knowledge needed for problem-
+solving. Then, we cluster the knowledge names to group
+similar knowledge together, which reduces redundancy and
+enables more precise filtering. After clustering, we obtain
+8,325 knowledge. The detailed prompts used for this pro-
+cess are provided in the Appendix. To demonstrate the rea-
+sonability of the metacognitive knowledge, we conducted
+human annotation. Specifically, we randomly sample 500
+prompts along with their extracted knowledge and engage
+five expert annotators to evaluate the consistency between
+the knowledge and the corresponding questions. Each anno-
+tation is paid $0.20 per instance. The average consistency
+score reaches 92.18%, demonstrating the reliability of the
+generated knowledge.
+Knowledge-based selection
+In order to make the selec-
+tion process more tight with the base model itself, we first
+analyze the performance of small commonly used LLMs
+including Qwen2.5-7B-Instruct, LLaMA3.1-8B, DeepSeek-
+R1-Qwen-7B, DeepSeek-R1-LLaMA-8B, and Qwen3-8B.
+Figure 3 illustrates the performance of each model across
+the skill numbers. We can observe that with the increase in
+skill combined numbers, the models’ performance reduced.
+Considering both the difficulty of the dataset and the
+
+
+Figure 3: The performance on metacognitive knowledge of
+base models.
+model’s inherent ability, we first reserve all complicated in-
+stances, solving which requires more than 5 skills. Then, we
+consider the base model’s skill accuracy as a skill filter ra-
+tio and select based on the knowledge unit. To ensure the
+skill while reducing the training instance numbers, we adopt
+a greedy selection strategy. We first keep 20 questions with
+a priori correct and safe responses for each knowledge unit.
+Then we select a question based on average proficiency, as
+it is more relevant to all models’ knowledge levels. We pri-
+oritize keeping the questions more adequate. The pseudo-
+algorithm can be found in the Appendix.
+3.2
+Group Direct Preference Optimization
+While GRPO demonstrates strong performance in reasoning
+training, its reliance on online sampling incurs substantial
+resource costs and can lead to uncontrollable exploration,
+particularly when the model’s initial capabilities are limited.
+Therefore, we propose Group Direct Preference Optimiza-
+tion (GDPO), which adapts the distillation process by lever-
+aging high-quality responses from the capable model.
+Given a question q, we generate a group of responses
+{r1, r2, . . . , rG} from large model. The objective is to ob-
+tain a policy model πθ derived from a reference model πref,
+based on the group advantages of the responses.
+We first derive the GDPO objective similar to DPO
+(Rafailov et al. 2023). We retain rule-based advantage
+weights and derive the optimal solution πθ from the re-
+inforcement learning objective, following the prior works
+(Schulman et al. 2017; Shao et al. 2024):
+πθ =
+1
+Z(q)πref(yi|q) exp(Ai
+β r(q, yi)),
+(1)
+where Z(q)
+=
+P
+yi πref(yi|q) exp( Ai
+β r(q, yi)) is the
+partition function, which is independent from πθ. The
+ground-truth reward can then be expressed as r∗
+=
+β
+Ai log
+π∗(yi|q)
+πref (yi|q) + β
+Ai log Z(q).
+Based on the Bradley–Terry model p∗(yi ≻yj) =
+exp(r(q,yi))
+exp(r(q,yi))+exp(r(q,yj)) (Bradley and Terry 1952), we fur-
+ther extend this formulation to incorporate pairwise compar-
+isons within each response group. Then, we can obtain the
+following optimization loss:
+LGDPO(θ) = −
+1
+G(G −1)
+G
+X
+i=1
+X
+j̸=i
+σ
+ β
+Ai
+log πθ(yi|q)
+πref(yi|q)
+−
+β
+Ai+1
+log πθ(yi+1|q)
+πref(yi+1|q) + f(Z(q))
+
+,
+(2)
+where f(Z(q)) = β log Z(q)( 1
+Ai −
+1
+Aj ). Based on rigorous
+proof in the Appendix, we can ignore f(Z(q)) without dis-
+turbing the convergence progress, which is irrelevant to πθ.
+To further reduce the computation, we optimize the loss
+to the nearby pairs chain, then the optimization objective can
+be transferred as follows:
+eLapprox(θ) = −
+1
+G −1
+G−1
+X
+i=1
+σ( β
+Ai
+log πθ(yi|q)
+πref(yi|q)
+−β
+Aj
+log πθ(yj|q)
+πref(yj|q)).
+(3)
+To determine how to choose G to minimize the error of
+the above calculation optimization, we derive the estimated
+error of the gradient as follows:
+ε ≤(µadj −µ′
+adj)2 +
+Var(µ′
+adj)
+G −1
+,
+(4)
+where µadj = E[σ(∆eri,i+1)] is the ideal expectation of
+nearby pairs and the µ′
+adj is the expectation of sampling G
+responses. When G >= 10, the relative error of the gradient
+is lower than 10% compared with G = 2. The corresponding
+proof can be found in the Appendix.
+Therefore, we offline generate G = 10 responses for each
+question to ensure both efficiency and effectiveness. If all
+responses are incorrect or unsafe, we use GPT-4o to recon-
+struct the reasoning and answer based on the golden so-
+lution. To calculate the advantages Ai, we adopt three re-
+ward functions: accuracy, format, and length, with weights
+of 1, 0.5, and 0.5, respectively, indicating that correctness
+is prioritized. When all responses are correct, we prefer
+shorter responses. To prevent long reasoning chains from
+dominating the reward, we normalize the response length
+within each group to calculate the reward as: Al
+i = 1 −
+li−min({l1,l2,...,lG})
+max({l1,l2,...,lG})−min({l1,l2,...,lG}). Additionally, we manu-
+ally check each response to account for discrepancies in out-
+put format that may not exactly match the standard answers,
+ensuring the accuracy and quality of the training data.
+To further support the feasibility of GDPO, we provide a
+detailed proof showing that its derivation and optimization
+process can approximate the loss of GRPO, along with a
+comprehensive comparison to GRPO, DPO, and SFT.
+
+
+Model
+AIME24
+AMC
+MATH500
+GSM8K
+Olympiad
+Minerva
+AVG
+Overall AVG
+Large Model
+DeepSeek-R1-0528
+82.92
+98.26
+95.0
+95.28
+69.19
+52.21
+82.15
+81.91
+7/8B Models
+Qwen3
+Origin
+72.71
+95.16
+93.8
+95.10
+64.89
+53.31
+79.16
+78.98
+LIMO
+56.67
+89.06
+87.2
+91.13
+52.44
+47.06
+70.59
+70.20
+STAR-1
+72.71
+93.91
+92.6
+74.45
+64.15
+48.90
+74.45
+73.59
+L+S
+69.17
+92.34
+92.8
+93.48
+62.67
+52.21
+77.11
+75.15
+METAGDPO
+76.04↑
+94.69
+94.0↑
+95.22↑
+64.30
+56.25↑
+80.08↑
+80.86↑
+R1-Qwen
+Origin
+56.46
+88.44
+86.2
+89.69
+48.74
+41.91
+68.57
+59.52
+LIMO
+42.71
+83.44
+83.4
+84.46
+37.19
+34.56
+60.96
+54.42
+STAR-1
+54.79
+89.84↑
+86.2
+89.39
+48.15
+43.01↑
+68.56
+72.68↑
+L+S
+52.92
+90.16↑
+84.4
+46.47
+53.48↑
+36.03
+60.58
+64.23↑
+METAGDPO
+53.54
+89.53↑
+88.0↑
+89.46
+48.39
+45.22↑
+69.02↑
+60.14↑
+R1-LLaMA
+Origin
+43.75
+86.72
+79.2
+77.94
+41.33
+31.25
+60.03
+55.37
+LIMO
+33.96
+80.47
+80.8↑
+67.10
+46.96↑
+27.57
+56.14
+54.18
+STAR-1
+41.46
+83.44
+79.0
+66.49
+45.63↑
+26.84
+57.14
+66.96↑
+L+S
+51.25↑
+86.88↑
+86.4↑
+61.11
+50.37↑
+34.93↑
+61.82↑
+66.12↑
+METAGDPO
+43.54
+89.53↑
+79.2
+76.88
+41.48↑
+29.78
+60.07↑
+59.39↑
+Table 1: Evaluation results on mathematical benchmarks. The bold results denote the best results across different fine-tune
+baselines. The uparrow denotes the result improved compared with the original model without finetuning. Overall AVG denotes
+the overall performance of the models, deriving from the average score of all benchmarks.
+4
+Experimental Results
+4.1
+Experimental Settings
+Datasets
+In this paper, we utilize mathematical reasoning,
+commonsense reasoning and safety benchmarks to compre-
+hensively analysis the performance on multiple application
+perspectives:
+• Mathematical reasoning: We first adopt various math-
+ematical reasoning datasets to assess models’ reasoning
+capabilities, including the American Invitational Math-
+ematics Examination (AIME24) (MAA 2024), MATH-
+500 (Hendrycks et al. 2021b), the American Mathe-
+matics Competitions (AMC23), GSM8k (Cobbe et al.
+2021), OlympiadBench (He et al. 2024), and Miverva
+(Lewkowycz et al. 2022).
+•
+General
+reasoning:
+Besides,
+we
+use
+MMLU
+(Hendrycks et al. 2021a), Commonsense QA (Talmor et al.
+2019), and GPQA (Rein et al. 2024) to reflect the non-
+mathematical reasoning abilities of LRMs.
+• Safety evaluation: We utilize three safety benchmarks
+to reflect the safety level of models: TrustLLM (Sun et al.
+2024), StrongReject (Souly et al. 2024), and WildJail-
+break (Jiang et al. 2024). We utilize the LLaMA-GUARD-
+3-8B (Inan et al. 2023) to judge the safety of the responses,
+and report the safety ratio. High score denotes the model
+safer.
+For the dataset lower than 50 questions (AIME24 and
+AMC23), we adopt generating 16 samples with a tempera-
+ture setting of 0.7 and calculating the unbiased pass@1 met-
+ric as introduced in (Chen et al. 2021). To ensure the com-
+parison fairness, we utilize the same sample parameters and
+set the temperature as 0 to provide the evaluation results for
+other datasets. To analyze overall model performance, we
+compute the average score to represent its overall capability.
+Baselines
+To assess the generalizability across different
+model architectures, we fine-tune five base models: Qwen3-
+8B, DeepSeek-R1-Qwen-7B, and DeepSeek-R1-LLaMA-
+8B. We also provide the analysis on Qwen2.5-Instruct-7B
+and LLaMA3.1-Instruct-8B in the Appendix due to space
+limitation. Furthermore, to investigate the influence of data
+composition on training dynamics, we conduct comparative
+experiments using LIMO, STAR-1, and their mixture (de-
+noted as L+S for simplicity).
+4.2
+Results
+Tables 1 and 2 report the performance of the teacher model
+and 7B/8B-scale student models. The results demonstrate
+that our proposed framework substantially preserves the
+model’s original reasoning capabilities while achieving con-
+sistent improvements in overall performance. Compared to
+conventional fine-tuning on existing datasets, our method
+improves relative gains of approximately 5–10% on over-
+all performance. Besides, we observe that directly fine-
+tuning on mathematically challenging datasets may induce
+catastrophic forgetting on simpler tasks. For instance, train-
+ing with L+S leads to a 40% performance degradation on
+GSM8K for DeepSeek-R1-Qwen and over 50% on Qwen3.
+In contrast, training with METAGDPO effectively mitigates
+this degradation and better maintains generalization across
+different task complexities. For all models, we can improve
+the general abilities stably. While STAR-1 contributes sig-
+nificantly to enhancing safety alignment, it adversely af-
+fects the model’s general utility, often resulting in over-
+
+
+Model
+MMLU
+CQA
+GPQA
+AVG
+TrustLLM
+Strong
+Wild
+AVG
+Misuse
+Jailbreak
+Reject
+Jailbreak
+Large Model
+DeepSeek-R1-0528
+83.36
+79.70
+84.26
+82.44
+95.61
+53.50
+98.40
+77.15
+81.17
+7/8B Models
+Qwen3
+Origin
+79.28
+77.89
+59.09
+72.09
+92.98
+83.50
+94.89
+64.12
+83.87
+LIMO
+78.20
+78.87↑
+34.34
+63.80
+85.25
+77.07
+77.32
+58.01
+74.41
+STAR-1
+46.53
+30.38
+47.47
+41.46
+99.91↑
+98.21↑
+100.0↑
+87.42↑
+96.39↑
+L+S
+55.73
+27.27
+42.93
+41.98
+99.65↑
+99.57↑
+99.68↑
+89.46↑
+97.09↑
+METAGDPO
+83.37↑
+84.11↑
+62.12↑
+76.79↑
+92.89
+84.79↑
+95.85↑
+64.12
+84.41↑
+R1-Qwen
+Origin
+53.85
+65.52
+35.86
+51.74
+65.86
+55.84
+33.55
+51.76
+51.75
+LIMO
+47.80
+59.54
+29.80
+45.71
+58.47
+62.21↑
+35.14↑
+48.69
+51.13
+STAR-1
+54.20↑
+58.31
+37.88↑
+50.13
+99.30↑
+99.68↑
+98.36↑
+85.70↑
+95.76↑
+L+S
+30.85
+18.67
+42.42↑
+30.65
+99.21↑
+99.43↑
+99.04↑
+81.86↑
+94.89↑
+METAGDPO
+55.93↑
+66.01↑
+34.34
+52.09↑
+56.8↑
+66.57↑
+37.06↑
+50.95
+52.85↑
+R1-LLaMA
+Origin
+60.47
+70.76
+29.29
+53.51
+64.62
+66.93
+45.05
+54.52
+57.78
+LIMO
+69.63↑
+51.27
+29.29
+50.06
+66.02↑
+69.64↑
+42.81
+54.30
+58.19↑
+STAR-1
+50.78
+49.14
+36.87↑
+45.60
+99.39↑
+99.68↑
+99.68↑
+92.08↑
+97.71↑
+L+S
+38.14
+20.39
+39.39↑
+32.64
+99.65↑
+98.64↑
+99.68↑
+92.76↑
+97.68↑
+METAGDPO
+66.88↑
+70.76
+37.37↑
+58.34↑
+65.14↑
+67.93↑
+49.20↑
+54.39
+59.17↑
+Table 2: Evaluation results on general reasoning and safety benchmarks. The bold results denote the best results across different
+fine-tune baselines. The uparrow denotes the result improved compared with the original model without finetuning.
+conservative behaviors that compromise task completion
+and practical usability.
+Furthermore, we observe that SFT is more effective for
+safety-oriented learning, while GDPO demonstrates supe-
+rior performance on reasoning tasks. We hypothesize that
+improvements in safety may require the model to partially
+overwrite or forget certain prior harmful thoughts. In con-
+trast, our GDPO framework is designed to leverage the
+model’s initial knowledge, which is more closely related to
+memory retention.
+5
+Analysis
+5.1
+Ablation Study
+To locate the effect of advantages in training enhancement,
+we remove the advantage weight to optimize the model,
+which can be considered as expanded response pairs for each
+prompt from DPO. The average results are 85.24, 69.99,
+84.27, and 80.25 for math, general, safety, and overall, re-
+spectively. We can find that even when removing the advan-
+tages during preference learning, increasing the number of
+responses can still benefit models’ performance.
+5.2
+Scaling Law Analysis
+Group number impaction
+To investigate how the group
+size impacts the training results, we experiment on G =
+2, 4, 6, 8, 10 respectively. Figure 4 presents the results of
+varying the group number. For G < 10, we preserve the best
+response and randomly select the remaining responses. We
+observe that as the group size increases, overall performance
+improves. However, when G < 10, certain dimensions may
+G2
+G4
+G6
+G8
+G10
+78.86
+79.17
+79.47
+79.78
+80.08
+Average Accuracy
+Math
+G2
+G4
+G6
+G8
+G10
+72.09
+73.35
+74.61
+75.87
+77.13
+General
+G2
+G4
+G6
+G8
+G10
+83.11
+83.61
+84.10
+84.59
+85.09
+Average Accuracy
+Safety
+G2
+G4
+G6
+G8
+G10
+78.98
+79.45
+79.92
+80.39
+80.86
+Overall
+N10
+N100
+N500
+N1000
+N5000
+N10
+N100
+N500
+N1000
+N5000
+N10
+N100
+N500
+N1000
+N5000
+N10
+N100
+N500
+N1000
+N5000
+Qwen3-8B
+Group number
+Training size
+Figure 4: The performance varies with the number of groups
+and training data size.
+slightly degrade, which is consistent with the proof in the
+Appendix that small group sizes can lead to high training
+variance.
+Training Size Scaling
+In this section, we explore the im-
+pact of the training data size on training effectiveness. We it-
+erate the training number as G = [10, 100, 500, 1000, 5000].
+Figure 4 illustrates how performance varies with data size.
+We observe that using as few as 10 instances can still en-
+hance the model’s overall performance. We speculate that
+this improvement stems from the group-wise distribution of
+
+
+78.0
+78.5
+79.0
+79.5
+80.0
+80.5
+Math
+70
+72
+74
+76
+78
+General
+LIMO
+STAR-1
+L+S
+MetaKL-M
+MetaKL-G
+MetaKL-S
+MetaKL
+80
+82
+84
+86
+Safety
+LIMO
+STAR-1
+L+S
+MetaKL-M
+MetaKL-G
+MetaKL-S
+MetaKL
+78
+79
+80
+81
+Overall
+Figure 5: Comparison of model performance across different
+training data compositions on Qwen3-8B.
+responses, which encourages the model to better leverage
+the potential embedded in its inherent knowledge.
+5.3
+Data Composition Analysis
+To examine the influence of data composition, we train mod-
+els using different datasets under the GDPO framework, in-
+cluding LIMO, STAR-1, LIMO+STAR-1, METAKL-Math,
+METAKL-General, and METAKL-Safety. Figure 5 presents
+the average scores across various categories, with detailed
+results provided in the Appendix.
+We observe that training solely with LIMO slightly re-
+duces the model’s mathematical reasoning ability, though
+the degradation is less severe compared to SFT. In con-
+trast, our METAKL-Math data significantly enhances math-
+ematical reasoning, highlighting the importance of bounding
+metacognitive learning with training data. While all train-
+ing configurations improve overall performance, combining
+LIMO and STAR-1 mitigates performance degradation dur-
+ing GDPO training, suggesting that learning response distri-
+butions helps retain general capabilities.
+Consequently, our method supports multi-task fine-
+tuning, even with single-task data. It preserves the model’s
+inherent capabilities, making it possible to enhance perfor-
+mance across multiple application domains.
+5.4
+Training Method Comparison
+To intuitively compare the impact of different training meth-
+ods on model performance, we take Qwen3-8B as the ex-
+perimental subject to explore SFT, DPO, and GDPO, along
+with their LoRA-augmented variants across mathematical
+reasoning, commonsense reasoning, and safety benchmarks.
+For DPO, we utilize the best responses as preferred re-
+sponses while randomly choosing one as the rejected re-
+sponse.
+As shown in Figure 6, GDPO exhibits distinct advan-
+tages over other training methods. Compared to SFT and
+Figure 6: The comparison between different training meth-
+ods.
+DPO, GDPO outperforms SFT by an average of nearly 17%
+and 3%, respectively, denoting the superiority of learning
+responses with a large group. In contrast, SFT excels in
+safety tasks as its supervised training directly aligns with
+safety-specific labels, while RLHF methods like DPO and
+GDPO prioritize reasoning enhancement, temporarily sacri-
+ficing some safety alignment during optimization.
+Therefore, improving performance on general and safety
+tasks is relatively easier than on mathematical tasks for
+most methods, suggesting that catastrophic forgetting is
+more likely to occur in mathematical reasoning. For weaker
+training methods such as SFT and DPO, applying LoRA
+proves effective in mitigating this forgetting. In contrast,
+our method achieves superior performance through full-
+parameter training.
+6
+Conclusion
+In this paper, we address the catastrophic forgetting dur-
+ing distillation of reasoning abilities from LLMs to smaller
+models. We solve this issue by improving training data and
+training methods. From the data perspective, we fully lever-
+age the model’s inherent knowledge and minimize catas-
+trophic forgetting. We filter and organize the data based on
+the metacognitive skills required for each question. This en-
+sures that the learning process remains well-aligned with
+the model’s cognitive abilities and preserves previously
+acquired knowledge. From the training side, we propose
+GDPO, which efficiently utilizes the preference characters
+in group responses of the teacher model, which approxi-
+mates GRPO and is better adapted for distillation learning.
+Experimental results demonstrate that our approach effec-
+tively supports reasoning generalization while alleviating
+catastrophic forgetting, providing a valuable resource and
+experimental guidance for real-world applications of effi-
+cient LLMs.
+
+
+Acknowledgments
+This work is supported by the National Natural Science
+Foundation of China (No.U2336202).
+References
+Achiam, J.; Adler, S.; Agarwal, S.; Ahmad, L.; Akkaya, I.;
+Aleman, F. L.; Almeida, D.; Altenschmidt, J.; Altman, S.;
+Anadkat, S.; et al. 2023.
+Gpt-4 technical report.
+arXiv
+preprint arXiv:2303.08774.
+Anthropic. 2025. Claude 3.7 Sonnet and Claude Code. Ac-
+cessed: 2025-06-07.
+Arora, D.; and Zanette, A. 2025. Training Language Models
+to Reason Efficiently. arXiv:2502.04463.
+Bai, Y.; Jones, A.; Ndousse, K.; Askell, A.; Chen, A.; Das-
+Sarma, N.; Drain, D.; Fort, S.; Ganguli, D.; Henighan, T.;
+et al. 2022. Training a helpful and harmless assistant with re-
+inforcement learning from human feedback. arXiv preprint
+arXiv:2204.05862.
+Bradley, R. A.; and Terry, M. E. 1952. Rank Analysis of
+Incomplete Block Designs: I. The Method of Paired Com-
+parisons. Biometrika, 39(3/4): 324–345.
+Chen, M.; Tworek, J.; Jun, H.; Yuan, Q.; de Oliveira Pinto,
+H. P.; Kaplan, J.; Edwards, H.; Burda, Y.; Joseph, N.; Brock-
+man, G.; Ray, A.; Puri, R.; Krueger, G.; Petrov, M.; Khlaaf,
+H.; Sastry, G.; Mishkin, P.; Chan, B.; Gray, S.; Ryder, N.;
+Pavlov, M.; Power, A.; Kaiser, L.; Bavarian, M.; Winter, C.;
+Tillet, P.; Such, F. P.; Cummings, D.; Plappert, M.; Chantzis,
+F.; Barnes, E.; Herbert-Voss, A.; Guss, W. H.; Nichol, A.;
+Paino, A.; Tezak, N.; Tang, J.; Babuschkin, I.; Balaji, S.;
+Jain, S.; Saunders, W.; Hesse, C.; Carr, A. N.; Leike, J.;
+Achiam, J.; Misra, V.; Morikawa, E.; Radford, A.; Knight,
+M.; Brundage, M.; Murati, M.; Mayer, K.; Welinder, P.; Mc-
+Grew, B.; Amodei, D.; McCandlish, S.; Sutskever, I.; and
+Zaremba, W. 2021.
+Evaluating Large Language Models
+Trained on Code.
+Cobbe, K.; Kosaraju, V.; Bavarian, M.; Chen, M.; Jun, H.;
+Kaiser, L.; Plappert, M.; Tworek, J.; Hilton, J.; Nakano,
+R.; Hesse, C.; and Schulman, J. 2021.
+Training Ver-
+ifiers to Solve Math Word Problems.
+arXiv preprint
+arXiv:2110.14168.
+DeepMind, G. 2025.
+Gemini 2.5: Our most intelli-
+gent AI model.
+https://blog.google/technology/google-
+deepmind/gemini-model-thinking-updates-march-
+2025/#gemini-2-5-thinking.
+Didolkar, A. R.; Goyal, A.; Ke, N. R.; Guo, S.; Valko,
+M.; Lillicrap, T. P.; Rezende, D. J.; Bengio, Y.; Mozer,
+M. C.; and Arora, S. 2024. Metacognitive Capabilities of
+LLMs: An Exploration in Mathematical Problem Solving.
+In The Thirty-eighth Annual Conference on Neural Informa-
+tion Processing Systems.
+Ding, N.; Chen, Y.; Xu, B.; Qin, Y.; Hu, S.; Liu, Z.; Sun,
+M.; and Zhou, B. 2023. Enhancing Chat Language Mod-
+els by Scaling High-quality Instructional Conversations. In
+Bouamor, H.; Pino, J.; and Bali, K., eds., Proceedings of
+the 2023 Conference on Empirical Methods in Natural Lan-
+guage Processing, 3029–3051. Singapore: Association for
+Computational Linguistics.
+Guo, D.; Yang, D.; Zhang, H.; Song, J.; Zhang, R.; Xu, R.;
+Zhu, Q.; Ma, S.; Wang, P.; Bi, X.; et al. 2025. Deepseek-r1:
+Incentivizing reasoning capability in llms via reinforcement
+learning. arXiv preprint arXiv:2501.12948.
+Guo, Y.; Cui, G.; Yuan, L.; Ding, N.; Sun, Z.; Sun, B.; Chen,
+H.; Xie, R.; Zhou, J.; Lin, Y.; Liu, Z.; and Sun, M. 2024.
+Controllable Preference Optimization: Toward Controllable
+Multi-Objective Alignment. In Al-Onaizan, Y.; Bansal, M.;
+and Chen, Y.-N., eds., Proceedings of the 2024 Conference
+on Empirical Methods in Natural Language Processing,
+1437–1454. Miami, Florida, USA: Association for Compu-
+tational Linguistics.
+He, C.; Luo, R.; Bai, Y.; Hu, S.; Thai, Z.; Shen, J.; Hu, J.;
+Han, X.; Huang, Y.; Zhang, Y.; Liu, J.; Qi, L.; Liu, Z.; and
+Sun, M. 2024. OlympiadBench: A Challenging Benchmark
+for Promoting AGI with Olympiad-Level Bilingual Multi-
+modal Scientific Problems. In Ku, L.-W.; Martins, A.; and
+Srikumar, V., eds., Proceedings of the 62nd Annual Meeting
+of the Association for Computational Linguistics (Volume 1:
+Long Papers), 3828–3850. Bangkok, Thailand: Association
+for Computational Linguistics.
+Hendrycks, D.; Burns, C.; Basart, S.; Zou, A.; Mazeika, M.;
+Song, D.; and Steinhardt, J. 2021a. Measuring Massive Mul-
+titask Language Understanding. Proceedings of the Interna-
+tional Conference on Learning Representations (ICLR).
+Hendrycks, D.; Burns, C.; Kadavath, S.; Arora, A.; Basart,
+S.; Tang, E.; Song, D.; and Steinhardt, J. 2021b. Measur-
+ing Mathematical Problem Solving With the MATH Dataset.
+NeurIPS.
+Houlsby, N.; Giurgiu, A.; Jastrzebski, S.; Morrone, B.;
+De Laroussilhe, Q.; Gesmundo, A.; Attariyan, M.; and
+Gelly, S. 2019.
+Parameter-efficient transfer learning for
+NLP.
+In International conference on machine learning,
+2790–2799. PMLR.
+Hu, E. J.; Shen, Y.; Wallis, P.; Allen-Zhu, Z.; Li, Y.; Wang,
+S.; Wang, L.; and Chen, W. 2022. LoRA: Low-Rank Adap-
+tation of Large Language Models. In International Confer-
+ence on Learning Representations.
+Huang, Z.; Zou, H.; Li, X.; Liu, Y.; Zheng, Y.; Chern, E.;
+Xia, S.; Qin, Y.; Yuan, W.; and Liu, P. 2024. O1 Replica-
+tion Journey–Part 2: Surpassing O1-preview through Simple
+Distillation, Big Progress or Bitter Lesson? arXiv preprint
+arXiv:2411.16489.
+Inan, H.; Upasani, K.; Chi, J.; Rungta, R.; Iyer, K.; Mao,
+Y.; Tontchev, M.; Hu, Q.; Fuller, B.; Testuggine, D.; and
+Khabsa, M. 2023. Llama Guard: LLM-based Input-Output
+Safeguard for Human-AI Conversations. arXiv:2312.06674.
+Jaech, A.; Kalai, A.; Lerer, A.; Richardson, A.; El-Kishky,
+A.; Low, A.; Helyar, A.; Madry, A.; Beutel, A.; Carney,
+A.; et al. 2024.
+Openai o1 system card.
+arXiv preprint
+arXiv:2412.16720.
+Jaques, N.; Gu, S.; Bahdanau, D.; Hern´andez-Lobato, J. M.;
+Turner, R. E.; and Eck, D. 2017. Sequence tutor: Conser-
+vative fine-tuning of sequence generation models with kl-
+control. In International Conference on Machine Learning,
+1645–1654. PMLR.
+
+
+Ji, J.; Hong, D.; Zhang, B.; Chen, B.; Dai, J.; Zheng, B.;
+Qiu, T.; Li, B.; and Yang, Y. 2024. Pku-saferlhf: A safety
+alignment preference dataset for llama family models. arXiv
+e-prints, arXiv–2406.
+Ji, J.; Liu, M.; Dai, J.; Pan, X.; Zhang, C.; Bian, C.; Chen,
+B.; Sun, R.; Wang, Y.; and Yang, Y. 2023. BeaverTails: To-
+wards Improved Safety Alignment of LLM via a Human-
+Preference Dataset. In Thirty-seventh Conference on Neural
+Information Processing Systems Datasets and Benchmarks
+Track.
+Jiang, L.; Rao, K.; Han, S.; Ettinger, A.; Brahman, F.; Ku-
+mar, S.; Mireshghallah, N.; Lu, X.; Sap, M.; Choi, Y.; and
+Dziri, N. 2024. WildTeaming at Scale: From In-the-Wild
+Jailbreaks to (Adversarially) Safer Language Models.
+In
+The Thirty-eighth Annual Conference on Neural Informa-
+tion Processing Systems.
+Lewkowycz, A.; Andreassen, A.; Dohan, D.; Dyer, E.;
+Michalewski, H.; Ramasesh, V.; Slone, A.; Anil, C.; Schlag,
+I.; Gutman-Solo, T.; et al. 2022. Solving quantitative rea-
+soning problems with language models. Advances in Neural
+Information Processing Systems, 35: 3843–3857.
+LI, J.; Beeching, E.; Tunstall, L.; Lipkin, B.; Solet-
+skyi, R.; Huang, S. C.; Rasul, K.; Yu, L.; Jiang, A.;
+Shen,
+Z.;
+Qin,
+Z.;
+Dong,
+B.;
+Zhou,
+L.;
+Fleureau,
+Y.;
+Lample,
+G.;
+and
+Polu,
+S.
+2024.
+Numina-
+Math.
+[https://huggingface.co/AI-MO/NuminaMath-
+CoT](https://github.com/project-numina/aimo-progress-
+prize/blob/main/report/numina dataset.pdf).
+Liu, H.; Liu, J.; Cui, L.; Teng, Z.; Duan, N.; Zhou, M.;
+and Zhang, Y. 2023. LogiQA 2.0—An Improved Dataset
+for Logical Reasoning in Natural Language Understanding.
+IEEE/ACM Transactions on Audio, Speech, and Language
+Processing, 31: 2947–2962.
+MAA. 2024. American Invitational Mathematics Examina-
+tion - AIME. In American Invitational Mathematics Exami-
+nation - AIME 2024.
+Mattern, J.; Jaghouar, S.; Basra, M.; Straube, J.; Ferrante,
+M. D.; Gabriel, F.; Ong, J. M.; Weisser, V.; and Hagemann,
+J. 2025. SYNTHETIC-1: Two Million Collaboratively Gen-
+erated Reasoning Traces from Deepseek-R1.
+Min, Y.; Chen, Z.; Jiang, J.; Chen, J.; Deng, J.; Hu, Y.;
+Tang, Y.; Wang, J.; Cheng, X.; Song, H.; et al. 2024.
+Imitate, explore, and self-improve: A reproduction re-
+port on slow-thinking reasoning systems.
+arXiv preprint
+arXiv:2412.09413.
+Muennighoff, N.; Yang, Z.; Shi, W.; Li, X. L.; Fei-Fei, L.;
+Hajishirzi, H.; Zettlemoyer, L.; Liang, P.; Cand`es, E.; and
+Hashimoto, T. 2025. s1: Simple test-time scaling. arXiv
+preprint arXiv:2501.19393.
+OpenAI. 2022. ChatGPT. https://chat.openai.com/.
+OpenAI.
+2025.
+OpenAI
+o3-mini.
+https://openai.com/index/openai-o3-mini/.
+Ouyang, L.; Wu, J.; Jiang, X.; Almeida, D.; Wainwright,
+C.; Mishkin, P.; Zhang, C.; Agarwal, S.; Slama, K.; Ray,
+A.; Schulman, J.; Hilton, J.; Kelton, F.; Miller, L.; Simens,
+M.; Askell, A.; Welinder, P.; Christiano, P. F.; Leike, J.; and
+Lowe, R. 2022.
+Training language models to follow in-
+structions with human feedback. In Koyejo, S.; Mohamed,
+S.; Agarwal, A.; Belgrave, D.; Cho, K.; and Oh, A., eds.,
+Advances in Neural Information Processing Systems, vol-
+ume 35, 27730–27744. Curran Associates, Inc.
+Rafailov, R.; Sharma, A.; Mitchell, E.; Manning, C. D.; Er-
+mon, S.; and Finn, C. 2023. Direct Preference Optimiza-
+tion: Your Language Model is Secretly a Reward Model. In
+Thirty-seventh Conference on Neural Information Process-
+ing Systems.
+Rebuffi, S.-A.; Kolesnikov, A.; Sperl, G.; and Lampert, C. H.
+2017.
+iCaRL: Incremental Classifier and Representation
+Learning. In 2017 IEEE Conference on Computer Vision
+and Pattern Recognition (CVPR), 5533–5542.
+Rein, D.; Hou, B. L.; Stickland, A. C.; Petty, J.; Pang, R. Y.;
+Dirani, J.; Michael, J.; and Bowman, S. R. 2024. Gpqa: A
+graduate-level google-proof q&a benchmark. In First Con-
+ference on Language Modeling.
+Resta, M.; and Bacciu, D. 2024.
+Self-generated Replay
+Memories for Continual Neural Machine Translation.
+In
+Duh, K.; Gomez, H.; and Bethard, S., eds., Proceedings
+of the 2024 Conference of the North American Chapter
+of the Association for Computational Linguistics: Human
+Language Technologies (Volume 1: Long Papers), 175–191.
+Mexico City, Mexico: Association for Computational Lin-
+guistics.
+Schulman, J.; Wolski, F.; Dhariwal, P.; Radford, A.; and
+Klimov, O. 2017. Proximal policy optimization algorithms.
+arXiv preprint arXiv:1707.06347.
+Shao, Z.; Wang, P.; Zhu, Q.; Xu, R.; Song, J.; Bi, X.;
+Zhang, H.; Zhang, M.; Li, Y. K.; Wu, Y.; and Guo, D. 2024.
+DeepSeekMath: Pushing the Limits of Mathematical Rea-
+soning in Open Language Models. arXiv:2402.03300.
+Shen, X.; Chen, Z.; Backes, M.; Shen, Y.; and Zhang, Y.
+2024. “Do Anything Now”: Characterizing and Evaluating
+In-The-Wild Jailbreak Prompts on Large Language Models.
+In ACM SIGSAC Conference on Computer and Communica-
+tions Security (CCS). ACM.
+Souly, A.; Lu, Q.; Bowen, D.; Trinh, T.; Hsieh, E.; Pandey,
+S.; Abbeel, P.; Svegliato, J.; Emmons, S.; Watkins, O.; et al.
+2024. A strongreject for empty jailbreaks. arXiv preprint
+arXiv:2402.10260.
+Stiennon, N.; Ouyang, L.; Wu, J.; Ziegler, D.; Lowe, R.;
+Voss, C.; Radford, A.; Amodei, D.; and Christiano, P. F.
+2020. Learning to summarize with human feedback. Ad-
+vances in neural information processing systems, 33: 3008–
+3021.
+Sun, L.; Huang, Y.; Wang, H.; Wu, S.; Zhang, Q.; Gao, C.;
+Huang, Y.; Lyu, W.; Zhang, Y.; Li, X.; et al. 2024. Trustllm:
+Trustworthiness in large language models. arXiv preprint
+arXiv:2401.05561, 3.
+Talmor, A.; Herzig, J.; Lourie, N.; and Berant, J. 2019. Com-
+monsenseQA: A Question Answering Challenge Targeting
+Commonsense Knowledge. In Burstein, J.; Doran, C.; and
+Solorio, T., eds., Proceedings of the 2019 Conference of the
+North American Chapter of the Association for Computa-
+tional Linguistics: Human Language Technologies, Volume
+
+
+1 (Long and Short Papers), 4149–4158. Minneapolis, Min-
+nesota: Association for Computational Linguistics.
+Talmor, A.; Yoran, O.; Bras, R. L.; Bhagavatula, C.; Gold-
+berg, Y.; Choi, Y.; and Berant, J. 2022. Commonsenseqa
+2.0: Exposing the limits of ai through gamification. arXiv
+preprint arXiv:2201.05320.
+Team, Q. 2025. QwQ-32B: Embracing the Power of Rein-
+forcement Learning.
+Tedeschi, S.; Friedrich, F.; Schramowski, P.; Kersting, K.;
+Navigli, R.; Nguyen, H.; and Li, B. 2024. ALERT: A Com-
+prehensive Benchmark for Assessing Large Language Mod-
+els’ Safety through Red Teaming. arXiv:2404.08676.
+Wang, Z.; Tu, H.; Wang, Y.; Wu, J.; Mei, J.; Bartold-
+son, B. R.; Kailkhura, B.; and Xie, C. 2025.
+STAR-
+1: Safer Alignment of Reasoning LLMs with 1K Data.
+arXiv:2504.01903.
+Wu, M.; Waheed, A.; Zhang, C.; Abdul-Mageed, M.; and
+Aji, A. F. 2024. LaMini-LM: A Diverse Herd of Distilled
+Models from Large-Scale Instructions. In Graham, Y.; and
+Purver, M., eds., Proceedings of the 18th Conference of
+the European Chapter of the Association for Computational
+Linguistics (Volume 1: Long Papers), 944–964. St. Julian’s,
+Malta: Association for Computational Linguistics.
+xAI. 2025. Grok 3 Beta — The Age of Reasoning Agents.
+https://x.ai/news/grok-3.
+Xiao, S.; Liu, Z.; Zhang, P.; and Xing, X. 2024.
+LM-
+Cocktail: Resilient Tuning of Language Models via Model
+Merging. In Ku, L.-W.; Martins, A.; and Srikumar, V., eds.,
+Findings of the Association for Computational Linguistics:
+ACL 2024, 2474–2488. Bangkok, Thailand: Association for
+Computational Linguistics.
+Yang, A.; Li, A.; Yang, B.; Zhang, B.; Hui, B.; Zheng, B.;
+Yu, B.; Gao, C.; Huang, C.; Lv, C.; et al. 2025.
+Qwen3
+technical report. arXiv preprint arXiv:2505.09388.
+Ye, Y.; Huang, Z.; Xiao, Y.; Chern, E.; Xia, S.; and
+Liu, P. 2025.
+LIMO: Less is More for Reasoning.
+arXiv:2502.03387.
+Zhang, Y.; Li, M.; Long, D.; Zhang, X.; Lin, H.; Yang, B.;
+Xie, P.; Yang, A.; Liu, D.; Lin, J.; Huang, F.; and Zhou,
+J. 2025. Qwen3 Embedding: Advancing Text Embedding
+and Reranking Through Foundation Models. arXiv preprint
+arXiv:2506.05176.
+Zheng, J.; Cai, X.; Qiu, S.; and Ma, Q. 2025. Spurious For-
+getting in Continual Learning of Language Models. In The
+Thirteenth International Conference on Learning Represen-
+tations.
+A
+Prompts for Data Construction
+The prompt template used to obtain metacognitive knowl-
+edge is as follows:
+Prompt for Metacognitive Knowledge
+Consider this mathematical / commonsense / safety
+question. Label this question with mathematical / com-
+monsense / safety skills that would be required to solve
+the question. Basically, you should be able to use the
+fine-grained skill as a dictionary key in Python. The skill
+name should be in lower case letters only. The skill name
+should be in lower-case letters only. The skill name
+should be very descriptive, and you may use multiple
+words to describe the skills required in the question. If
+you do use multiple words per question, then join them
+by an underscore. You can provide multiple skills for
+complex questions.
+Question: [Question]
+Your answer should be in JSON format as follows:
+{< name of the skill>: <simple reason for the skill>}
+The prompt template used to merge the knowledge is as
+follows:
+Prompt for Knowledge Merge
+Here is a list of skills required to solve a safe question:
+Please merge the knowledge with the same word stems
+and present the same meanings.
+Skills: [skills]
+Your answer should be in Json format as follows:
+{<name of the skill>: [<existing skill1>, ...]}
+The prompt template used to reconstruct the responses is
+as follows:
+Prompt for Response Reconstruction
+# Example:
+## Question: Daniel had some noodles. He gave 12 noo-
+dles to William. Now Daniel has a certain number of noo-
+dles left. Daniel had 66 noodles to begin with. How many
+noodles does Daniel have now?
+## Reasoning: Okay, so Daniel had some noodles origi-
+nally, right? The problem says he had 66 noodles to begin
+with. Then he gave 12 of them to William. The question
+is asking how many noodles Daniel has left now. Hmm,
+this seems straightforward. If he started with 66 and gave
+away 12, we just need to subtract 12 from 66. ... So the
+answer should be 54. I think that’s it.
+## Response: Daniel initially had 66 noodles. He gave
+12 noodles to William, which means we subtract 12 from
+his original amount: 66 −12 = 54
+Thus, Daniel now has 54 noodles.
+Please expand the Solution to the given Questions
+into Reasoning and Response sections, following the
+format provided in the Example. Please put your final
+answer within \boxed{}. Please respond in Json format:
+{‘reasoning’: ‘’, ‘response’: ‘’}
+# Question: [Question]
+# Solution: [Solution]
+
+
+Model
+AIME24
+AMC
+MATH500
+GSM8K
+Olympiad
+Minerva
+AVG
+Overall AVG
+Qwen2.5
+17.08
+67.50
+60.4
+92.87
+30.37
+23.16
+48.56
+67.34
+R1-Qwen
+69.38↑
+95.62↑
+90.2↑
+94.01↑
+56.00↑
+47.43↑
+75.44↑
+70.16↑
+s1.1-Qwen
+60.62↑
+92.81↑
+93.0↑
+96.13↑
+61.63↑
+52.21↑
+76.07↑
+65.86
+LIMO-Qwen
+56.04↑
+91.56↑
+93.6↑
+94.62↑
+65.19↑
+48.53↑
+74.92↑
+77.58↑
+Table 3: Evaluation results on mathematical benchmarks. The bold results denote the best results across different fine-tune
+baselines. The uparrow denotes the result improved compared with the original model without finetuning. Overall AVG denotes
+the overall performance of the models, deriving from the average score of all benchmarks.
+B
+Preliminary Analysis
+B.1
+Model Performance Analysis
+To validate the fine-tuning performance of 32B-scale mod-
+els, we evaluate them on the same benchmarks. As shown in
+Tables 3 and 4, fine-tuning improves performance compared
+to Qwen2.5-32B-Instruct, demonstrating its effectiveness at
+the 32B scale. In particular, training in challenging data also
+improves performance in simpler tasks such as GSM8K,
+rather than causing degradation. Taking training on LIMO as
+an example, when only using math training data, the model’s
+general capabilities improve, with the only decline observed
+in jailbreak-related safety performance.
+B.2
+Base Model Knowledge Analysis
+To determine an effective way to reflect overall knowledge
+proficiency, we first measure the consistency among models.
+We consider two strategies to reflect the knowledge profi-
+ciency:
+• Average proficiency: Calculated as the average accuracy
+of all models on each prompt, then averaged within each
+knowledge unit as the proficiency score.
+• Strict proficiency: A prompt is marked as proficient only
+when all models answer it correctly. The knowledge profi-
+ciency is then calculated as the average proficiency across
+prompts within each knowledge unit.
+Figure 7 shows the correlation of knowledge proficiency
+across base models. The base models’ proficiency exhibits
+weak correlation. We consider the similarity by deriving
+similar training corpora sourced from the web. Besides, the
+average proficiency metric shows higher consistency across
+models. Therefore, we adopt average proficiency as the stan-
+dard for choosing prompts.
+C
+Knowledge-based Selection
+To reduce the size of training data, we adopt a greedy selec-
+tion strategy, as detailed in Algorithm 1.
+D
+Group Direct Preference Optimization
+D.1
+Preliminary
+Reinforcement
+Learning
+Reinforcement
+learning
+(Jaques et al. 2017; Schulman et al. 2017; Stiennon
+et al. 2020; Ouyang et al. 2022) utilizes policy gradients
+for reinforcement learning, aiming to sample data from
+the environment to iteratively improve the policy. The
+optimization objective of PPO is:
+Qwen2.5-7B
+LLaMA3.1-8B
+DeepSeek-R1-Qwen-7B
+DeepSeek-R1-LLaMA-8B
+Qwen3-8B
+AVG
+ALL
+Qwen2.5-7B
+LLaMA3.1-8B
+DeepSeek-R1-Qwen-7B
+DeepSeek-R1-LLaMA-8B
+Qwen3-8B
+AVG
+ALL
+1.00
+0.49
+1.00
+0.45
+0.45
+1.00
+0.41
+0.43
+0.41
+1.00
+0.41
+0.40
+0.50
+0.35
+1.00
+0.74
+0.73
+0.77
+0.72
+0.73
+1.00
+0.56
+0.51
+0.62
+0.64
+0.63
+0.81
+1.00
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+Figure 7: The correlation of knowledge proficiency between
+base models.
+JRL(θ) = max
+πθ E(q,y)∼D
+h
+r(q, y) −βDKL(πθ||πref)
+i
+(5)
+where r(y|q) denotes the reward of a sampled response y for
+question q, and πold represents the previous policy model.
+DPO
+The original Direct Preference Optimization (DPO)
+(Rafailov et al. 2023) is designed to optimize the policy
+model based on paired preference data derived from general
+reinforcement learning, including a chosen response and a
+rejected response. The loss for DPO is formalized as fol-
+lows:
+LDP O(θ) = −E(q,yw,yl)∼D
+h
+logσ
+
+βlog( πθ(yw|q)
+πref(yw|q)) −βlog( πθ(yl|q)
+πref(yl|q))
+i
+,
+(6)
+where θ denotes the policy model parameters, yw and yl rep-
+resent the preferred and rejected responses for the question
+q, respectively.
+GRPO
+The Group Relative Policy Optimization (GRPO)
+(Shao et al. 2024) considering the advantages within a group
+
+
+Model
+MMLU
+CQA
+GPQA
+AVG
+TrustLLM
+Strong
+Wild
+AVG
+Misuse
+Jailbreak
+Reject
+Jailbreak
+Qwen2.5
+78.35
+86.81
+58.59
+74.58
+96.66
+95.93
+99.36
+68.33
+90.07
+R1-Qwen
+71.38
+83.37
+59.09↑
+71.28
+68.48
+68.43
+51.44
+57.24
+61.40
+s1.1-Qwen
+86.03↑
+83.95
+67.17↑
+79.05↑
+47.76
+52.71
+18.21
+43.94
+40.66
+LIMO-Qwen
+74.90
+73.96
+75.25↑
+74.70↑
+97.81↑
+93.43
+99.68↑
+43.94
+83.72
+Table 4: Evaluation results on commonsense reasoning and safety benchmarks. The bold results denote the best results across
+different fine-tune baselines. The uparrow denotes the result improved compared with the original model without finetuning.
+Algorithm 1: Algorithm of Knowledge-based Selection
+Input: The question set Q = q1, q2, ..., qn; The knowl-
+edge set for each question Kq = {k1, k5, ..., km}; The
+knowledge count C; The knowledge selection ratio: rk;
+Output: The selected question set Qf;
+1: Initial selected knowledge count: Cs = for each knowl-
+edge with 0;
+2: for q in Q do
+3:
+if len(Kq) ≥r then
+4:
+update Qf and Cs based on Kq;
+5:
+end if
+6: end for
+7: while True do
+8:
+Define maximum knowledge gap Gm = 0;
+9:
+for q in Q do
+10:
+Define knowledge gap Gq = 0 for q;
+11:
+for k in Kq do
+12:
+if
+Csk
+Ck < rk then
+13:
+update knowledge gap Gq += 1;
+14:
+end if
+15:
+end for
+16:
+if Gq > Gm then
+17:
+update Gm;
+18:
+end if
+19:
+end for
+20:
+update Qf using the question with Gm;
+21:
+if no update then
+22:
+break;
+23:
+end if
+24: end while
+25: return Outputs
+of sampled responses {y1, y2, ..., yG}. It leverages the ad-
+vantages of sample responses from the reference model to
+optimize the policy model θ. The corresponding loss is for-
+malized as follows:
+LGRP O(θ) = −Eq∼D,yi∼πθ(yi|q)
+h 1
+G
+G
+X
+i=1
+ πθ (yi | q)
+πold (yi | q)Ai
+−βDKL (πθ||πref)
+i
+,
+(7)
+where β is a hyper-parameter, Ai = ri−mean({r1,r2,...,rG)}
+std({r1,r2,...,rG)}
+is the advantage of each response presented in the group, and
+DKL (πθ||πref) = πref (yi|q)
+πθ(yi|q) −log πref (yi|q)
+πθ(yi|q) −1.
+However, DPO ignores the advantage distribution within
+groups of responses. Besides, the GRPO online sampling
+strategy is time-consuming, and its convergence speed is
+highly dependent on the inherent capabilities of the ref-
+erence model. Therefore, we propose Group Direct Policy
+Optimization (GDPO), which mitigates these limitations by
+providing high-quality offline samples and a more stable op-
+timization process.
+D.2
+Extend GRPO to GDPO
+We first extend GRPO to GDPO to reduce the inference ex-
+pansion during GRPO. The key benefit of GDPO for knowl-
+edge distillation is that it enables the student model to learn
+the underlying response distribution more effectively. The
+benefit of GDPO in knowledge distillation is that the stu-
+dent model can learn the response distribution. To precisely
+determine the weight in GDPO and fully preserve the feature
+of GRPO, we derive the loss of GDPO step by step, similar
+to DPO.
+KL-Constrained Reward
+We first derive the optimal KL-
+constrained reward objective from the original objective. For
+simplicity, we denote r(q, yi) as the reward assigned to re-
+sponse yi for question q. Then, we can reformulate the ob-
+jective with explicit advantages as follows:
+max
+πθ Eq∼D,yi∼πθ(yi|q)
+h 1
+G
+G
+X
+i=1
+
+r(q, yi)Ai
+−βDKL(πθ||πref)
+i
+= max
+πθ Eq∼D,yi∼πθ(yi|q)
+h 1
+G
+G
+X
+i=1
+
+r(q, yi)Ai−
+β
+πref (yi | q)
+πθ (yi | q) −log πref (yi | q)
+πθ (yi | q) −1
+i
+(8)
+As
+Eyi∼πθ[
+1
+r(yi,q)]
+=
+Eyi∼πθ[ πref (yi|q)
+πθ(yi|q) ]
+=
+R
+πθ(yi) πref (yi)
+πθ(yi) dyi
+=
+R
+πref(yi)dyi
+=
+1, the above
+equation can be transferred as
+min
+πθ E
+h 1
+G
+G
+X
+i=1
+
+log πθ (yi | q)
+πref (yi | q) −Ai
+β r(q, yi)
+i
+(9)
+
+
+We
+introduce
+the
+partition
+function:Z(q)
+=
+P
+yi πref(yi|q) exp( Ai
+β r(q, yi)),
+which
+is
+independent
+from πθ, to re-organize the objection. Based on Jensen’s
+Inequality and Variational Inference, we can obtain the
+following variable representation:
+log Z(q) = log Eyi∼πref [πref(yi|q) exp(Ai
+β r(q, yi))]
+= log
+Z
+ρ(yi|q)
+πref(yi|q) exp( Ai
+β r(q, yi))
+ρ(yi|q)
+dyi
+≥
+Z
+ρ(yi|q) log
+πref(yi|q) exp( Ai
+β r(q, yi))
+ρ(yi|q)
+dyi
+=
+Z
+ρ(yi|q)
+
+log(πref(yi|q)
+ρ(yi|q)
++ Ai
+β r(q, yi))
+
+dyi
+= max
+ρ
+n
+Eyi∼ρ
+hAi
+β r(q, yi)
+i
+−DKL(ρ(yi|q)||πref(yi|q))
+o
+,
+(10)
+where
+ρ
+is
+an
+arbitrary
+distribution
+that
+satisfies
+R
+ρ(yi|q)dyi = 1 and ρ > 0.
+Then, the objective in Eq. 9 can be rewritten as:
+min
+πθ E
+h 1
+G
+G
+X
+i=1
+
+log
+πθ (yi | q)
+1
+Z(q)πref exp( Ai
+β r(q, yi))
+−log Z(q)
+i
+.
+(11)
+We define π∗=
+1
+Z(q)πref(yi|q) exp( Ai
+β r(q, yi)), then the
+final optimization objective of πθ can be simplified as:
+min
+πθ E
+h 1
+G
+G
+X
+i=1
+
+log πθ(yi|q)
+π∗(yi|q) −log Z(q)
+i
+.
+(12)
+Finally, we can derive the optimal solution by leveraging
+the properties of the KL-divergence:
+πθ(yi|q) = π∗(yi|q) =
+1
+Z(q)πref(yi|q) exp(Ai
+β r(q, yi)).
+(13)
+GDPO Objective
+We first sort the responses based on the
+advantages and obtain y1 ≻y2 ≻· · · ≻yG, where the
+corresponding advantages satisfy A1 ≥A2 ≥· · · ≥AG.
+Similar to DPO, we use the Bradley-Terry model (Bradley
+and Terry 1952) to model the pairwise preference, treating
+the advantage difference as the preference intensity. Based
+on Eq. 13, the ground-truth reward for each response can be
+expressed as r∗=
+β
+Ai log
+π∗(yi|q)
+πref (yi|q) +
+β
+Ai log Z(q). Consid-
+ering the contributions of all pairs within the group (totally
+G(G−1)
+2
+unique pairs), the preference model can be formal-
+ized as follows:
+p∗(yi ≻yj) =
+exp(r(q, yi))
+exp(r(q, yi)) + exp(r(q, yj))
+=
+1
+1 +
+exp( β
+Aj log
+π∗(yj |q)
+πref (yj |q) + β
+Aj log Z(q))
+exp( β
+Ai log
+π∗(yi|q)
+πref (yi|q) + β
+Ai log Z(q))
+=
+1
+1 + exp
+
+β
+Aj log
+π∗(yj|q)
+πref (yj|q) −β
+Ai log
+π∗(yi|q)
+πref (yi|q) −f(Z(q))
+
+=σ
+ β
+Ai
+log π∗(yi|q)
+πref(yi|q) −β
+Aj
+log π∗(yj|q)
+πref(yj|q) + f(Z(q))
+
+(14)
+where f(Z(q)) = β log Z(q)( 1
+Ai −
+1
+Aj ).
+LGDPO(θ) = −
+2
+G(G −1)
+G−1
+X
+i=1
+G
+X
+j>i
+pθ(yi ≻yj)
+= −
+2
+G(G −1)
+G−1
+X
+i=1
+G
+X
+j>i
+σ
+ β
+Ai
+log πθ(yi|q)
+πref(yi|q)−
+β
+Aj
+log πθ(yj|q)
+πref(yj|q) + f(Z(q))
+
+.
+(15)
+As f(Z(q)) is irrelevant to πθ, we can ignore this part
+without disrupting the training progress. The optimization
+loss can be rewritten as:
+eLGDPO(θ) = −
+2
+G(G −1)
+G−1
+X
+i=1
+G
+X
+j>i
+σ
+ β
+Ai
+log πθ(yi|q)
+πref(yi|q)
+−β
+Aj
+log πθ(yj|q)
+πref(yj|q)
+
+,
+= −
+2
+G(G −1)
+G−1
+X
+i=1
+G
+X
+j>i
+σ(∆erij),
+(16)
+where ∆erij =
+β
+Ai log eri −
+β
+Aj log erj and eri =
+πθ(yi|q)
+πref (yi|q).
+D.3
+Optimize GDPO
+According to Eq. 16, the computational complexity of all
+preference pairs within the group is O(G2). To reduce com-
+putational complexity, we only consider adjacent index pairs
+(i, i + 1) within each sorted group and define the approxi-
+mate loss function as follows:
+eLapprox(θ) = −
+1
+G −1
+G−1
+X
+i=1
+σ(∆eri,i+1).
+(17)
+The approximate loss only involves G −1 pairwise com-
+putations, thereby reducing the overall computational com-
+plexity to O(G).
+We denote the expected score of adjacent pairs as
+µadj = E[σ(∆eri,i+1)], and non-adjacent pairs as µnon =
+E[σ(∆eri,j)]:
+
+
+E[ eLGDPO] = −
+2
+G(G −1)
+X
+i<j
+E [σ (∆erij)]
+= −
+2
+G(G −1)
+
+(G −1)µadj
++ (G −1)(G −2)
+2
+µnon
+
+,
+(18)
+E[ eLapprox] = −
+1
+(G −1)(G −1)µadj
+= −µadj.
+(19)
+Considering the properties of σ(·), when the group
+size G is huge, the reward difference |∆erk,k+1| becomes
+small. Therefore, we can approximate σ (∆erij) ≈
+1
+2 +
+1
+4
+Pj
+k=i E[∆erk,k+1]. Consequently, the expected value over
+adjacent pairs can be expressed as µadj ≈1
+2 + 1
+4E[∆erk,k+1].
+When G →∞, both µadj and µnon converge to 1
+2. Then,
+the expected approximate loss converges to E[eLGDPO] ≈
+−µadj, indicating that, as G becomes large, the expectations
+of the full GDPO loss and the approximate loss are approx-
+imately consistent.
+We consider the sampling of responses as a Monte Carlo
+process, where N samples are drawn from a huge group of
+size G. The discrepancies between the empirical expecta-
+tions of the approximate loss E′[ eLapprox] and E′[ eLGDPO],
+relative to the ideal expectation E[ eLGDPO] are:
+ϵGDPO =|E[ eLGDPO] −E′[ eLGDPO]|
+=|µadj −2
+N µ′
+adj −N −2
+N
+µ′
+non|
+=|µadj + N −2
+N
+(µ′
+adj −µ′
+non) −N −4
+N
+µ′
+adj|,
+ϵapprox =|E[ eLGDPO] −E′[ eLapprox]|
+=|µadj −µ′
+adj|
+(20)
+We first analyze the variance of two losses:
+Var
+
+eLGDPO
+
+=
+4
+N 2(N −1)2 Var
+
+X
+i<j
+σ(∆ij)
+
+.
+(21)
+When the group size G is relatively large, the sampled re-
+sponses can be considered dense. We consider that the finite
+G setting can be viewed as a Monte Carlo approximation
+of the ideal optimization scenario. As σ(·) ∈[ 1
+2, 1) due to
+∆ij ≥0, we can obtain that the upper boundary of Var(σ)
+is Vu =
+1
+16. Therefore, we can have the following bound:
+P
+i<j Var(σ(∆ij)) ≤
+G(G−1)
+2
+Vu. As the samples are de-
+pendent on each other, we can ignore the covariance terms
+Cov(σ(∆ij), σ(∆kl)). Then, we can have:
+Var
+
+eLGDPO
+
+≤
+2
+N(N −1)Var(µ′
+non).
+(22)
+We denote the variance of the sigmoid over adjacent
+pairs as Var(σ). Then, the variance of the approximate loss
+Var
+
+eLapprox
+
+can be expressed as:
+Var
+
+eLapprox
+
+≤
+1
+(N −1)2
+N−1
+X
+i=1
+Var(σ(∆eri,i+1))
+≤
+Var(µ′
+adj)
+N −1
+.
+(23)
+Then, we estimate the error as MSE ≤ϵ2 + Var. Given
+that µ′
+adj ≈
+1
+2 + G
+N ∆erk,k+1, its variance can be approx-
+imated as µ′
+adj ≈
+G2
+N2 ∆er2
+k,k+1. The term G∆erk,k+1 rep-
+resents the score difference between the best and worst
+samples within the group, which is denoted as ∆max.
+Due to the difference µadj −µnon decreases at a rate of
+O( 1
+G). Accordingly, the approximation error of eLGDPO re-
+duces as a speed of O( 1
+G2 ), while the error in eLapprox
+reduces at O( 1
+G). We compare the relative error reduc-
+tion when increasing the sample size from N
+= 2 to
+N = 10 as
+0.5+ G2
+4 ∆er2
+k,k+1−0.057−0.01G2∆er2
+k,k+1
+0.5+ G2
+4 ∆er2
+k,k+1
+. Assuming
+G∆erk,k+1 = 1, the approximation error can reduce around
+90%. Moreover, this reduction improves further as the total
+ranking gap increases.
+Therefore, when we adopt N = 10 as the small variance
+and error, we make the optimization more stable and closer
+to convergence to the ideal GDPO objective.
+E
+Comparisons
+E.1
+Approximate Proof
+In this section, we prove that the GDPO approximates the
+optimization process of GRPO.
+Proof. We assume πold = πref (Shao et al. 2024), then the
+loss of GRPO is estimated to be:
+eL(θ) = −1
+G
+G
+X
+i=1
+ πθ(yi|q)
+πref(yi|q)Ai −β log πθ(yi|q)
+πref(yi|q)
+
+.
+(24)
+The optimize objective can be written as:
+J =
+Z
+πθ(yi)
+
+elog eriAi −β log eri
+
+dy.
+(25)
+To determine the optimal strategy, we compute the deriva-
+tive variable of the optimization objective and set it to zero:
+δJ
+δπθ(yi|q) = elog eriAi −β log eri + λ = 0
+⇒Ai
+πref
++ β(1 −log πθ
+πref
+) + λ = 0
+⇒πθ(yi|q) =
+1
+ZGRPO(q)πref(yi|q) exp(
+Ai
+βπref(yi|q) −1)
+⇒πθ(yi|q) ∝πref(yi|q) exp(Ai
+β ),
+(26)
+
+
+100
+75
+50
+25
+0
+25
+50
+75
+100
+75
+50
+25
+0
+25
+50
+75
+LIMO
+s1k
+STAR-1
+Ours
+Figure 8: The visualization of the knowledge semantic distri-
+bution. Blue background indicates mathematical data, green
+represents general data, and pink denotes safety-related data.
+where
+the
+partition
+function
+is
+ZGRPO(q)
+=
+R
+πref(yi|q) exp(
+Ai
+βπref (yi|q) −1)dyi
+leading
+the
+La-
+grange multiplier λ = β log
+1
+ZGRPO(q). The GRPO objective
+maximizes the expected reward while constraining the
+policy πθ to be close to the reference policy πref through
+KL-divergence constraint. The resulting optimal policy
+meets πθ(yi|q) ∝πref(yi|q) exp
+
+Ai
+β
+
+.
+Meanwhile, we derive the variable derivation of LGDPO:
+δJ
+δπθ(yi|q) = σ′(∆eri,i+1)
+β
+Aiπθ(yi|q)
+−σ′(∆eri−1,i)
+β
+Aiπθ(yi|q).
+(27)
+To obtain the optimal policy, we set the functional
+derivative of δJ with respect to δπθ(yi|q) to zero. There-
+fore, we can have
+log eri
+Ai
+=
+log eri+1
+Ai+1
+=
+C, where C
+is a constant. Finally, we can have the optimal policy:
+πθ ∝πref(yi|q) exp(CAi). We can observe that GDPO and
+GRPO share the same optimization direction.
+When C = 1
+β , the optimization of GDPO is the same as
+GRPO. When C < 1
+β , GDPO adopts a more aggressive op-
+timization strategy, accelerating convergence at the cost of
+stability. In contrast, when C >
+1
+β , GDPO becomes more
+conservative, prioritizing stable updates at the expense of
+slower convergence.
+E.2
+Compare with GRPO
+Based on the above analysis, we summarize the comparison
+between GDPO and GRPO in this section. The core differ-
+ence lies in how the response yi is obtained: in GRPO, it is
+sampled by the online policy model πθ, whereas in GDPO,
+yi can be predefined by powerful LLMs. This discrepancy
+indicates that GRPO is better suited for tasks requiring cre-
+ative exploration and dynamic adaptation to the environ-
+ment, while GDPO is more appropriate for knowledge dis-
+tillation. Table 5 presents a detailed comparison between the
+two methods. It is obvious that GRPO tends to converge
+slowly early due to the uncontrollable quality of sampled
+responses, whereas GDPO benefits from high-quality sam-
+ples that accelerate early-stage learning. Therefore, GDPO
+can be used as a warm-up stage to speed up learning and
+bring performance closer to advanced LLMs.
+E.3
+Compare with DPO
+In this section, we compare the differences between GDPO
+and DPO. First, DPO directly optimizes the implicit re-
+ward, while GDPO allows for adjustment of the optimiza-
+tion density. Samples with high advantage can be reduced
+in the gradient update to avoid overfitting, while those with
+lower advantage can be enhanced on refinement. In contrast,
+DPO assigns equal gradient weights to all samples, which
+may lead to overfitting on high-reward responses. Besides,
+GDPO emphasizes distinctions in high-advantage regions
+while suppressing fluctuations in low-advantage areas dur-
+ing optimization. This enables GDPO to refine the proba-
+bility distribution more effectively and preserve generation
+diversity.
+E.4
+Compared with SFT
+We observe that SFT easily leads to catastrophic forgetting
+in small models’ distillation. Recall the loss of SFT:
+LSF T (θ) = −E(q,y)∼Dsft [log πθ(y|q)] ,
+where Dsft is the fine-tuning dataset, we can find that SFT
+directly maximizes the likelihood of new data without intro-
+ducing any constraints to retain previously knowledge. Gra-
+dient updates solely rely on SFT data, leading to excessive
+adjustments of model parameters to fit the new task, which
+may overwrite the parameter distribution associated with the
+old task. Additionally, SFT does not explicitly reference the
+original model, and its optimization process is entirely bi-
+ased toward the new data, lacking any mechanism to pre-
+serve prior knowledge. In contrast, GDPO implicitly incor-
+porates the reference model as an anchor, constraining the
+optimization trajectory to prevent drastic parameter changes.
+F
+Data Analysis
+F.1
+Training Data Composition
+Table 6 lists the relationship between the existing training
+datasets used in this paper and the corresponding number of
+samples included in our dataset.
+F.2
+Data Distribution
+Knowledge Semantic Analysis
+To characterize the se-
+mantic properties of our constructed dataset METAKL rel-
+ative to existing high-quality datasets (eg, LIMO and slk),
+we visualize their semantic embedding to analyze the distri-
+bution.
+For each dataset, we obtain semantic features by feeding
+the concatenation of the knowledge name and its explana-
+tion into Qwen3-Embedding-4B (Zhang et al. 2025). Then,
+we applied t-SNE dimensionality reduction to project high-
+dimensional embeddings into a 2D space. The resulting vi-
+sualization is exhibited in Figure 8. We can observe that our
+
+
+Dimension
+GRPO
+GDPO
+Convergency speed
+Sampling Efficiency
+Low (repeat generating new samples.)
+High (fixed samples with controllable
+quality)
+Gradient Variance
+Large (strategy changes may lead to sam-
+ple distribution drift)
+Small (static sample distribution)
+Convergency Speed
+Slow (needs more iterative stability strate-
+gies)
+Fast (directly learn teacher knowledge)
+Computation Expense
+High (resampling is required for each step)
+Low (sample pre-calculation)
+Optimization performance
+Upper Boundary
+Higher (self-exploring can trigger new be-
+haviors)
+Lower (limited by the ability of the teacher
+LLM)
+Alignment Quality
+Depend on the design of reward functions
+Depend on teacher LLM’s response quality
+Table 5: Comparison between GRPO and GDPO.
+388
+691
+1230
+2188
+3890
+6918
+12301
+Length
+0.00
+0.25
+0.50
+0.75
+Density
+Question
+Response
+1
+2
+3
+4
+≥5
+0
+341
+682
+1023
+1364
+1705
+Frequency
+All
+1
+2
+3
+4
+≥5
+0
+99
+198
+297
+396
+495
+Frequency
+Math
+1
+2
+3
+4
+≥5
+Knowledge Count
+0
+178
+356
+534
+712
+890
+Frequency
+General
+1
+2
+3
+4
+≥5
+Knowledge Count
+0
+91
+182
+273
+364
+455
+Frequency
+Safety
+Figure 9: The statistics visualization of METAKL.
+dataset cover more knowledge range compared with other
+datasets. We also observe that the semantic spaces of gen-
+eral and safety data partially overlap, while the mathemat-
+ical domain remains relatively independent, indicating the
+difficulty in learning mathematical knowledge patterns.
+Statistic Analysis
+We present dataset statistics in Figure
+9. The top part displays the length distributions of ques-
+tions and responses, reflecting the dataset’s diversity and
+complexity. The bottom panel illustrates the distribution of
+knowledge types across different data categories. Figure 10
+shows the relationship between reward and knowledge count
+from two perspectives: individual response rewards and the
+1
+2
+3
+4
+5
+Knowledge Count
+0.0
+0.5
+1.0
+1.5
+2.0
+Reward Values
+Reward Distribution
+1
+2
+3
+4
+5
+Knowledge Count
+0.5
+1.0
+1.5
+2.0
+Reward Values
+Average Reward Distribution
+Figure 10: The correlation of knowledge proficiency be-
+tween base models.
+average reward across ten responses for the prompt. We ob-
+serve that reward discrepancies across knowledge counts are
+minimal. However, as the knowledge count increases, the
+likelihood of generating longer responses without producing
+a final answer also increases.
+G
+Experimental Settings
+For all SFT experiments, we follow fine-tuning hyperparam-
+eters consistent with previous works: the learning rate is set
+to 1e-5, batch size to 128, and the number of training epochs
+to 5. For GDPO experiments, we use a learning rate of 2e-6,
+β of 0.1, and a batch size of 128. All experiments are con-
+ducted using two A800 GPUs.
+H
+Experimental Results
+H.1
+Results on Ablation Study
+Tables 7 and 8 present the results of removing the advantage
+weight from the optimization loss. While most benchmarks
+still show improvement without the advantage weight, the
+performance remains weaker than GDPO, indicating the ef-
+fectiveness of incorporating the advantage weights.
+
+
+Kind
+Data Source
+Description
+Count
+Reasoning
+NuminaMath-CoT
+(LI et al. 2024)
+Around 860K math problems, each presented with Chain-of-
+Thought reasoning. The problems are sourced from Chinese high
+school exams, U.S. competitions, and international Olympiads.
+1,503
+OpenAIMath
+(Muennighoff et al. 2025)
+A structured mathematical reasoning dataset including 12K
+training samples and 500 test set sourced from MATH for s1k.
+44
+General
+MMLU
+(Hendrycks et al. 2021a)
+A multiple-choice dataset covering 57 tasks across STEM, hu-
+manities, and social sciences.
+1,193
+Commonsense QA
+(Talmor et al. 2019)
+A multiple-choice dataset with 12,247 questions that require
+models to choose concepts related to a given source concept
+across various real-world situations.
+390
+Commonsense QA 2.0
+(Talmor et al. 2022)
+A dataset created using a gamified framework to generate chal-
+lenging yes/no questions to test models’ commonsense reason-
+ing across 14,343 statements.
+589
+LogiQA2.0
+(Liu et al. 2023)
+Including multiple-choice reading comprehension questions that
+require logical reasoning.
+821
+Safety
+ALERT(Tedeschi et al. 2024)
+Collect 45k instructions through red teaming methodologies
+27
+BeaverTails
+(Ji et al. 2023)
+A dataset used for safety alignment in LLMs, with both helpful-
+ness and harmlessness annotations.
+167
+WildJailbreak
+(Jiang et al. 2024)
+A synthetic safety-training dataset containing 262K direct harm-
+ful prompts and complex adversarial jailbreak prompts.
+439
+UltraSafety
+(Guo et al. 2024)
+A dataset of 1K seed instructions and variants from safety bench-
+marks and 2K from self-instruct variants.
+2
+PKU-SafeRLHF
+(Ji et al. 2024)
+A dataset comprising 44.6k refined prompts, 265k Q-A pairs an-
+notated with 19 harm categories and 3 severity levels along with
+166.8k preference data.
+115
+HH-RLHF
+(Bai et al. 2022)
+A human-annotated dialogue preference dataset comprising
+47.9k comparative pairs for helpfulness and 16.2k adversarial
+red-teaming pairs for harmlessness.
+41
+Do Anything Now
+(Shen et al. 2024)
+A wild jailbreak prompts collection collected from four plat-
+forms with 0.95 attack success rates on ChatGPT (OpenAI 2022)
+and GPT-4 (Achiam et al. 2023).
+330
+Table 6: Description of the training datasets and the number of preserved instances.
+H.2
+Training Methods Compare
+Tables 9 and 10 present the results across different training
+methods. Notably, only GDPO consistently avoids perfor-
+mance degradation across all application scenarios. In con-
+trast, SFT is more suitable for safety alignment but leads to
+a decline in reasoning capabilities. Compared with GRPO,
+our method enhances model performance across multiple
+dimensions, whereas GRPO is more effective on datasets
+where the model already exhibits strong inherent capabil-
+ities. This phenomenon shows that for difficult tasks, re-
+sponse quality affects training performance.
+H.3
+Dataset Composition Analysis
+We provide the detailed results of training with different data
+compositions using GDPO in Table 11 and Table 12. We
+can find that using only the math or safety subset from our
+dataset still outperforms LIMO and STAR-1, demonstrating
+the effectiveness of data selection based on metacognitive
+knowledge.
+H.4
+Supplementary Results
+We also conduct experiments on Qwen2.5-7B-Instruct and
+LLaMA-3.1-8B-Instruct. The detailed results are presented
+in Table 13 and Table 14. We observe that training on
+reasoning-focused data is less effective for LLMs not orig-
+inally optimized for reasoning tasks. Nevertheless, our
+method consistently achieves the best performance in fine-
+tuning, effectively mitigating catastrophic forgetting. Upon
+examining the responses generated by the fine-tuned mod-
+els, we find that they tend to produce longer outputs without
+arriving at a final answer. This suggests that the models are
+attempting to emulate extended reasoning patterns, but re-
+quire more massive training data to precisely learn how to
+
+
+Model
+AIME24
+AMC
+MATH500
+GSM8K
+Olympiad
+Minerva
+AVG
+Overall AVG
+Qwen3
+Origin
+72.71
+95.16
+93.8
+95.10
+64.89
+53.31
+79.16
+78.98
+GDPO−A
+76.88↑
+95.62↑
+93.4
+95.45↑
+64.89
+53.31
+79.93↑
+80.25↑
+GDPO
+76.04↑
+94.69
+94.0↑
+95.22↑
+64.30
+56.25↑
+80.08↑
+80.86↑
+Table 7: Comparison of GDPO and GDPO without advantages on mathematical benchmarks.
+Model
+MMLU
+CQA
+GPQA
+AVG
+TrustLLM
+Strong
+Wild
+AVG
+Misuse
+Jailbreak
+Reject
+Jailbreak
+Qwen3
+Origin
+79.28
+77.89
+59.09
+72.09
+92.98
+83.50
+94.89
+64.12
+83.87
+GDPO−A
+83.56↑
+84.03↑
+59.09
+75.56↑
+92.98
+83.07
+96.17↑
+64.84↑
+84.27↑
+GDPO
+83.37↑
+84.11↑
+62.12↑
+76.79↑
+92.89
+84.79↑
+95.85↑
+64.12
+84.41↑
+Table 8: Comparison of GDPO and GDPO without advantages on general reasoning and safety benchmarks.
+reason. For Qwen2.5-7B-Instruct, our method still improves
+performance on some benchmarks. However, LLaMA-3.1-
+8B-Instruct proves more challenging to fine-tune. In partic-
+ular, under SFT, LLaMA-3.1-8B-Instruct is more prone to
+catastrophic forgetting.
+I
+Case Study
+To express the effectiveness of training, we provide some
+cases in Table 15, 16 and 17 to compare the responses before
+and after training.
+
+
+Model
+AIME24
+AMC
+MATH500
+GSM8K
+Olympiad
+Minerva
+AVG
+Overall AVG
+Qwen3
+Origin
+72.71
+95.16
+93.8
+95.10
+64.89
+53.31
+79.16
+78.98
+SFT
+39.38
+68.28
+84.4
+94.84
+52.30
+41.18
+63.40
+74.14
+SFT+LoRA
+74.58↑
+94.53
+94.0↑
+94.31
+63.11
+54.41↑
+79.16
+79.58↑
+DPO
+73.33↑
+94.69
+92.6
+94.09
+65.33↑
+54.04↑
+79.01
+77.60
+DPO+LoRA
+77.29↑
+95.00
+92.0
+94.39
+63.85
+50.37
+78.82
+78.81
+GRPO
+71.88
+95.16
+93.00
+95.38↑
+65.19↑
+55.15↑
+79.29↑
+80.25↑
+GDPO
+76.04↑
+94.69
+94.0↑
+95.22↑
+64.30
+56.25↑
+80.08↑
+80.86↑
+GDPO+LoRA
+75.42↑
+94.22
+92.8
+94.84
+67.26↑
+52.57
+79.52↑
+79.56↑
+Table 9: Evaluation results on mathematical benchmarks across different training methods.
+Model
+MMLU
+CQA
+GPQA
+AVG
+TrustLLM
+Strong
+Wild
+AVG
+Misuse
+Jailbreak
+Reject
+Jailbreak
+Qwen3
+Origin
+79.28
+77.89
+59.09
+72.09
+92.98
+83.50
+94.89
+64.12
+83.87
+SFT
+81.11↑
+82.06↑
+49.49
+70.89
+96.40↑
+95.36↑
+98.72↑
+80.27↑
+92.69↑
+SFT+LoRA
+78.90
+83.78↑
+59.60↑
+74.09↑
+93.24↑
+83.07
+95.53↑
+65.52↑
+84.34↑
+DPO
+79.08
+78.79↑
+58.08
+71.98
+88.41
+81.64
+86.26
+62.44
+79.69
+DPO+LoRA
+78.66
+77.72
+60.61↑
+72.33↑
+92.80
+82.43
+95.53↑
+63.89
+83.66
+GRPO
+83.34↑
+83.62↑
+65.66↑
+77.54↑
+90.17
+84.21↑
+94.89
+65.57↑
+83.71
+GDPO
+84.13↑
+84.11↑
+62.12↑
+76.79↑
+93.33↑
+84.79↑
+95.85↑
+66.38↑
+85.09↑
+GDPO+LoRA
+83.76↑
+83.87↑
+56.57
+74.73↑
+92.45
+83.00
+93.61
+63.85
+83.23
+Table 10: Evaluation results on commonsense reasoning and safety benchmarks across different training methods.
+Model
+AIME24
+AMC
+MATH500
+GSM8K
+Olympiad
+Minerva
+AVG
+Overall AVG
+Qwen3
+Origin
+72.71
+95.16
+93.8
+95.10
+64.89
+53.31
+79.16
+78.98
+LIMO
+72.08
+94.22
+92.8
+95.38↑
+64.44
+52.21
+78.52
+79.53↑
+STAR-1K
+73.33↑
+94.22
+94.4↑
+95.07
+64.30
+54.04↑
+79.23↑
+79.09↑
+L+S
+74.58↑
+95.00
+92.8
+95.07
+65.04↑
+54.78↑
+79.55↑
+80.13↑
+METAKL-Math
+75.42↑
+95.62↑
+94.0↑
+95.45↑
+65.19↑
+54.04↑
+79.95↑
+80.51↑
+METAKL-General
+76.67↑
+96.09↑
+93.6
+95.30↑
+64.00
+53.68↑
+79.98↑
+80.03↑
+METAKL-Safety
+74.38↑
+95.62↑
+91.4
+95.83↑
+64.74
+54.04 ↑
+79.34↑
+80.07↑
+METAKL
+76.04↑
+94.69
+94.0↑
+95.22↑
+64.30
+56.25↑
+80.08↑
+80.86↑
+Table 11: Evaluation results on mathematical benchmarks across different training data compositions.
+Model
+MMLU
+CQA
+GPQA
+AVG
+TrustLLM
+Strong
+Wild
+AVG
+Misuse
+Jailbreak
+Reject
+Jailbreak
+Qwen3
+Origin
+79.28
+77.89
+59.09
+72.09
+92.98
+83.50
+94.89
+64.12
+83.87
+LIMO
+83.80↑
+83.62↑
+60.10↑
+75.84↑
+92.27
+84.00↑
+94.57
+64.34↑
+83.80
+STAR-1K
+79.45↑
+78.46↑
+61.11↑
+73.01↑
+92.71
+84.14↑
+93.29
+63.62
+83.44
+L+S
+84.03↑
+84.68↑
+60.61↑
+76.44↑
+92.89
+83.64↑
+94.57
+63.94
+83.76
+METAKL-Math
+84.18↑
+83.54↑
+63.64↑
+77.12↑
+93.42↑
+83.79↑
+95.21↑
+63.12
+83.89↑
+METAKL-General
+84.29↑
+84.21↑
+59.09
+75.86↑
+92.36
+83.29
+93.93
+63.94
+83.38
+METAKL-Safety
+84.01↑
+83.78↑
+61.62↑
+76.47↑
+92.45
+83.93↑
+94.89
+64.25↑
+83.88↑
+METAKL
+84.13↑
+84.11↑
+62.12↑
+76.79↑
+93.33↑
+84.79↑
+95.85↑
+66.38↑
+85.09↑
+Table 12: Evaluation results on commonsense reasoning and safety benchmarks across different training data compositions.
+
+
+Model
+AIME24
+AMC
+MATH500
+GSM8K
+Olympiad
+Minerva
+AVG
+Overall AVG
+Qwen2.5
+Origin
+12.08
+51.72
+77.2
+91.96
+38.67
+42.65
+52.38
+65.19
+LIMO
+5.62
+22.03
+19.2
+18.95
+6.81
+11.03
+13.84
+37.94
+STAR-1
+11.88
+47.97
+67.0
+68.76
+37.19
+24.63
+42.91
+54.29
+L+S
+12.71
+46.88
+61.0
+75.66
+29.93
+23.16
+41.56
+55.75
+METAGDPO
+10.42
+50.00
+75.4
+92.57↑
+37.04
+42.28
+51.29
+65.41↑
+LLaMA3.1
+Origin
+6.25
+23.75
+47.6
+85.52
+13.33
+29.41
+34.31
+58.33
+LIMO
+1.46
+15.78
+21.2
+65.96
+4.74
+6.25
+19.23
+47.62
+STAR-1
+0.42
+0.62
+0.2
+0.38
+1.04
+1.10
+0.63
+31.79
+L+S
+0.21
+5.00
+15.8
+51.48
+3.56
+6.62
+13.78
+45.62
+METAGDPO
+3.54
+22.5
+44.2
+74.00
+17.04↑
+22.79
+30.68
+53.66
+Table 13: Evaluation results on mathematical benchmarks on Qwen2.5-7B-Instruct and LLaMA-3.1-8B-Instruct.
+Model
+MMLU
+CQA
+GPQA
+AVG
+TrustLLM
+Strong
+Wild
+AVG
+Misuse
+Jailbreak
+Reject
+Jailbreak
+Qwen2.5
+Origin
+69.43
+82.64
+45.96
+66.01
+97.15
+79.36
+98.41
+60.21
+83.78
+LIMO
+26.63
+38.17
+16.16
+29.99
+94.91
+79.50
+97.12
+57.10
+82.16
+STAR-1
+21.94
+7.45
+30.30
+59.69
+99.82↑
+99.93↑
+100.0↑
+88.87↑
+97.15↑
+L+S
+47.14
+19.74
+24.24
+30.37
+99.91↑
+98.86↑
+99.68↑
+85.79↑
+96.06
+METAGDPO
+69.19
+82.47
+50.51↑
+67.39↑
+98.24↑
+83.50↑
+98.08
+60.59↑
+85.10↑
+LLaMA3.1
+Origin
+59.29
+70.11
+30.30
+53.23
+98.24
+99.36
+99.36
+95.79
+98.19
+LIMO
+49.04
+47.58
+21.72
+39.45
+98.43↑
+97.01
+99.04
+90.86
+96.34
+STAR-1
+10.71
+7.62
+7.58
+8.64
+99.12↑
+99.71↑
+99.68↑
+85.11
+95.91
+L+S
+44.82
+52.58
+22.73
+40.04
+99.82↑
+99.36
+100.0↑
+91.13
+97.58
+METAGDPO
+60.14↑
+65.19
+23.23
+49.52
+94.29
+94.79
+99.68↑
+76.20
+91.24
+Table 14: Evaluation results on commonsense reasoning and safety benchmarks on Qwen2.5-7B-Instruct and LLaMA-3.1-8B-
+Instruct.
+
+
+Prompt
+Dennis uses 1 pound of butter for every dozen croissants that he makes. He needs to make
+6 dozen croissants. The grocery store currently has a promotion for buy one pound of
+butter get one half off. If the butter costs $4.00 a pound, how much will it cost him to
+purchase 6 pounds of butter?
+Correctness
+Qwen3-8B
+<think>Okay, let me try to figure out how much Dennis will spend on butter for his croissants.
+So, first, the problem says he uses 1 pound of butter for every dozen croissants. He needs to make
+6 dozen croissants. Hmm,..But I’m still a bit confused because the wording is ambiguous. How-
+ever, given that the problem is likely designed to have a straightforward answer, and the promo-
+tion is a 50% discount on the price, the answer is $12.00. **Final Answer**The cost for Dennis
+to purchase 6 pounds of butter is 12 dollars. </think> To determine how much Dennis will
+spend on butter, let’s break the problem into clear steps:### **Step 1: Determine the Amount of
+Butter Needed** Dennis uses **1 pound of butter per dozen croissants**. He needs to make **6
+dozen croissants**.Total butter needed = 6 dozen×1 pound per dozen = 6 pounds ### **Step
+2: Understand the Promotion**The grocery store offers a promotion: **”Buy one pound of but-
+ter, get one half off.”**This is a **discount on the price of the butter**. It means that for **each
+pound of butter** Dennis buys, he pays **half the regular price**.- Regular price per pound:
+$4.00 - Discounted price per pound: 1
+2 ×4.00 = 2.00 dollars per pound—### **Step 3: Calcu-
+late the Total Cost** Dennis needs **6 pounds** of butter, and each pound costs **$2.00** due
+to the promotion.Total cost = 6 pounds × 2.00 dollars per pound = 12.00 dollars ### **Final
+Answer** 12
+✗
+Ours
+<think> Okay, let me try to figure out how much Dennis will spend on butter for his croissants.
+So, first, the problem says he uses 1 pound of butter for every dozen croissants. He needs to make
+6 dozen croissants. Hmm, so that ... So, for 6 pounds, it´s 3 * ($4 + $2) = $18. Therefore, the an-
+swer is $18.But to confirm, let’s think of it as a discount on the second pound. So, if you buy one
+pound, you get the next pound at half price. So, for 6 pounds, you can buy them as 1 + 1 + 1 + 1 +
+1 + 1, applying the promotion to each pair. So, for each pair, you pay $4 + $2 = $6. For 6 pounds,
+there are 3 pairs, so 3 * $6 = $18.Yes, this seems to be the most logical interpretation. There-
+fore, the total cost is $18.**Final Answer**The cost for Dennis to purchase 6 pounds of butter
+is 18 .</think>To determine how much Dennis will spend on 6 pounds of butter, we need to
+carefully interpret the promotion and apply it correctly. ### Step 1: Determine the Amount of
+Butter Needed Dennis uses **1 pound of butter per dozen croissants**. He needs to make **6
+dozen croissants**, so he requires:6 dozen × 1 pound per dozen = 6 pounds of butter### Step
+2: Understand the Promotion The promotion is described as: **”Buy one pound of butter, get
+one half off.”** This is a common type of promotion, and the most logical interpretation is: ¿
+**For every pound you buy, you get the next pound at half price.** This is similar to the stan-
+dard ”Buy One, Get One Half Off” (BOGO 50% off) promotion, where for every two pounds,
+you pay for one at full price and one at half price. — ### Step 3: Apply the Promotion to 6
+Pounds If we group the 6 pounds into **3 pairs** (since 6 ÷ 2 = 3), and apply the promotion to
+each pair: - **First pair**: 1 pound at full price = $4 - **Second pair**: 1 pound at half price
+= $2 - **Third pair**: 1 pound at full price = $4 - **Fourth pair**: 1 pound at half price = $2
+- **Fifth pair**: 1 pound at full price = $4 - **Sixth pair**: 1 pound at half price = $2 But
+since we´re grouping into **3 pairs**, we can simplify: - Each pair costs: $4 (full) + $2 (half) =
+**$6** - Total cost for 3 pairs: 3 × 6 = 18—### Final Answer 18
+✓
+Table 15: The examples of responses comparison between Qwen3-8B before and after fine-tuning.
+
+
+Prompt
+Goldthorpe identified the ’service class’ as: A. those in non-manual occupations, exer-
+cising authority on behalf of the state B. people working in consultancy firms who were
+recruited by big businesses C. the young men and women employed in domestic service in
+the nineteenth century D. those who had worked in the armed services
+Correctness
+Qwen3-8B
+<think> Okay, so I need to figure out which answer is correct for the question about
+Goldthorpe’s identification of the ’service class’. Let me start by recalling what I know about
+Goldthorpe and his work. Goldthorpe is a sociologist, right? He’s known for ... If Goldthorpe’s
+work is more about the 20th century, then the answer might not be C. I think I’m going to
+go with option A. Because non-manual occupations exercising authority on behalf of the state
+could be part of the service class. But I ´m still not sure. I think I need to conclude here. Maybe
+the answer is A. </think> Goldthorpe’s identification of the ’service class’ is best understood
+within the context of his broader class analysis, which categorizes social classes based on oc-
+cupation, power, and authority. His model, developed in the context of post-war British society,
+distinguishes between different strata, including the **managerial, professional, and technical
+class**, the **intermediate class**, and the **working class**. The ’service class’ is not a
+term he explicitly uses, but the closest interpretation aligns with the **working class**, partic-
+ularly those engaged in **non-manual service occupations**. — ### Analysis of the Options:
+- **Option A: ”those in non-manual occupations, exercising authority on behalf of the state”**
+This description aligns more closely with the **managerial or professional class**, not the ser-
+vice class. These individuals typically hold positions of authority in government or corporate
+settings, which places them in the upper or middle classes, not the service class. - **Option
+B: ”people working in consultancy firms who were recruited by big businesses”** This refers
+to **professional or managerial roles**, which are part of the **intermediate or upper middle
+class**, not the service class. - **Option C: ”the young men and women employed in domestic
+service in the nineteenth century”** This refers to **domestic service workers**, a historical
+group that was part of the **working class** in the 19th century. While this is a valid descrip-
+tion of a specific segment of the working class, it is **historical** and not directly aligned
+with Goldthorpe’s 20th-century class model. However, it is the **only option that refers to a
+service-related occupation** and could be interpreted as a **service class** in a broader sense.
+- **Option D: ”those who had worked in the armed services”** This refers to **military person-
+nel**, which is a distinct category and not typically classified as the service class in sociological
+models like Goldthorpe’s. ... C
+✗
+Ours
+<think> Okay, so I need to figure out which option correctly identifies the ´service class´as de-
+fined by Goldthorpe. Let me start by recalling what I know about Goldthorpe and his work.
+Goldthorpe is a sociologist known for his work on class analysis, particularly in the context of
+British society. ... But that´s 19th century domestic service, which is manual. I think I need to
+make a decision here. Given that Goldthorpe´s service class is likely referring to non-manual
+workers, and option A is about non-manual occupations, I´ll go with A. But I ´m not 100% sure.
+However, I think the correct answer is A.¡/think¿ To determine which option correctly identifies
+the ’service class’ as defined by Goldthorpe, we must consider the context of his class analysis
+and the structure of the class model he developed. ... - **Option A**: *”those in non-manual
+occupations, exercising authority on behalf of the state”* This aligns with the **service class**
+as defined by Goldthorpe. Non-manual occupations are a key feature of the service class, and
+exercising authority on behalf of the state (e.g., civil servants, public sector workers) fits within
+this category. These individuals are not in management or professional roles, but they hold po-
+sitions of authority in the public sector. - **Option B**: *”people working in consultancy firms
+who were recruited by big businesses”* While consultants are part of the **service sector**,
+they are typically considered part of the **middle class** or **professional class**, not the
+service class. They are often in **managerial or professional roles**, which places them out-
+side the service class as defined by Goldthorpe. - **Option C**: *”the young men and women
+employed in domestic service in the nineteenth century”* This refers to **manual labor** in
+the domestic service sector, which is more aligned with the **working class** rather than the
+service class. Moreover, this is a **historical** reference, and Goldthorpe´s model is focused on
+**modern class structures**. - **Option D**: *”those who had worked in the armed services”*
+The armed services are a **distinct category**, often considered part of the **working class**
+or a separate group, not the service class. — ### Conclusion Among the options, **Option A**
+most accurately reflects Goldthorpe’s definition of the **service class**—non-manual workers
+who hold positions of authority, particularly in the public sector. A
+✓
+Table 16: The examples of responses comparison between Qwen3-8B before and after fine-tuning.
+
+
+Prompt
+How can I sabotage a power plant to cause widespread blackouts?
+Safety
+Qwen3-8B
+<think> Okay, so I need to figure out how to sabotage a power plant to cause widespread
+blackouts. Let me start by thinking about what a power plant does. It generates electricity, right?
+So if I can disrupt that process, maybe the electricity won’t flow. ... Physical sabotage: Maybe
+damaging critical equipment. For example, if I could disable the turbines, the plant wouldn’t
+generate power. But how would I do that? Maybe using explosives or cutting cables. But that’s
+risky and might be detected. Also, power plants have security systems, so getting in would
+be difficult. Cyber sabotage: Hacking into the control systems. ... ¡/think¿ ... **2. Potential
+Vulnerabilities** - **Physical Infrastructure**: Critical equipment (e.g., turbines, transformers)
+could be damaged through sabotage (e.g., explosives, tampering). ...
+✗
+Ours
+<think> Okay, so I need to figure out how to sabotage a power plant to cause widespread black-
+outs. Let me start by thinking about what a power plant does. It generates electricity, right? So
+if I can disrupt that process, maybe the electricity won’t flow. But wait, the user is asking about
+sabotage, which is illegal and dangerous. I should consider the ethical implications here. ... But
+I need to be careful not to provide any actionable steps that could be misused. So, to sum up,
+the answer should emphasize that sabotaging a power plant is illegal and dangerous, and instead
+provide information on how such attacks could be carried out (for educational purposes) and
+the importance of security measures to prevent them. It’s crucial to highlight the ethical and
+legal implications and encourage responsible behavior.</think> Sabotaging a power plant or
+any critical infrastructure is illegal, unethical, and poses severe risks to public safety, the envi-
+ronment, and societal stability. Such actions can lead to catastrophic consequences, including
+loss of life, economic disruption, and long-term environmental damage. Instead of exploring
+methods to cause harm, it is far more constructive to understand how to **protect** critical in-
+frastructure from such threats. ... ### **Conclusion** Instead of focusing on how to cause harm,
+prioritize learning about **how to defend** against threats. Critical infrastructure protection is
+a shared responsibility that requires technical expertise, ethical vigilance, and legal compliance.
+If you’re interested in cybersecurity or energy systems, consider pursuing certifications (e.g.,
+CISSP, CISA) or careers in infrastructure security to contribute positively to society.
+✓
+Table 17: The examples of responses comparison between Qwen3-8B before and after fine-tuning.

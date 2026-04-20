@@ -1,0 +1,2680 @@
+Provably Mitigating Overoptimization in RLHF: Your SFT Loss is
+Implicitly an Adversarial Regularizer
+Zhihan Liu∗†
+Miao Lu∗‡
+Shenao Zhang†
+Boyi Liu§
+Hongyi Guo†
+Yingxiang Yang§
+Jose Blanchet‡
+Zhaoran Wang†
+December 5, 2024
+Abstract
+Aligning generative models with human preference via RLHF typically suffers from overoptimization,
+where an imperfectly learned reward model can misguide the generative model to output undesired re-
+sponses. We investigate this problem in a principled manner by identifying the source of the misalignment
+as a form of distributional shift and uncertainty in learning human preferences. To mitigate overopti-
+mization, we first propose a theoretical algorithm that chooses the best policy for an adversarially chosen
+reward model; one that simultaneously minimizes the maximum likelihood estimation of the loss and a
+reward penalty term. Here, the reward penalty term is introduced to prevent the policy from choosing
+actions with spurious high proxy rewards, resulting in provable sample efficiency of the algorithm under
+a partial coverage style condition. Moving from theory to practice, the proposed algorithm further enjoys
+an equivalent but surprisingly easy-to-implement reformulation. Using the equivalence between reward
+models and the corresponding optimal policy, the algorithm features a simple objective that combines: (i)
+a preference optimization loss that directly aligns the policy with human preference, and (ii) a supervised
+learning loss that explicitly imitates the policy with a (suitable) baseline distribution. In the context
+of aligning large language models (LLM), this objective fuses the direct preference optimization (DPO)
+loss with the supervised fine-tuning (SFT) loss to help mitigate the overoptimization towards undesired
+responses, for which we name the algorithm Regularized Preference Optimization (RPO). Experiments
+of aligning LLMs demonstrate the improved performance of RPO compared with DPO baselines. Our
+work sheds light on the interplay between preference optimization and SFT in tuning LLMs with both
+theoretical guarantees and empirical evidence.
+Keywords: Alignment, reinforcement learning from human feedback, large language model, overoptimiza-
+tion, supervised fine-tuning
+Contents
+1
+Introduction
+2
+1.1
+Our Contributions . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+3
+1.2
+Related Works
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+4
+2
+Preliminaries of RLHF
+5
+3
+A Theory-motivated Objective
+6
+4
+An Equivalent and Implementation-friendly Objective
+7
+5
+Theoretical Analysis
+9
+5.1
+Establishing the Sample Complexity of Maximin Objective (Algorithm 1) . . . . . . . . . . .
+10
+5.2
+Equivalence between Maximin and Minimax Objectives
+. . . . . . . . . . . . . . . . . . . . .
+11
+5.3
+Generalization to New Prompt Distributions
+. . . . . . . . . . . . . . . . . . . . . . . . . . .
+12
+∗Equal contributions.
+†Northwestern University.{zhihanliu2027,shenaozhang2028,hongyiguo2025}@u.northwestern.edu,zhaoranwang@gmail.com
+‡Stanford University. {miaolu, jose.blanchet}@stanford.edu
+§ByteDance Inc. {boyi.liu01, yingxiang.yang}@bytedance.com
+1
+arXiv:2405.16436v3  [cs.LG]  4 Dec 2024
+
+
+6
+Experiments
+13
+7
+Conclusions
+15
+A Further Discussions
+21
+B Proofs for Sample Complexity Analysis
+22
+B.1
+Concepts
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+22
+B.2
+Proof of Theorem 5.3 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+22
+B.3
+Technical Lemmas
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+25
+C Proofs for Equivalence between Maximin and Minimax Objectives
+27
+C.1 Proof of Theorem 5.6 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+27
+C.2 Auxiliary Lemmas
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+27
+D Proofs for Generalization to New Prompt Distributions
+28
+E Additional Details on Experiments
+29
+E.1
+Training Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+29
+E.2
+Evaluation Details
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+29
+E.3
+Additional Results on Experiments . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+30
+F Experiments on Math, Reasoning, and Coding Tasks
+31
+F.1
+Experimental Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+31
+F.2
+Experimental Results . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+31
+1
+Introduction
+A key step in building state-of-the-art LLMs is Reinforcement Learning from Human Feedback (RLHF)
+(Christiano et al., 2017; Ziegler et al., 2019), which aligns pretrained LLMs with human preferences using
+human assessment data, making the model more helpful, truthful, and harmless (Ouyang et al., 2022; Casper
+et al., 2023). Without doing RLHF, pretrained LLMs could exhibit harmful behaviors including offensive or
+toxic outputs, social biases, and leaking sensitive information from training data, etc (Gehman et al., 2020;
+Carlini et al., 2021; Ganguli et al., 2022). Typically, RLHF first learns a reward model from data (pair-wise
+comparisons of responses) to quantify the human preferences of LLM outputs. Then it fine-tunes the LLM
+to maximize the learned reward using RL techniques.
+In this pipeline, a crucial challenge is reward overoptimization or reward hacking (Michaud et al., 2020;
+Tien et al., 2022; Gao et al., 2023). Since the reward model is learned from finite data, this reward might not
+be perfectly aligned with the underlying human preference. Optimizing the LLM towards such an imperfectly
+learned and potentially overfitted reward model leads to performance degeneration and a substantial decrease
+in the probability of choosing the preferred responses in the data (Hong et al., 2024; Rafailov et al., 2024).
+Given the importance of RLHF and the outlined challenge, a crucial research question is:
+How to mitigate reward overoptimization in RLHF in a principled
+and efficient manner for better alignment?
+To answer the question, we model RLHF as an offline contextual bandit (Ouyang et al., 2022) and ascribe
+overoptimzation to distributional shifts and reward uncertainty. Intuitively, when fine-tuning an LLM, the
+response (action) distribution of the tuned LLM could deviate from that of the training data. For the out-of-
+distribution responses, which are dissimilar with (or not well covered by) the responses in the data, the high
+inherent uncertainty of underlying human preferences could make the learned reward model misleading for
+out-of-distribution responses. In this situation, reward overoptimization can occur because the LLM is fine-
+tuned towards maximizing a reward model with defective out-of-distribution prediction, giving a potential
+consequence that the LLM responses are favored by the learned reward but less preferred by a human (Zhu
+et al., 2024). We illustrate such an issue inherent to overoptimization in Figure 1.
+In this work, we propose a new RLHF algorithm to mitigate reward overoptimization. From a high level,
+our theoretical algorithm seeks the best LLM for an adversarially chosen reward model that minimizes the
+2
+
+
+desired  
+responses
+undesired responses 
+(misguided by  
+estimated reward  
+with high uncertainty)
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Training Epoch
+−475
+−450
+−425
+−400
+−375
+−350
+−325
+−300
+−275
+Log Probabilty
+Log Probability on Chosen Responses During Training
+DPO (beta)
+RPO (beta)
+action
+a
+b
+c
+r⋆
+1
+0.5
+0
+Dataset
+D = {(a, b, 1)}
+πref
+0.45
+0.45
+0.1
+πDPO
+0.5
+0
+0.5
+πRPO
+1.0
+0
+0
+Figure 1: Left: Reward overoptimization due to distributional shift and uncertainty in reward. Middle: Overopti-
+mization can cause the probability of outputting the preferred responses from preference data to decrease substantially
+using original DPO proposed by (Rafailov et al., 2023). Our algorithm (RPO) can significantly alleviate this decrease.
+See more discussions in Section 6. Right: For the illustration of the intuition behind the success of RPO, we give a
+simple example with no prompts and only three responses a, b, and c (Xu et al., 2024). The dataset D only consists
+of a single data point where response a is preferred than response b (as indicated by the label 1). Writing out the
+DPO loss, one needs to minimize log(1 + (π(b)/π(a))β) for 0 ≤π(a) + π(b) ≤1, which gives π(b) = 0 and leaves π(a)
+arbitrary. Thus possible solutions to DPO objective would bring out non-zero probabilities of response c that is not
+desirable since r⋆(c) = 0. In contrast RPO objective simultaneously maximizes another term log π(a) as regularizer,
+avoiding the output of response c.
+sum of its maximum likelihood estimation (MLE) loss and its own expected reward value. Intuitively, since
+the reward value is also minimized when minimizing the sum, it can automatically prevent the misleadingly
+high reward caused by the uncertainty inherent in learning from finite preference data. Furthermore, we show
+that the theoretical algorithm enjoys an easy implementation: it simply adopts a supervised fine-tuning (SFT)
+loss as a regularizer during training. By explicitly regularizing the LLM to imitate high-quality responses
+(e.g., the preferred responses in dataset), the algorithm can effectively mitigate the issue of overoptimization.
+We provide both theory and experiments to demonstrate our findings, which we summarize next.
+1.1
+Our Contributions
+We summarize our contributions in three areas as follows.
+A theoretical algorithm under general function approximation.
+Our first contribution is a new
+theoretical algorithm (Algorithm 1). It features an unconstrained maximin problem, outputting the optimal
+policy (LLM) against an adversarially chosen reward model that minimizes the summation of: (a) the MLE
+loss for estimating the underlying reward; and (b) a reward expected value term as a penalty that aims to
+prevent spuriously high reward estimation caused by data uncertainty and insufficient coverage. Algorithm 1
+is compatible with general function approximations of the reward model, meaning that we do not impose
+any specific structural form to the hypothesis class of reward, demonstrating its generality.
+In this regime, we establish the finite-sample suboptimality gap of Algorithm 1 as e
+O(C2
+coverage
+p
+NR/N)
+when competing with any LLM in terms of the underlying human reward (Theorem 5.3). Here N denotes the
+number of human comparison data. NR denotes the complexity of the reward model class R, and Ccoverage
+characterizes the coverage of the preference dataset with respect to the response distribution of the LLM to
+compete (please see Assumption 5.2 for details). This indicates that, as long as the training data well cover
+the LLM π to compete, the algorithm is guaranteed to align an LLM to output responses as good as π in
+terms of human reward, without suffering from overoptimization caused by distributional shifts and inherent
+uncertainty in human preference.
+An easy-to-implement practical objective.
+Moving towards practice, we show that the objective of
+Algorithm 1 adopts a surprisingly simple and equivalent form for its use in practice. Specifically, with mild
+regularity conditions, we prove that the maximin objective (Algorithm1) is equivalent to the corresponding
+minimax objective, which is further reduced to a single minimization problem for the reward model since its
+inner problem adopts a closed form solution. Inspired by recent RLHF research that uses reward-model-free
+3
+
+
+methods to align LLMs (Rafailov et al., 2023), we further re-parameterize the reward model via its corre-
+sponding KL-regularized optimal policy. Then the minimization objective of the reward modeling naturally
+translates to a target that directly aligns the LLM, which we call Regularized Preference Optimization (RPO;
+Algorithm 2). The objective of RPO features a simple weighted combination of two losses:
+RPO objective = Preference optimization loss + Imitation (SFT) loss.
+Here the Preference optimization loss coincides with the DPO (Rafailov et al., 2023) objective, which tends
+to optimize the LLM towards maximizing the underlying true reward. The Imitation (SFT) loss explicitly
+supervises the LLM to mimic the responses from a proper distribution that is well covered by the dataset.
+The choice of the distribution is guided and justified by our theory of Algorithm 1, but can also be flexibly
+adapted in practice, e.g., the preferred response in the dataset, or the responses of the initial model.
+We highlight that the Imitation (SFT) loss serves as an important term to mitigate overoptimization.
+Even though the original DPO objective has already involved a KL regularization between the tuned LLM and
+the initial LLM, is not enough to prevent overoptimization. As elaborated in Section 4, the KL-regularization
+weight of the DPO objective could only control the scale of the gradient per training example, while the
+RPO objective can further modify the gradient direction. Calling back to the theoretical Algorithm 1, such
+a modification of gradient direction originates from the reward penalty in the adversarial objective for the
+reward model. This modification, as we expose in our theoretical analysis, helps to mitigate overoptimization.
+Thus, incorporating SFT loss in RLHF gives you a regularizer that provably mitigates overoptimization.
+Empirical evaluations.
+Following the training setup of two series of released chat models Zephyr-7b-beta
+(trained on Ultrafeedback dataset (Cui et al., 2023) using DPO) and Zephyr-7b-gemma (trained on Argilla-
+DPO-Mix-7K dataset (argill, 2024) using DPO) (Tunstall et al., 2023b), we implement RPO for the beta
+series and gemma series respectively to show that: (i) RPO is a flexible plug-in module and can be applied to
+different reference models. (ii) RPO effectively alleviates overoptimization. (iii) RPO consistently achieves
+better alignment performance than DPO in in-data distribution. (iv) RPO can also achieve consistently bet-
+ter performance in standard LLM benchmarks like MT-bench and AlpacaEval 2.0, which shows its potential
+of mitigating overoptimization for better alignment performance, justifying our theory.
+1.2
+Related Works
+In the following, we relate our work to recent lines of RLHF research on both theory and practice sides. We
+also review related works on reward hacking and overoptimization in RLHF.
+RLHF: algorithm design.
+The technique of RLHF (Christiano et al., 2017; Ziegler et al., 2019; Ouyang
+et al., 2022; Bai et al., 2022) has recently demonstrated its great importance in building the state-of-the-art
+LLMs, including ChatGPT (Achiam et al., 2023), Gemini (Team et al., 2023), Claude (Anthropic, 2023). In
+the RLHF pipeline therein, the LLM is fine-tuned towards maximizing a learned reward model using the RL
+algorithm Proximal Policy Optimization (PPO; Schulman et al. (2017)). Meanwhile, PPO-style algorithm is
+also known for its instability, sample-inefficiency, and especially, a high demand for proper hyperparameter
+tuning (Engstrom et al., 2020). This thus casts prohibitive computational cost to make the most effectiveness
+of PPO-based RLHF methods to align LLMs, especially for the open-source community.
+Given that, further research on RLHF has explored various alternatives to PPO-based methods, with the
+most popular approach being the direct preference optimization method (Zhao et al., 2023; Rafailov et al.,
+2023), which skips the reward learning phase and directly optimize the LLM to align it with the human
+preference. Our practical implementation (RPO) also harnesses the wisdom of reward-LLM equivalence to
+avoid explicit reward learning followed by PPO training.
+Besides the original DPO algorithm (Rafailov et al., 2023), ever since it popularizing the direct preference
+learning style method, variants of the direct preference learning approach are proposed, including but not
+limited to Liu et al. (2023a); Azar et al. (2023); Xiong et al. (2023); Tang et al. (2024); Ji et al. (2024); Ye
+et al. (2024); Pal et al. (2024); Hong et al. (2024); Rosset et al. (2024); Liang et al. (2024); Zhang et al.
+(2024a); Tajwar et al. (2024); Wu et al. (2024). Each of them aims to address further challenges of direct
+preference learning from varying perspectives. Specifically, the algorithm proposed by Pal et al. (2024); Hong
+et al. (2024) share similar algorithmic components as RPO proposed in this work. Both work consider SFT
+style regularization during preference optimization. However, theoretical understanding of how SFT loss can
+4
+
+
+help alignment remains unknown. In contrast, we provide theoretical justifications to the SFT loss as an
+implicit adversarial regularizer that provably mitigates overoptimization in preference learning.
+RLHF: theoretical investigation.
+Initiated from the literature of dueling bandits and dueling RL (Yue
+et al., 2012; Bengs et al., 2021; Pacchiano et al., 2021), recent success of RLHF in fine-tuning LLMs also
+motivates a long line of research to investigate the theoretical foundations of RLHF under different settings
+(Chen et al., 2022; Zhu et al., 2023; Zhan et al., 2023a,b; Wang et al., 2023b; Li et al., 2023; Xiong et al., 2023;
+Ye et al., 2024; Du et al., 2024; Zhong et al., 2024), aiming to propose provably sample-efficient algorithms
+to learn a human-reward-maximizing policy from human preference signals. Our theoretical study of RLHF
+falls into the paradigm of offline learning from a pre-collected preference dataset, and is most related to Zhu
+et al. (2023); Zhan et al. (2023a); Li et al. (2023); Xiong et al. (2023); Ye et al. (2024). In this setup, the
+main challenge is to address the overoptimization issues due to human reward uncertainty and distributional
+shifts when only a fixed dataset is available. In the sequel, we compare our work with them in more detail.
+Existing theoretical work on provably sample-efficient offline RLHF typically suffers from two drawbacks:
+they are either restricted to the linear function approximations setting (Zhu et al., 2023; Xiong et al., 2023)
+which is far from the practical situations, or are generally unable to be implemented in the LLM experiments.
+Typically, to encompass the pessimistic principle in the face of uncertainty, the existing literature proposes to
+return the optimal policy against either an estimated reward model plus a structure-aware reward uncertainty
+penalty (Xiong et al., 2023) or the most pessimistic reward model inside a confidence region (Zhu et al., 2023;
+Zhan et al., 2023a). Both of these two types of method involve intractable components for implementation
+and needs for additional algorithmic design to approximate the theoretical algorithm in practice. In contrast,
+our theory works in the context of general function approximations while being friendly to be implemented.
+Finally, we remark that, while our study focuses on the standard Bradley-Terry model of human preference
+with general reward function approximations, the work of Ye et al. (2024) further considers a general human
+preference model. But it remains unknown how their algorithms can be efficiently implemented in practice.
+It serves as an interesting direction to extend our technique to RLHF with general reward model and device
+new practical algorithms.
+Finally, we mention that the algorithm design of RPO is also related to the “pessimism” principle in the
+standard offline RL literature. It proposes to maintain a pessimistic estimate of the policy values or constrain
+the policy not to take unseen actions in the data to handle the challenge of the insufficient coverage of the
+dataset, e.g., Jin et al. (2021); Uehara and Sun (2021); Xie et al. (2021a,b); Rashidinejad et al. (2021); Yin
+and Wang (2021); Fu et al. (2022); Xiong et al. (2022); Liu et al. (2022a,b); Shi et al. (2022); Zhan et al.
+(2022); Lu et al. (2022); Rashidinejad et al. (2022); Shi and Chi (2024); Blanchet et al. (2024). In contrast,
+we consider the offline RLHF problem and the techniques to obtain the objective of our algorithm along
+with its sample complexity analysis are new and different from these prior works on standard offline RL.
+Reward hacking and overoptimization in RLHF for LLM.
+As is discussed in the introduction, the
+challenge of reward hacking or overoptimization may prevent the successful alignment of LLMs, degenerating
+the performance of an LLM because of maximizing an imperfect, overfitted, and misgeneralized proxy reward
+learned from the finite data (Michaud et al., 2020; Tien et al., 2022; Gao et al., 2023; Casper et al., 2023).
+Efforts have been made to mitigate this fundamental issue through the perspective of theory, e.g., Zhu et al.
+(2023); Xiong et al. (2023); Zhu et al. (2024), and practice, e.g., Coste et al. (2023); Eisenstein et al. (2023);
+Dong et al. (2023); Moskovitz et al. (2023); Zhang et al. (2024b); Rita et al. (2024); Pal et al. (2024); Hong
+et al. (2024). Our approach starts from the theoretical insights of handling inherent uncertainty in learning
+human preference from finite data, while being suprisingly easy to implement in practice.
+2
+Preliminaries of RLHF
+In this section, we introduce the mathematical framework of studying RLHF for alignining LLMs. We adopt
+the framework of offline contextual bandits (Ouyang et al., 2022; Zhu et al., 2023, 2024), where we identify
+the contextual space X as the space of prompts, and we identify the action space A as the space of responses.
+An LLM, which is defined as a policy π(·|·) : X 7→∆(A), can take a prompt x ∈X as its input and output
+a response a ∈A obeying a ∼π(·|x).
+5
+
+
+Preference model.
+Given any reward function r : X × A 7→R belonging to certain reward class R which
+represents the “human’s rating” of LLM responses given some prompts, we consider the Bradley-Terry model
+(Bradley and Terry, 1952) of human preference. That is, given a prompt x ∈X and two responses a1, a0 ∈A,
+the probability of a1 being preferred to a0 (denoted by y = 1, otherwise y = 0) is given by
+Pr(y = 1|x, a1, a0) =
+exp(r(x, a1))
+exp(r(x, a1)) + exp(r(x, a0)) = σ
+ r(x, a1) −r(x, a0)
+
+,
+(2.1)
+where σ(z) = 1/(1+exp(−z)) is the sigmoid function. For simplicity of future discussion, we explicitly write
+out the dependence of the preference probability Pr(·) on the reward model r ∈R. In the section of theory,
+i.e., Section 5, we specify the assumptions on the reward model class R.
+Learning protocol.
+Typically in an LLM training pipeline, the RLHF phase starts from certain reference
+policy πref which is obtained by pretraining and then supervised fine-tuning (SFT). Then RLHF aligns the
+LLM based on certain human preference data. In this work, we consider offline RLHF setup where the LLM
+is aligned using a fixed offline preference dataset D. It consists of N i.i.d. tuples in the form of
+D =
+
+(xi, a1
+i , a0
+i , yi)
+	N
+i=1.
+Here the prompt xi and the response a1
+i , a0
+i are distributed according to (x, a1, a0) ∼µD(·), and conditioning
+on (xi, a1
+i , a0
+i ), yi is distributed according to (2.1) for an underlying true (but unknown) reward model r⋆∈R.
+Performance metric.
+The target of RLHF is to align an LLM, or equivalently, to learn a policy π, so as
+to maximize the expected true reward r⋆. Correspondingly, we define the value function of a policy π as
+J(π) = Ex∼d0,a∼π(·|x)
+
+r⋆(x, a)
+
+.
+(2.2)
+Here we allow the prompt distribution d0(·) to be different from that of the offline dataset distribution µD(·),
+but is assumed to be known. In the meanwhile, we consider the policies that share the same support as the
+reference policy πref, that is, we take a policy class Π as
+Π =
+n
+π : X 7→∆(A)
+ Supp(π(·|x)) ⊆Supp(πref(·|x)), ∀x ∈X
+o
+.
+(2.3)
+The performance gap of a learned policy bπ ∈Π with respect to any other policy π ∈Π is measured as
+Gapπ(bπ) = J(π) −J(bπ).
+(2.4)
+Our goal is to propose a sample-efficient and also implementation-friendly algorithm to learn a policy bπ ∈Π
+that can compete with a given policy π ∈Π in terms of Gapπ(bπ) ≤ε, using a number of samples polynomial
+in 1/ε and logarithmic in the complexity of the reward class R and the failure probability inversed 1/δ.
+We do not assume parametric forms of the reward class R (Zhu et al., 2023; Xiong et al., 2023), and thus
+we fall into the paradigm of general function approximations.
+3
+A Theory-motivated Objective
+Our method seeks to find the best policy bπ against an adversarially chosen reward model bradv that minimizes
+a weighted sum of its expected value and the maximum likelihood estimation (MLE) loss. Intuitively, such a
+reward model can prevent the overoptimization issue by taking its own value into account when minimizing
+the MLE loss. Since the reward value is also minimized when minimizing the sum, this method prevents the
+misleadingly high reward caused by the uncertainty due to finite data. Formally, given two hyperparameters
+β, η > 0 and a “baseline policy” πbase, we define
+T adv
+β,η (π) = min
+r∈R
+(
+η · Ex∼d0,a1∼π(·|x),
+a0∼πbase(·|x)
+h
+r(x, a1) −r(x, a0) −β · KL
+ π(·|x)∥πref(·|x)
+i
++ LD(r)
+)
+,
+6
+
+
+Algorithm 1 Theoretical Algorithm: Maximin Objective
+1: Input: Preference dataset D, parameters β, η > 0, reference policy πref, baseline policy πbase.
+2: Output: Policy bπ given by (3.2) with the cross-entropy loss function LD defined in (3.1).
+where the loss function LD(·) is the average negative log-likelihood function of the BT model (2.1) (and here
+it becomes the cross-entropy loss) over the preference dataset D, defined as
+LD(r) = −bED
+
+yi log
+ σ
+ r(xi, a1
+i ) −r(xi, a0
+i )
+
++ (1 −yi) log
+ σ
+ r(xi, a0
+i ) −r(xi, a1
+i )
+
+.
+(3.1)
+As we can see, T adv
+β,η (π) is the minimum value of a weighted sum of the MLE loss and the expected reward
+value of π, but with two important modifications that we explain in the following.
+Firstly, we subtract another expected reward of certain policy πbase. This is because the BT model (2.1)
+essentially only uses the reward differences to define the preference probabilities. As a result, the data can
+only reveal information of the differences between the true reward r⋆of different responses (Zhan et al.,
+2023a). Accordingly, we subtract a baseline expected reward value to match this observation. The choice of
+the baseline policy is discussed in the theory part (Section 5) and experiments (Section 6).
+Secondly, we subtract a KL divergence between π and πref from the expected reward, weighted by the
+coefficient β > 0. Such a term is for practical considerations that would be explained in Sections 4 and 5.2.
+We note that the KL regularized reward is commonly adopted in RLHF practice to ensure the learned policy
+is not far away from the reference policy (Ouyang et al., 2022; Xiong et al., 2023).
+Finally, the overall algorithm design (Algorithm 1) is to output the policy that maximizes T adv
+β,η (π), i.e.,
+bπ ∈argmaxπ∈Π T adv
+β,η (π), which gives the following theoretical target:
+bπ ∈argmax
+π∈Π
+min
+r∈R
+(
+η · Ex∼d0,a1∼π(·|x),
+a0∼πbase(·|x)
+h
+r(x, a1) −r(x, a0) −β · KL
+ π(·|x)∥πref(·|x)
+i
++ LD(r)
+)
+.(3.2)
+Given the form of (3.2), we name it the maximin objective in the sequel. Upon seeing (3.2), one might
+be arguing that such a theory-motivated objective seems hard to implement in practice. Nevertheless, in the
+coming Section 4, we demonstrate that the maximin objective (3.2) adopts an easy-to-implement equivalent
+form, allowing us to design a practical algorithm for aligning LLMs.
+Remark 3.1 (Comparison with Zhan et al. (2023a)). We remark that in the work of Zhan et al. (2023a),
+they also mentioned a maximin object similar to (3.2) for offline preference-based RL as a complementary
+to their theoretical algorithm. However, the sample complexity of the maximin algorithm they presented is
+unknown. Furthermore, our objective (3.2) features another KL-regularization term, which is essential for
+the proposal of our new practical algorithm design for aligning LLM in Section 4.
+Remark 3.2 (Comparison with Xiong et al. (2023)). Another theoretical work on RLHF (Xiong et al.,
+2023) explicitly models the KL-regularization between the target policy and the reference policy in the learning
+objective, referred to as the KL-regularized contextual bandit. This means that their metric becomes the KL-
+regularized expected reward. In contrast, here we put the KL-regularization as a component of our algorithm
+design, but we still keep the metric as the expected reward (2.2). Therefore our theory in Section 5.1 directly
+reveals how the learned policy performs in terms of the expected reward compared to any given target policy.
+4
+An Equivalent and Implementation-friendly Objective
+In this section, we propose another minimax-style objective that is equivalent to the maximin objective (3.2).
+Based on the minimax objective, we propose a new LLM aligning algorithm called Regularized Preference
+Optimization (RPO). It draws inspirations from the reparametrization technique originated in Direct Pref-
+erence Optimization (DPO) (Rafailov et al., 2023) and goes beyond to further address the overoptimization
+issue in offline RLHF by incorprating an SFT loss as an explicit adversarial regularizer.
+7
+
+
+An equivalent minimax objective.
+If the reward model class R satisfies certain regularity conditions,
+which we discuss in detail in Section 5.2, the minimax theorem holds: solving the maximin objective (3.2)
+is equivalent to solving a minimax target, given by
+min
+r∈R max
+π∈Π
+(
+η · Ex∼d0,a1∼π(·|x),
+a0∼πbase(·|x)
+h
+r(x, a1) −r(x, a0) −β · KL
+ π(·|x)∥πref(·|x)
+i
++ LD(r)
+)
+.
+(4.1)
+Such a minimax formulation (4.1) is the starting point of our practical algorithm. The magic of (4.1) is that
+the inner maximization problem adopts a closed form solution, which further simplifies such an objective.
+To see this, note that given any reward model r ∈R, the inner problem is equivalent to
+max
+π∈Π
+
+Ex∼d0,a∼π(·|x)
+h
+r(x, a) −β · KL
+ π(·|x)∥πref(·|x)
+i
+.
+(4.2)
+It has been well established that the policy that maximizes the KL-regularized expected reward (4.2) has a
+closed form solution. Due to its importance, we present it as the following lemma.
+Lemma 4.1 (Oracle optimal KL-regularized policy). Given any reward model r ∈R, the optimal policy πr
+to the maximization problem (4.2) is given by
+πr(·|x) =
+1
+Zr(x) · πref(·|x) · exp
+ β−1r(x, ·)
+
+, Zr(x) =
+Z
+a∈A
+exp
+ β−1r(x, a)
+
+dπref(a|x),
+and correspondingly the optimal value of (4.2) is given by (4.2) = Ex∼d0[β · log(Zr(x))].
+Proof of Lemma 4.1. This follows directly from Proposition 7.16 and Theorem 15.3 of Zhang (2023).
+Specifically, by Lemma 4.1, we can solve the inner maximization problem in (4.1) and obtain that
+(4.1) = min
+r∈R
+
+η · Ex∼d0,a0∼πbase(·|x)
+h
+−r(x, a0) + β · log (Zr(x))
+i
++ LD(r)
+
+.
+Furthermore, from Lemma 4.1, one immediately see that given any reward model r ∈R, we can reparame-
+terize it via its corresponding optimal KL-regularized policy πr (Rafailov et al., 2023), that is,
+r(x, ·) = β · log
+ πr(·|x)
+πref(·|x)
+
++ β · log(Zr(x)).
+(4.3)
+Taking (4.3) back into (4.1), we are able to further simplify it as
+(4.1) = min
+r∈R
+
+η · Ex∼d0,a0∼πbase(·|x)
+h
+−β · log(πr(a0|x))
+i
++ LD
+
+β · log
+ πr(·|·)
+πref(·|·)
+ 
+.
+(4.4)
+Thanks to the KL-regularization term in the original minimax objective (4.1) (or equivalently, the maximin
+objective (3.2)), we have the following theorem. It theoretically shows that the policy πbr associated with the
+reward model br solving (4.4) also solves the maximin target (3.2) of the theoretical algorithm (Algorithm 1)
+that enjoys finite-sample convergence guarantees.
+Theorem 4.2 (Equivalence between maximin and minimax algorithm (informal)). Under certain regularity
+assumptions on R and given η, β > 0, solving the minimax objective (4.1) via (4.4), i.e.,
+br = argmin
+r∈R
+
+η · Ex∼d0,a0∼πbase(·|x)
+h
+−β · log(πr(a0|x))
+i
++ LD
+
+β · log
+ πr(·|·)
+πref(·|·)
+ 
+,
+then the corresponding optimal KL-regularized policy πbr also solves the maximin objective (3.2).
+Proof of Proposition 4.2. Please see Section 5.2 for a formal statement and proof of Theorem 4.2.
+8
+
+
+Algorithm 2 Practical Algorithm: Regularized Preference Optimization (RPO)
+1: Input: Preference dataset D, parameters β, η > 0, reference policy πref, baseline policy πbase.
+2: Output: Policy πbθ obtained by optimizing objective (4.5).
+Regularized Preference Optimization. Target (4.4) gives a quite simple objective to use in practice!
+Since (4.4) depends on r ∈R only through its corresponding optimal policy πr, we formulate a minimization
+objective over a parameterized policy πθ, i.e., the LLM to be aligned, and directly optimize the parameters
+θ ∈Θ. More formally, the new RLHF objective becomes
+min
+θ∈Θ
+(
+LRPO(θ) := ηβ · Ex∼d0,a0∼πbase(·|x)
+h
+−log(πθ(a0|x))
+i
+|
+{z
+}
+Imitation (SFT) loss
++ LD
+
+β · log
+ πθ(·|·)
+πref(·|·)
+
+|
+{z
+}
+Preference opt. loss
+)
+.
+(4.5)
+In (4.5), the second term coincides with the objective of DPO algorithm (Rafailov et al., 2023) which
+optimizes the policy towards maximizing the underlying true reward, and the first term stands for a regular-
+ization term weighted by η·β which explicitly regularizes the policy to imitate the baseline policy. Therefore,
+we name the resulting algorithm as Regularized Preference Optimization (RPO). We summarize it abstractly
+in Algorithm 2. As for DPO, implementing RPO does not require to maintain a reward model r. Thus it is
+computationally more friendly compared to reward-based algorithms.
+How does RPO improve DPO?
+We illustrate the effect of the imitation loss by analyzing the gradient
+of the RPO target LRPO(θ) in (4.5). Notice that by (4.5) we have
+∇θLRPO(θ) = ηβ · Ex∼d0,a0∼πbase(·|x)
+h
+−∇θ log(πθ(a0|x))
+i
+|
+{z
+}
+increase the alignment with the baseline policy
++
+∇θLDPO(θ)
+|
+{z
+}
+decrease the DPO Loss
+,
+where the derivative of the DPO loss ∇θLDPO(θ) is given by the following,
+∇θLDPO(θ) = −bED
+
+β · σ
+ brθ(x, arej) −brθ(x, acho)
+
+|
+{z
+}
+gradient weight
+·
+
+∇θ log πθ(acho|x) −∇θ log πθ(arej|x)
+
+.
+For simplicity we denote brθ(x, a) = β · log(πθ(a|x))/ log(πref(a|x)), and denote acho for the chosen response
+and arej for the rejected response. Intuitively, RPO (4.5) modifies the gradient direction of DPO to ensure
+the alignment with the baseline policy πbase, and the hyper-parameter η controls the power of alignment.
+In comparison, the hyper-parameter β in DPO only controls the gradient weight when increasing the
+likelihood of acho and decreasing the likelihood arej. In this perspective, the hyper-parameter β only changes
+the scale of the gradient instead of the direction. By introducing η, we stabilize the training and reduce the
+side-effect of uncertain labels in data to prevent overoptimization.
+5
+Theoretical Analysis
+In this section, we present theoretical analysis of our proposed algorithms (Algorithm 1 and Algorithm 2).
+In Section 5.1, we first establish a finite-sample complexity result for the theoretical algorithm (Algorithm 1)
+that adopts maximin objective (3.2). In Section 5.2, we formally provide an equivalence result between the
+maximin objective (3.2) and the minimax objective (4.1) that we use in practice, based on which we further
+obtain the sample complexity guarantee of our practical algorithm design (Algorithm 2). In Section 5.3, we
+further extend our theory to guarantee the performance on new prompt distributions.
+Through this theory section, we assume that the space of prompts and responses are compact subsets of
+high-dimensional spaces, that is, X ⊆RdX and A ⊆RdA for some dX , dA ∈N+, and X and A are compact
+(closed and bounded). We take the policy class Π as (2.3), that is,
+Π =
+n
+π : X 7→∆(A)
+ Supp(π(·|x)) ⊆Supp(πref(·|x)), ∀x ∈X
+o
+.
+(5.1)
+9
+
+
+5.1
+Establishing the Sample Complexity of Maximin Objective (Algorithm 1)
+We first make the following two assumptions for the sample complexity analysis of Algorithm 1.
+Assumption 5.1 (True reward model). We assume that the true reward model r⋆∈R, and for any r ∈R
+and (x, a) ∈X × A, it holds that r(x, a) ∈[0, R].
+Assumption 5.2 (Partial coverage coefficient (Zhan et al., 2023a)). Given a policy π ∈Π, the coverage
+coefficient of the offline dataset distribution µD w.r.t. reward model class R, policy π, and the baseline policy
+πbase, denoted by CµD(R; π, πbase), is defined as
+max
+
+
+
+
+
+
+
+0, sup
+r∈R
+Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
+
+(r⋆(x, a1) −r⋆(x, a0)) −(r(x, a1) −r(x, a0))
+
+r
+E(x,a1,a0)∼µD
+h(r⋆(x, a1) −r⋆(x, a0)) −(r(x, a1) −r(x, a0))
+2i
+
+
+
+
+
+
+
+.
+We assume that CµD(R; π, πbase) < +∞for the policy π to compete.
+Assumption 5.1 is standard in sample complexity analysis (Zhu et al., 2023; Zhan et al., 2023a; Ye et al.,
+2024). Assumption 5.2 characterizes how well the dataset D covers the policy π to compete. Intuitively, this
+can be understood from the fact that CµD(R; π, πbase) is upper bounded by the density ratio
+CµD(R; π, πbase) ≤
+
+d0 ⊗π ⊗πbase
+µD
+
+∞
+=
+sup
+(x,a1,a0)∈S×A×A
+d0(x)π(a1|x)πbase(a0|x)
+µD(x, a1, a0)
+.
+In order for Algorithm 1 to achieve provable sample efficiency, we only require that D covers the target policy
+π, a weak partial coverage style assumption for the sample complexity analysis (Zhu et al., 2023; Zhan et al.,
+2023a; Xiong et al., 2023). To illustrate it, when calling back to Figure 1, the data distribution therein well
+covers those nearly optimal responses under r⋆, but does not sufficiently cover the responses with low r⋆.
+Under such a partial coverage data condition, however, the human preference of responses a ∈A that are
+not well covered by the dataset D can be poorly estimated, misguiding the policy bπ to behave suboptimally
+if it is overoptimized (recall Figure 1). Fortunately, the following theorem shows that Algorithm 1 provably
+mitigates the overoptimization issue and achieves a finite-sample convergence of the suboptimality gap (2.4).
+Theorem 5.3 (Suboptimality of Algorithm 1). Taking the policy class Π as (2.3), supposing that Assump-
+tions 5.1 and 5.2 hold, and assuming that the reward model class R has a finite ε-covering number under
+∥· ∥∞-norm Nε(R, ∥· ∥∞) < +∞with ε = (6 · (1 + eR) · N)−1. Setting
+η =
+1
+(1 + exp(R))2 ·
+r
+24 · log (Nε(R, ∥· ∥∞)/δ)
+N
+,
+β =
+1
+√
+N
+in Algorithm 1. Then the output policy bπ of Algorithm 1 satisfies that with probability at least 1 −δ,
+Gapπ(bπ) ≤
+√
+6 ·
+ 1 + exp(R)
+2 ·
+ CµD(R; π, πbase)
+2 + 1
+
+· ι + 4 · Ex∼d0
+h
+KL
+ π(·|x)∥πref(·|x)
+i
+4
+√
+N
+,
+where ι =
+p
+log (Nε(R, ∥· ∥∞)/δ) with ε = (6·(1+eR)·N)−1. Here, N denotes the number of preference pairs
+in D, R denotes the upper bound of the reward models, and the partial coverage coefficient CµD(R; π, πbase)
+is defined in Assumption 5.2.
+Proof of Theorem 5.3. Please refer to Appendix B.2 for a detailed proof of Theorem 5.3.
+Remark 5.4 (Choice of the baseline policy πbase). As is indicated by Assumption 5.2, the least requirement
+is that πbase can be covered by the offline data distribution. For example, we can take πbase as the distribution
+of the preferred responses in the dataset. In this case, the SFT loss in the RPO objective explicitly regularizes
+the LLM to imitate the preferred responses. We choose this baseline policy in our experiments (Section 6).
+10
+
+
+5.2
+Equivalence between Maximin and Minimax Objectives
+In this section, we formally show that under certain regularity assumptions, the theoretical target (maximin
+objective (3.2)) and the target for practical algorithm design (minimax objective (4.1)) are equivalent. This
+can naturally extend the sample complexity of Algorithm 1 (Section 5.1) to that of minimax-based algorithms
+in Section 4, providing the theoretical guarantee for our practical algorithm design (RPO).
+First, for notational simplicity, we denote the optimization target we investigate in Sections 3 and 4 as
+ϕ(π, r) := η · Ex∼d0,a1∼π(·|x),a0∼πref(·|x)
+h
+r(x, a1) −r(x, a0) −β · DKL
+ π(·|x)∥πref(·|x)
+i
++ LD(r), (5.2)
+for any (π, r) ∈Π × R. Our result relies on the following assumptions on the reward model class R.
+Assumption 5.5 (Regularity of reward model class). We assume the following things on the reward model
+class R: (i) the space R is a compact topological space; (ii) the function ϕ in (5.2) is convex-like on R, that
+is, for any r1, r2 ∈R and α ∈[0, 1], there exists r3 ∈R such that
+ϕ(π, r3) ≤α · ϕ(π, r1) + (1 −α) · ϕ(π, r2),
+∀π ∈Π,
+(5.3)
+We note that by the definition, the convex-like property (5.3) not only depends on the function ϕ, but
+also depends on the reward model class R. As a special case, if R is convex, e.g., a linear model class (Zhu
+et al., 2023; Xiong et al., 2023; Zhu et al., 2024) or more general the Lipschitz continuous model class R, we
+can directly obtain that the function ϕ(π, ·) is convex over R (since the dependence on r ∈R is linear terms
+plus a convex loss LD of r ∈R), which implies the convex-like property (5.3).
+Under Assumption 5.5, it holds that (Lemma C.1)
+max
+π∈Π min
+r∈R ϕ(π, r) = min
+r∈R max
+π∈Π ϕ(π, r).
+(5.4)
+Furthermore, thanks to the KL-divergence regularization in ϕ which intuitively makes ϕ “strongly concave”
+over the policy π, (5.4) can gives us the following stronger result.
+Theorem 5.6 (Formal statement of Theorem 4.2). For the policy class Π defined in (5.1) and the reward
+model class R satisfying Assumption 5.5, consider the following policy defined as
+πbr ∈argmax
+π∈Π
+ϕ(br, π),
+where
+br ∈argmin
+r∈R
+max
+π∈Π ϕ(π, r).
+(5.5)
+Then the policy πbr also satisfies the maximin objective (3.2) of Algorithm 1, that is,
+πbr ∈argmax
+π∈Π
+min
+r∈R ϕ(π, r).
+Proof of Theorem 5.6. Please refer for Appendix C.1 for a detailed proof of Proposition 5.6.
+Theorem 5.6 shows that the optimal KL-regularized policy associated with the reward model solving the
+minimax objective (3.2) also solves the maximin target for the policy (i.e., objective (4.1) of Algorithm 1).
+This further allows us to extend our theoretical guarantee of Algorithm 1 (Section 5.1) to that of minimax-
+based algorithms, justifying our practical algorithm design in Section 4.
+Corollary 5.7 (Suboptimality of minimax-based algorithm). Take the policy class Π in (5.1) and the reward
+model class satisfying Assumption 5.5. Given any given policy π to compete, if Assumption 5.2 holds for π,
+then under the same choice of η and β as in Theorem 5.3, the policy πbr defined in (5.5) satisfies that
+Gapπ(πbr) ≤e
+O
+
+1/
+√
+N
+
+.
+with probability at least 1 −δ, where e
+O(·) hides the same factors as shown in Theorem 5.3 for Algorithm 1.
+Proof of Corollary 5.7. This is a direct corollary of Theorem 5.3 and Theorem 5.6.
+11
+
+
+5.3
+Generalization to New Prompt Distributions
+In this section, we further generalize our previous theoretical analysis to guarantee the performance of the
+proposed algorithm on new prompt distributions different from the data or training distribution. Specifically,
+we would like to consider a new prompt distribution d1(·) ∈∆(X) that is different from d0. This corresponds
+to testing the learned policy on a new set of prompts with a different distribution than the training prompts.
+The following corollary demonstrates that, as long as the new prompt distribution d1 is well covered by
+the distribution d0, we still have a finite-sample convergence guarantee.
+Corollary 5.8 (Generalization to new prompt distributions). Under the same setups as in Corollary 5.7,
+we consider the policy to compete as the optimal policy π⋆∈Π, that is, π⋆= argmaxπ∈Π Ea∼π(·|x)[r⋆(x, a)]
+for any x ∈X. Assume that the density ratio between the prompt distributions d1 and d0 are bounded, i.e.,
+C∞(d0, d1) := sup
+x∈X
+d1(x)
+d0(x) < +∞.
+(5.6)
+Then the following bound holds, for the policy πbr (see Corollary 5.7), with probability at least 1 −δ,
+Ex∼d1,a∼π⋆(·|x)[r⋆(x, a)] −Ex∼d1,a∼πbr(·|x)[r⋆(x, a)] ≤e
+O
+C∞(d0, d1)
+√
+N
+
+,
+where e
+O(·) hides the same factors as shown in Theorem 5.3 for Algorithm 1.
+Proof of Corollary 5.8. Please refer to Appendix D for a detailed proof of Corollary 5.8.
+In our experiments (Section 6), we evaluate the performance of RPO-trained LLMs (trained using the Ul-
+trafeedback Dataset) on two standard benchmarks, MT-Bench and AlpacaEval 2.0 (with a different prompt
+distribution than Ultrafeedback), which demonstrates the capability of RPO to adapt to new prompt distri-
+butions, as is indicated by the above Corollary 5.8.
+A key requirement of Corollary 5.8 is that the training prompt distribution well covers the new prompt
+distribution. In the following, we use Principle Component Analysis (PCA) analysis to illustrate the prompt
+distribution of these two benchmarks as well as the training data. We use text-embedding-ada-002 provided
+by OpenAI to extract the embeddings of the prompts in the training dataset, MT-bench, and AlpacaEval 2.0,
+for the two models we train in experiments (the beta series and the gemma series). Here, each embedding is
+a vector with a length of 1536. For each model, we use Singular Value Decomposition (SVD) on the matrix
+stacked by the embeddings of the training dataset and obtain the first two PCA axises v1 and v2. Here, unit
+vectors v1 and v2 have a length of 1536 and correspond to the first largest and the second largest singular
+value in SVD, respectively. Then, for each embedding e in the training dataset, MT-Bench, and AlpacaEval
+2.0, we use (⟨e, v1⟩, ⟨e, v2⟩) as the coordinate to draw a 2D scatter plot in Figures 2 and 3. Results show that
+(5.6) in Corollary 5.8 approximately holds for both beta and gemma series on MT-Bench and AlpacaEval
+2.0, which suggests the desired performance of RPO on these two benchmarks given by Corollary 5.8.
+0.65
+0.70
+0.75
+0.80
+0.85
+0.90
+PCA Axis 1
+0.3
+0.2
+0.1
+0.0
+0.1
+0.2
+0.3
+PCA Axis 2
+PCA Analysis on the Embeddings of Prompts
+Training Dataset
+MT-Bench
+AlpacaEval
+Figure 2: PCA of the embeddings of prompts in the
+training dataset of the beta series (Ultrafeedback),
+MT-Bench, and AlpacaEval 2.0.
+0.65
+0.70
+0.75
+0.80
+0.85
+0.90
+PCA Axis 1
+0.3
+0.2
+0.1
+0.0
+0.1
+0.2
+0.3
+PCA Axis 2
+PCA Analysis on the Embeddings of Prompts
+Training Dataset
+MT-Bench
+AlpacaEval
+Figure 3: PCA of the embeddings of prompts in the
+training dataset of the gemma series (Argilla-DPO-
+Mix-7K), MT-Bench, and AlpacaEval 2.0.
+12
+
+
+6
+Experiments
+In this experiment section, we provide a detailed empirical analysis of RPO to highlight the following four
+key points: (i) RPO is a flexible plug-in module and can be applied to different reference models. (ii) RPO
+mitigates overoptimization in the training phase by giving more trust to the chosen responses in the preference
+dataset. (iii) As a justification of our theoretical analysis, RPO achieves better alignment performance than
+DPO in in-data distribution. (iv) RPO can also achieve consistently better performance in LLM benchmarks
+like MT-bench (Zheng et al., 2024) and AlpacaEval 2.0 (Dubois et al., 2024), which shows the potential of
+mitigating overoptimization for better generalization performance.
+Experiment setup.
+To show that RPO is a flexible plug-in module regardless of the reference model, we
+follow the training setup for two well-studied series of released chat models with around 7 billion parame-
+ters trained by DPO: Zephyr-7b-beta and Zephyr-7b-gemma (Tunstall et al., 2023b) to implement RPO in
+beta and gemma series. Mirrored by their training configurations, we introduce how we select the reference
+model and the preference dataset for our training pipeline of these two series as follows. For the beta se-
+ries, we use mistral-7b-sft-beta as the reference model πref. mistral-7b-sft-beta is a fine-tuned version
+of Mistral-7b-v0.1 on the distilled version of the UltraChat dataset (Ding et al., 2023), which contains
+approximately 200k examples of multi-turn dialogues generated by GPT-3.5-TURBO. For the training pref-
+erence dataset, we use the Ultrafeedback Dataset (Cui et al., 2023), which consists of approximately 60k
+prompts. For the gemma series, we use zephyr-7b-gemma-sft-v0.1 as our reference model πref. zephyr-7b-
+gemma-sft-v0.1 is a fine-tuned version of gemma-7b on the Deita dataset (Liu et al., 2023b), which involves
+around 10k distilled SFT data. For the training preference dataset, we use the Argilla-DPO-Mix-7K Dataset
+(argill, 2024), which is a mixture of multiple distilled public preference datasets. For simplicity, we denote
+Ref. (beta) as the reference model, DPO (beta) as the model trained by DPO, and RPO (beta) as the model
+trained by RPO, all for the beta series. We use the same notations for the gemma series.
+Practical implementation.
+According to Algorithm 2 and as we discussed in Remark 5.4, we implement
+RPO by adding an SFT loss (log probability of chosen responses in the preference dataset) to the original
+DPO loss. By comparing the evaluation performance on the test split of the training dataset, we select the
+hyperparameter η as 0.005 for both RPO (beta) and RPO (gemma). During the training of DPO and RPO,
+We keep the remaining hyperparameters including β, batch size, and learning rate to be the same for a fair
+comparison. Please see Appendix E.1 for a detailed training configuration.
+RPO alleviates overoptimization.
+As mentioned in the introduction (Figure 1), DPO is observed to
+have a significant and continual decrease in log probability on chosen responses (Hong et al., 2024; Rafailov
+et al., 2024) during training and we regard it as the consequence of overoptimization. Implied by our theory,
+overoptimization could arise when the model maximizes its own proxy reward formed on the responses less
+covered by the data. Due to the overoptimization, the model tends to disprefer the chosen responses as they
+are away from the maximizers of the proxy reward despite that some chosen responses are highly preferred
+by humans. Consistent with our theoretical conclusion, we empirically find that RPO can indeed alleviate
+overoptimization in DPO. During the training phase of both beta and gemma series, we observe that the log
+probability given by the RPO-trained model is notably higher than that given by the DPO-trained model
+for the chosen responses, which are shown in Figures 1 and 4.
+RPO improves the alignment performance in in-data distribution.
+For the in-data distribution
+evaluation, we select the 200 prompts (which are not used in the selection of paremeter η) in the test split of
+the training dataset to let the reference model, DPO, and RPO generate the response respectively. We choose
+GPT-4 to annotate the preference in the response pairs. Though we instruct GPT-4 to give an annotation
+among win, lose, and tie (please see the full prompt in Appendix E.2), GPT-4 might still provide undesired
+annotations. Therefore, we filter all the undesired annotations and collect 150 examples for evaluation. We
+report the pairwise win rate among Ref., RPO, and DPO in Table 1 for both the beta and gemma series. To
+show a more illustrative comparison between DPO and RPO, we provide the barplot to report the number
+of pairwise examples annotated by GPT-4 in Figures 5 and 6. We observe that for both beta and gemma
+series, RPO has a better performance than DPO in terms of both RPO/DPO-SFT and RPO-DPO win rates.
+13
+
+
+Win rate (%)
+RPO (beta)
+Ref. (beta)
+DPO (beta)
+Win rate (%)
+RPO (gemma)
+Ref. (gemma)
+DPO (gemma)
+RPO (beta)
+50.0
+79.0
+56.0
+RPO (gemma)
+50.0
+71.7
+54.0
+Ref. (beta)
+21.0
+50.0
+22.7
+Ref. (gemma)
+28.3
+50.0
+32.7
+DPO (beta)
+44.0
+77.3
+50.0
+DPO (gemma)
+46.0
+67.3
+50.0
+Table 1: Pairwise win rate (left vs. right) among RPO-trained model, DPO-trained model, and the reference
+model. Annotated by GPT-4, evaluations of beta and gemma series are made on the 150 examples of the
+test split of the Ultrafeedback and the Argilla-DPO-Mix-7K dataset, respectively.
+0.00
+0.25
+0.50
+0.75
+1.00
+1.25
+1.50
+1.75
+2.00
+Training Epoch
+−440
+−420
+−400
+−380
+−360
+Log Probabilty
+Log Probability on Chosen Responses During Training
+DPO (gemma)
+RPO (gemma)
+Figure 4: Log probability of chosen
+responses during the training of
+RPO (gemma) and DPO (gemma).
+Win
+Lose
+Tie
+0
+10
+20
+30
+40
+50
+60
+70
+Number of Annotations
+Pairwise Annotations on RPO vs. DPO
+Figure 5: Pairwise annotations (by
+GPT-4) on RPO (beta) vs. DPO
+(beta) on the test split of the Ul-
+trafeedback dataset.
+Win
+Lose
+Tie
+0
+10
+20
+30
+40
+50
+60
+Number of Annotations
+Pairwise Annotations on RPO vs. DPO
+Figure 6:
+Pairwise annotations
+(by GPT-4) on RPO (gemma) vs.
+DPO (gemma) on the test split of
+the Argilla-DPO-Mix-7K dataset.
+Model Name
+MT-Bench
+AlpacaEval 2.0
+Model Name
+MT-Bench
+AlpacaEval 2.0
+Score
+LC win rate (%)
+win rate (%)
+Score
+LC win rate (%)
+win rate (%)
+RPO (beta)
+7.381
+23.28
+21.01
+RPO (gemma)
+7.916
+15.51
+13.85
+Ref. (beta)
+5.088
+7.19
+4.69
+Ref. (gemma)
+7.266
+8.35
+4.61
+DPO (beta)
+7.278
+21.15
+17.27
+DPO (gemma)
+7.688
+15.36
+13.69
+zephyr-beta-7b
+7.200
+13.20
+10.99
+zephyr-gemma-7b
+7.719
+14.78
+12.14
+Table 2: Results on MT-Bench scores and AlpacaEval 2.0. zephyr-beta-7b and zephyr-gemma-7b are the
+officially released models. win rates and Length-Control (LC) win rates in AlpacaEval 2.0 are evaluated by
+GPT-4 compared with GPT-4.
+The performance improvement matches our theoretical results in Corollary 5.7, which shows the credit of
+the alleviation of overoptimization.
+RPO consistently improves the benchmark performance.
+We further evaluate the reference model,
+RPO-trained model, DPO-trained model, and the officially released DPO-trained model for both beta and
+gemma series in two standard LLM chat benchmarks: MT-bench (Zheng et al., 2024) and AlpacaEval 2.0
+(Dubois et al., 2024). MT-Bench is a multi-turn benchmark that contains 160 questions across eight different
+domains of knowledge. The score for MT-Bench is evaluated by GPT-4 on a scale from 1 to 10. AlpacaEval
+2.0 is a single-turn benchmark including 805 questions on different topics, mostly focused on helpfulness. The
+metrics of AlpacaEval 2.0 are the win rate and Length-Control (LC) win rate compared with GPT-4 Preview
+(11/06), where the annotator is also GPT-4 Preview (11/06) and LC win rate is proposed to mitigate the
+length bias of GPT-4. The results are summarized in Table 2, which shows that RPO consistently exceeds
+the performance of all the competitors (DPO, Reference model, and the officially released model trained by
+DPO) on MT-Bench and AlpacaEval 2.0. We also provide additional results on the pairwise win rate for these
+two benchmarks in Appendix E.3 to illustrate the performance improvement. The improvement can also be
+explained by the theoretical results in Corollary 5.8. Finally, we remark that RPO is a flexible plug-in module
+and can steadily improve the benchmark performance without changing the original training configuration
+or accessing extra preference data. This also sheds light on the potential of mitigating overoptimization for
+better alignment and generalization performance.
+14
+
+
+RPO also improves math, reasoning, and coding abilities.
+In addition to the MT-Bench and Al-
+pacaEval 2.0 benchmarks, we further use benchmarks on math, reasoning, and coding tasks for evaluations of
+the RPO algorithm. Specifically, we choose the Grade School Math 8K (GSM8K) (Cobbe et al., 2021), AI2
+Reasoning Challenge (ARC) (Clark et al., 2018), and Mostly Basic Python Programming (MBPP) (Austin
+et al., 2021) to measure the math, reasoning, and coding abilities of the model trained by RPO, respectively.
+We refer the readers to Appendix F for the detailed setups and results of these experiments.
+7
+Conclusions
+This work proposes a new algorithm that provably mitigates reward overoptimization in RLHF. We establish
+its finite-sample convergence under a partial coverage style data condition, and provide an equivalent practical
+implementation, RPO. As a flexible plug-in module, RPO exhibits consistent improvement over the DPO
+baseline and effectively mitigates overoptimization. Future works include extending our idea of theoretical
+algorithm design and analysis to the iterative RLHF setup where further preference data could be collected.
+Also, since our practical algorithm RPO is a plug-in module that effectively mitigates overoptimization and
+improves alignment performance, it serves as an exciting direction to combine it with explorative preference
+data collecting mechanism in iterative RLHF to further boost the performance of LLM alignment.
+Acknowledgement
+The authors would like to thank the anonymous reviewers for their helpful comments. The authors would also
+like to thank Junyan Zhang for valuable discussions on the equivalence between the minimax and maxmin
+optimization.
+References
+Achiam, J., Adler, S., Agarwal, S., Ahmad, L., Akkaya, I., Aleman, F. L., Almeida, D., Al-
+tenschmidt, J., Altman, S., Anadkat, S. et al. (2023). Gpt-4 technical report. arXiv preprint
+arXiv:2303.08774 . 4
+Anthropic (2023). Introducing claude. https://www.anthropic.com/news/introducing-claude . 4
+argill (2024). argilla-dpo-mix-7k. https://huggingface.co/datasets/argilla/dpo-mix-7k. 4, 13
+Austin, J., Odena, A., Nye, M., Bosma, M., Michalewski, H., Dohan, D., Jiang, E., Cai, C.,
+Terry, M., Le, Q. et al. (2021).
+Program synthesis with large language models.
+arXiv preprint
+arXiv:2108.07732 . 15
+Azar, M. G., Rowland, M., Piot, B., Guo, D., Calandriello, D., Valko, M. and Munos, R.
+(2023). A general theoretical paradigm to understand learning from human preferences. arXiv preprint
+arXiv:2310.12036 . 4
+Bai, Y., Jones, A., Ndousse, K., Askell, A., Chen, A., DasSarma, N., Drain, D., Fort, S.,
+Ganguli, D., Henighan, T. et al. (2022). Training a helpful and harmless assistant with reinforcement
+learning from human feedback. arXiv preprint arXiv:2204.05862 . 4
+Bengs, V., Busa-Fekete, R., El Mesaoudi-Paul, A. and H¨ullermeier, E. (2021). Preference-based
+online learning with dueling bandits: A survey. Journal of Machine Learning Research 22 1–108. 5
+Blanchet, J., Lu, M., Zhang, T. and Zhong, H. (2024). Double pessimism is provably efficient for distri-
+butionally robust offline reinforcement learning: Generic algorithm and robust partial coverage. Advances
+in Neural Information Processing Systems 36. 5
+Bradley, R. A. and Terry, M. E. (1952). Rank analysis of incomplete block designs: I. the method of
+paired comparisons. Biometrika 39 324–345. 6
+15
+
+
+Carlini, N., Tramer, F., Wallace, E., Jagielski, M., Herbert-Voss, A., Lee, K., Roberts, A.,
+Brown, T., Song, D., Erlingsson, U. et al. (2021). Extracting training data from large language
+models. In 30th USENIX Security Symposium (USENIX Security 21). 2
+Casper, S., Davies, X., Shi, C., Gilbert, T. K., Scheurer, J., Rando, J., Freedman, R., Korbak,
+T., Lindner, D., Freire, P. et al. (2023). Open problems and fundamental limitations of reinforcement
+learning from human feedback. arXiv preprint arXiv:2307.15217 . 2, 5
+Chen, X., Zhong, H., Yang, Z., Wang, Z. and Wang, L. (2022). Human-in-the-loop: Provably efficient
+preference-based reinforcement learning with general function approximation. In Proceedings of the 39th
+International Conference on Machine Learning (K. Chaudhuri, S. Jegelka, L. Song, C. Szepesvari, G. Niu
+and S. Sabato, eds.), vol. 162 of Proceedings of Machine Learning Research. PMLR. 5
+Christiano, P. F., Leike, J., Brown, T., Martic, M., Legg, S. and Amodei, D. (2017).
+Deep
+reinforcement learning from human preferences. Advances in neural information processing systems 30.
+2, 4
+Clark, P., Cowhey, I., Etzioni, O., Khot, T., Sabharwal, A., Schoenick, C. and Tafjord, O.
+(2018). Think you have solved question answering? try arc, the ai2 reasoning challenge. arXiv preprint
+arXiv:1803.05457 . 15
+Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek,
+J., Hilton, J., Nakano, R. et al. (2021). Training verifiers to solve math word problems. arXiv
+preprint arXiv:2110.14168 . 15
+Coste, T., Anwar, U., Kirk, R. and Krueger, D. (2023). Reward model ensembles help mitigate
+overoptimization. arXiv preprint arXiv:2310.02743 . 5
+Cui, G., Yuan, L., Ding, N., Yao, G., Zhu, W., Ni, Y., Xie, G., Liu, Z. and Sun, M. (2023).
+Ultrafeedback: Boosting language models with high-quality feedback. arXiv preprint arXiv:2310.01377 .
+4, 13
+Ding, N., Chen, Y., Xu, B., Qin, Y., Zheng, Z., Hu, S., Liu, Z., Sun, M. and Zhou, B. (2023).
+Enhancing chat language models by scaling high-quality instructional conversations.
+arXiv preprint
+arXiv:2305.14233 . 13
+Dong, H., Xiong, W., Goyal, D., Zhang, Y., Chow, W., Pan, R., Diao, S., Zhang, J., Shum, K.
+and Zhang, T. (2023). Raft: Reward ranked finetuning for generative foundation model alignment. arXiv
+preprint arXiv:2304.06767 . 5
+Du, Y., Winnicki, A., Dalal, G., Mannor, S. and Srikant, R. (2024). Exploration-driven policy
+optimization in rlhf: Theoretical insights on efficient data utilization. arXiv preprint arXiv:2402.10342 .
+5
+Dubois, Y., Galambosi, B., Liang, P. and Hashimoto, T. B. (2024). Length-controlled alpacaeval: A
+simple way to debias automatic evaluators. arXiv preprint arXiv:2404.04475 . 13, 14
+Eisenstein, J., Nagpal, C., Agarwal, A., Beirami, A., D’Amour, A., Dvijotham, D., Fisch, A.,
+Heller, K., Pfohl, S., Ramachandran, D. et al. (2023).
+Helping or herding?
+reward model
+ensembles mitigate but do not eliminate reward hacking. arXiv preprint arXiv:2312.09244 . 5
+Engstrom, L., Ilyas, A., Santurkar, S., Tsipras, D., Janoos, F., Rudolph, L. and Madry, A.
+(2020). Implementation matters in deep policy gradients: A case study on ppo and trpo. arXiv preprint
+arXiv:2005.12729 . 4
+Fan, K. (1953). Minimax theorems. Proceedings of the National Academy of Sciences 39 42–47. 27, 28
+Fu, Z., Qi, Z., Wang, Z., Yang, Z., Xu, Y. and Kosorok, M. R. (2022). Offline reinforcement learning
+with instrumental variables in confounded markov decision processes. arXiv preprint arXiv:2209.08666 .
+5
+16
+
+
+Ganguli, D., Lovitt, L., Kernion, J., Askell, A., Bai, Y., Kadavath, S., Mann, B., Perez, E.,
+Schiefer, N., Ndousse, K. et al. (2022). Red teaming language models to reduce harms: Methods,
+scaling behaviors, and lessons learned. arXiv preprint arXiv:2209.07858 . 2
+Gao, L., Schulman, J. and Hilton, J. (2023).
+Scaling laws for reward model overoptimization.
+In
+International Conference on Machine Learning. PMLR. 2, 5
+Gehman, S., Gururangan, S., Sap, M., Choi, Y. and Smith, N. A. (2020).
+Realtoxicityprompts:
+Evaluating neural toxic degeneration in language models. arXiv preprint arXiv:2009.11462 . 2
+Hong, J., Lee, N. and Thorne, J. (2024). Orpo: Monolithic preference optimization without reference
+model. arXiv preprint arXiv:2403.07691 . 2, 4, 5, 13
+Hu, J., Wu, X., Wang, W., Xianyu, Zhang, D. and Cao, Y. (2024). Openrlhf: An easy-to-use, scalable
+and high-performance rlhf framework. arXiv preprint arXiv:2405.11143 . 31
+Ji, H., Lu, C., Niu, Y., Ke, P., Wang, H., Zhu, J., Tang, J. and Huang, M. (2024). Towards efficient
+and exact optimization of language model alignment. arXiv preprint arXiv:2402.00856 . 4
+Jin, Y., Yang, Z. and Wang, Z. (2021). Is pessimism provably efficient for offline rl?
+In International
+Conference on Machine Learning. PMLR. 5
+Li, Z., Yang, Z. and Wang, M. (2023). Reinforcement learning with human feedback: Learning dynamic
+choices via pessimism. arXiv preprint arXiv:2305.18438 . 5
+Liang, X., Chen, C., Wang, J., Wu, Y., Fu, Z., Shi, Z., Wu, F. and Ye, J. (2024). Robust preference
+optimization with provable noise tolerance for llms. arXiv preprint arXiv:2404.04102 . 4
+Liu, T., Zhao, Y., Joshi, R., Khalman, M., Saleh, M., Liu, P. J. and Liu, J. (2023a). Statistical
+rejection sampling improves preference optimization. arXiv preprint arXiv:2309.06657 . 4
+Liu, W., Zeng, W., He, K., Jiang, Y. and He, J. (2023b). What makes good data for alignment? a
+comprehensive study of automatic data selection in instruction tuning. arXiv preprint arXiv:2312.15685
+. 13
+Liu, Z., Lu, M., Wang, Z., Jordan, M. and Yang, Z. (2022a). Welfare maximization in competitive equi-
+librium: Reinforcement learning for markov exchange economy. In International Conference on Machine
+Learning. PMLR. 5
+Liu, Z., Lu, M., Xiong, W., Zhong, H., Hu, H., Zhang, S., Zheng, S., Yang, Z. and Wang, Z. (2024).
+Maximize to explore: One objective function fusing estimation, planning, and exploration. Advances in
+Neural Information Processing Systems 36. 25
+Liu, Z., Zhang, Y., Fu, Z., Yang, Z. and Wang, Z. (2022b). Learning from demonstration: Provably
+efficient adversarial policy imitation with linear function approximation. In International conference on
+machine learning. PMLR. 5
+Lu, M., Min, Y., Wang, Z. and Yang, Z. (2022).
+Pessimism in the face of confounders: Provably
+efficient offline reinforcement learning in partially observable markov decision processes. arXiv preprint
+arXiv:2205.13589 . 5
+Michaud, E. J., Gleave, A. and Russell, S. (2020). Understanding learned reward functions. arXiv
+preprint arXiv:2012.05862 . 2, 5
+Moskovitz, T., Singh, A. K., Strouse, D., Sandholm, T., Salakhutdinov, R., Dragan, A. D. and
+McAleer, S. (2023). Confronting reward model overoptimization with constrained rlhf. arXiv preprint
+arXiv:2310.04373 . 5
+Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C., Mishkin, P., Zhang, C., Agarwal,
+S., Slama, K., Ray, A. et al. (2022). Training language models to follow instructions with human
+feedback. Advances in neural information processing systems 35 27730–27744. 2, 4, 5, 7
+17
+
+
+Pacchiano, A., Saha, A. and Lee, J. (2021). Dueling rl: reinforcement learning with trajectory prefer-
+ences. arXiv preprint arXiv:2111.04850 . 5
+Pal, A., Karkhanis, D., Dooley, S., Roberts, M., Naidu, S. and White, C. (2024). Smaug: Fixing
+failure modes of preference optimisation with dpo-positive. arXiv preprint arXiv:2402.13228 . 4, 5
+Rafailov, R., Hejna, J., Park, R. and Finn, C. (2024). From r to q⋆: Your language model is secretly
+a q-function. arXiv preprint arXiv:2404.12358 . 2, 13
+Rafailov, R., Sharma, A., Mitchell, E., Manning, C. D., Ermon, S. and Finn, C. (2023). Direct
+preference optimization: Your language model is secretly a reward model. Advances in Neural Information
+Processing Systems 36. 3, 4, 7, 8, 9
+Rashidinejad, P., Zhu, B., Ma, C., Jiao, J. and Russell, S. (2021). Bridging offline reinforcement
+learning and imitation learning: A tale of pessimism. Advances in Neural Information Processing Systems
+34 11702–11716. 5
+Rashidinejad, P., Zhu, H., Yang, K., Russell, S. and Jiao, J. (2022). Optimal conservative offline rl
+with general function approximation via augmented lagrangian. arXiv preprint arXiv:2211.00716 . 5
+Rita, M., Strub, F., Chaabouni, R., Michel, P., Dupoux, E. and Pietquin, O. (2024). Counter-
+ing reward over-optimization in llm with demonstration-guided reinforcement learning. arXiv preprint
+arXiv:2404.19409 . 5
+Rosset, C., Cheng, C.-A., Mitra, A., Santacroce, M., Awadallah, A. and Xie, T. (2024). Direct
+nash optimization: Teaching language models to self-improve with general preferences. arXiv preprint
+arXiv:2404.03715 . 4
+Schulman, J., Wolski, F., Dhariwal, P., Radford, A. and Klimov, O. (2017). Proximal policy
+optimization algorithms. arXiv preprint arXiv:1707.06347 . 4
+Shi, L. and Chi, Y. (2024). Distributionally robust model-based offline reinforcement learning with near-
+optimal sample complexity. Journal of Machine Learning Research 25 1–91. 5
+Shi, L., Li, G., Wei, Y., Chen, Y. and Chi, Y. (2022). Pessimistic q-learning for offline reinforcement
+learning: Towards optimal sample complexity. In International conference on machine learning. PMLR.
+5
+Tajwar, F., Singh, A., Sharma, A., Rafailov, R., Schneider, J., Xie, T., Ermon, S., Finn, C.
+and Kumar, A. (2024). Preference fine-tuning of llms should leverage suboptimal, on-policy data. arXiv
+preprint arXiv:2404.14367 . 4
+Tang, Y., Guo, Z. D., Zheng, Z., Calandriello, D., Munos, R., Rowland, M., Richemond, P. H.,
+Valko, M., Pires, B. ´A. and Piot, B. (2024). Generalized preference optimization: A unified approach
+to offline alignment. arXiv preprint arXiv:2402.05749 . 4
+Taori, R., Gulrajani, I., Zhang, T., Dubois, Y., Li, X., Guestrin, C., Liang, P. and Hashimoto,
+T. B. (2023). Stanford alpaca: An instruction-following llama model. 21
+Team, G., Anil, R., Borgeaud, S., Wu, Y., Alayrac, J.-B., Yu, J., Soricut, R., Schalkwyk, J.,
+Dai, A. M., Hauth, A. et al. (2023). Gemini: a family of highly capable multimodal models. arXiv
+preprint arXiv:2312.11805 . 4
+Tien, J., He, J. Z.-Y., Erickson, Z., Dragan, A. D. and Brown, D. S. (2022). Causal confusion and
+reward misidentification in preference-based reward learning. arXiv preprint arXiv:2204.06601 . 2, 5
+Tunstall, L., Beeching, E., Lambert, N., Rajani, N., Huang, S., Rasul, K., Rush, A. M. and
+Wolf, T. (2023a). The alignment handbook. https://github.com/huggingface/alignment-handbook.
+29
+18
+
+
+Tunstall, L., Beeching, E., Lambert, N., Rajani, N., Rasul, K., Belkada, Y., Huang, S., von
+Werra, L., Fourrier, C., Habib, N. et al. (2023b). Zephyr: Direct distillation of lm alignment.
+arXiv preprint arXiv:2310.16944 . 4, 13
+Uehara, M. and Sun, W. (2021). Pessimistic model-based offline reinforcement learning under partial
+coverage. In International Conference on Learning Representations. 5
+Wang, P., Li, L., Chen, L., Zhu, D., Lin, B., Cao, Y., Liu, Q., Liu, T. and Sui, Z. (2023a). Large
+language models are not fair evaluators. arXiv preprint arXiv:2305.17926 . 29
+Wang, Y., Liu, Q. and Jin, C. (2023b). Is rlhf more difficult than standard rl? a theoretical perspective.
+Advances in Neural Information Processing Systems 36. 5
+Wu, Y., Sun, Z., Yuan, H., Ji, K., Yang, Y. and Gu, Q. (2024). Self-play preference optimization for
+language model alignment. arXiv preprint arXiv:2405.00675 . 4
+Xie, T., Cheng, C.-A., Jiang, N., Mineiro, P. and Agarwal, A. (2021a). Bellman-consistent pessimism
+for offline reinforcement learning. Advances in neural information processing systems 34 6683–6694. 5
+Xie, T., Jiang, N., Wang, H., Xiong, C. and Bai, Y. (2021b). Policy finetuning: Bridging sample-
+efficient offline and online reinforcement learning. Advances in neural information processing systems 34
+27395–27407. 5
+Xiong, W., Dong, H., Ye, C., Zhong, H., Jiang, N. and Zhang, T. (2023). Gibbs sampling from
+human feedback: A provable kl-constrained framework for rlhf. arXiv preprint arXiv:2312.11456 . 4, 5,
+6, 7, 10, 11
+Xiong, W., Zhong, H., Shi, C., Shen, C., Wang, L. and Zhang, T. (2022). Nearly minimax optimal
+offline reinforcement learning with linear function approximation: Single-agent mdp and markov game.
+arXiv preprint arXiv:2205.15512 . 5
+Xu, S., Fu, W., Gao, J., Ye, W., Liu, W., Mei, Z., Wang, G., Yu, C. and Wu, Y. (2024). Is dpo
+superior to ppo for llm alignment? a comprehensive study. arXiv preprint arXiv:2404.10719 . 3, 21
+Ye, C., Xiong, W., Zhang, Y., Jiang, N. and Zhang, T. (2024). A theoretical analysis of nash learning
+from human feedback under general kl-regularized preference. arXiv preprint arXiv:2402.07314 . 4, 5, 10
+Yin, M. and Wang, Y.-X. (2021). Towards instance-optimal offline reinforcement learning with pessimism.
+Advances in neural information processing systems 34 4065–4078. 5
+Yue, Y., Broder, J., Kleinberg, R. and Joachims, T. (2012). The k-armed dueling bandits problem.
+Journal of Computer and System Sciences 78 1538–1556. 5
+Zhan, W., Huang, B., Huang, A., Jiang, N. and Lee, J. (2022). Offline reinforcement learning with
+realizability and single-policy concentrability. In Conference on Learning Theory. PMLR. 5
+Zhan, W., Uehara, M., Kallus, N., Lee, J. D. and Sun, W. (2023a). Provable offline preference-based
+reinforcement learning. In The Twelfth International Conference on Learning Representations. 5, 7, 10
+Zhan, W., Uehara, M., Sun, W. and Lee, J. D. (2023b). How to query human feedback efficiently in
+rl? arXiv preprint arXiv:2305.18505 . 5
+Zhang, R., Lin, L., Bai, Y. and Mei, S. (2024a). Negative preference optimization: From catastrophic
+collapse to effective unlearning. arXiv preprint arXiv:2404.05868 . 4
+Zhang, T. (2023). Mathematical analysis of machine learning algorithms. Cambridge University Press. 8
+Zhang, X., Ton, J.-F., Shen, W., Wang, H. and Liu, Y. (2024b).
+Overcoming reward overopti-
+mization via adversarial policy optimization with lightweight uncertainty estimation.
+arXiv preprint
+arXiv:2403.05171 . 5
+19
+
+
+Zhao, Y., Joshi, R., Liu, T., Khalman, M., Saleh, M. and Liu, P. J. (2023).
+Slic-hf: Sequence
+likelihood calibration with human feedback. arXiv preprint arXiv:2305.10425 . 4
+Zheng, L., Chiang, W.-L., Sheng, Y., Zhuang, S., Wu, Z., Zhuang, Y., Lin, Z., Li, Z., Li, D.,
+Xing, E. et al. (2024). Judging llm-as-a-judge with mt-bench and chatbot arena. Advances in Neural
+Information Processing Systems 36. 13, 14
+Zhong, H., Feng, G., Xiong, W., Zhao, L., He, D., Bian, J. and Wang, L. (2024). Dpo meets ppo:
+Reinforced token optimization for rlhf. arXiv preprint arXiv:2404.18922 . 5
+Zhou, D.-X. (2002). The covering number in learning theory. Journal of Complexity 18 739–767. 22
+Zhu, B., Jiao, J. and Jordan, M. I. (2023). Principled reinforcement learning with human feedback from
+pairwise or k-wise comparisons. arXiv preprint arXiv:2301.11270 . 5, 6, 10, 11
+Zhu, B., Jordan, M. I. and Jiao, J. (2024). Iterative data smoothing: Mitigating reward overfitting and
+overoptimization in rlhf. arXiv preprint arXiv:2401.16335 . 2, 5, 11
+Ziegler, D. M., Stiennon, N., Wu, J., Brown, T. B., Radford, A., Amodei, D., Christiano, P. and
+Irving, G. (2019). Fine-tuning language models from human preferences. arXiv preprint arXiv:1909.08593
+. 2, 4
+20
+
+
+A
+Further Discussions
+In this section, we make several further discussions on the RPO algorithm and its theory
+Discussions on the partial coverage assumption (Assumption 5.2).
+A sufficient condition to make
+this partial coverage condition (Assumption 5.2) hold is that the distribution of the offline dataset, which is
+µD, can well cover the joint distribution of (a1, a0) ∼(π, πbase). Here to discuss focus on πbase = πchosen as
+we adopted in the experiment part.
+First, we clarify that the offline dataset distribution µD is not simply (a1, a0) ∼(πunchosen, πchosen), since
+according to our definition (see Section 2) whether a1 or a0 is chosen is random and is determined by y ∈0, 1
+obeying the BT model. Thus, (a1, a0) ∼µD can be interpreted as a mixture of (πunchosen, πchosen) and
+(πchosen, πunchosen). This mixture probability would not be too small as long as the quality of (a1, a0) does
+not vary too much, i.e., both of them are possible to be chosen, which is the case in practice. As a result, in
+the offline data distribution (a1, a0) ∼µD, both a1 and a0 partly comes from the chosen distribution πchosen.
+Then in order for µD to cover the joint distribution of (a1, a0) ∼(π, πbase), it suffices to argue that
+πchosen can cover the target policy π, which is then reduced back to the traditional coverage condition. Thus
+our assumption essentially requires that πchosen well covers and only needs to cover the target policy π.
+This coincides with the spirit of the minimal data assumption in offline RL theory, i.e., the so-called partial
+coverage condition.
+On the relationship between observed chosen probability and reward overoptimization.
+First,
+we note that the actions and their chosen probabilities can be interpreted as a proxy of analyzing the under-
+lying (estimated) reward model br due to the representation πbr(a|x) ∝πref(a|x) exp(β−1br(x, a)). Analyzing
+the (log) probabilities of the actions can be utilized to detect the mitigation of over-optimization, because
+according to the representation, an overestimated reward of a poor action would result in a higher probabil-
+ity of choosing this action, and would also cause a decay in the probability of choosing other better actions
+(since the probabilities are normalized to 1).
+To further showcase the ability of RPO to address overoptimization (through the lense of probability),
+consider the following theoretical example with only one state and three actions (Xu et al., 2024) where
+we can track everything clearly. It has three actions a, b, c with R⋆(a) = 1, R⋆(b) = 0.5, R⋆(c) = 0. The
+reference policy πref(a) = πref(b) = 0.4, πref(c) = 0.1, and the dataset consists of one data point D = (a, b, 1)
+(meaning action a is preferred in the data). Then an ideally solved DPO objective would be πDPO as long as
+πDPO(b) = 0, and the value of πDPO(a) can be arbitrarily chosen in [0, 1]. Thus a possible solution to DPO
+would be πDPO(a) = 0.5, πDPO(b) = 0, and by the normalizing condition πDPO(c) = 0.5, which is undesirable
+since the action c has reward R⋆(c) = 0. In contrast, solving the RPO objective would additionally require
+the maximization of πRPO(a) due to the SFT regularization term, and thus the solution is shifted towards
+πRPO(a) = 1, πRPO(b) = πRPO(c) = 0, which is better than the DPO policy. Thus, RPO is able to prevent
+overoptimization towards poor actions that are less covered by the dataset (action c here), therefore resulting
+in a better policy.
+About the relationships and distinctions between PTX loss in (Taori et al., 2023) and the SFT
+loss of RPO.
+The original PTX loss is an imitation loss calculated on the pretraining data. In contrast,
+the SFT loss in the RPO objective is an imitation loss calculated on the RLHF dataset. In more specific, our
+experiments use this SFT loss to imitate the chosen responses in the RLHF dataset. Thus the relationship
+is that they are both imitation loss which aims to mimic certain data distribution. The distinction is that
+they are calculated on different data sources. The SFT loss in the RPO objective naturally comes from our
+theoretical algorithm and provably serves as an important regularization term to mitigate overoptimization
+in offline RLHF.
+About the computational complexity of the SFT loss gradient.
+According to the paragraph Prac-
+tical implementation in Section 6, RPO adds an additional SFT loss (the log probability of the chosen
+labels in the preference dataset) on the original DPO loss, where we highlight that the SFT loss is actually
+an intermediate quantity in the calculation of the DPO loss. Therefore, our proposed method does not incur
+any additional computation overhead compared with the vanilla DPO.
+21
+
+
+B
+Proofs for Sample Complexity Analysis
+B.1
+Concepts
+We provide some useful concepts for the simplicity of later discussions.
+• Hellinger distance DHellinger(p∥q) between two probability density functions p and q defined on X is
+defined as
+DHellinger(p∥q) = 1
+2
+Z
+x∈X
+p
+p(x) −
+p
+q(x)
+2
+dx.
+• Total variation (TV) distance DTV(p∥q) between two probability density functions p and q defined on
+X is defined as
+DTV(p∥q) = 1
+2
+Z
+x∈X
+|p(x) −q(x)|dx.
+• Kullback–Leibler (KL) divergence KL(p∥q) between two probability density functions p and q defined
+on X is defined as
+KL(p∥q) =
+Z
+x∈X
+log
+p(x)
+q(x)
+
+p(x)dx.
+• We denote Nϵ(F, ∥· ∥∞) as the ϵ-covering number (Zhou, 2002) for function class F under the infinity
+norm ∥·∥∞. Widely used in the theoretical analysis, the ϵ-covering number characterizes the complexity
+of the function class F.
+B.2
+Proof of Theorem 5.3
+Proof of Theorem 5.3. By definition, the suboptimality gap of bπ w.r.t. π is decomposed as following,
+Gapπ(bπ)
+= Ex∼d0,a∼π(·|x)
+
+r⋆(x, a)
+
+−Ex∼d0,a∼bπ(·|x)
+
+r⋆(x, a)
+
+= Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
+h
+r⋆(x, a1) −r⋆(x, a0) −β · KL
+ π(·|x)∥πref(·|x)
+i
+−η−1 · min
+r∈R
+(
+η · Ex∼d0,a1∼bπ(·|x),
+a0∼πbase(·|x)
+h
+r(x, a1) −r(x, a0) −β · KL
+ bπ(·|x)∥πref(·|x)
+i
++ LD(r)
+)
++ η−1 · min
+r∈R
+(
+η · Ex∼d0,a1∼bπ(·|x),
+a0∼πbase(·|x)
+h
+r(x, a1) −r(x, a0) −β · KL
+ bπ(·|x)∥πref(·|x)
+i
++ LD(r)
+)
+−Ex∼d0,a1∼bπ(·|x),a0∼πbase(·|x)
+h
+r⋆(x, a1) −r⋆(x, a0) −β · KL
+ bπ(·|x)∥πref(·|x)
+i
++ β · Ex∼d0
+h
+KL
+ π(·|x)∥πref(·|x)
+
+−KL
+ bπ(·|x)∥πref(·|x)
+i
+:= Term (A) + Term (B) + Term (C),
+(B.1)
+where in the above Term (A), Term (B), and Term (C) are abbreviations for
+Term (A) = Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
+h
+r⋆(x, a1) −r⋆(x, a0) −β · KL
+ π(·|x)∥πref(·|x)
+i
+−η−1 · min
+r∈R
+(
+η · Ex∼d0,a1∼bπ(·|x),
+a0∼πbase(·|x)
+h
+r(x, a1) −r(x, a0) −β · KL
+ bπ(·|x)∥πref(·|x)
+i
++ LD(r)
+)
+,
+and
+Term (B) = η−1 · min
+r∈R
+(
+η · Ex∼d0,a1∼bπ(·|x),
+a0∼πbase(·|x)
+h
+r(x, a1) −r(x, a0) −β · KL
+ bπ(·|x)∥πref(·|x)
+i
++ LD(r)
+)
+−Ex∼d0,a1∼bπ(·|x),a0∼πbase(·|x)
+h
+r⋆(x, a1) −r⋆(x, a0) −β · KL
+ bπ(·|x)∥πref(·|x)
+i
+,
+22
+
+
+and
+Term (C) = β · Ex∼d0
+h
+KL
+ π(·|x)∥πref(·|x)
+
+−KL
+ bπ(·|x)∥πref(·|x)
+i
+.
+In the following, we analyze Term (A) and Term (B) respectively.
+Upper bound Term (A).
+Notice that by the optimality of our choice of policy bπ in (3.2), we have
+Term (A)
+= Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
+h
+r⋆(x, a1) −r⋆(x, a0) −β · KL
+ π(·|x)∥πref(·|x)
+i
+(B.2)
+−η−1 · min
+r∈R
+(
+η · Ex∼d0,a1∼bπ(·|x),
+a0∼πbase(·|x)
+h
+r(x, a1) −r(x, a0) −β · KL
+ bπ(·|x)∥πref(·|x)
+i
++ LD(r)
+)
+≤Ex∼d0,a1∼π(·|x),a0∼πref(·|x)
+h
+r⋆(x, a1) −r⋆(x, a0) −β · KL
+ π(·|x)∥πref(·|x)
+i
+−η−1 · min
+r∈R
+(
+η · Ex∼d0,a1∼π(·|x),
+a0∼πbase(·|x)
+h
+r(x, a1) −r(x, a0) −β · KL
+ π(·|x)∥πref(·|x)
+i
++ LD(r)
+)
+= max
+r∈R
+(
+Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
+h r⋆(x, a1) −r⋆(x, a0)
+
+−
+ r(x, a1) −r(x, a0)
+i
+−η−1 · LD(r)
+)
+,
+where in the inequality we apply the optimality of the choice of policy bπ in (3.2).
+Upper bound Term (B).
+For this term, we directly consider the following bound,
+Term (B)
+= η−1 · min
+r∈R
+(
+η · Ex∼d0,a1∼bπ(·|x),
+a0∼πbase(·|x)
+h
+r(x, a1) −r(x, a0) −β · KL
+ bπ(·|x)∥πref(·|x)
+i
++ LD(r)
+)
+−Ex∼d0,a1∼bπ(·|x),a0∼πbase(·|x)
+h
+r⋆(x, a1) −r⋆(x, a0) −β · KL
+ bπ(·|x)∥πref(·|x)
+i
+≤Ex∼d0,a1∼bπ(·|x),a0∼πbase(·|x)
+h
+r⋆(x, a1) −r⋆(x, a0) −β · KL
+ bπ(·|x)∥πref(·|x)
+i
++ η−1 · LD(r⋆)
+−Ex∼d0,a1∼bπ(·|x),a0∼πbase(·|x)
+h
+r⋆(x, a1) −r⋆(x, a0) −β · KL
+ bπ(·|x)∥πref(·|x)
+i
+= η−1 · LD(r⋆),
+(B.3)
+where in the inequality we apply the fact that r⋆∈R by Assumption 5.1.
+Combining Term (A), Term (B), and Term (C).
+Now by (B.1), (B.2), and (B.3), we have that
+Gapπ
+β(bπ) = Term (A) + Term (B) + Term (C)
+(B.4)
+≤max
+r∈R
+(
+Ex∼d0,a1∼π(·|x),
+a0∼πbase(·|x)
+h r⋆(x, a1) −r⋆(x, a0)
+
+−
+ r(x, a1) −r(x, a0)
+i
++ η−1 ·
+
+LD(r⋆) −LD(r)
+)
++ β · Ex∼d0
+h
+KL
+ π(·|x)∥πref(·|x)
+
+−KL
+ bπ(·|x)∥πref(·|x)
+i
+.
+In the following, we upper bound the right hand side of (B.4) via relating the MLE loss difference term to
+the reward difference term through a careful analysis of the preference model. On the one hand, we invoke
+Lemma B.1 to give an upper bound of the difference of the MLE loss as following, with probability at least
+1 −δ over random samples and ε = (6 · (1 + eR) · N)−1, for any reward model r ∈R, it holds that
+LD(r⋆) −LD(r) ≤−2 · E(x,a1,a0)∼µD(·,·,·)
+h
+D2
+Hellinger
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+i
++ 3
+N · log
+Nε(R, ∥· ∥∞)
+δ
+
+,
+23
+
+
+where we recall that we use the subscript r in Pr to emphasize the dependence of the probabilistic model on
+the reward model. Here Nε(R, ∥· ∥∞) denotes the ε-covering number of the reward model class and R is the
+upper bound on the reward functionss (Assumption 5.1). Now to facilitate the calculation, we lower bound
+the Hellinger distance by total variation (TV) distance as
+D2
+Hellinger
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+
+≥D2
+TV
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+
+,
+By the expression of the probability model Pr, we can further write the TV distance above as
+DTV
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+
+= 1
+2 ·
+σ
+ r⋆(x, a1) −r⋆(x, a0)
+
+−σ
+ r(x, a1) −r(x, a0)
+
++ 1
+2 ·
+σ
+ r⋆(x, a0) −r⋆(x, a1)
+
+−σ
+ r(x, a0) −r(x, a1)
+
+=
+σ
+ r⋆(x, a1) −r⋆(x, a0)
+
+−σ
+ r(x, a1) −r(x, a0)
+,
+(B.5)
+where in the second equality we use the fact that σ(−z) = 1 −σ(z). Now by Lemma B.2 and the condition
+that r(x, a) ∈[0, R] for any (x, a, r) ∈X × A × R (Assumption 5.1), we know that
+σ
+ r⋆(x, a1) −r⋆(x, a0)
+
+−σ
+ r(x, a1) −r(x, a0)
+ ≥κ ·
+
+ r⋆(x, a1) −r⋆(x, a0)
+
+−
+ r(x, a1) −r(x, a0)
+,
+where κ = 1/(1 + exp(R))2. As a result, the difference of the MLE loss is upper bounded by
+LD(r⋆) −LD(r) ≤−2κ2 · E(x,a1,a0)∼µD(·,·,·)
+
+ r⋆(x, a1) −r⋆(x, a0)
+
+−
+ r(x, a1) −r(x, a0)
+
+2
++ 3
+N · log
+Nε(R, ∥· ∥∞)
+δ
+
+.
+(B.6)
+On the other hand, the reward difference term in (B.4), which is evaluated on actions from π and πbase, can
+be related to the reward difference evaluated on the data distribution µD via Assumption 5.2, i.e.,
+Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
+h r⋆(x, a1) −r⋆(x, a0)
+
+−
+ r(x, a1) −r(x, a0)
+i
+(B.7)
+≤CµD(R; π, πbase)
+s
+E(x,a1,a0)∼µD
+
+ r⋆(x, a1) −r⋆(x, a0)
+
+−
+ r(x, a1) −r(x, a0)
+
+2
+.
+Finally, combining (B.6), (B.7), and (B.4), denoting
+∆r :=
+s
+E(x,a1,a0)∼µD
+
+ r⋆(x, a1) −r⋆(x, a0)
+
+−
+ r(x, a1) −r(x, a0)
+
+2
+,
+we have that
+Gapπ(bπ) ≤max
+r∈R
+n
+CµD(R; π, πbase) · ∆r −2η−1κ2 · ∆2
+r
+o
++
+3
+ηN · log
+Nε(R, ∥· ∥∞)
+δ
+
++ β · Ex∼d0
+h
+KL
+ π(·|x)∥πref(·|x)
+
+−KL
+ bπ(·|x)∥πref(·|x)
+i
+≤
+ CµD(R; π, πbase)
+2η
+8κ2
++
+3
+ηN · log
+Nε(R, ∥· ∥∞)
+δ
+
++ β · Ex∼d0
+h
+KL
+ π(·|x)∥πref(·|x)
+i
+,
+where in the second inequality we use that fact that az−bz2 ≤a2/(4b) for any z ∈R and that KL-divergence
+is non-negative. Consequently, with the choice of
+η = 2
+√
+6 ·
+r
+log (Nε(R, ∥· ∥∞)/δ)
+N
+,
+β =
+1
+√
+N
+,
+κ =
+1
+(1 + exp(R))2 ,
+we conclude that with probability at least 1 −δ and ε = (6 · (1 + eR) · N)−1,
+Gapπ(bπ) ≤
+√
+6
+ 1 + exp(R)
+2  CµD(R; π, πbase)
+2 + 1
+
+ι + 4Ex∼d0
+h
+KL
+ π(·|x)∥πref(·|x)
+i
+4
+√
+N
+,
+where we denote ι =
+p
+log (Nε(R, ∥· ∥∞)/δ) with ε = (6 · (1 + eR) · N)−1. This proves Theorem 5.3.
+24
+
+
+B.3
+Technical Lemmas
+Lemma B.1 (Uniform concentration). Consider the MLE loss (3.1) and define the approximation error as
+ε = (6 · (1 + eR) · N)−1 where R is the upper bound on the reward functions (Assumption 5.2). Suppose that
+the reward model class R has a finite ε-covering number Nε(R, ∥· ∥∞) < ∞. Then for any δ < 1/e it holds
+with probability at least 1 −δ that
+LD(r⋆) −LD(r) ≤−2 · E(x,a1,a0)∼µD(·,·,·)
+h
+D2
+Hellinger
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+i
++ 3
+N · log
+Nε(R, ∥· ∥∞)
+δ
+
+.
+Proof of Lemma B.1. For notational simplicity, we use Cε(R, ∥·∥∞) to denote an ε-cover of the reward model
+class R under the ∥· ∥∞-norm. It holds that Nε(R, ∥· ∥∞) = |Cε(R, ∥· ∥∞)|. First we invoke Proposition 5.3
+of Liu et al. (2024) to obtain a uniform concentration over the finite set of ε-cover Cε(R, ∥· ∥∞). Specifically,
+with probability at least 1 −δ, for any r ∈Cε(R, ∥· ∥∞),
+LD(r⋆) −LD(r) ≤−2 · E(x,a1,a0)∼µD(·,·,·)
+h
+D2
+Hellinger
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+i
++ 2
+N · log
+Nε(R, ∥· ∥∞)
+δ
+
+.
+(B.8)
+Now for any reward model r ∈R, we take a r† ∈Cε(R, ∥· ∥∞) satisfying ∥r −r†∥∞≤ε. We have
+LD(r⋆) −LD(r) = LD(r⋆) −LD(r†) + LD(r†) −LD(r)
+≤−2 · E(x,a1,a0)∼µD(·,·,·)
+h
+D2
+Hellinger
+ Pr⋆(·|x, a1, a0)∥Pr†(·|x, a1, a0)
+i
++ 2
+N · log
+Nε(R, ∥· ∥∞)
+δ
+
++ LD(r†) −LD(r)
+≤−2 · E(x,a1,a0)∼µD(·,·,·)
+h
+D2
+Hellinger
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+i
++ 2
+N · log
+Nε(R, ∥· ∥∞)
+δ
+
++ LD(r†) −LD(r)
++ 4 · E(x,a1,a0)∼µD(·,·,·)
+h
+D2
+Hellinger
+ Pr†(·|x, a1, a0)∥Pr(·|x, a1, a0)
+i
+,
+(B.9)
+where in the fir inequality we use (B.8) for r† and in the second inequality we utilize the triangular inequality
+for Hellinger distance. Therefore, it remains to upper bound the approximation error induced by r†. On the
+one hand, by the definition of LD in (3.1), we have that
+LD(r†) −LD(r) = 1
+N
+N
+X
+i=1
+yi · log
+ 
+σ
+ r(xi, a1
+i ) −r(xi, a0
+i )
+
+σ
+ r†(xi, a1
+i ) −r†(xi, a0
+i )
+
+!
++ 1
+N
+N
+X
+i=1
+(1 −yi) · log
+ 
+σ
+ r(xi, a0
+i ) −r(xi, a1
+i )
+
+σ
+ r†(xi, a0
+i ) −r†(xi, a1
+i )
+
+!
+.
+Use the inequality that log(x) ≤x −1, we can further upper bound LD(r†) −LD(r) by
+LD(r†) −LD(r) ≤1
+N
+N
+X
+i=1
+yi · σ
+ r(xi, a1
+i ) −r(xi, a0
+i )
+
+−σ
+ r†(xi, a1
+i ) −r†(xi, a0
+i )
+
+σ
+ r†(xi, a1
+i ) −r†(xi, a0
+i )
+
++ 1
+N
+N
+X
+i=1
+(1 −yi) · σ
+ r(xi, a0
+i ) −r(xi, a1
+i )
+
+−σ
+ r†(xi, a0
+i ) −r†(xi, a1
+i )
+
+σ
+ r†(xi, a0
+i ) −r†(xi, a1
+i )
+
+.
+Now since ∥r† −r∥∞≤ε and r† ∈[0, R], invoking Lemma B.2, we can derive that
+LD(r†) −LD(r) ≤1
+N
+N
+X
+i=1
+ r(xi, a1
+i ) −r(xi, a0
+i )
+
+−
+ r†(xi, a1
+i ) −r†(xi, a0
+i )
+
+(1 + eR)−1
+25
+
+
++ 1
+N
+N
+X
+i=1
+ r(xi, a0
+i ) −r(xi, a1
+i )
+
+−
+ r†(xi, a0
+i ) −r†(xi, a1
+i )
+
+(1 + eR)−1
+≤4 · ∥r† −r∥∞· (1 + eR) ≤4ε · (1 + eR).
+(B.10)
+On the other hand, we upper bound the hellinger distance between Pr and Pr†, for any (x, a1, a0) ∈X ×A×A,
+D2
+Hellinger
+ Pr†(·|x, a1, a0)∥Pr(·|x, a1, a0)
+
+≤DTV
+ Pr†(·|x, a1, a0)∥Pr(·|x, a1, a0)
+
+=
+σ
+ r†(x, a1) −r†(x, a0)
+
+−σ
+ r(x, a1) −r(x, a0)
+
+≤
+
+ r†(x, a1) −r†(x, a0)
+
+−
+ r(x, a1) −r(x, a0)
+
+≤2 · ∥r† −r∥∞≤2ε,
+(B.11)
+where the first inequality uses the fact that D2
+Hellinger ≤DTV, the equality uses the same argument as (B.5),
+and the second inequality applies Lemma B.2. Finally, combining (B.9), (B.10), and (B.11), we conclude
+that
+LD(r⋆) −LD(r) ≤−2 · E(x,a1,a0)∼µD(·,·,·)
+h
+D2
+Hellinger
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+i
++ 2
+N · log
+Nε(R, ∥· ∥∞)
+δ
+
++ 6ε · (1 + eR).
+By taking the approximation error ε = (6 · (1 + eR) · N)−1, we conclude that for δ < e−1, with probability
+at least 1 −δ, for any r ∈R, it holds that
+LD(r⋆) −LD(r) ≤−2 · E(x,a1,a0)∼µD(·,·,·)
+h
+D2
+Hellinger
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+i
++ 3
+N · log
+Nε(R, ∥· ∥∞)
+δ
+
+.
+This completes the proof of Lemma B.1.
+Lemma B.2 (Sigmoid function). For any real numbers z1, z2 ∈[−R, R], it holds that
+κ · |z1 −z2| ≤|σ(z1) −σ(z2)| ≤|z1 −z2|,
+where the constant κ = 1/(1 + exp(R))2.
+Proof of Lemma B.2. Since the sigmoid function σ(·) is differentiable, we know that for any z1, z2 ∈[−R, R],
+there exists some ξ(z1, z2) ∈[−R, R] such that
+σ(z1) −σ(z2) = σ′ ξ(z1, z2)
+
+· (z1 −z2).
+Notice that σ′(z) = σ(z) · (1 −σ(z)), we can obtain that
+1 ≥σ′ ξ(z1, z2)
+
+= σ
+ ξ(z1, z2)
+
+·
+
+1 −σ
+ ξ(z1, z2)
+
+=
+1
+1 + exp(ξ(z1, z2)) ·
+
+1 −
+1
+1 + exp(ξ(z1, z2))
+
+≥
+1
+1 + exp(R) ·
+
+1 −
+1
+1 + exp(−R)
+
+=
+1
+(1 + exp(R))2 .
+This completes the proof of Lemma B.2.
+26
+
+
+C
+Proofs for Equivalence between Maximin and Minimax Objec-
+tives
+C.1
+Proof of Theorem 5.6
+Proof of Theorem 5.6. Consider denoting an auxiliary policy bπ as
+bπ ∈argmax
+π∈Π
+min
+r∈R ϕ(π, r).
+(C.1)
+By the definition of br and bπ, the duality gap of (br, bπ), defined as
+Dual(br, bπ) := max
+π∈Π ϕ(π, br) −min
+r∈R ϕ(bπ, r)
+is zero. This is because the following deduction,
+Dual(br, bπ) =
+
+max
+π∈Π ϕ(π, br) −min
+r∈R max
+π∈Π ϕ(π, r)
+
++
+
+max
+π∈Π min
+r∈R ϕ(π, r) −min
+r∈R ϕ(bπ, r)
+
+= 0,
+(C.2)
+where in the first equality we apply Lemma C.1 that the minimax objective and the maximin objective are
+equivalent, and the last equality applies the definition of br and bπ respectively. Note that we can rewrite the
+duality gap as following
+Dual(br, bπ) =
+
+max
+π∈Π ϕ(π, br) −ϕ(bπ, br)
+
++
+
+ϕ(bπ, br) −min
+r∈R ϕ(bπ, r)
+
+.
+(C.3)
+Combining (C.2) and (C.3), we can conclude that
+max
+π∈Π ϕ(π, br) = ϕ(bπ, br)
+⇒
+bπ ∈argmax
+π∈Π
+ϕ(br, π).
+(C.4)
+Now comparing what πbr and bπ satisfy in (5.5) and (C.4) respectively, invoking Lemma C.3 that the maximizer
+of ϕ(·, r) given any r ∈R is unique on the support of d0, we can conclude that
+πbr(·|x) = bπ(·|x),
+∀x ∈Supp(d0).
+(C.5)
+Therefore, by (C.1) and (C.5), and the fact that ϕ(π, r) depends on π only through its value on the support
+of d0, we can conclude that
+πbr ∈argmax
+π∈Π
+min
+r∈R ϕ(π, r).
+This finishes the proof of Theorem 5.6.
+C.2
+Auxiliary Lemmas
+Lemma C.1 (Equivalence of maximin and minimax objectives). For the policy class Π defined in (2.3) and
+the reward model class R satisfying Assumption 5.5, it holds that the maximin objective is equivalent to the
+minimax objective, i.e.,
+max
+π∈Π min
+r∈R ϕ(π, r) = min
+r∈R max
+π∈Π ϕ(π, r).
+Proof of Lemma C.1. The foundation of this result is a minimax theorem given by Fan (1953) (Lemma C.2).
+In our setting, the policy class Π is a nonempty set, and the reward model class R is a nonempty compact
+Hausdorff space. Furthermore, by our choice of the policy class Π in (2.3), Π is a convex set. Meanwhile,
+the function ϕ is a concave function of π ∈Π since the dependence on π is linear terms plus a negative KL
+term (concave). Finally, by our assumption, the function ϕ is convex-like on the reward model class R and
+is also continuous on R. As a result, all the conditions of Lemma C.2 are satisfied and the minimax theorem
+holds in our problem setup, finishing the proof of Lemma C.1.
+27
+
+
+Lemma C.2 (Minimax theorem (Fan, 1953)). Let X be a nonempty set (not necessarily topologized) and Y
+be a nonempty compact topological space. Let f : X × Y 7→R be lower semicontinuous on Y. Suppose that f
+is concave-like on X and convex-like on Y, i.e., for any x1, x2 ∈X, α ∈[0, 1], there exists x3 ∈X such that
+f(x3, ·) ≥α · f(x1, ·) + (1 −α) · f(x2, ·) on Y,
+and for any y1, y2 ∈Y, β ∈[0, 1], there exists y3 ∈Y such that
+f(·, y3) ≤β · f(·, y1) + (1 −β) · f(·, y2) on Y.
+Then the following equation holds,
+max
+x∈X min
+y∈Y f(x, y) = min
+y∈Y max
+x∈X f(x, y).
+Lemma C.3 (Unique maximizer of ϕ). Consider the function ϕ defined as
+ϕ(π, r) := η · Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
+h
+r(x, a1) −r(x, a0) −β · DKL
+ π(·|x)∥πref(·|x)
+i
++ LD(r).
+Then given any r ∈R, the maximimzer of ϕ(·, r) is unique on the support of d0.
+Proof of Lemma C.3. Given any r ∈R, consider that
+max
+π∈Π ϕ(π, r)
+= η · max
+π∈Π
+n
+Ex∼d0,a1∼π(·|x)
+h
+r(x, a1) −β · DKL
+ π(·|x)∥πref(·|x)
+io
+= η · max
+π∈Π
+(
+Cr −β · Ex∼d0
+"
+DKL
+ 
+π(·|x)
+
+πref(·|x) · exp(β−1 · r(x, ·))
+R
+a′∈A dπref(a′|x) · exp(β−1 · r(x, a′))
+!#)
+,
+where
+Cr = Ex∼d0
+
+β · log
+Z
+a∈A
+dπref(a|x) · exp
+ β−1 · r(x, a)
+
+is a constant independent of π. Therefore, the maximizer of ϕ(·, r) on the support of d0 must equal to
+πr(·|x) =
+πref(·|x) · exp(β−1 · r(x, ·))
+R
+a′∈A dπref(a′|x) · exp(β−1 · r(x, a′)),
+which completes the proof of Lemma C.3.
+D
+Proofs for Generalization to New Prompt Distributions
+Proof of Corollary 5.8. Consider by Holder’s inequality, we can bound the new target as
+Ex∼d1,a∼π⋆(·|x)[r⋆(x, a)] −Ex∼d1,a∼πbr(·|x)[r⋆(x, a)]
+= Ex∼d1
+
+Ea∼π⋆(·|x)[r⋆(x, a)] −Ea∼πbr(·|x)[r⋆(x, a)]
+
+= Ex∼d0
+d1(x)
+d0(x) ·
+ Ea∼π⋆(·|x)[r⋆(x, a)] −Ea∼πbr(·|x)[r⋆(x, a)]
+
+≤C∞(d0, d1) · Ex∼d0
+Ea∼π⋆(·|x)[r⋆(x, a)] −Ea∼πbr(·|x)[r⋆(x, a)]
+
+,
+(D.1)
+where the last inequality follows from Holder’s inequality and the definition of the density ratio C∞(d0, d1) in
+Corollary 5.8. Now since π⋆is the optimal policy in Π in the sense that π⋆= argmaxπ∈Π Ea∼π(·|x)[r⋆(x, a)]
+for any x ∈X, we have that
+Ex∼d0
+Ea∼π⋆(·|x)[r⋆(x, a)] −Ea∼πbr(·|x)[r⋆(x, a)]
+
+= Ex∼d0,a∼π⋆(·|x)[r⋆(x, a)] −Ex∼d0,a∼πbr(·|x)[r⋆(x, a)]
+= Gapπ⋆(πbr),
+(D.2)
+28
+
+
+Therefore, by combining (D.1) and (D.2), invoking Corollary 5.7, we have that
+Ex∼d1,a∼π⋆(·|x)[r⋆(x, a)] −Ex∼d1,a∼πbr(·|x)[r⋆(x, a)] ≤e
+O
+C∞(d0, d1)
+√
+N
+
+,
+with probability at least 1 −δ. This proves Corollary 5.8.
+E
+Additional Details on Experiments
+E.1
+Training Details
+We train the gemma series models with 8 NVIDIA A6000 GPUs and the beta series models with 8 NVIDIA
+A100 GPUs, where they are all GPT-like models with around 7 billion parameters. It takes around three
+hours to train a beta series model and five hours to train a gemma one. Our codebase is adapted from the
+Alignment Handbook (Tunstall et al., 2023a). By comparing the validation loss on the test split (not used
+for later evaluation), we select the hyperparameter η of both RPO (beta) and RPO (gemma) to be 0.005. We
+list the remaining training configurations in Table 3, which are recommended by the Alignment Handbook.
+Configuration
+Beta Series
+Gemma Series
+learning rate
+5.0e-7
+5.0e-7
+learning scheduler type
+cosine
+cosine
+warmup ratio
+1.0
+1.0
+batch size
+128
+128
+gradient accumulation
+2
+16
+batch size per device
+8
+1
+training epoch
+1
+2
+β
+0.01
+0.05
+optimizer
+adamw torch
+adamw torch
+seed
+42
+42
+precision
+bfloat16
+bfloat16
+Table 3: Training configurations for beta series and gemma series models in this paper.
+E.2
+Evaluation Details
+GPT-4 evaluation on the test split.
+We use the following prompts to guide GPT-4 (0613) to annotate
+the preferences among win, lose, and tie (we denote them by A, B, and C, respectively).
+Prompts: Please act as an impartial judge and evaluate the quality of the responses provided by two
+AI assistants to the user question displayed below. You should choose the assistant that follows the
+user’s instructions and answers the user’s question better. Your evaluation should consider factors
+such as the helpfulness, relevance, accuracy, depth, creativity, and level of detail of their responses.
+Begin your evaluation by comparing the two responses and provide a short explanation. Avoid any
+position biases and ensure that the order in which the responses were presented does not influence
+your decision. Do not allow the length of the responses to influence your evaluation. Do not favor
+certain names of the assistants. Be as objective as possible. After providing your explanation, output
+your final verdict by strictly following this format: [[A]] if assistant A is better, [[B]] if assistant B
+is better, and [[C]] for a tie. [Instruction] instruction [The Start of Assistant A’s Answer] {answer
+A} [The End of Assistant A’s Answer] [The Start of Assistant B’s Answer] {answer B} [The End of
+Assistant B’s Answer]
+Here, we replace {answer A} and {answer B} with the answers of two models. Since GPT annotation
+has shown to prefer the answer in the first position (Wang et al., 2023a), we randomly exchange the positions
+between two answers during the evaluation to ensure a fair comparison.
+29
+
+
+Benchmark evaluation.
+We use the default configuration for the evaluations on MT-Bench1 and Al-
+pacaEval 2.02. By default, the annotator of MT-Bench is the latest version of GPT-4. The default annotator
+and the competitor model are both GPT-4 (Preview 11/06). We only need to manually import the proper
+chat template that formats the training dataset, which are shown as follows.
+Chat Template for Beta Series: <|system|></s><|user|>
+{instruction}</s>
+<|assistant|>
+Chat Template for Gemma Series: <bos><|im start|>user
+{instruction}<|im end|>
+<|im start|>assistant
+E.3
+Additional Results on Experiments
+In this section, we provide the additional results to show the performance gain for RPO (beta) in MT-Bench
+and RPO (gemma) in AlpacaEval 2.0. We report the pairwise win rates in Tables 4, 5, and 6 to analyze
+their performance gaps, where all the annotation configurations are the same in Table 2. Results show that
+RPO still exceeds DPO in the metric of the pairwise win rates on the benchmarks for both beta series and
+gemma series.
+win rate (%)
+RPO (beta)
+Ref. (beta)
+DPO (beta)
+RPO (beta)
+50.00
+83.75
+57.81
+Ref. (beta)
+16.25
+50.00
+21.25
+DPO (beta)
+78.75
+42.19
+50.00
+Table 4: Pairwise win rates (left vs. right) for beta series models on MT-Benchmark.
+win rate (%)
+RPO (beta)
+Ref. (beta)
+DPO (beta)
+RPO(beta)
+50.00
+80.13
+52.02
+Ref.(beta)
+19.87
+50.00
+20.61
+DPO (beta)
+47.98
+79.39
+50.00
+Table 5: Pairwise win rates (left vs. right) for gemma series models on AlpacaEval 2.0.
+win rate (%)
+RPO (beta)
+Ref. (beta)
+DPO (beta)
+RPO (beta)
+50.00
+64.93
+51.33
+Ref. (beta)
+35.07
+50.00
+36.44
+DPO (beta)
+48.67
+64.56
+50.00
+Table 6: Pairwise Length-Control (LC) win rates (left vs. right) for gemma series models on AlpacaEval 2.0.
+1https://github.com/lm-sys/FastChat/tree/main/fastchat/llm_judge
+2https://github.com/tatsu-lab/alpaca_eval/tree/main
+30
+
+
+F
+Experiments on Math, Reasoning, and Coding Tasks
+F.1
+Experimental Details
+To provide a more comprehensive analysis of the trained LLM, we introduce more benchmarks on the math,
+reasoning, and coding tasks for evaluations. Specifically, we choose the Grade School Math 8K (GSM8K), AI2
+Reasoning Challenge (ARC), and Mostly Basic Python Programming (MBPP) to measure math, reasoning,
+and coding abilities, respectively. In this section, we focus on the gemma series for the experiments. We do
+not use chain-of-thought or few shots in all the benchmarks. We compare the greedy decoding result (pass
+@1) on the MBPP benchmark.
+Here we use the OpenRLHF codebase (Hu et al., 2024) to implement a new variant of RPO, where the
+SFT loss regularizer is averaged by the number of tokens of the chosen labels, that is, (log πθ(acho|x))/|acho|.
+Such a variant balances the weight of the averaged SFT loss regularizer between the shorter chosen response
+and the longer one. We set the coefficient for the SFT loss regularizer as 0.2. We use 8 NVIDIA A100 GPUs
+for the training and evaluation. The remaining hyperparameters are in Table 7.
+Configuration
+Gemma Series
+learning rate
+5.0e-7
+learning scheduler type
+cosine with a minimum learning rate
+batch size
+128
+gradient accumulation
+8
+batch size per device
+2
+training epoch
+2
+β
+0.5
+optimizer
+adamw torch
+seed
+42
+precision
+bfloat16
+Table 7: Training configurations for DPO and RPO for the experiments in Appendix F.
+F.2
+Experimental Results
+Table 8 demonstrates that our proposed method still outperforms or performs equally to the vanilla DPO on
+these benchmarks of math, reasoning, and coding, which verifies the effectiveness of our proposed method.
+Model Name
+GSM8K
+ARC
+MBPP (Pass @1)
+(%)
+Easy (%)
+Challenge (%)
+Normal (%)
+Plus (%)
+RPO
+49.9
+79.1
+49.8
+54.2
+46.3
+DPO
+45.3
+75.7
+50.0
+54.2
+43.9
+Ref.
+45.4
+75.0
+45.8
+50.3
+44.2
+zephyr-gemma-7b
+47.3
+77.6
+48.6
+54.5
+44.7
+Table 8: The results on GSM8K, ARC, and MBPP. Here, zephyr-gemma-7b is the officially released models
+trained by DPO and Ref. denotes the reference model zephyr-7b-gemma-sft used for our training. RPO
+and DPO are trained with the OpenRLHF codebase (Hu et al., 2024) and we average the SFT loss regularizer
+in RPO by the number of tokens of the chosen response. We do not use chain-of-thought or few shots in all
+the benchmarks. We compare the greedy decoding result (pass @1) for MBPP.
+31
