@@ -1,0 +1,79 @@
+{
+  "n_train": 1692758,
+  "n_eval": 49399,
+  "n_clusters_per_layer": [
+    4096,
+    4096,
+    4096
+  ],
+  "n_layers": 3,
+  "n_items": 10,
+  "n_params": 45781504,
+  "train_loss": 2.897603,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "preprocessed_dir": "experiments/ntp_data/exp016-14d",
+  "timestamp": "2026-04-20 12:33:32",
+  "train": {
+    "n_params": 45781504,
+    "avg_ntp_loss": 2.724161,
+    "avg_dpo_loss": 1.734416,
+    "avg_total_loss": 2.897603,
+    "dpo_weight": 0.1,
+    "dpo_beta": 0.1,
+    "difficulty": "hard",
+    "pure_dpo": false,
+    "dpo_epochs": 0,
+    "total_tokens": 67491816,
+    "wall_time_s": 3734.8,
+    "batch_size": 136,
+    "dpo_batch_size": 16,
+    "world_size": 8,
+    "n_steps": 807,
+    "n_dpo_pairs": 4312,
+    "avg_chosen_reward": 5.2229,
+    "avg_rejected_reward": -9.8659,
+    "avg_reward_margin": 15.0887,
+    "avg_preference_acc": 0.7463
+  },
+  "eval": {
+    "ppl": 22.4266,
+    "layer_ppl": [
+      335.8589,
+      6.3341,
+      5.3891
+    ],
+    "avg_loss": 3.110249,
+    "depth_hit@10": [
+      0.2374,
+      0.2161,
+      0.2136
+    ],
+    "depth_hit@10_indep": [
+      0.2365,
+      0.892,
+      0.9318
+    ],
+    "depth_acc_beam": [
+      0.044,
+      0.03,
+      0.03
+    ],
+    "target_sid_found_rate": 0.644,
+    "n_eval_positions": 147902,
+    "n_eval_items": 49104,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.132,
+    "item_recall@50": 0.318,
+    "item_recall@100": 0.421,
+    "item_recall@500": 0.644
+  },
+  "alignment_eval": {
+    "chosen_reward": 7.0165,
+    "rejected_reward": -16.6044,
+    "reward_margin": 23.6209,
+    "preference_acc": 0.9374,
+    "n_pairs": 4312,
+    "difficulty": "hard",
+    "dpo_beta": 0.1
+  }
+}
