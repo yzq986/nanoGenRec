@@ -89,6 +89,8 @@ push_main() {
 
     # Push to personal (原始 commit，个人身份)
     if git remote | grep -q '^personal$'; then
+        echo "  Pulling from personal (rebase)..."
+        git pull --rebase personal "$BRANCH" 2>&1 || echo "  Warning: pull from personal failed"
         echo "  Pushing to personal..."
         git push personal "$BRANCH" 2>&1 || echo "  Warning: push to personal failed"
     else
@@ -100,6 +102,8 @@ push_main() {
         # Fallback: 没有 personal/company 双 remote 配置时，直接 push origin
         if git remote | grep -q '^origin$'; then
             echo "  No personal/public remotes — pushing to origin..."
+            echo "  Pulling from origin (rebase)..."
+            git pull --rebase origin "$BRANCH" 2>&1 || echo "  Warning: pull from origin failed"
             git push origin "$BRANCH" 2>&1 || echo "  Warning: push to origin failed"
         else
             echo "  Skipping company (remote not configured)"
