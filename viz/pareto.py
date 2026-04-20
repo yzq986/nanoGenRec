@@ -65,27 +65,26 @@ def plot_pareto(experiments, baseline_name=None, recall_key=None, save_path=None
 
     fig, ax = plt.subplots(figsize=(10, 7))
 
-    for pt in points:
+    for idx, pt in enumerate(points):
         marker = DIFFICULTY_MARKERS.get(pt['difficulty'], 'o')
         color = 'red' if pt['pure_dpo'] else 'steelblue'
-        size = 200 if pt['is_baseline'] else 80
-        edge = 'gold' if pt['is_baseline'] else 'none'
+        size = 250 if pt['is_baseline'] else 100
+        edge = 'gold' if pt['is_baseline'] else 'white'
         zorder = 10 if pt['is_baseline'] else 5
 
         ax.scatter(pt['ppl'], pt['recall'],
                    marker='*' if pt['is_baseline'] else marker,
-                   c=color, s=size, edgecolors=edge, linewidths=2,
+                   c=color, s=size, edgecolors=edge, linewidths=1.5,
                    zorder=zorder)
 
-        offset = (5, 5)
-        fontsize = 7
         short_name = pt['name'].replace('exp0', 'E')
         label = short_name
         if pt['dpo_weight'] > 0 and not pt['pure_dpo']:
             label += f' λ={pt["dpo_weight"]}'
+        y_nudge = 5 if idx % 2 == 0 else -12
         ax.annotate(label, (pt['ppl'], pt['recall']),
-                    textcoords='offset points', xytext=offset,
-                    fontsize=fontsize, alpha=0.7)
+                    textcoords='offset points', xytext=(8, y_nudge),
+                    fontsize=7.5, alpha=0.75)
 
     ax.set_xlabel('Perplexity (lower is better)', fontsize=12)
     ax.set_ylabel(f'{rk} % (higher is better)', fontsize=12)

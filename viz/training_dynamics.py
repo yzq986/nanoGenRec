@@ -14,21 +14,29 @@ import numpy as np
 from viz.loader import load_experiments
 
 
-def plot_training_dynamics(experiments, save_path=None, smooth=5):
-    """Plot NTP loss, DPO loss, and grad_norm for multiple experiments."""
+def plot_training_dynamics(experiments, save_path=None, smooth=0):
+    """Plot NTP loss, DPO loss, and grad_norm for multiple experiments.
+
+    Args:
+        smooth: smoothing window. 0 = auto (2% of longest experiment).
+    """
     n_exps = len(experiments)
     if n_exps == 0:
         print("No experiments found.")
         return
+
+    if smooth == 0:
+        max_steps = max(len(exp['log']) for exp in experiments)
+        smooth = max(1, max_steps // 50)
 
     has_ntp = any(
         any(r.get('ntp_loss', 0) > 0 for r in exp['log'])
         for exp in experiments
     )
     n_rows = 3 if has_ntp else 2
-    fig, axes = plt.subplots(n_rows, 1, figsize=(12, 4 * n_rows), sharex=True)
+    fig, axes = plt.subplots(n_rows, 1, figsize=(12, 3.5 * n_rows), sharex=True)
 
-    colors = plt.cm.tab10(np.linspace(0, 1, max(n_exps, 1)))
+    colors = plt.cm.tab10(np.linspace(0, 1, max(n_exps, 10)))
 
     for i, exp in enumerate(experiments):
         log = exp['log']
@@ -36,8 +44,9 @@ def plot_training_dynamics(experiments, save_path=None, smooth=5):
             continue
 
         steps = [r['step'] for r in log]
-        color = colors[i]
-        label = exp['name']
+        color = colors[i % 10]
+        label = exp['name'].replace('exp0', 'E')
+        lw = 1.5
 
         row = 0
 
@@ -45,34 +54,34 @@ def plot_training_dynamics(experiments, save_path=None, smooth=5):
             ntp = [r.get('ntp_loss', 0) for r in log]
             if any(v > 0 for v in ntp):
                 axes[row].plot(steps, _smooth(ntp, smooth),
-                               color=color, label=label, alpha=0.8)
+                               color=color, label=label, alpha=0.85, linewidth=lw)
             row += 1
 
         dpo = [r.get('dpo_loss', 0) for r in log]
         axes[row].plot(steps, _smooth(dpo, smooth),
-                       color=color, label=label, alpha=0.8)
+                       color=color, label=label, alpha=0.85, linewidth=lw)
 
         gnorm = [r.get('grad_norm', 0) for r in log]
         axes[row + 1].plot(steps, _smooth(gnorm, smooth),
-                           color=color, label=label, alpha=0.8)
+                           color=color, label=label, alpha=0.85, linewidth=lw)
 
     row = 0
     if has_ntp:
         axes[row].set_ylabel('NTP Loss')
-        axes[row].legend(fontsize=8)
+        axes[row].legend(fontsize=8, loc='upper right')
         axes[row].grid(True, alpha=0.3)
         row += 1
 
     axes[row].set_ylabel('DPO Loss')
-    axes[row].legend(fontsize=8)
+    axes[row].legend(fontsize=8, loc='upper right')
     axes[row].grid(True, alpha=0.3)
 
     axes[row + 1].set_ylabel('Grad Norm')
     axes[row + 1].set_xlabel('Step')
-    axes[row + 1].legend(fontsize=8)
+    axes[row + 1].legend(fontsize=8, loc='upper right')
     axes[row + 1].grid(True, alpha=0.3)
 
-    fig.suptitle('Training Dynamics', fontsize=14)
+    fig.suptitle(f'Training Dynamics (smooth={smooth})', fontsize=14)
     fig.tight_layout()
 
     if save_path:

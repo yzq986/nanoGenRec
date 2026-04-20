@@ -36,6 +36,9 @@ experiments/hyperparam/**/smoke_test/
 wandb/
 experiments/wandb/
 
+# Viz output (generated plots)
+viz/output_*.png
+
 # Eval output (generated at runtime)
 eval_results/
 eval_results_with_behavior/
