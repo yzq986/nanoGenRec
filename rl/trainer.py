@@ -1024,5 +1024,178 @@ def eval_main():
     log(is_main, "Eval complete!")
 
 
+def alignment_eval_main():
+    """Evaluate alignment metrics on existing checkpoint + preference pairs.
+
+    Runs forward-only (no training) to compute implicit reward, preference
+    accuracy, and reward margin on all preference pairs.
+
+    Usage:
+        python run.py alignment-eval \
+            --checkpoint experiments/ntp_checkpoints/exp019-joint-hard-lam10 \
+            --reference experiments/ntp_checkpoints/exp017-fixed-medium \
+            --preference_dir experiments/rf_dpo_data/exp018/hard
+    """
+    parser = argparse.ArgumentParser(description='Evaluate DPO alignment metrics')
+    parser.add_argument('--checkpoint', type=str, required=True,
+                        help='Policy model checkpoint directory')
+    parser.add_argument('--reference', type=str, required=True,
+                        help='Reference model checkpoint directory (the SFT/SP-DPO base)')
+    parser.add_argument('--preference_dir', type=str, required=True,
+                        help='Path to preference pair shards')
+    parser.add_argument('--difficulty', type=str, default='all',
+                        choices=['easy', 'medium', 'hard', 'all'])
+    parser.add_argument('--dpo_beta', type=float, default=0.1)
+    parser.add_argument('--dpo_batch_size', type=int, default=16)
+    parser.add_argument('--dpo_n_rejected', type=int, default=20)
+    args = parser.parse_args()
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    is_main = True
+
+    log(is_main, "=" * 60)
+    log(is_main, "Alignment Evaluation (forward-only)")
+    log(is_main, f"  Policy:    {args.checkpoint}")
+    log(is_main, f"  Reference: {args.reference}")
+    log(is_main, f"  Pref data: {args.preference_dir}")
+    log(is_main, "=" * 60)
+
+    # Load models
+    log(is_main, "  Loading policy model...")
+    policy_model, cfg = load_model_from_checkpoint(args.checkpoint, device)
+    policy_model.eval()
+
+    log(is_main, "  Loading reference model...")
+    ref_model, _ = load_model_from_checkpoint(args.reference, device)
+    ref_model.eval()
+
+    # Load NTP meta for n_layers
+    meta_path = os.path.join(args.checkpoint, 'train_meta.json')
+    with open(meta_path) as f:
+        meta = json.load(f)
+    preprocessed_dir = meta.get('preprocessed_dir')
+    with open(os.path.join(preprocessed_dir, 'meta.json')) as f:
+        prep_meta = json.load(f)
+    n_layers = prep_meta['n_layers']
+
+    # Load preference pairs
+    pref_meta_path = os.path.join(args.preference_dir, 'meta.json')
+    n_pref_shards = 1
+    if os.path.exists(pref_meta_path):
+        with open(pref_meta_path) as f:
+            pref_meta = json.load(f)
+        n_pref_shards = pref_meta.get('n_shards', 1)
+
+    all_pairs = []
+    for si in range(n_pref_shards):
+        shard_file = os.path.join(args.preference_dir, f'preference_shard_{si}.npz')
+        if os.path.exists(shard_file):
+            pairs = load_preference_shard(shard_file)
+            all_pairs.extend(pairs)
+    log(is_main, f"  Loaded {len(all_pairs):,} preference pairs")
+
+    # Build dataset + loader
+    difficulty = args.difficulty
+    if difficulty == 'all' and os.path.exists(pref_meta_path):
+        pref_difficulty = pref_meta.get('difficulty', 'all')
+        if pref_difficulty != 'all':
+            difficulty = pref_difficulty
+
+    dataset = PreferencePairDataset(
+        all_pairs, difficulty=difficulty,
+        n_rejected=args.dpo_n_rejected, n_layers=n_layers)
+    log(is_main, f"  Dataset: {len(dataset):,} pairs (difficulty={difficulty})")
+
+    loader = DataLoader(
+        dataset, batch_size=args.dpo_batch_size, shuffle=False,
+        num_workers=0, pin_memory=True, collate_fn=preference_collate_fn)
+
+    # Forward pass over all pairs
+    all_chosen = []
+    all_rejected = []
+    all_margins = []
+    wins = 0
+    total_pairs = 0
+    t0 = time.time()
+
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(loader):
+            ctx_padded, ctx_lengths, all_sids, sample_offsets = batch
+            ctx_padded = ctx_padded.to(device)
+            ctx_lengths = ctx_lengths.to(device)
+            all_sids = all_sids.to(device)
+            sample_offsets = sample_offsets.to(device)
+
+            counts = sample_offsets[1:] - sample_offsets[:-1]
+            ctx_exp = torch.repeat_interleave(ctx_padded, counts, dim=0)
+            len_exp = torch.repeat_interleave(ctx_lengths, counts, dim=0)
+
+            ref_lp = compute_sid_logprobs_batch(
+                ref_model, ctx_exp, len_exp, all_sids, n_layers)
+            policy_lp = compute_sid_logprobs_batch(
+                policy_model, ctx_exp, len_exp, all_sids, n_layers)
+
+            _, diag = softmax_dpo_loss(
+                policy_lp, ref_lp, sample_offsets,
+                beta=args.dpo_beta, return_diagnostics=True)
+
+            if diag:
+                all_chosen.append(diag['chosen_reward'])
+                all_rejected.append(diag['rejected_reward'])
+                all_margins.append(diag['reward_margin'])
+                wins += int(diag['preference_acc'] * args.dpo_batch_size)
+                total_pairs += args.dpo_batch_size
+
+            if (batch_idx + 1) % 20 == 0:
+                elapsed = time.time() - t0
+                log(is_main, f"    batch {batch_idx+1}/{len(loader)}, "
+                    f"margin={diag['reward_margin']:.3f}, acc={diag['preference_acc']:.1%} "
+                    f"({elapsed:.1f}s)")
+
+    elapsed = time.time() - t0
+
+    if not all_chosen:
+        log(is_main, "  No valid pairs evaluated!")
+        return
+
+    avg_chosen = np.mean(all_chosen)
+    avg_rejected = np.mean(all_rejected)
+    avg_margin = np.mean(all_margins)
+    pref_acc = wins / total_pairs if total_pairs > 0 else 0
+
+    log(is_main, "")
+    log(is_main, "=" * 60)
+    log(is_main, "Alignment Evaluation Results")
+    log(is_main, "=" * 60)
+    log(is_main, f"  Pairs evaluated:   {total_pairs:,}")
+    log(is_main, f"  Chosen reward:     {avg_chosen:.4f}")
+    log(is_main, f"  Rejected reward:   {avg_rejected:.4f}")
+    log(is_main, f"  Reward margin:     {avg_margin:.4f}")
+    log(is_main, f"  Preference acc:    {pref_acc:.2%}")
+    log(is_main, f"  Wall time:         {elapsed:.1f}s")
+
+    # Save to train_meta.json
+    alignment_results = {
+        'chosen_reward': round(avg_chosen, 4),
+        'rejected_reward': round(avg_rejected, 4),
+        'reward_margin': round(avg_margin, 4),
+        'preference_acc': round(pref_acc, 4),
+        'n_pairs': total_pairs,
+        'reference': args.reference,
+        'preference_dir': args.preference_dir,
+        'difficulty': difficulty,
+        'dpo_beta': args.dpo_beta,
+    }
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            meta = json.load(f)
+    else:
+        meta = {}
+    meta['alignment_eval'] = alignment_results
+    with open(meta_path, 'w') as f:
+        json.dump(meta, f, indent=2)
+    log(is_main, f"\n  Saved to {meta_path} ['alignment_eval']")
+
+
 if __name__ == '__main__':
     main()
