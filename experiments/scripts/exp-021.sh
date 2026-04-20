@@ -70,7 +70,7 @@ fi
 # ============================================================
 # Config 1: Baseline — Qwen3-0.6B (reuse existing SID cache)
 # ============================================================
-SID_CACHE_06B="experiments/sid_cache/qwen3-0.6b"
+SID_CACHE_06B="experiments/sid_cache/exp013-4096x3-12d-binary"
 NTP_DATA_06B="experiments/ntp_data/exp021-06b"
 CKPT_06B="experiments/ntp_checkpoints/exp021-06b"
 
