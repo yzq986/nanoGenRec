@@ -108,7 +108,7 @@ def compute_sid_logprobs(
 
     # Forward pass
     positions = torch.arange(T, device=device).unsqueeze(0)
-    x = model._embed_tokens(full_input) + model.pos_emb(positions)
+    x = model._embed_tokens(full_input) + model._get_pos_emb(positions)
     hidden = model._transformer_forward(x)  # (B, T, D)
 
     # Extract log-probs at the 3 prediction positions.

@@ -1105,6 +1105,12 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
             'parallel': probe.parallel,
             'max_seq_len': probe.max_seq_len,
         }
+        if hasattr(probe, 'use_segment_emb') and probe.use_segment_emb:
+            probe_config['use_segment_emb'] = True
+        if hasattr(probe, 'time_gap_emb'):
+            probe_config['n_time_buckets'] = probe.time_gap_emb.num_embeddings
+        if hasattr(probe, 'action_emb'):
+            probe_config['n_action_levels'] = probe.action_emb.num_embeddings
     else:
         probe_config = {
             'model_type': 'probe',

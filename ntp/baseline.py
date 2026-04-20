@@ -110,6 +110,9 @@ class NTPProbe(nn.Module):
                 x[:, mask] = self.token_embs[l](tokens[:, mask])
         return x
 
+    def _get_pos_emb(self, positions: torch.Tensor) -> torch.Tensor:
+        return self.pos_emb(positions)
+
     def forward(self, input_tokens: torch.Tensor,
                 generated_tokens: Optional[torch.Tensor] = None,
                 return_last_n: int = 1,

@@ -131,7 +131,7 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
         # Forward pass
         L = n_layers
         positions = torch.arange(T, device=device).unsqueeze(0)
-        x = probe._embed_tokens(input_tokens) + probe.pos_emb(positions)
+        x = probe._embed_tokens(input_tokens) + probe._get_pos_emb(positions)
 
         if hasattr(probe, 'encoder'):
             causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
