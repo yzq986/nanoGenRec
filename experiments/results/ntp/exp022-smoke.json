@@ -1,0 +1,41 @@
+{
+  "name": "exp022-smoke",
+  "model_type": "s-tier",
+  "n_params": 45978624,
+  "n_active_params": 17667072,
+  "total_tokens": 223104,
+  "total_flops": 23649566588928,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "eval": {
+    "ppl": 4239.7799,
+    "layer_ppl": [
+      4560.7714,
+      4008.4682,
+      4170.664
+    ],
+    "avg_loss": 8.352267,
+    "depth_hit@10": [
+      0.0029,
+      0.0,
+      0.0
+    ],
+    "depth_hit@10_indep": [
+      0.0029,
+      0.0102,
+      0.006
+    ],
+    "depth_acc_beam": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "target_sid_found_rate": 0.0,
+    "n_eval_positions": 147902,
+    "n_eval_items": 49104,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.0,
+    "item_recall@50": 0.0,
+    "item_recall@100": 0.0,
+    "item_recall@500": 0.0
+  }
+}

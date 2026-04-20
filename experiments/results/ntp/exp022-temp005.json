@@ -1,0 +1,41 @@
+{
+  "name": "exp022-temp005",
+  "model_type": "s-tier",
+  "n_params": 45978624,
+  "n_active_params": 17667072,
+  "total_tokens": 129968664,
+  "total_flops": 13776994467790848,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "eval": {
+    "ppl": 28.1602,
+    "layer_ppl": [
+      352.9571,
+      12.7037,
+      5.0563
+    ],
+    "avg_loss": 3.337908,
+    "depth_hit@10": [
+      0.1943,
+      0.1637,
+      0.162
+    ],
+    "depth_hit@10_indep": [
+      0.1935,
+      0.797,
+      0.846
+    ],
+    "depth_acc_beam": [
+      0.026,
+      0.013,
+      0.013
+    ],
+    "target_sid_found_rate": 0.582,
+    "n_eval_positions": 147902,
+    "n_eval_items": 49104,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.101,
+    "item_recall@50": 0.252,
+    "item_recall@100": 0.348,
+    "item_recall@500": 0.582
+  }
+}
