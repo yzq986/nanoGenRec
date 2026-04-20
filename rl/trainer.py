@@ -402,7 +402,7 @@ def train_dpo(
 
     # ── DPO step helper (shared by both modes) ──
     def _dpo_step(dpo_batch, weight=1.0):
-        """Compute DPO loss and backward. Returns unscaled loss tensor."""
+        """Compute DPO loss and backward. Returns (unscaled_loss, diagnostics)."""
         with _freeze_moe_bias(raw_policy):
             ctx_padded_dpo, ctx_lengths_dpo, all_sids, sample_offsets = dpo_batch
             ctx_padded_dpo = ctx_padded_dpo.to(device, non_blocking=True)
@@ -421,14 +421,15 @@ def train_dpo(
             policy_lp = compute_sid_logprobs_batch(
                 raw_policy, ctx_exp, len_exp, all_sids, n_layers)
 
-            dpo_loss = softmax_dpo_loss(
+            dpo_loss, diag = softmax_dpo_loss(
                 policy_lp, ref_lp, sample_offsets, beta=dpo_beta,
+                return_diagnostics=True,
             )
 
             (weight * dpo_loss).backward()
             del ctx_padded_dpo, ctx_lengths_dpo, all_sids, sample_offsets
             del ctx_exp, len_exp, policy_lp, ref_lp
-        return dpo_loss
+        return dpo_loss, diag
 
     # ── Gradient all-reduce helper ──
     def _allreduce_grads():
@@ -470,6 +471,12 @@ def train_dpo(
                 dpo_iter = iter(dpo_loader)
                 return next(dpo_iter)
 
+    # ── Alignment metrics accumulators ──
+    total_chosen_reward = 0.0
+    total_rejected_reward = 0.0
+    total_preference_acc = 0.0
+    n_diag_steps = 0
+
     # ── Main training loop ──
     if pure_dpo:
         # Pure DPO: iterate over DPO pairs only
@@ -478,7 +485,7 @@ def train_dpo(
                 break
 
             optimizer.zero_grad()
-            dpo_loss_val = _dpo_step(dpo_batch)
+            dpo_loss_val, diag = _dpo_step(dpo_batch)
             _allreduce_grads()
 
             grad_norm = torch.nn.utils.clip_grad_norm_(policy_model.parameters(), 1.0).item()
@@ -487,10 +494,15 @@ def train_dpo(
 
             step_dpo = dpo_loss_val.item()
             total_dpo_loss += step_dpo
+            if diag:
+                total_chosen_reward += diag['chosen_reward']
+                total_rejected_reward += diag['rejected_reward']
+                total_preference_acc += diag['preference_acc']
+                n_diag_steps += 1
 
             if is_main:
                 cur_lr = scheduler.get_last_lr()[0]
-                train_log.append({
+                log_entry = {
                     'step': step,
                     'ntp_loss': 0.0,
                     'dpo_loss': round(step_dpo, 6),
@@ -499,24 +511,43 @@ def train_dpo(
                     'grad_norm': round(grad_norm, 4),
                     'tokens': 0,
                     'wall_s': round(time.time() - t0, 2),
-                })
+                }
+                if diag:
+                    log_entry.update({
+                        'chosen_reward': round(diag['chosen_reward'], 4),
+                        'rejected_reward': round(diag['rejected_reward'], 4),
+                        'reward_margin': round(diag['reward_margin'], 4),
+                        'preference_acc': round(diag['preference_acc'], 4),
+                        'kl': round(diag['kl'], 4),
+                    })
+                train_log.append(log_entry)
                 if wandb_run is not None:
-                    wandb_run.log({
+                    wb = {
                         'train/dpo_loss': step_dpo,
                         'train/total_loss': step_dpo,
                         'train/lr': cur_lr,
                         'train/grad_norm': grad_norm,
-                    }, step=step)
+                    }
+                    if diag:
+                        wb.update({
+                            'train/chosen_reward': diag['chosen_reward'],
+                            'train/rejected_reward': diag['rejected_reward'],
+                            'train/reward_margin': diag['reward_margin'],
+                            'train/preference_acc': diag['preference_acc'],
+                            'train/kl': diag['kl'],
+                        })
+                    wandb_run.log(wb, step=step)
 
             if is_main and (step + 1) % 10 == 0:
                 elapsed = time.time() - t0
                 remaining = (n_batches - step - 1) / ((step + 1) / elapsed)
                 eta = format_eta(remaining)
                 avg_dpo = total_dpo_loss / (step + 1)
+                margin_str = f", margin={diag['reward_margin']:.2f}, acc={diag['preference_acc']:.0%}" if diag else ""
                 print(f"    step {step+1}/{n_batches}: "
                       f"dpo={avg_dpo:.4f}, "
                       f"lr={scheduler.get_last_lr()[0]:.2e}, "
-                      f"gnorm={grad_norm:.2f}, ETA {eta}")
+                      f"gnorm={grad_norm:.2f}{margin_str}, ETA {eta}")
 
     else:
         # Joint NTP + DPO: iterate over NTP loader, sample DPO each step
@@ -551,9 +582,10 @@ def train_dpo(
 
             # DPO loss (separate backward, gradients accumulate)
             dpo_loss_val = torch.tensor(0.0, device=device)
+            diag = {}
             if dpo_weight > 0 and dpo_loader is not None:
                 dpo_batch = _next_dpo_batch()
-                dpo_loss_val = _dpo_step(dpo_batch, weight=dpo_weight)
+                dpo_loss_val, diag = _dpo_step(dpo_batch, weight=dpo_weight)
 
             _allreduce_grads()
 
@@ -567,11 +599,16 @@ def train_dpo(
             total_dpo_loss += step_dpo
             step_tokens = int(lengths.sum().item()) * world_size
             total_tokens += step_tokens
+            if diag:
+                total_chosen_reward += diag['chosen_reward']
+                total_rejected_reward += diag['rejected_reward']
+                total_preference_acc += diag['preference_acc']
+                n_diag_steps += 1
 
             if is_main:
                 cur_lr = scheduler.get_last_lr()[0]
                 step_total = step_ntp + dpo_weight * step_dpo
-                train_log.append({
+                log_entry = {
                     'step': step,
                     'ntp_loss': round(step_ntp, 6),
                     'dpo_loss': round(step_dpo, 6),
@@ -580,16 +617,34 @@ def train_dpo(
                     'grad_norm': round(grad_norm, 4),
                     'tokens': total_tokens,
                     'wall_s': round(time.time() - t0, 2),
-                })
+                }
+                if diag:
+                    log_entry.update({
+                        'chosen_reward': round(diag['chosen_reward'], 4),
+                        'rejected_reward': round(diag['rejected_reward'], 4),
+                        'reward_margin': round(diag['reward_margin'], 4),
+                        'preference_acc': round(diag['preference_acc'], 4),
+                        'kl': round(diag['kl'], 4),
+                    })
+                train_log.append(log_entry)
                 if wandb_run is not None:
-                    wandb_run.log({
+                    wb = {
                         'train/ntp_loss': step_ntp,
                         'train/dpo_loss': step_dpo,
                         'train/total_loss': step_total,
                         'train/lr': cur_lr,
                         'train/grad_norm': grad_norm,
                         'tokens': total_tokens,
-                    }, step=step)
+                    }
+                    if diag:
+                        wb.update({
+                            'train/chosen_reward': diag['chosen_reward'],
+                            'train/rejected_reward': diag['rejected_reward'],
+                            'train/reward_margin': diag['reward_margin'],
+                            'train/preference_acc': diag['preference_acc'],
+                            'train/kl': diag['kl'],
+                        })
+                    wandb_run.log(wb, step=step)
 
             if is_main and (step + 1) % 50 == 0:
                 elapsed = time.time() - t0
@@ -598,11 +653,12 @@ def train_dpo(
                 eta = format_eta(remaining)
                 avg_ntp = total_ntp_loss / (step + 1)
                 avg_dpo = total_dpo_loss / (step + 1)
+                margin_str = f", margin={diag['reward_margin']:.2f}, acc={diag['preference_acc']:.0%}" if diag else ""
                 print(f"    step {step+1}/{n_batches}: "
                       f"ntp={avg_ntp:.4f}, dpo={avg_dpo:.4f}, "
                       f"total={avg_ntp + dpo_weight * avg_dpo:.4f}, "
                       f"lr={scheduler.get_last_lr()[0]:.2e}, "
-                      f"gnorm={grad_norm:.2f}, "
+                      f"gnorm={grad_norm:.2f}{margin_str}, "
                       f"{toks_per_sec:.0f} tok/s, ETA {eta}")
 
     actual_steps = min(step + 1, n_batches) if 'step' in dir() else 0
@@ -639,6 +695,13 @@ def train_dpo(
         'n_steps': actual_steps,
         'n_dpo_pairs': len(dpo_dataset) if dpo_dataset else 0,
     }
+    if n_diag_steps > 0:
+        train_summary.update({
+            'avg_chosen_reward': round(total_chosen_reward / n_diag_steps, 4),
+            'avg_rejected_reward': round(total_rejected_reward / n_diag_steps, 4),
+            'avg_reward_margin': round((total_chosen_reward - total_rejected_reward) / n_diag_steps, 4),
+            'avg_preference_acc': round(total_preference_acc / n_diag_steps, 4),
+        })
 
     return policy_model, avg_total, n_params, train_log, train_summary
 
