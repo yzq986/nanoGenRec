@@ -68,71 +68,23 @@ print(f'[Smoke] Shard 0: {n_items} items, dim={dim}. OK!')
 fi
 
 # ============================================================
-# Config 1: Baseline — Qwen3-0.6B (reuse existing SID cache)
+# Baseline reference (no retraining needed):
+#   Qwen3-0.6B: PPL=17.5, R@10=15.4%, R@500=68.3%
+#   SID cache: experiments/sid_cache/exp013-4096x3-12d-binary
+#   Checkpoint: experiments/ntp_checkpoints/exp017-fixed-medium
 # ============================================================
-SID_CACHE_06B="experiments/sid_cache/exp013-4096x3-12d-binary"
-NTP_DATA_06B="experiments/ntp_data/exp021-06b"
-CKPT_06B="experiments/ntp_checkpoints/exp021-06b"
-
-if [ "${START_FROM}" -le 1 ]; then
-    echo ""
-    echo "============================================================"
-    echo "[Config 1] Qwen3-0.6B baseline — SID exists, build NTP data + train"
-    echo "============================================================"
-
-    # SID cache already exists for 0.6B
-    if [ ! -f "${SID_CACHE_06B}/semantic_ids.npy" ]; then
-        echo "ERROR: Baseline SID cache not found at ${SID_CACHE_06B}"
-        exit 1
-    fi
-
-    # Preprocess NTP data (skip if exists)
-    python run.py preprocess-ntp \
-        --sid_cache "${SID_CACHE_06B}" \
-        --output_dir "${NTP_DATA_06B}" \
-        --n_shards "${N_GPUS}" \
-        --date_start 2026-04-01 \
-        --date_end 2026-04-14
-
-    # Train NTP probe
-    if [ "${N_GPUS}" -gt 1 ]; then
-        torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
-            --preprocessed_dir "${NTP_DATA_06B}" \
-            --output_dir "${CKPT_06B}" \
-            --model probe \
-            --lr 3e-4 \
-            --epochs 3 \
-            --wandb \
-            --name exp021-06b
-    else
-        python run.py train-ntp \
-            --preprocessed_dir "${NTP_DATA_06B}" \
-            --output_dir "${CKPT_06B}" \
-            --model probe \
-            --lr 3e-4 \
-            --epochs 3 \
-            --wandb \
-            --name exp021-06b
-    fi
-
-    echo ""
-    echo ">>> Committing 0.6B baseline results..."
-    git add experiments/
-    git commit -m "EXP-021: Qwen3-0.6B baseline NTP" || echo "Nothing to commit"
-    ./push.sh
-fi
 
 # ============================================================
-# Config 2: Qwen3-4B — same FSQ hidden (64)
+# Config 1: Qwen3-4B — same FSQ hidden (64)
 # ============================================================
 SID_CACHE_4B="experiments/sid_cache/qwen3-4b"
 NTP_DATA_4B="experiments/ntp_data/exp021-4b"
 CKPT_4B="experiments/ntp_checkpoints/exp021-4b"
 
-if [ "${START_FROM}" -le 2 ]; then
+if [ "${START_FROM}" -le 1 ]; then
     echo ""
     echo "============================================================"
-    echo "[Config 2] Qwen3-4B — train SID tokenizer + NTP (fsq_hidden=64)"
+    echo "[Config 1] Qwen3-4B — train SID tokenizer + NTP (fsq_hidden=64)"
     echo "============================================================"
 
     # Train SID tokenizer for 4B
@@ -180,16 +132,16 @@ if [ "${START_FROM}" -le 2 ]; then
 fi
 
 # ============================================================
-# Config 3: Qwen3-4B — larger FSQ hidden (128)
+# Config 2: Qwen3-4B — larger FSQ hidden (128)
 # ============================================================
 SID_CACHE_4B_H128="experiments/sid_cache/qwen3-4b-h128"
 NTP_DATA_4B_H128="experiments/ntp_data/exp021-4b-h128"
 CKPT_4B_H128="experiments/ntp_checkpoints/exp021-4b-h128"
 
-if [ "${START_FROM}" -le 3 ]; then
+if [ "${START_FROM}" -le 2 ]; then
     echo ""
     echo "============================================================"
-    echo "[Config 3] Qwen3-4B — larger FSQ hidden (128)"
+    echo "[Config 2] Qwen3-4B — larger FSQ hidden (128)"
     echo "============================================================"
 
     # Train SID tokenizer for 4B with larger FSQ hidden
