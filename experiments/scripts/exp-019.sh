@@ -136,7 +136,7 @@ train_joint_rf_dpo() {
         return 0
     fi
 
-    rm -rf "${OUTPUT}"
+    # archive_if_exists is handled by trainer — no rm -rf needed
 
     local CMD_ARGS=(
         --sft_checkpoint "${THIS_REF}"
@@ -150,6 +150,8 @@ train_joint_rf_dpo() {
         --difficulty "${DIFFICULTY}"
         --name "exp019-${NAME}"
     )
+
+    CMD_ARGS+=(--wandb)
 
     if [ "${N_GPUS}" -gt 1 ]; then
         torchrun --nproc_per_node="${N_GPUS}" run.py sp-dpo-train "${CMD_ARGS[@]}"
@@ -165,67 +167,67 @@ train_joint_rf_dpo() {
 }
 
 # ============================================================
-# Config 1: Joint Easy (15 steps = 3 epochs × 5 batches)
+# Config 1: Joint Hard λ=0.1 (807 steps) — baseline λ
 # ============================================================
 if [ "${START_FROM}" -le 1 ]; then
-    train_joint_rf_dpo "joint-easy" "easy" 0.1 0.1 1e-4 15 \
-        "${REF_CKPT}" "${PREF_DIR}/easy" \
-        "Joint NTP+DPO Easy, step-matched (15 steps)"
-
-    echo ""
-    echo ">>> Committing Easy results..."
-    git add experiments/
-    git commit -m "EXP-019 partial: Joint RF-DPO Easy (step-matched)" || echo "Nothing to commit"
-    ./push.sh
-fi
-
-# ============================================================
-# Config 2: Joint Hard λ=0.1 (807 steps = 3 epochs × 269 batches)
-# ============================================================
-if [ "${START_FROM}" -le 2 ]; then
-    train_joint_rf_dpo "joint-hard" "hard" 0.1 0.1 1e-4 807 \
+    train_joint_rf_dpo "joint-hard-lam10" "hard" 0.1 0.1 1e-4 807 \
         "${REF_CKPT}" "${PREF_DIR}/hard" \
         "Joint NTP+DPO Hard, λ=0.1 (807 steps)"
 
     echo ""
-    echo ">>> Committing Hard results..."
+    echo ">>> Committing Hard λ=0.1 results..."
     git add experiments/
-    git commit -m "EXP-019 partial: Joint RF-DPO Hard λ=0.1" || echo "Nothing to commit"
+    git commit -m "EXP-019: Joint RF-DPO Hard λ=0.1 (fixed λ scaling)" || echo "Nothing to commit"
     ./push.sh
 fi
 
 # ============================================================
-# Config 3: Joint Hard λ=0.5 (stronger DPO signal)
+# Config 2: Joint Hard λ=0.5 (stronger DPO signal)
 # ============================================================
-if [ "${START_FROM}" -le 3 ]; then
+if [ "${START_FROM}" -le 2 ]; then
     train_joint_rf_dpo "joint-hard-lam50" "hard" 0.5 0.1 1e-4 807 \
         "${REF_CKPT}" "${PREF_DIR}/hard" \
         "Joint NTP+DPO Hard, λ=0.5 (stronger DPO)"
 
     echo ""
-    echo ">>> Committing λ=0.5 results..."
+    echo ">>> Committing Hard λ=0.5 results..."
     git add experiments/
-    git commit -m "EXP-019 partial: Joint RF-DPO Hard λ=0.5" || echo "Nothing to commit"
+    git commit -m "EXP-019: Joint RF-DPO Hard λ=0.5 (fixed λ scaling)" || echo "Nothing to commit"
     ./push.sh
 fi
 
 # ============================================================
-# Config 4: Joint Hard λ=0.01 (weaker DPO, more NTP regularization)
+# Config 3: Joint Hard λ=0.01 (weaker DPO, more NTP regularization)
 # ============================================================
-if [ "${START_FROM}" -le 4 ]; then
+if [ "${START_FROM}" -le 3 ]; then
     train_joint_rf_dpo "joint-hard-lam01" "hard" 0.01 0.1 1e-4 807 \
         "${REF_CKPT}" "${PREF_DIR}/hard" \
         "Joint NTP+DPO Hard, λ=0.01 (more NTP regularization)"
 
     echo ""
-    echo ">>> Committing λ=0.01 results..."
+    echo ">>> Committing Hard λ=0.01 results..."
     git add experiments/
-    git commit -m "EXP-019 partial: Joint RF-DPO Hard λ=0.01" || echo "Nothing to commit"
+    git commit -m "EXP-019: Joint RF-DPO Hard λ=0.01 (fixed λ scaling)" || echo "Nothing to commit"
     ./push.sh
 fi
 
 # ============================================================
-# Config 5: Progressive Easy → Hard (joint mode)
+# Config 4: Joint Easy λ=0.1 (15 steps)
+# ============================================================
+if [ "${START_FROM}" -le 4 ]; then
+    train_joint_rf_dpo "joint-easy-lam10" "easy" 0.1 0.1 1e-4 15 \
+        "${REF_CKPT}" "${PREF_DIR}/easy" \
+        "Joint NTP+DPO Easy, λ=0.1 step-matched (15 steps)"
+
+    echo ""
+    echo ">>> Committing Easy λ=0.1 results..."
+    git add experiments/
+    git commit -m "EXP-019: Joint RF-DPO Easy λ=0.1 (fixed λ scaling)" || echo "Nothing to commit"
+    ./push.sh
+fi
+
+# ============================================================
+# Config 5: Progressive Easy → Hard λ=0.1 (joint mode)
 # ============================================================
 if [ "${START_FROM}" -le 5 ]; then
     echo ""
@@ -233,24 +235,25 @@ if [ "${START_FROM}" -le 5 ]; then
     echo "Progressive Joint RF-DPO: Easy → Hard"
     echo "============================================================"
 
-    # Stage 1: Easy (reuse if done in Config 1)
-    if [ ! -f "${CKPT_DIR}/exp019-joint-easy/probe.pt" ]; then
-        train_joint_rf_dpo "joint-easy" "easy" 0.1 0.1 1e-4 15 \
+    # Stage 1: Easy (reuse Config 4 if available)
+    EASY_CKPT="${CKPT_DIR}/exp019-joint-easy-lam10"
+    if [ ! -f "${EASY_CKPT}/probe.pt" ]; then
+        train_joint_rf_dpo "joint-easy-lam10" "easy" 0.1 0.1 1e-4 15 \
             "${REF_CKPT}" "${PREF_DIR}/easy" \
             "Progressive Stage 1/2: Easy"
     else
-        echo "[Progressive] Reusing joint-easy checkpoint"
+        echo "[Progressive] Reusing joint-easy-lam10 checkpoint"
     fi
 
     # Stage 2: Hard (reference = Easy output)
     train_joint_rf_dpo "joint-prog" "hard" 0.1 0.1 1e-4 807 \
-        "${CKPT_DIR}/exp019-joint-easy" "${PREF_DIR}/hard" \
+        "${EASY_CKPT}" "${PREF_DIR}/hard" \
         "Progressive Stage 2/2: Hard (ref=Easy output)"
 
     echo ""
     echo ">>> Committing Progressive results..."
     git add experiments/
-    git commit -m "EXP-019 partial: Joint RF-DPO Progressive (Easy→Hard)" || echo "Nothing to commit"
+    git commit -m "EXP-019: Joint RF-DPO Progressive Easy→Hard (fixed λ scaling)" || echo "Nothing to commit"
     ./push.sh
 fi
 
@@ -265,14 +268,14 @@ echo "============================================================"
 echo ""
 echo ">>> Committing final results..."
 git add experiments/
-git commit -m "EXP-019 results: RF-DPO Joint NTP+DPO step-matched" || echo "Nothing to commit"
+git commit -m "EXP-019 results: RF-DPO Joint NTP+DPO (fixed λ scaling)" || echo "Nothing to commit"
 ./push.sh
 
 echo ""
 echo "EXP-019 done! Compare checkpoints:"
 echo "  Reference (SP-DPO):   ${REF_CKPT}"
-echo "  Joint Easy:           ${CKPT_DIR}/exp019-joint-easy"
-echo "  Joint Hard λ=0.1:     ${CKPT_DIR}/exp019-joint-hard"
-echo "  Joint Hard λ=0.5:     ${CKPT_DIR}/exp019-joint-hard-lam50"
-echo "  Joint Hard λ=0.01:    ${CKPT_DIR}/exp019-joint-hard-lam01"
-echo "  Joint Progressive:    ${CKPT_DIR}/exp019-joint-prog"
+echo "  Hard λ=0.1:           ${CKPT_DIR}/exp019-joint-hard-lam10"
+echo "  Hard λ=0.5:           ${CKPT_DIR}/exp019-joint-hard-lam50"
+echo "  Hard λ=0.01:          ${CKPT_DIR}/exp019-joint-hard-lam01"
+echo "  Easy λ=0.1:           ${CKPT_DIR}/exp019-joint-easy-lam10"
+echo "  Progressive:          ${CKPT_DIR}/exp019-joint-prog"

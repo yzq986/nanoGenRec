@@ -1,0 +1,15 @@
+{"step": 0, "ntp_loss": 2.698263, "dpo_loss": 1.118055, "total_loss": 2.810069, "lr": 9.891e-05, "grad_norm": 1.7144, "tokens": 84528, "wall_s": 3.89}
+{"step": 1, "ntp_loss": 2.688032, "dpo_loss": 0.988876, "total_loss": 2.78692, "lr": 9.568e-05, "grad_norm": 1.7665, "tokens": 192672, "wall_s": 5.66}
+{"step": 2, "ntp_loss": 2.427232, "dpo_loss": 0.790496, "total_loss": 2.506281, "lr": 9.045e-05, "grad_norm": 1.2129, "tokens": 277464, "wall_s": 6.9}
+{"step": 3, "ntp_loss": 2.730733, "dpo_loss": 0.840256, "total_loss": 2.814759, "lr": 8.346e-05, "grad_norm": 1.0195, "tokens": 367536, "wall_s": 8.64}
+{"step": 4, "ntp_loss": 2.819707, "dpo_loss": 0.514412, "total_loss": 2.871149, "lr": 7.5e-05, "grad_norm": 1.0278, "tokens": 451008, "wall_s": 9.89}
+{"step": 5, "ntp_loss": 2.759423, "dpo_loss": 0.57529, "total_loss": 2.816952, "lr": 6.545e-05, "grad_norm": 0.9682, "tokens": 531912, "wall_s": 11.63}
+{"step": 6, "ntp_loss": 2.748439, "dpo_loss": 0.467407, "total_loss": 2.795179, "lr": 5.523e-05, "grad_norm": 0.8507, "tokens": 610248, "wall_s": 13.44}
+{"step": 7, "ntp_loss": 2.629392, "dpo_loss": 0.44353, "total_loss": 2.673745, "lr": 4.477e-05, "grad_norm": 0.7696, "tokens": 691440, "wall_s": 14.69}
+{"step": 8, "ntp_loss": 3.019695, "dpo_loss": 0.413561, "total_loss": 3.061051, "lr": 3.455e-05, "grad_norm": 0.8807, "tokens": 760440, "wall_s": 16.56}
+{"step": 9, "ntp_loss": 2.6942, "dpo_loss": 0.314549, "total_loss": 2.725655, "lr": 2.5e-05, "grad_norm": 0.7732, "tokens": 858048, "wall_s": 18.27}
+{"step": 10, "ntp_loss": 2.743828, "dpo_loss": 0.404101, "total_loss": 2.784238, "lr": 1.654e-05, "grad_norm": 0.7829, "tokens": 935424, "wall_s": 20.13}
+{"step": 11, "ntp_loss": 2.800923, "dpo_loss": 0.284515, "total_loss": 2.829375, "lr": 9.55e-06, "grad_norm": 0.6817, "tokens": 1001952, "wall_s": 21.35}
+{"step": 12, "ntp_loss": 2.722548, "dpo_loss": 0.33762, "total_loss": 2.75631, "lr": 4.32e-06, "grad_norm": 0.7858, "tokens": 1073304, "wall_s": 23.1}
+{"step": 13, "ntp_loss": 2.905733, "dpo_loss": 0.333971, "total_loss": 2.93913, "lr": 1.09e-06, "grad_norm": 0.7601, "tokens": 1182600, "wall_s": 24.36}
+{"step": 14, "ntp_loss": 2.593884, "dpo_loss": 0.323882, "total_loss": 2.626272, "lr": 0.0, "grad_norm": 0.7749, "tokens": 1279560, "wall_s": 26.09}
