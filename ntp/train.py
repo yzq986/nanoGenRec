@@ -679,10 +679,22 @@ def _build_sid_to_embedding(sid_cache_dir):
     specified in config.json. For each SID tuple, computes the mean embedding
     across all content items that share that SID.
 
+    Caches result to sid_cache_dir/sid_to_embedding.npy for fast subsequent loads.
+
     Returns:
         sid_to_embedding: dict mapping tuple(int,...) → np.ndarray of shape (emb_dim,)
         emb_dim: int
     """
+    cache_path = os.path.join(sid_cache_dir, 'sid_to_embedding.npz')
+    if os.path.exists(cache_path):
+        cached = np.load(cache_path)
+        sid_keys = cached['sid_keys']   # (N, n_layers), int32
+        sid_embs = cached['sid_embs']   # (N, emb_dim), float32
+        sid_to_embedding = {tuple(k): e for k, e in zip(sid_keys, sid_embs)}
+        emb_dim = sid_embs.shape[1]
+        print(f"  _build_sid_to_embedding: loaded from cache ({len(sid_to_embedding):,} SID tuples, dim={emb_dim})")
+        return sid_to_embedding, emb_dim
+
     from gr_demo.eval.preprocess_sid import _load_embedding_cache
 
     # Load SID dict
@@ -716,6 +728,13 @@ def _build_sid_to_embedding(sid_cache_dir):
 
     print(f"  _build_sid_to_embedding: {len(sid_to_embedding):,} SID tuples "
           f"(from {len(content_to_tokens):,} items), emb_dim={emb_dim}")
+
+    # Cache as aligned arrays for fast subsequent loads
+    keys_arr = np.array(list(sid_to_embedding.keys()), dtype=np.int32)
+    embs_arr = np.array(list(sid_to_embedding.values()), dtype=np.float32)
+    np.savez(cache_path, sid_keys=keys_arr, sid_embs=embs_arr)
+    print(f"  Cached to {cache_path} ({keys_arr.shape[0]:,} entries)")
+
     return sid_to_embedding, emb_dim
 
 
