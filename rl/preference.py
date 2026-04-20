@@ -552,7 +552,7 @@ def _load_model(ckpt_path, device):
     else:
         model = NTPProbe(**cfg)
 
-    model.load_state_dict(ckpt['model_state_dict'])
+    model.load_state_dict(ckpt['model_state_dict'], strict=False)
     model.to(device)
     model.eval()
     return model, cfg

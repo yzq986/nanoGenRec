@@ -382,6 +382,17 @@ class SparseMoEBlock(nn.Module):
 # ENTP-Loss helper (shared by NTPModel and NTPProbe)
 # ============================================================
 
+
+def _gather_all(tensor: torch.Tensor) -> torch.Tensor:
+    """All-gather tensors across DDP ranks, preserving gradients for local shard."""
+    import torch.distributed as dist
+    world_size = dist.get_world_size()
+    gathered = [torch.zeros_like(tensor) for _ in range(world_size)]
+    dist.all_gather(gathered, tensor)
+    gathered[dist.get_rank()] = tensor
+    return torch.cat(gathered, dim=0)
+
+
 def _compute_entp_loss(
     hidden_flat: torch.Tensor,
     l0_proj: nn.Linear,
@@ -527,6 +538,8 @@ class NTPModel(nn.Module):
         expert_dim: int = 1024,
         parallel: bool = False,
         max_seq_len: int = 0,
+        contrastive_dim: int = 0,
+        contrastive_item_dim: int = 1024,
     ):
         super().__init__()
         assert len(n_clusters_per_layer) == n_sid_layers
@@ -562,6 +575,20 @@ class NTPModel(nn.Module):
         self.output_projs = nn.ModuleList([
             nn.Linear(embed_dim, nc) for nc in n_clusters_per_layer
         ])
+
+        # Contrastive head (IDEA-onemall-0): project s₃ hidden → align with item embedding
+        self.contrastive_dim = contrastive_dim
+        if contrastive_dim > 0:
+            self.contrastive_proj = nn.Sequential(
+                nn.Linear(embed_dim, contrastive_dim),
+                nn.ReLU(),
+                nn.Linear(contrastive_dim, contrastive_dim),
+            )
+            self.contrastive_item_proj = nn.Sequential(
+                nn.Linear(contrastive_item_dim, contrastive_dim),
+                nn.ReLU(),
+                nn.Linear(contrastive_dim, contrastive_dim),
+            )
 
     def _embed_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
         """Per-layer token embedding lookup. Position i uses token_embs[i % n_sid_layers]."""
@@ -661,6 +688,9 @@ class NTPModel(nn.Module):
         neg_l0_tokens: Optional[torch.Tensor] = None,
         neg_l0_mask: Optional[torch.Tensor] = None,
         entp_weight: float = 0.0,
+        item_embeddings: Optional[torch.Tensor] = None,
+        contrastive_weight: float = 0.0,
+        contrastive_temp: float = 0.07,
     ):
         """Forward pass — supports both legacy (sliding window) and packed modes.
 
@@ -679,12 +709,18 @@ class NTPModel(nn.Module):
             neg_l0_tokens: (B, N_items, K) L0 tokens of unclicked exposures for ENTP loss.
             neg_l0_mask: (B, N_items, K) bool mask (True = valid negative).
             entp_weight: weight α for ENTP loss term.
+            item_embeddings: (B, N_items, E) target item embeddings (for contrastive).
+            contrastive_weight: weight α for contrastive loss.
+            contrastive_temp: InfoNCE temperature τ.
         """
         if packed_targets is not None:
             return self._forward_packed(
                 input_tokens, packed_targets, packed_mask,
                 neg_l0_tokens=neg_l0_tokens, neg_l0_mask=neg_l0_mask,
                 entp_weight=entp_weight,
+                item_embeddings=item_embeddings,
+                contrastive_weight=contrastive_weight,
+                contrastive_temp=contrastive_temp,
             )
 
         device = input_tokens.device
@@ -726,27 +762,24 @@ class NTPModel(nn.Module):
         neg_l0_tokens: Optional[torch.Tensor] = None,
         neg_l0_mask: Optional[torch.Tensor] = None,
         entp_weight: float = 0.0,
+        item_embeddings: Optional[torch.Tensor] = None,
+        contrastive_weight: float = 0.0,
+        contrastive_temp: float = 0.07,
     ) -> torch.Tensor:
         """LM-style forward on packed user sequences. Returns scalar loss.
-
-        Each position i predicts targets[i] = tokens[i+1], using
-        output_projs[(i+1) % n_sid_layers]. Loss is averaged per-layer
-        then across layers (matching legacy training).
-
-        When entp_weight > 0 and neg_l0_tokens is provided, adds ENTP-Loss
-        (DualGR, WWW 2026): penalizes L0 probability of unclicked exposures
-        via −α·log(1 − p_L0) at L0 prediction positions.
 
         Args:
             input_tokens: (B, S) — packed tokens (right-padded with 0)
             targets: (B, S) — shifted targets (right-padded, ignored via mask)
             target_mask: (B, S) — True for valid target positions
-            neg_l0_tokens: (B, S, K) — L0 tokens of unclicked exposures per position.
-                Only meaningful at L0 prediction positions. Padded with -1.
+            neg_l0_tokens: (B, S, K) — L0 tokens of unclicked exposures.
             neg_l0_mask: (B, S, K) — True for valid negative tokens.
-            entp_weight: α weight for ENTP loss term.
+            entp_weight: α for ENTP loss.
+            item_embeddings: (B, N_items, E) — target item embeddings.
+            contrastive_weight: α for contrastive loss.
+            contrastive_temp: InfoNCE temperature τ.
         Returns:
-            loss: scalar (ntp_loss + α * entp_loss)
+            loss: scalar
         """
         B, S = input_tokens.size()
         device = input_tokens.device
@@ -785,9 +818,55 @@ class NTPModel(nn.Module):
                 neg_l0_tokens.reshape(-1, neg_l0_tokens.size(-1)),
                 neg_l0_mask.reshape(-1, neg_l0_mask.size(-1)),
             )
-            return ntp_loss + entp_weight * entp_loss
+            ntp_loss = ntp_loss + entp_weight * entp_loss
+
+        # ── In-Batch Contrastive Loss (IDEA-onemall-0) ──
+        if contrastive_weight > 0 and item_embeddings is not None and self.contrastive_dim > 0:
+            cl_loss = self._compute_contrastive_loss(
+                hidden, target_mask, item_embeddings, contrastive_temp)
+            ntp_loss = ntp_loss + contrastive_weight * cl_loss
 
         return ntp_loss
+
+    def _compute_contrastive_loss(self, hidden, target_mask, item_embeddings, temperature):
+        """InfoNCE between s₃ hidden states and item embeddings.
+
+        s₃ positions: where input layer = L-1 (position i % L == L-1).
+        The hidden state here has encoded the full item SID (s₀..s₃).
+        """
+        B, S, D = hidden.shape
+        L = self.n_sid_layers
+        device = hidden.device
+        N_items = item_embeddings.size(1)
+
+        # s₃ positions: every L tokens starting at L-1
+        s3_indices = torch.arange(L - 1, S, L, device=device)
+        n_s3 = min(len(s3_indices), N_items)
+        if n_s3 == 0:
+            return torch.tensor(0.0, device=device)
+
+        s3_pos = s3_indices[:n_s3]
+        h_s3 = hidden[:, s3_pos, :]  # (B, n_s3, D)
+        item_emb = item_embeddings[:, :n_s3, :]  # (B, n_s3, E)
+
+        # Project to contrastive space
+        h_proj = self.contrastive_proj(h_s3.reshape(-1, D))  # (B*n_s3, C)
+        h_proj = F.normalize(h_proj, dim=-1)
+        e_proj = self.contrastive_item_proj(item_emb.reshape(-1, item_emb.size(-1)))
+        e_proj = F.normalize(e_proj, dim=-1)
+
+        # Gather across GPUs for more negatives
+        if torch.distributed.is_initialized():
+            h_all = _gather_all(h_proj)
+            e_all = _gather_all(e_proj)
+        else:
+            h_all = h_proj
+            e_all = e_proj
+
+        # InfoNCE: h_all[i] should match e_all[i]
+        logits = torch.mm(h_all, e_all.t()) / temperature  # (M, M)
+        labels = torch.arange(logits.size(0), device=device)
+        return F.cross_entropy(logits, labels)
 
     @torch.no_grad()
     def beam_search(self, input_tokens: torch.Tensor, beam_size: int = 5) -> torch.Tensor:

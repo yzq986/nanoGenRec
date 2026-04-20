@@ -157,7 +157,7 @@ def load_model_from_checkpoint(ckpt_path, device):
     else:
         model = NTPProbe(**cfg)
 
-    model.load_state_dict(ckpt['model_state_dict'])
+    model.load_state_dict(ckpt['model_state_dict'], strict=False)
     cfg['model_type'] = model_type
     return model.to(device), cfg
 
