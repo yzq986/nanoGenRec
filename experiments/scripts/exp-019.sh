@@ -151,6 +151,8 @@ train_joint_rf_dpo() {
         --name "exp019-${NAME}"
     )
 
+    CMD_ARGS+=(--wandb)
+
     if [ "${N_GPUS}" -gt 1 ]; then
         torchrun --nproc_per_node="${N_GPUS}" run.py sp-dpo-train "${CMD_ARGS[@]}"
     else
