@@ -91,8 +91,14 @@ def print_table(baseline_metrics, rows):
     print("=" * len(header))
 
 
-def plot_degradation(baseline_metrics, rows, save_path=None):
-    """Bar chart of degradation deltas."""
+def plot_degradation(baseline_metrics, rows, save_path=None, clamp_ppl=1000):
+    """Bar chart of degradation deltas.
+
+    Args:
+        clamp_ppl: cap ΔPPL display at this % to prevent extreme outliers
+                   from squashing the readable range. Clamped bars get a
+                   '>>>' annotation showing the true value.
+    """
     rows = [r for r in rows if r.get('ΔPPL') is not None]
     if not rows:
         return
@@ -103,24 +109,47 @@ def plot_degradation(baseline_metrics, rows, save_path=None):
     available = [m for m in metrics if any(r.get(m) is not None for r in rows)]
 
     n_metrics = len(available)
-    fig, axes = plt.subplots(1, n_metrics, figsize=(5 * n_metrics, max(4, 0.4 * len(rows))))
+    fig, axes = plt.subplots(1, n_metrics, figsize=(5 * n_metrics, max(4, 0.5 * len(rows))))
 
     if n_metrics == 1:
         axes = [axes]
 
     for ax, metric in zip(axes, available):
-        vals = [r.get(metric, 0) or 0 for r in rows]
-        colors = ['#d32f2f' if v > 0 else '#388e3c'
-                  for v in vals] if metric == 'ΔPPL' else \
-                 ['#388e3c' if v > 0 else '#d32f2f' for v in vals]
+        raw_vals = [r.get(metric, 0) or 0 for r in rows]
+
+        if metric == 'ΔPPL':
+            vals = [min(v, clamp_ppl) for v in raw_vals]
+            clamped = [v > clamp_ppl for v in raw_vals]
+        else:
+            vals = raw_vals
+            clamped = [False] * len(vals)
+
+        is_bad_up = metric == 'ΔPPL'
+        colors = [('#d32f2f' if v > 0 else '#388e3c') if is_bad_up
+                  else ('#388e3c' if v > 0 else '#d32f2f')
+                  for v in vals]
 
         y_pos = np.arange(len(names))
-        ax.barh(y_pos, vals, color=colors, alpha=0.8)
+        bars = ax.barh(y_pos, vals, color=colors, alpha=0.8)
+
+        for bar, raw, clip, v in zip(bars, raw_vals, clamped, vals):
+            if clip:
+                label = f'>>> +{raw:,.0f}%'
+            else:
+                sign = '+' if raw > 0 else ''
+                label = f'{sign}{raw:.1f}%'
+            x = bar.get_width()
+            ha = 'left' if x >= 0 else 'right'
+            offset = max(abs(max(vals) - min(vals)) * 0.02, 1)
+            ax.text(x + (offset if x >= 0 else -offset),
+                    bar.get_y() + bar.get_height() / 2,
+                    label, va='center', ha=ha, fontsize=8, alpha=0.8)
+
         ax.set_yticks(y_pos)
-        ax.set_yticklabels(names, fontsize=8)
+        ax.set_yticklabels(names, fontsize=9)
         ax.set_xlabel(f'{metric} (%)')
-        ax.set_title(metric)
-        ax.axvline(0, color='black', linewidth=0.5)
+        ax.set_title(metric, fontsize=12, fontweight='bold')
+        ax.axvline(0, color='black', linewidth=0.8)
         ax.grid(True, alpha=0.3, axis='x')
         ax.invert_yaxis()
 
