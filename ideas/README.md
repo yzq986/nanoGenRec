@@ -15,8 +15,9 @@
 | [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR/RPO/ElasticTether) | 12 | — |
 | [inference.md](inference.md) | 推理优化 (Dynamic Beam/CSR约束/Register压缩/PRM-Beam/GRC/FP8-PTQ) | 7 | — |
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | ~~oneloc-4~~ 部分完成 |
+| [ntp-features.md](ntp-features.md) | NTP 特征注入 (TimeGap/ActionType/SegmentEmb/Category/UserProfile/ContTime) | 6 | feat-0, feat-1, feat-2 |
 
-**总计: 80 ideas (3 P0 / 53 P1 / 24 P2)**
+**总计: 86 ideas (6 P0 / 55 P1 / 25 P2)**
 
 ## 全局演进图
 
