@@ -540,6 +540,9 @@ class NTPModel(nn.Module):
         max_seq_len: int = 0,
         contrastive_dim: int = 0,
         contrastive_item_dim: int = 1024,
+        n_time_buckets: int = 0,
+        n_action_levels: int = 0,
+        use_segment_emb: bool = False,
     ):
         super().__init__()
         assert len(n_clusters_per_layer) == n_sid_layers
@@ -549,6 +552,7 @@ class NTPModel(nn.Module):
         self.embed_dim = embed_dim
         self.parallel = parallel
         self.seq_len = n_items * n_sid_layers
+        self.use_segment_emb = use_segment_emb
 
         # Per-layer token embeddings (different codebook per SID layer)
         self.token_embs = nn.ModuleList([
@@ -557,7 +561,20 @@ class NTPModel(nn.Module):
         # max_seq_len=0 → legacy mode (short sequences only)
         default_len = self.seq_len + n_sid_layers
         self.max_seq_len = max(max_seq_len, default_len)
-        self.pos_emb = nn.Embedding(self.max_seq_len, embed_dim)
+
+        # Position embeddings: standard or segment (item_pos + layer_pos)
+        if use_segment_emb:
+            max_n_items = self.max_seq_len // n_sid_layers + 1
+            self.item_pos_emb = nn.Embedding(max_n_items, embed_dim)
+            self.layer_pos_emb = nn.Embedding(n_sid_layers, embed_dim)
+        else:
+            self.pos_emb = nn.Embedding(self.max_seq_len, embed_dim)
+
+        # Side information embeddings (EXP-023)
+        if n_time_buckets > 0:
+            self.time_gap_emb = nn.Embedding(n_time_buckets, embed_dim)
+        if n_action_levels > 0:
+            self.action_emb = nn.Embedding(n_action_levels, embed_dim)
 
         # Transformer layers
         self.layers = nn.ModuleList([
@@ -603,6 +620,16 @@ class NTPModel(nn.Module):
             if mask.any():
                 x[:, mask] = self.token_embs[l](tokens[:, mask])
         return x
+
+    def _get_pos_emb(self, positions: torch.Tensor) -> torch.Tensor:
+        """Get positional embedding for given positions (standard or segment)."""
+        if self.use_segment_emb:
+            L = self.n_sid_layers
+            item_pos = positions // L
+            layer_pos = positions % L
+            return self.item_pos_emb(item_pos) + self.layer_pos_emb(layer_pos)
+        else:
+            return self.pos_emb(positions)
 
     def _transformer_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run through all transformer layers + final norm."""
@@ -659,8 +686,8 @@ class NTPModel(nn.Module):
                 tokens = torch.cat([input_tokens, generated_tokens], dim=1)
             T = tokens.size(1)
             device = tokens.device
-            x = self._embed_tokens(tokens) + self.pos_emb(
-                torch.arange(T, device=device).unsqueeze(0))
+            positions = torch.arange(T, device=device).unsqueeze(0)
+            x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
             out, kv_caches = self._transformer_forward_cached(x)
         else:
             # Incremental — only new tokens
@@ -669,8 +696,8 @@ class NTPModel(nn.Module):
             T_new = new_tokens.size(1)
             device = new_tokens.device
             x = self._embed_tokens_at_offset(new_tokens, offset)
-            x = x + self.pos_emb(
-                torch.arange(offset, offset + T_new, device=device).unsqueeze(0))
+            positions = torch.arange(offset, offset + T_new, device=device).unsqueeze(0)
+            x = x + self._get_pos_emb(positions)
             out, kv_caches = self._transformer_forward_cached(x, kv_caches)
 
         T_total = kv_caches[0].size(1)
@@ -691,6 +718,8 @@ class NTPModel(nn.Module):
         item_embeddings: Optional[torch.Tensor] = None,
         contrastive_weight: float = 0.0,
         contrastive_temp: float = 0.07,
+        time_gaps: Optional[torch.Tensor] = None,
+        action_levels: Optional[torch.Tensor] = None,
     ):
         """Forward pass — supports both legacy (sliding window) and packed modes.
 
@@ -712,6 +741,8 @@ class NTPModel(nn.Module):
             item_embeddings: (B, N_items, E) target item embeddings (for contrastive).
             contrastive_weight: weight α for contrastive loss.
             contrastive_temp: InfoNCE temperature τ.
+            time_gaps: (B, T) time gap bucket indices (optional side feature).
+            action_levels: (B, T) action level indices (optional side feature).
         """
         if packed_targets is not None:
             return self._forward_packed(
@@ -721,13 +752,15 @@ class NTPModel(nn.Module):
                 item_embeddings=item_embeddings,
                 contrastive_weight=contrastive_weight,
                 contrastive_temp=contrastive_temp,
+                time_gaps=time_gaps,
+                action_levels=action_levels,
             )
 
         device = input_tokens.device
 
         if self.parallel:
             positions = torch.arange(self.seq_len, device=device).unsqueeze(0)
-            x = self._embed_tokens(input_tokens) + self.pos_emb(positions)
+            x = self._embed_tokens(input_tokens) + self._get_pos_emb(positions)
             out = self._transformer_forward(x)
             s = out[:, -1, :]
             return [self.output_projs[l](s) for l in range(self.n_sid_layers)]
@@ -740,7 +773,7 @@ class NTPModel(nn.Module):
 
         T = tokens.size(1)
         positions = torch.arange(T, device=device).unsqueeze(0)
-        x = self._embed_tokens(tokens) + self.pos_emb(positions)
+        x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
         out = self._transformer_forward(x)
 
         if return_last_n == 1:
@@ -765,6 +798,8 @@ class NTPModel(nn.Module):
         item_embeddings: Optional[torch.Tensor] = None,
         contrastive_weight: float = 0.0,
         contrastive_temp: float = 0.07,
+        time_gaps: Optional[torch.Tensor] = None,
+        action_levels: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """LM-style forward on packed user sequences. Returns scalar loss.
 
@@ -778,6 +813,8 @@ class NTPModel(nn.Module):
             item_embeddings: (B, N_items, E) — target item embeddings.
             contrastive_weight: α for contrastive loss.
             contrastive_temp: InfoNCE temperature τ.
+            time_gaps: (B, S) — time gap bucket indices.
+            action_levels: (B, S) — action level indices.
         Returns:
             loss: scalar
         """
@@ -786,7 +823,11 @@ class NTPModel(nn.Module):
         L = self.n_sid_layers
 
         positions = torch.arange(S, device=device).unsqueeze(0)
-        x = self._embed_tokens(input_tokens) + self.pos_emb(positions)
+        x = self._embed_tokens(input_tokens) + self._get_pos_emb(positions)
+        if time_gaps is not None and hasattr(self, 'time_gap_emb'):
+            x = x + self.time_gap_emb(time_gaps)
+        if action_levels is not None and hasattr(self, 'action_emb'):
+            x = x + self.action_emb(action_levels)
         hidden = self._transformer_forward(x)  # (B, S, D)
 
         # Flatten for efficient per-layer gather

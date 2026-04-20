@@ -39,6 +39,51 @@
 
 ---
 
+## EXP-023: NTP Side Information — Time Gap + Action Type + Segment Embedding
+
+**Date**: 2026-04-21
+**Status**: planned
+**Results**: TBD
+
+### Background
+当前 NTP 模型输入仅为 SID token 序列 + 单一位置编码。三个 P0 低成本 additive 特征（IDEA-feat-0/1/2）可同时实现并独立验证：
+1. **Time Gap Embedding**: 相邻 item 的时间间隔 log-scale 分桶 (16 bins)，捕捉实时性信号
+2. **Action Level Embedding**: action_bitmap → 4 级离散信号 (pad/weak/strong/trade)，区分行为强度
+3. **Segment Embedding**: 将 position embedding 解耦为 item_pos + layer_pos，让模型区分 SID 层级
+
+Baseline: EXP-016 B-14d-S (PPL=27.05, R@500=58.5%)
+
+### Hypothesis
+- Time Gap: +1-2% R@500（高频连续行为 vs 长时间回访语义不同）
+- Action Level: +1-3% R@500（强交互 item 应被更高权重预测）
+- Segment Emb: +0.5-1% R@500（层级结构感知改善 L0→L1→L2 转换建模）
+- All combined: +2-4% R@500 (特征信息正交，应可叠加)
+
+### Design
+- **Variable**: side features 组合 (5 configs)
+  - baseline: 无新特征（复现 EXP-016）
+  - timegap: 仅 time_gap_emb
+  - action: 仅 action_level_emb
+  - segment: 仅 segment_emb
+  - all: 全部开启
+- **Fixed**: S-tier model (17.5M active, 256d/6L/8E top-2), 14d data (03-18~03-31), batch=4096, lr=1e-3, 1 epoch
+- **Metric**: train loss, eval PPL, Recall@{10, 50, 100, 500}
+- **Data**: 需重新 preprocess-ntp 生成带 time_gaps + action_levels 的 shards
+
+### Run
+`bash experiments/scripts/exp-023.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-022: NTP In-Batch Contrastive Loss (IDEA-onemall-0)
 
 **Date**: 2026-04-20

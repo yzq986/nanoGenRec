@@ -56,7 +56,8 @@ def save_shard(sequences, path):
 
     Args:
         sequences: list of dicts with 'tokens', 'split_pos', 'eval_cids',
-                   and optionally 'neg_l0' (list of K ints per item).
+                   and optionally 'neg_l0' (list of K ints per item),
+                   'time_gaps' (list of int), 'action_levels' (list of int).
     """
     if not sequences:
         np.savez_compressed(
@@ -80,6 +81,10 @@ def save_shard(sequences, path):
     neg_l0_offsets = [0] if has_neg else None
     neg_l0_k = None
 
+    has_features = 'time_gaps' in sequences[0]
+    all_time_gaps = [] if has_features else None
+    all_action_levels = [] if has_features else None
+
     for seq in sequences:
         all_tokens.extend(seq['tokens'])
         offsets.append(offsets[-1] + len(seq['tokens']))
@@ -93,6 +98,9 @@ def save_shard(sequences, path):
             for row in neg:
                 neg_l0_flat.extend(row)
             neg_l0_offsets.append(neg_l0_offsets[-1] + len(neg))
+        if has_features:
+            all_time_gaps.extend(seq['time_gaps'])
+            all_action_levels.extend(seq['action_levels'])
 
     arrays = dict(
         tokens=np.array(all_tokens, dtype=np.int32),
@@ -105,6 +113,9 @@ def save_shard(sequences, path):
         arrays['neg_l0_flat'] = np.array(neg_l0_flat, dtype=np.int16)
         arrays['neg_l0_offsets'] = np.array(neg_l0_offsets, dtype=np.int64)
         arrays['neg_l0_k'] = np.array(neg_l0_k or 0, dtype=np.int32)
+    if has_features:
+        arrays['time_gaps'] = np.array(all_time_gaps, dtype=np.int8)
+        arrays['action_levels'] = np.array(all_action_levels, dtype=np.int8)
 
     np.savez_compressed(path, **arrays)
 
@@ -112,8 +123,8 @@ def save_shard(sequences, path):
 def load_shard(path):
     """Load shard → (tokens_list, split_pos_list[, neg_l0_list]).
 
-    Returns only what training needs. eval_cids loaded separately via load_shard_eval_cids.
-    Returns 3-tuple if shard contains neg_l0 data, 2-tuple otherwise.
+    Returns dict with keys: 'tokens_list', 'split_pos_list', and optionally
+    'neg_l0_list', 'time_gaps_list', 'action_levels_list'.
     """
     data = np.load(path, allow_pickle=True)
     tokens = data['tokens']
@@ -121,16 +132,25 @@ def load_shard(path):
     split_pos = data['split_pos']
 
     has_neg = 'neg_l0_flat' in data
+    has_features = 'time_gaps' in data.files
+
     if has_neg:
         neg_flat = data['neg_l0_flat']
         neg_offsets = data['neg_l0_offsets']
         neg_k = int(data['neg_l0_k'])
 
+    time_gaps_all = data['time_gaps'] if has_features else None
+    action_levels_all = data['action_levels'] if has_features else None
+
     tokens_list = []
     split_pos_list = []
     neg_l0_list = [] if has_neg else None
+    time_gaps_list = [] if has_features else None
+    action_levels_list = [] if has_features else None
+
     for i in range(len(offsets) - 1):
-        tokens_list.append(tokens[offsets[i]:offsets[i + 1]].tolist())
+        start, end = int(offsets[i]), int(offsets[i + 1])
+        tokens_list.append(tokens[start:end].tolist())
         split_pos_list.append(int(split_pos[i]))
         if has_neg:
             n_items = int(neg_offsets[i + 1] - neg_offsets[i])
@@ -139,10 +159,20 @@ def load_shard(path):
             chunk = neg_flat[flat_start:flat_end].astype(int).tolist()
             neg_l0_list.append([chunk[j * neg_k:(j + 1) * neg_k]
                                 for j in range(n_items)])
+        if has_features:
+            time_gaps_list.append(time_gaps_all[start:end].tolist())
+            action_levels_list.append(action_levels_all[start:end].tolist())
 
+    result = {
+        'tokens_list': tokens_list,
+        'split_pos_list': split_pos_list,
+    }
     if has_neg:
-        return tokens_list, split_pos_list, neg_l0_list
-    return tokens_list, split_pos_list
+        result['neg_l0_list'] = neg_l0_list
+    if has_features:
+        result['time_gaps_list'] = time_gaps_list
+        result['action_levels_list'] = action_levels_list
+    return result
 
 
 def load_shard_full(path):

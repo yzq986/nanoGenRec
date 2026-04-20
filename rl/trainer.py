@@ -777,7 +777,7 @@ def main():
         if not os.path.exists(shard_path):
             shard_path = os.path.join(args.preprocessed_dir, 'train_shard_0.npz')
         shard_data = load_shard(shard_path)
-        tokens_list, split_pos_list = shard_data[0], shard_data[1]
+        tokens_list, split_pos_list = shard_data['tokens_list'], shard_data['split_pos_list']
         log(is_main, f"  NTP shard: {len(tokens_list):,} seqs (rank {local_rank})")
 
     # ── Load preference pairs (all shards on each rank for simplicity) ──
