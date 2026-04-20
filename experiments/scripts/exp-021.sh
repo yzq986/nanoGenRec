@@ -7,8 +7,12 @@
 # between Qwen3-Embedding-0.6B (dim=1024) and Qwen3-Embedding-4B (dim=2560).
 #
 # Prerequisites:
-#   - EFS embedding cache for both models
-#   - experiments/sid_cache/qwen3-0.6b/ already exists (baseline)
+#   - EFS embedding cache for qwen3-4b
+#   - Baseline: experiments/sid_cache/exp013-4096x3-12d-binary (0.6B, 4096×3, FSQ 12d, MLP h=64)
+#
+# Tokenizer config (same as baseline EXP-013):
+#   4096 clusters × 2 KMeans layers, FSQ 12d_4096, MLP projection
+# NTP data window: 14d (2026-03-18 ~ 2026-03-31), same as EXP-016 B-14d
 # ============================================================
 set -euo pipefail
 
@@ -87,21 +91,24 @@ if [ "${START_FROM}" -le 1 ]; then
     echo "[Config 1] Qwen3-4B — train SID tokenizer + NTP (fsq_hidden=64)"
     echo "============================================================"
 
-    # Train SID tokenizer for 4B
+    # Train SID tokenizer for 4B (same config as 0.6B baseline: 4096×3, FSQ 12d_4096, MLP h=64)
     python run.py preprocess-sid \
         --model qwen3-4b \
         --output_dir "${SID_CACHE_4B}" \
         --behavior_path auto \
-        --date_start 2026-04-01 \
-        --date_end 2026-04-14
+        --num_clusters 4096 \
+        --fsq_levels 12d_4096 \
+        --fsq_projection mlp \
+        --fsq_mlp_hidden 64 \
+        --fsq_epochs 50
 
-    # Preprocess NTP data
+    # Preprocess NTP data (14d window, same as EXP-016 B-14d)
     python run.py preprocess-ntp \
         --sid_cache "${SID_CACHE_4B}" \
         --output_dir "${NTP_DATA_4B}" \
         --n_shards "${N_GPUS}" \
-        --date_start 2026-04-01 \
-        --date_end 2026-04-14
+        --date_start 2026-03-18 \
+        --date_end 2026-03-31
 
     # Train NTP probe
     if [ "${N_GPUS}" -gt 1 ]; then
@@ -144,22 +151,24 @@ if [ "${START_FROM}" -le 2 ]; then
     echo "[Config 2] Qwen3-4B — larger FSQ hidden (128)"
     echo "============================================================"
 
-    # Train SID tokenizer for 4B with larger FSQ hidden
+    # Train SID tokenizer for 4B with larger FSQ hidden (128 vs baseline 64)
     python run.py preprocess-sid \
         --model qwen3-4b \
         --output_dir "${SID_CACHE_4B_H128}" \
         --behavior_path auto \
+        --num_clusters 4096 \
+        --fsq_levels 12d_4096 \
+        --fsq_projection mlp \
         --fsq_mlp_hidden 128 \
-        --date_start 2026-04-01 \
-        --date_end 2026-04-14
+        --fsq_epochs 50
 
-    # Preprocess NTP data
+    # Preprocess NTP data (14d window, same as EXP-016 B-14d)
     python run.py preprocess-ntp \
         --sid_cache "${SID_CACHE_4B_H128}" \
         --output_dir "${NTP_DATA_4B_H128}" \
         --n_shards "${N_GPUS}" \
-        --date_start 2026-04-01 \
-        --date_end 2026-04-14
+        --date_start 2026-03-18 \
+        --date_end 2026-03-31
 
     # Train NTP probe
     if [ "${N_GPUS}" -gt 1 ]; then
