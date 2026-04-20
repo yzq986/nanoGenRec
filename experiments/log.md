@@ -39,6 +39,61 @@
 
 ---
 
+## EXP-020: RF-DPO Hard λ Sweep — Finding Optimal DPO Weight
+
+**Date**: 2026-04-20
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+EXP-019 Joint NTP+DPO 结果显示 Hard 的最佳 λ 在 0.01~0.1 之间：
+- λ=0.01: PPL=14.4 (best), R@10=13.5%, R@500=66.4%, **但 pref_acc=49.8%**（DPO 信号太弱，模型没学到 preference）
+- λ=0.1:  PPL=23.6 (退化), R@10=13.6%, R@500=65.5%, pref_acc=93.6%（PPL 开始崩）
+- Reference: PPL=17.5, R@10=15.4%, R@500=68.3%
+
+目标：在 λ=0.01~0.1 之间找到 sweet spot，让 pref_acc >70% 的同时保持 PPL 不显著退化（<18）。
+
+同时测试 Easy multi-epoch：Easy 只有 95 pairs / 15 steps，但 joint 模式下可以让 DPO 数据循环多次（NTP 兜底防遗忘），验证更多 DPO epoch 能否增强 Easy 的对齐效果。
+
+### Hypothesis
+
+1. λ=0.03~0.05 能在 PPL 保持 <18 的同时让 pref_acc >70%，实现有意义的对齐
+2. Easy multi-epoch（更多步数）能让模型更充分学到 negative feedback 的 preference，比 15 步的 Easy 有更强对齐效果
+3. 存在一个 λ 使得 R@10 超过 reference（15.4%）——alignment 和 recall 不一定冲突
+
+### Design
+
+- **Variable**: λ (DPO weight) — 0.03, 0.05, 0.07；Easy multi-epoch steps
+- **Fixed**: S-tier 模型 (17.5M), 14d 数据, β=0.1, lr=1e-4, ref=SP-DPO fixed-medium, Hard 807 steps
+- **Metric**: PPL, item_recall@{10,50,100,500}, reward_margin, preference_acc
+- **Data**: RF-DPO Hard 4,312 pairs; Easy 95 pairs
+
+Step 计算：
+- Hard: 4,312 pairs / 16 batch = 269 batches × 3 epochs = 807 steps (same as EXP-019)
+- Easy multi-epoch: 95 pairs / 16 batch = 5 batches × 20 epochs = 100 steps
+
+| Config | Name | Difficulty | λ | β | max_steps | Description |
+|--------|------|-----------|-----|-----|-----------|-------------|
+| 1 | hard-lam03 | Hard | 0.03 | 0.1 | 807 | λ=0.03 |
+| 2 | hard-lam05 | Hard | 0.05 | 0.1 | 807 | λ=0.05 |
+| 3 | hard-lam07 | Hard | 0.07 | 0.1 | 807 | λ=0.07 |
+| 4 | easy-multi | Easy | 0.1 | 0.1 | 100 | Easy 20 epochs |
+
+### Run
+`bash experiments/scripts/exp-020.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-019: RF-DPO Joint NTP+DPO — Step-Matched Training
 
 **Date**: 2026-04-20
