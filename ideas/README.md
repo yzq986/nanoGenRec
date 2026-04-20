@@ -12,11 +12,11 @@
 | [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性/Caption) | 6 | — |
 | [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale) | 23 | — |
 | [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum) | 17 | onemall-0 |
-| [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR) | 10 | — |
+| [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR/RPO/ElasticTether) | 12 | — |
 | [inference.md](inference.md) | 推理优化 (Dynamic Beam/CSR约束/Register压缩/PRM-Beam/GRC/FP8-PTQ) | 7 | — |
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | ~~oneloc-4~~ 部分完成 |
 
-**总计: 78 ideas (3 P0 / 51 P1 / 24 P2)**
+**总计: 80 ideas (3 P0 / 53 P1 / 24 P2)**
 
 ## 全局演进图
 
@@ -83,6 +83,8 @@ graph LR
         OL4("oneloc-4 Scaling Law 序列长度≫模型"):::p0
         OM2("onemall-2 GRPO/DPO"):::p1
         AL0("align3-0 Progressive DPO"):::p1
+        RPO0("rpo-0 RPO SFT Regularizer"):::p1
+        SPOT0("spot-0 Elastic Tether"):::p1
         RG0("rankgr-0 Listwise DPO+Rescore"):::p1
         GR4("gr4ad-4 Dynamic Beam"):::p1
         STAT0("static-0 CSR 约束解码"):::p1
@@ -123,6 +125,8 @@ graph LR
     RG0 --> GR4
     OM2 --> SGREC0
     OM2 --> P2_RL
+    AL0 --> RPO0
+    AL0 --> SPOT0
     S2GR0 --> P2_ARCH
     S2GR0 --> OREC_THINK0
     S2GR0 --> REG4REC0
@@ -196,6 +200,8 @@ graph LR
 | `nsgr` | NSGR (Meituan, arxiv 2604.05314) | Next-Scale 粗到细生成式重排序 |
 | `orecv2` | OneRec-V2 Quant (Kuaishou, arxiv 2603.11486) | FP8 PTQ 推理加速 |
 | `rclrec` | RCLRec (Alibaba International, arxiv 2603.28124) | 反向课程学习稀疏转化建模 |
+| `rpo` | RPO (ByteDance+Northwestern+Stanford, arxiv 2405.16436, NeurIPS 2024) | SFT Loss as Adversarial Regularizer |
+| `spot` | SPoT (HKU, arxiv 2603.01683, Mar 2026) | Elastic Tether — DPO 隐式正则化 |
 
 ## 核心设计原则
 
