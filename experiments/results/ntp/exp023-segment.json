@@ -1,0 +1,41 @@
+{
+  "name": "exp023-segment",
+  "model_type": "s-tier",
+  "n_params": 45694976,
+  "n_active_params": 17383424,
+  "total_tokens": 132610536,
+  "total_flops": 13831351044931584,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "eval": {
+    "ppl": 25.9382,
+    "layer_ppl": [
+      346.9199,
+      11.7518,
+      4.3462
+    ],
+    "avg_loss": 3.255718,
+    "depth_hit@10": [
+      0.1998,
+      0.1736,
+      0.1722
+    ],
+    "depth_hit@10_indep": [
+      0.199,
+      0.808,
+      0.8628
+    ],
+    "depth_acc_beam": [
+      0.036,
+      0.023,
+      0.023
+    ],
+    "target_sid_found_rate": 0.612,
+    "n_eval_positions": 148078,
+    "n_eval_items": 49166,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.109,
+    "item_recall@50": 0.249,
+    "item_recall@100": 0.354,
+    "item_recall@500": 0.612
+  }
+}
