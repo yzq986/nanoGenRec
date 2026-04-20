@@ -829,16 +829,16 @@ class NTPModel(nn.Module):
         return ntp_loss
 
     def _compute_contrastive_loss(self, hidden, target_mask, item_embeddings, temperature,
-                                   sim_matrix_budget_mb=192):
-        """InfoNCE between s₃ hidden states and item embeddings.
+                                   max_pairs=4096):
+        """InfoNCE between s₃ hidden states and item embeddings (local in-batch).
 
         s₃ positions: where input layer = L-1 (position i % L == L-1).
         The hidden state here has encoded the full item SID (s₀..s₃).
 
-        Adaptively caps the number of sampled pairs so the total memory
-        from the similarity matrix fits within budget. Real cost ≈ 3x the
-        matrix itself (forward + backward grad + softmax intermediate),
-        so budget=192 MB → ~576 MB peak, safe when <1 GiB GPU headroom.
+        Uses only local (per-GPU) negatives to avoid OOM from cross-GPU gather.
+        Each GPU samples up to max_pairs from its B×n_s3 pool.
+        Memory: (max_pairs, max_pairs) * 4 bytes * ~3 (fwd+bwd+softmax)
+        = 4096² * 12 ≈ 192 MB peak, fits in <1 GiB headroom.
         """
         B, S, D = hidden.shape
         L = self.n_sid_layers
@@ -858,14 +858,8 @@ class NTPModel(nn.Module):
         e_flat = item_emb.reshape(-1, item_emb.size(-1))  # (B*n_s3, E)
         M_local = h_flat.size(0)
 
-        # Budget covers forward matrix only; backward ≈ 3x total
-        # N_total = max_local * world_size → max_local = N_total_max / world_size
-        ws = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
-        n_total_max = int((sim_matrix_budget_mb * 1024 * 1024 / 4) ** 0.5)
-        max_local = max(n_total_max // ws, 1)
-
-        if M_local > max_local:
-            idx = torch.randperm(M_local, device=device)[:max_local]
+        if M_local > max_pairs:
+            idx = torch.randperm(M_local, device=device)[:max_pairs]
             h_flat = h_flat[idx]
             e_flat = e_flat[idx]
 
@@ -874,15 +868,7 @@ class NTPModel(nn.Module):
         e_proj = self.contrastive_item_proj(e_flat)
         e_proj = F.normalize(e_proj, dim=-1)
 
-        if torch.distributed.is_initialized():
-            h_all = _gather_all(h_proj)
-            e_all = _gather_all(e_proj)
-        else:
-            h_all = h_proj
-            e_all = e_proj
-
-        # (N, N) where N ≤ max_pairs * world_size (e.g. 2048*8 = 16K → 1 GiB fp32)
-        logits = torch.mm(h_all, e_all.t()) / temperature
+        logits = torch.mm(h_proj, e_proj.t()) / temperature  # (N, N), N ≤ 4096
         labels = torch.arange(logits.size(0), device=device)
         return F.cross_entropy(logits, labels)
 
