@@ -1304,6 +1304,10 @@ def main():
             n_transformer_layers = args.n_transformer_layers if args.n_transformer_layers is not None else 2
             lr = args.lr if args.lr is not None else 3e-3
 
+        from gr_demo.utils.checkpoint import archive_if_exists
+        if is_main:
+            archive_if_exists(output_dir)
+
         log(is_main, f"\nStep 4: Training ({model_type}, packed)")
         probe, avg_loss, n_params, model_type, train_log, train_summary = train_packed(
             tokens_list=tokens_list,
