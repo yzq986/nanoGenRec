@@ -24,6 +24,17 @@ sys.path.insert(0, os.path.dirname(repo_root))  # adds parent of gr_demo/
 The CLI entry point is always `python run.py <command>`, NOT `python -m gr_demo`.
 For DDP/torchrun, use `torchrun ... run.py <command>`, NOT `torchrun -m gr_demo.<module>`.
 
+**Shell 脚本 (.sh) 也必须设置 PYTHONPATH**：任何 `experiments/scripts/*.sh` 中如果调用
+`python -c "..."` 或 `python run.py`，脚本顶部必须加：
+
+```bash
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+cd "${REPO_ROOT}"
+```
+
+这保证无论用户从哪个目录执行脚本，`gr_demo` 包都能被找到。**每次写新的 .sh 实验脚本时必须包含这三行。**
+
 ## Git remotes
 
 Two remotes are configured:
