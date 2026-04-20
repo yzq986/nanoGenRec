@@ -265,7 +265,7 @@ rθ(x, y) = β log πθ(y|x)
 DPO maximizes the margin between the chosen response
 y+ and the rejected response y−:
 LDPO = −Ex,y+,y−∼D[log σ
- rθ(x, y+)−rθ(x, y−)
+rθ(x, y+)−rθ(x, y−)
 
 ] (4)
 Reward-SFT
@@ -276,7 +276,7 @@ mizes the likelihood of tokens directly, this objective simply
 maximizes the probability of the chosen response y+ being
 classified as “correct” under the implicit reward formulation:
 LRW-SFT = −Ex,y+∼D[log σ
- rθ(x, y+)
+rθ(x, y+)
 
 ]
 (5)
@@ -331,7 +331,7 @@ rθ from Equation (3):
 ∂r
 ∇θrθ(x, y+)
 = −
- 1−σ(rθ(x, y+))
+1−σ(rθ(x, y+))
 
 ·β∇θ log πθ(y+|x) (7)
 Comparing Equation (6) and Equation (7) reveals a fun-
@@ -544,12 +544,12 @@ reward-shift δ to the BCE loss:
 LSPoT-BCO = −Ex,y+,y−∼D
 
 log σ
- rθ(x, y+)−δ
+rθ(x, y+)−δ
 
 +
 log σ
- −
- rθ(x, y−)−δ
+−
+rθ(x, y−)−δ
   (10)
 5
 

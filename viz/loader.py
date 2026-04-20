@@ -102,6 +102,23 @@ def get_eval_metrics(meta):
     return result
 
 
+def get_alignment_metrics(meta):
+    """Extract alignment metrics from train_summary.
+
+    Returns:
+        dict with reward/preference stats, or None if not available.
+    """
+    train = meta.get('train', {})
+    if 'avg_reward_margin' not in train:
+        return None
+    return {
+        'avg_chosen_reward': train.get('avg_chosen_reward'),
+        'avg_rejected_reward': train.get('avg_rejected_reward'),
+        'avg_reward_margin': train.get('avg_reward_margin'),
+        'avg_preference_acc': train.get('avg_preference_acc'),
+    }
+
+
 def get_train_config(meta):
     """Extract training config from meta."""
     train = meta.get('train', {})

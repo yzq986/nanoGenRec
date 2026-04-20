@@ -207,7 +207,8 @@ def softmax_dpo_loss(
     ref_lp: Tensor,          # (N,) flat log pi_ref for all candidates
     sample_offsets: Tensor,  # (B+1,) boundaries; [off[i]] = chosen, [off[i]+1:off[i+1]] = rejected
     beta: float = 0.1,
-) -> Tensor:
+    return_diagnostics: bool = False,
+):
     """Softmax-DPO loss with packed candidates (no padding).
 
     Supports 1 chosen vs variable N rejected per sample.
@@ -221,13 +222,19 @@ def softmax_dpo_loss(
     All computation in fp32 for numerical stability.
 
     Returns:
-        Scalar loss.
+        Scalar loss (default), or (loss, diagnostics_dict) when return_diagnostics=True.
+        Diagnostics are detached scalars for logging — no gradient impact.
     """
     adv = (policy_lp - ref_lp).float()  # (N,)
     offsets = sample_offsets.tolist()
     B = len(offsets) - 1
 
     losses = []
+    chosen_rewards = []
+    rejected_rewards = []
+    wins = 0
+    n_pairs = 0
+
     for i in range(B):
         start, end = int(offsets[i]), int(offsets[i + 1])
         if end - start <= 1:
@@ -238,6 +245,30 @@ def softmax_dpo_loss(
         lse = torch.logsumexp(r, dim=0)
         losses.append(-F.logsigmoid(-lse))
 
+        if return_diagnostics:
+            chosen_rewards.append(chosen_adv.detach())
+            rejected_rewards.append(rejected_adv.detach().mean())
+            wins += int((chosen_adv > rejected_adv.max()).item())
+            n_pairs += 1
+
     if not losses:
-        return torch.tensor(0.0, device=policy_lp.device, requires_grad=True)
-    return torch.stack(losses).mean()
+        zero = torch.tensor(0.0, device=policy_lp.device, requires_grad=True)
+        if return_diagnostics:
+            return zero, {}
+        return zero
+
+    loss = torch.stack(losses).mean()
+
+    if not return_diagnostics:
+        return loss
+
+    cr = torch.stack(chosen_rewards)
+    rr = torch.stack(rejected_rewards)
+    diagnostics = {
+        'chosen_reward': cr.mean().item(),
+        'rejected_reward': rr.mean().item(),
+        'reward_margin': (cr - rr).mean().item(),
+        'preference_acc': wins / n_pairs if n_pairs > 0 else 0.0,
+        'kl': adv.detach().mean().item(),
+    }
+    return loss, diagnostics
