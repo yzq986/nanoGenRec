@@ -401,8 +401,8 @@ def train_dpo(
         grad_flat_buffer = None
 
     # ── DPO step helper (shared by both modes) ──
-    def _dpo_step(dpo_batch):
-        """Compute DPO loss and backward. Returns loss tensor."""
+    def _dpo_step(dpo_batch, weight=1.0):
+        """Compute DPO loss and backward. Returns unscaled loss tensor."""
         with _freeze_moe_bias(raw_policy):
             ctx_padded_dpo, ctx_lengths_dpo, all_sids, sample_offsets = dpo_batch
             ctx_padded_dpo = ctx_padded_dpo.to(device, non_blocking=True)
@@ -425,7 +425,7 @@ def train_dpo(
                 policy_lp, ref_lp, sample_offsets, beta=dpo_beta,
             )
 
-            dpo_loss.backward()
+            (weight * dpo_loss).backward()
             del ctx_padded_dpo, ctx_lengths_dpo, all_sids, sample_offsets
             del ctx_exp, len_exp, policy_lp, ref_lp
         return dpo_loss
@@ -546,7 +546,7 @@ def train_dpo(
             dpo_loss_val = torch.tensor(0.0, device=device)
             if dpo_weight > 0 and dpo_loader is not None:
                 dpo_batch = _next_dpo_batch()
-                dpo_loss_val = _dpo_step(dpo_batch)
+                dpo_loss_val = _dpo_step(dpo_batch, weight=dpo_weight)
 
             _allreduce_grads()
 
