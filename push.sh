@@ -97,7 +97,7 @@ push_main() {
         echo "  Skipping personal (remote not configured)"
     fi
 
-    # Push to company (重写 author 为公司身份)
+    # Push to company (rewrite author for local commits, preserve GPU commits)
     if ! git remote | grep -q '^company$'; then
         # Fallback: 没有 personal/company 双 remote 配置时，直接 push origin
         if git remote | grep -q '^origin$'; then
@@ -116,33 +116,48 @@ push_main() {
     local COMPANY_EMAIL="${GIT_AUTHOR_EMAIL:?Missing GIT_AUTHOR_EMAIL in config/config.sh}"
     local TEMP_BRANCH="_mirror_company_$$"
 
-    # 找到 company 和 personal 的分叉点，只重写之后的 commits
-    local BASE
-    BASE="$(git merge-base "company/${BRANCH}" "$BRANCH" 2>/dev/null || echo "")"
+    # Step 1: Fetch company and incorporate GPU machine's commits
+    git fetch company "$BRANCH" --quiet 2>/dev/null || true
+    local COMPANY_HEAD
+    COMPANY_HEAD="$(git rev-parse "company/${BRANCH}" 2>/dev/null || echo "")"
 
-    # Robust cleanup: abort rebase, force-checkout back to original branch, delete temp
+    if [ -n "$COMPANY_HEAD" ]; then
+        # Merge company commits into local (so we don't lose GPU work)
+        if ! git merge-base --is-ancestor "$COMPANY_HEAD" HEAD 2>/dev/null; then
+            echo "  Incorporating GPU commits from company..."
+            git rebase --quiet "company/${BRANCH}" 2>/dev/null || {
+                echo "  Warning: rebase onto company failed, trying merge..."
+                git rebase --abort --quiet 2>/dev/null || true
+                git merge "company/${BRANCH}" --no-edit --quiet 2>/dev/null || {
+                    echo "  Warning: merge failed too, pushing as-is..."
+                    git merge --abort 2>/dev/null || true
+                }
+            }
+        fi
+    fi
+
+    # Step 2: Find merge-base for rewrite range
+    local BASE
+    BASE="$(git merge-base "company/${BRANCH}" HEAD 2>/dev/null || echo "")"
+
+    # Robust cleanup
     cleanup_mirror() {
         git rebase --abort --quiet 2>/dev/null || true
-        # Force checkout even if working tree is dirty from failed rebase
         git checkout -f "$BRANCH" --quiet 2>/dev/null || true
         git branch -D "$TEMP_BRANCH" --quiet 2>/dev/null || true
-        # Final paranoia: if still detached, force back to master
         if ! git symbolic-ref HEAD >/dev/null 2>&1; then
             git checkout -f master --quiet 2>/dev/null || true
         fi
-        # Restore stashed changes even on error
         if [ "$STASHED" = true ]; then
             if ! git stash pop --quiet 2>/dev/null; then
-                echo "  ERROR: stash pop failed (conflict?)."
-                echo "  Your changes are safe in 'git stash list'. Run 'git stash pop' manually."
-                echo "  DO NOT run 'git stash drop' until you've recovered your changes!"
+                echo "  ERROR: stash pop failed. Your changes are in 'git stash list'."
             fi
             STASHED=false
         fi
     }
     trap 'cleanup_mirror; trap - INT TERM; return 1' INT TERM
 
-    # Stash any uncommitted changes so checkout -f won't destroy them
+    # Stash uncommitted changes
     local STASHED=false
     if ! git diff --quiet || ! git diff --cached --quiet; then
         git stash push --quiet -m "push.sh: auto-stash before company mirror"
@@ -151,38 +166,37 @@ push_main() {
 
     git checkout -b "$TEMP_BRANCH" "$BRANCH" --quiet
 
+    # Step 3: Rewrite only non-company-author commits (preserve GPU commits' hashes)
+    local REWRITE_EXEC="if [ \"\$(git log -1 --format='%ae')\" != '$COMPANY_EMAIL' ]; then GIT_COMMITTER_NAME='$COMPANY_NAME' GIT_COMMITTER_EMAIL='$COMPANY_EMAIL' git commit --amend --no-edit --quiet --author='$COMPANY_NAME <$COMPANY_EMAIL>'; fi"
+
     local REBASE_OK=true
     if [ -n "$BASE" ]; then
-        # 重写 base 之后的 commits
         GIT_SEQUENCE_EDITOR=true git rebase --quiet --onto "$BASE" "$BASE" "$TEMP_BRANCH" \
-            --exec "GIT_COMMITTER_NAME='$COMPANY_NAME' GIT_COMMITTER_EMAIL='$COMPANY_EMAIL' git commit --amend --no-edit --quiet --author='$COMPANY_NAME <$COMPANY_EMAIL>'" \
+            --exec "$REWRITE_EXEC" \
             2>/dev/null || REBASE_OK=false
     else
-        # 没有共同祖先，重写所有 commits
         GIT_SEQUENCE_EDITOR=true git rebase --quiet --root "$TEMP_BRANCH" \
-            --exec "GIT_COMMITTER_NAME='$COMPANY_NAME' GIT_COMMITTER_EMAIL='$COMPANY_EMAIL' git commit --amend --no-edit --quiet --author='$COMPANY_NAME <$COMPANY_EMAIL>'" \
+            --exec "$REWRITE_EXEC" \
             2>/dev/null || REBASE_OK=false
     fi
 
     if [ "$REBASE_OK" = false ]; then
         echo "  Warning: rebase failed, aborting..."
         git rebase --abort --quiet 2>/dev/null || true
-        # Fall back to pushing original branch without author rewrite
-        echo "  Falling back: pushing original commits to company (no author rewrite)..."
+        echo "  Falling back: pushing original commits to company..."
         git push company "$BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: fallback push to company failed"
     else
         git push company "$TEMP_BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: push to company failed"
     fi
 
-    # Cleanup — always return to original branch and restore stash
+    # Cleanup
     trap - INT TERM
     cleanup_mirror
 
-    # Post-cleanup verification
     local FINAL_BRANCH
     FINAL_BRANCH="$(git branch --show-current 2>/dev/null || echo "")"
     if [ "$FINAL_BRANCH" != "$BRANCH" ]; then
-        echo "  ERROR: expected to be on '$BRANCH' but on '${FINAL_BRANCH:-DETACHED HEAD}'. Force recovering..."
+        echo "  ERROR: expected '$BRANCH' but on '${FINAL_BRANCH:-DETACHED HEAD}'. Recovering..."
         git checkout -f "$BRANCH" --quiet 2>/dev/null || git checkout -f master --quiet
     fi
     echo "  Company mirror complete."
