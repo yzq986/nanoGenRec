@@ -62,5 +62,14 @@
     "item_recall@50": 0.312,
     "item_recall@100": 0.42,
     "item_recall@500": 0.655
+  },
+  "alignment_eval": {
+    "chosen_reward": 6.887,
+    "rejected_reward": -16.6092,
+    "reward_margin": 23.4962,
+    "preference_acc": 0.9355,
+    "n_pairs": 4312,
+    "difficulty": "hard",
+    "dpo_beta": 0.1
   }
 }
