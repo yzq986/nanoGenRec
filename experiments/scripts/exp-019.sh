@@ -135,7 +135,6 @@ train_joint_rf_dpo() {
         echo "[${NAME}] Checkpoint found, running eval-only (use --force to re-train)"
     fi
 
-    # archive_if_exists is handled by trainer — no rm -rf needed
 
     local CMD_ARGS=(
         --sft_checkpoint "${THIS_REF}"

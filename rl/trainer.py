@@ -801,11 +801,6 @@ def main():
     train_meta_path = os.path.join(args.output_dir, 'train_meta.json')
     skip_train = os.path.exists(ckpt_path)
 
-    # ── Archive existing results only when re-training ──
-    if not skip_train:
-        from gr_demo.utils.checkpoint import archive_if_exists
-        if is_main:
-            archive_if_exists(args.output_dir)
 
     # ── Wandb (rank 0 only) ──
     wandb_run = None
