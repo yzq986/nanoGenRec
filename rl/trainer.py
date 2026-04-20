@@ -500,6 +500,13 @@ def train_dpo(
                     'tokens': 0,
                     'wall_s': round(time.time() - t0, 2),
                 })
+                if wandb_run is not None:
+                    wandb_run.log({
+                        'train/dpo_loss': step_dpo,
+                        'train/total_loss': step_dpo,
+                        'train/lr': cur_lr,
+                        'train/grad_norm': grad_norm,
+                    }, step=step)
 
             if is_main and (step + 1) % 10 == 0:
                 elapsed = time.time() - t0
@@ -563,16 +570,26 @@ def train_dpo(
 
             if is_main:
                 cur_lr = scheduler.get_last_lr()[0]
+                step_total = step_ntp + dpo_weight * step_dpo
                 train_log.append({
                     'step': step,
                     'ntp_loss': round(step_ntp, 6),
                     'dpo_loss': round(step_dpo, 6),
-                    'total_loss': round(step_ntp + dpo_weight * step_dpo, 6),
+                    'total_loss': round(step_total, 6),
                     'lr': round(cur_lr, 8),
                     'grad_norm': round(grad_norm, 4),
                     'tokens': total_tokens,
                     'wall_s': round(time.time() - t0, 2),
                 })
+                if wandb_run is not None:
+                    wandb_run.log({
+                        'train/ntp_loss': step_ntp,
+                        'train/dpo_loss': step_dpo,
+                        'train/total_loss': step_total,
+                        'train/lr': cur_lr,
+                        'train/grad_norm': grad_norm,
+                        'tokens': total_tokens,
+                    }, step=step)
 
             if is_main and (step + 1) % 50 == 0:
                 elapsed = time.time() - t0
@@ -663,6 +680,8 @@ def parse_args():
                         help='Difficulty filter for preference pairs')
     parser.add_argument('--name', type=str, default='sp-dpo',
                         help='Experiment name for logging')
+    parser.add_argument('--wandb', action='store_true',
+                        help='Enable wandb logging (rank 0 only)')
     return parser.parse_args()
 
 
@@ -720,6 +739,27 @@ def main():
     train_meta_path = os.path.join(args.output_dir, 'train_meta.json')
     skip_train = os.path.exists(ckpt_path)
 
+    # ── Wandb (rank 0 only) ──
+    wandb_run = None
+    if is_main and args.wandb:
+        try:
+            import wandb
+            wandb_run = wandb.init(
+                project='gr-demo',
+                name=args.name,
+                config={
+                    'dpo_weight': args.dpo_weight,
+                    'dpo_beta': args.dpo_beta,
+                    'lr': args.lr,
+                    'max_steps': args.max_steps,
+                    'pure_dpo': args.pure_dpo,
+                    'dpo_epochs': args.dpo_epochs,
+                    'n_preference_pairs': len(all_pairs),
+                },
+            )
+        except Exception:
+            wandb_run = None
+
     if skip_train:
         log(is_main, f"\n  Checkpoint found at {args.output_dir}, skipping training.")
 
@@ -732,6 +772,8 @@ def main():
 
         if has_eval:
             log(is_main, f"  Eval results already present, nothing to do.")
+            if wandb_run is not None:
+                wandb_run.finish()
             cleanup_ddp()
             return
 
@@ -746,6 +788,9 @@ def main():
         if difficulty == 'all' and pref_difficulty != 'all':
             difficulty = pref_difficulty
             log(is_main, f"  Using difficulty from preference meta: {difficulty}")
+
+        if wandb_run is not None:
+            wandb_run.config.update({'difficulty': difficulty})
 
         # ── Train ──
         log(is_main, f"\n  Training {label} (difficulty={difficulty})...")
@@ -772,6 +817,7 @@ def main():
             max_steps=args.max_steps,
             pure_dpo=args.pure_dpo,
             dpo_epochs=args.dpo_epochs,
+            wandb_run=wandb_run,
         )
 
         # ── Save checkpoint (rank 0 only) ──
@@ -821,6 +867,13 @@ def main():
         with open(train_meta_path, 'w') as f:
             json.dump(meta, f, indent=2)
         log(is_main, f"  Eval results saved to train_meta.json")
+
+    if wandb_run is not None:
+        if eval_results:
+            for k, v in eval_results.items():
+                if isinstance(v, (int, float)):
+                    wandb_run.summary[f'eval/{k}'] = v
+        wandb_run.finish()
 
     cleanup_ddp()
     log(is_main, f"\n{label} training complete!")
