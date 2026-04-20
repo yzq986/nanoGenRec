@@ -690,7 +690,7 @@ def _build_sid_to_embedding(sid_cache_dir):
         cached = np.load(cache_path)
         sid_keys = cached['sid_keys']   # (N, n_layers), int32
         sid_embs = cached['sid_embs']   # (N, emb_dim), float32
-        sid_to_embedding = {tuple(k): e for k, e in zip(sid_keys, sid_embs)}
+        sid_to_embedding = {tuple(int(x) for x in k): e for k, e in zip(sid_keys, sid_embs)}
         emb_dim = sid_embs.shape[1]
         print(f"  _build_sid_to_embedding: loaded from cache ({len(sid_to_embedding):,} SID tuples, dim={emb_dim})")
         return sid_to_embedding, emb_dim
