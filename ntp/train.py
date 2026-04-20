@@ -1251,10 +1251,15 @@ def main():
             wandb_run = None
             log(is_main, f"  W&B not available: {e}")
 
-    if args.eval_only:
-        # ── Eval-only: load checkpoint, skip training ──
-        ckpt_path = os.path.join(output_dir, 'probe.pt')
-        log(is_main, f"\n--eval_only: loading checkpoint from {output_dir}")
+    ckpt_path = os.path.join(output_dir, 'probe.pt')
+    skip_train = args.eval_only or os.path.exists(ckpt_path)
+
+    if skip_train:
+        # ── Load existing checkpoint, skip training ──
+        if args.eval_only:
+            log(is_main, f"\n--eval_only: loading checkpoint from {output_dir}")
+        else:
+            log(is_main, f"\n  Checkpoint found at {output_dir}, skipping training.")
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         cfg = ckpt['config']
         model_type = cfg.get('model_type', 'probe')
@@ -1366,11 +1371,21 @@ def main():
             )
 
     # ── Inline eval (ALL ranks participate, all-reduce results) ──
-    log(is_main, f"\nStep 6: Eval (teacher-forced + beam search, {world_size} GPUs)")
-    eval_results = _run_inline_eval(
-        probe, sid_cache_dir, preprocessed_dir, n_layers,
-        n_clusters_per_layer, local_rank, world_size, device,
-        is_main, args.batch_size)
+    meta_path = os.path.join(output_dir, 'train_meta.json')
+    has_eval = False
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            has_eval = 'eval' in json.load(f)
+
+    if has_eval and skip_train:
+        log(is_main, "\n  Eval already present, nothing to do.")
+        eval_results = None
+    else:
+        log(is_main, f"\nStep 6: Eval (teacher-forced + beam search, {world_size} GPUs)")
+        eval_results = _run_inline_eval(
+            probe, sid_cache_dir, preprocessed_dir, n_layers,
+            n_clusters_per_layer, local_rank, world_size, device,
+            is_main, args.batch_size)
 
     # Save eval results (rank 0 only)
     if is_main and eval_results:
