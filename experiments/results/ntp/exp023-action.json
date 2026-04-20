@@ -1,0 +1,41 @@
+{
+  "name": "exp023-action",
+  "model_type": "s-tier",
+  "n_params": 45782528,
+  "n_active_params": 17470976,
+  "total_tokens": 132615168,
+  "total_flops": 13901498504183808,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "eval": {
+    "ppl": 36.2124,
+    "layer_ppl": [
+      398.593,
+      15.1579,
+      7.9716
+    ],
+    "avg_loss": 3.589401,
+    "depth_hit@10": [
+      0.1751,
+      0.1466,
+      0.1423
+    ],
+    "depth_hit@10_indep": [
+      0.1744,
+      0.7775,
+      0.8149
+    ],
+    "depth_acc_beam": [
+      0.022,
+      0.012,
+      0.012
+    ],
+    "target_sid_found_rate": 0.534,
+    "n_eval_positions": 148078,
+    "n_eval_items": 49166,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.077,
+    "item_recall@50": 0.205,
+    "item_recall@100": 0.288,
+    "item_recall@500": 0.531
+  }
+}

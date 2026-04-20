@@ -1,0 +1,60 @@
+{
+  "n_train": 1709380,
+  "n_eval": 49456,
+  "n_clusters_per_layer": [
+    4096,
+    4096,
+    4096
+  ],
+  "n_layers": 3,
+  "n_items": 10,
+  "n_params": 45782528,
+  "train_loss": 3.390577,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "preprocessed_dir": "experiments/ntp_data/exp023-14d-features",
+  "timestamp": "2026-04-20 20:39:25",
+  "train": {
+    "n_params": 45782528,
+    "n_active_params": 17470976,
+    "total_tokens": 132615168,
+    "total_flops": 13901498504183808,
+    "throughput_tok_per_s": 101870.8,
+    "wall_time_s": 1301.8,
+    "batch_size": 152,
+    "world_size": 8,
+    "n_batches": 1405,
+    "max_seq_len": 512
+  },
+  "eval": {
+    "ppl": 36.2124,
+    "layer_ppl": [
+      398.593,
+      15.1579,
+      7.9716
+    ],
+    "avg_loss": 3.589401,
+    "depth_hit@10": [
+      0.1751,
+      0.1466,
+      0.1423
+    ],
+    "depth_hit@10_indep": [
+      0.1744,
+      0.7775,
+      0.8149
+    ],
+    "depth_acc_beam": [
+      0.022,
+      0.012,
+      0.012
+    ],
+    "target_sid_found_rate": 0.534,
+    "n_eval_positions": 148078,
+    "n_eval_items": 49166,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.077,
+    "item_recall@50": 0.205,
+    "item_recall@100": 0.288,
+    "item_recall@500": 0.531
+  }
+}
