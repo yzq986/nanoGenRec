@@ -689,6 +689,7 @@ def train_packed(
     contrastive_temp=0.07,
     contrastive_dim=0,
     sid_to_embedding=None,
+    dry_run=False,
 ):
     """Train NTPModel or NTPProbe with unified sequences (causal LM style).
 
@@ -887,6 +888,10 @@ def train_packed(
         # tokens processed this step (across all ranks)
         step_tokens = int(lengths.sum().item()) * world_size
         total_tokens += step_tokens
+
+        if dry_run and step >= 1:
+            log(is_main, f"  Dry run complete (2 steps, loss={total_loss/2:.4f})")
+            break
 
         # Record per-step metrics (rank 0 only to avoid duplicate I/O)
         if is_main:
@@ -1101,6 +1106,8 @@ def parse_args():
                         help='InfoNCE temperature τ')
     parser.add_argument('--contrastive_dim', type=int, default=128,
                         help='Contrastive projection dimension')
+    parser.add_argument('--dry_run', action='store_true',
+                        help='Run 2 steps only (smoke test)')
     return parser.parse_args()
 
 
@@ -1502,6 +1509,7 @@ def main():
             contrastive_temp=args.contrastive_temp,
             contrastive_dim=args.contrastive_dim,
             sid_to_embedding=sid_to_embedding,
+            dry_run=args.dry_run,
         )
 
         # Update W&B config with model-specific info discovered during training
