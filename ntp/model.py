@@ -829,16 +829,15 @@ class NTPModel(nn.Module):
         return ntp_loss
 
     def _compute_contrastive_loss(self, hidden, target_mask, item_embeddings, temperature,
-                                   max_pairs=2048):
+                                   sim_matrix_budget_mb=1024):
         """InfoNCE between s₃ hidden states and item embeddings.
 
         s₃ positions: where input layer = L-1 (position i % L == L-1).
         The hidden state here has encoded the full item SID (s₀..s₃).
 
-        To avoid OOM on the (M, M) similarity matrix when M = B × n_items × world_size
-        can reach 200K+, we randomly sample up to `max_pairs` (h, e) pairs from the
-        local batch, then gather across GPUs. Final matrix is at most
-        (max_pairs * world_size)², which fits comfortably in memory.
+        Adaptively caps the number of sampled pairs so the (N_total, N_total)
+        similarity matrix fits within `sim_matrix_budget_mb` (default 1 GiB).
+        N_total = local_pairs * world_size, matrix memory = N_total² * 4 bytes.
         """
         B, S, D = hidden.shape
         L = self.n_sid_layers
@@ -858,9 +857,14 @@ class NTPModel(nn.Module):
         e_flat = item_emb.reshape(-1, item_emb.size(-1))  # (B*n_s3, E)
         M_local = h_flat.size(0)
 
-        # Sub-sample to cap memory: randomly pick max_pairs from local pool
-        if M_local > max_pairs:
-            idx = torch.randperm(M_local, device=device)[:max_pairs]
+        # Adaptive cap: N_total² * 4 ≤ budget → N_total ≤ sqrt(budget/4)
+        # N_total = max_local * world_size → max_local = N_total_max / world_size
+        ws = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+        n_total_max = int((sim_matrix_budget_mb * 1024 * 1024 / 4) ** 0.5)
+        max_local = max(n_total_max // ws, 1)
+
+        if M_local > max_local:
+            idx = torch.randperm(M_local, device=device)[:max_local]
             h_flat = h_flat[idx]
             e_flat = e_flat[idx]
 
