@@ -472,38 +472,81 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
 class UnifiedSequenceDataset(torch.utils.data.Dataset):
     """Dataset of unified per-user sequences with split_pos."""
 
-    def __init__(self, tokens_list, split_pos_list, neg_l0_list=None):
+    def __init__(self, tokens_list, split_pos_list, neg_l0_list=None,
+                 sid_to_embedding=None, n_sid_layers=None):
         """
         Args:
             tokens_list: list of 1D token lists (variable length)
             split_pos_list: list of int split positions
             neg_l0_list: optional list of 2D lists (n_items, K) neg L0 tokens
+            sid_to_embedding: optional dict mapping SID tuple → mean embedding (np array)
+            n_sid_layers: number of SID layers (needed to chunk tokens into SID tuples)
         """
         self.tokens_list = tokens_list
         self.split_pos_list = split_pos_list
         self.neg_l0_list = neg_l0_list
+        self.sid_to_embedding = sid_to_embedding
+        self.n_sid_layers = n_sid_layers
 
     def __len__(self):
         return len(self.tokens_list)
 
     def __getitem__(self, idx):
-        item = (torch.tensor(self.tokens_list[idx], dtype=torch.long),
+        tokens = self.tokens_list[idx]
+        item = (torch.tensor(tokens, dtype=torch.long),
                 self.split_pos_list[idx])
         if self.neg_l0_list is not None:
-            return item + (torch.tensor(self.neg_l0_list[idx], dtype=torch.long),)
+            item = item + (torch.tensor(self.neg_l0_list[idx], dtype=torch.long),)
+
+        # Look up per-item embeddings from SID tokens
+        if self.sid_to_embedding is not None and self.n_sid_layers is not None:
+            L = self.n_sid_layers
+            n_items = len(tokens) // L
+            emb_dim = next(iter(self.sid_to_embedding.values())).shape[0]
+            embs = np.zeros((n_items, emb_dim), dtype=np.float32)
+            for i in range(n_items):
+                sid_tuple = tuple(tokens[i * L:(i + 1) * L])
+                emb = self.sid_to_embedding.get(sid_tuple)
+                if emb is not None:
+                    embs[i] = emb
+            item = item + (torch.from_numpy(embs),)
+
         return item
 
 
 def unified_collate_fn(batch):
     """Right-pad variable-length sequences, return split_pos tensor.
 
-    When neg_l0 data is present (3-tuples), also pads and returns neg tensors.
+    When neg_l0 data is present, also pads and returns neg tensors.
+    When item_embeddings are present (float dtype), pads and returns them.
+
+    Tuple layouts:
+        2-tuple: (tokens, split_pos)
+        3-tuple: (tokens, split_pos, neg_l0) or (tokens, split_pos, item_embs)
+        4-tuple: (tokens, split_pos, neg_l0, item_embs)
+    Detection: neg_l0 is dtype=long, item_embs is dtype=float32.
     """
-    has_neg = len(batch[0]) == 3
-    if has_neg:
-        seqs, split_positions, neg_l0s = zip(*batch)
-    else:
+    n_elems = len(batch[0])
+
+    # Parse tuple elements
+    has_neg = False
+    has_item_embs = False
+    if n_elems == 2:
         seqs, split_positions = zip(*batch)
+    elif n_elems == 3:
+        seqs, split_positions, third = zip(*batch)
+        if third[0].dtype == torch.float32:
+            has_item_embs = True
+            item_embs_list = third
+        else:
+            has_neg = True
+            neg_l0s = third
+    elif n_elems == 4:
+        seqs, split_positions, neg_l0s, item_embs_list = zip(*batch)
+        has_neg = True
+        has_item_embs = True
+    else:
+        raise ValueError(f"Unexpected batch tuple length: {n_elems}")
 
     lengths = torch.tensor([len(s) for s in seqs], dtype=torch.long)
     split_pos = torch.tensor(split_positions, dtype=torch.long)
@@ -512,44 +555,106 @@ def unified_collate_fn(batch):
     for i, seq in enumerate(seqs):
         padded[i, :len(seq)] = seq
 
-    if not has_neg:
-        return padded, lengths, split_pos
+    result = [padded, lengths, split_pos]
 
-    # Pad neg_l0: (B, max_items, K) → expand to (B, max_len_tokens, K)
-    # neg_l0s[i] shape: (n_items_i, K) — one row per item
-    # We need to broadcast item-level negs to token-level positions.
-    # Each item spans n_layers tokens; neg only applies at L0 prediction positions.
-    K = neg_l0s[0].size(1)
-    n_layers = max_len // neg_l0s[0].size(0) if neg_l0s[0].size(0) > 0 else 3
-    # Infer n_layers from first sequence: tokens / items
-    for i, nl in enumerate(neg_l0s):
-        if nl.size(0) > 0:
-            n_layers = lengths[i].item() // nl.size(0)
-            break
-
-    # Build (B, max_len-1, K) tensor aligned with input_tokens positions.
-    # Position j in input predicts token j+1. If (j+1) % n_layers == 0,
-    # it's an L0 prediction → use neg from item index (j+1) // n_layers.
-    S = max_len - 1  # same as input_tokens length
-    neg_padded = torch.full((len(seqs), S, K), -1, dtype=torch.long)
-    neg_mask = torch.zeros(len(seqs), S, K, dtype=torch.bool)
-
-    for i, nl in enumerate(neg_l0s):
-        n_items_i = nl.size(0)
-        for item_idx in range(n_items_i):
-            # This item's L0 prediction is at input position: item_idx * n_layers - 1
-            # because position j predicts token j+1, and token item_idx*n_layers
-            # is the L0 token of item_idx. So j+1 = item_idx*n_layers → j = item_idx*n_layers - 1.
-            # But item_idx=0 means j=-1 (no preceding context) → skip.
-            if item_idx == 0:
-                continue
-            pos = item_idx * n_layers - 1
-            if pos >= S:
+    if has_neg:
+        # Pad neg_l0: (B, max_items, K) → expand to (B, max_len_tokens, K)
+        # neg_l0s[i] shape: (n_items_i, K) — one row per item
+        # We need to broadcast item-level negs to token-level positions.
+        # Each item spans n_layers tokens; neg only applies at L0 prediction positions.
+        K = neg_l0s[0].size(1)
+        n_layers = max_len // neg_l0s[0].size(0) if neg_l0s[0].size(0) > 0 else 3
+        # Infer n_layers from first sequence: tokens / items
+        for i, nl in enumerate(neg_l0s):
+            if nl.size(0) > 0:
+                n_layers = lengths[i].item() // nl.size(0)
                 break
-            neg_padded[i, pos] = nl[item_idx]
-            neg_mask[i, pos] = (nl[item_idx] >= 0)
 
-    return padded, lengths, split_pos, neg_padded, neg_mask
+        # Build (B, max_len-1, K) tensor aligned with input_tokens positions.
+        # Position j in input predicts token j+1. If (j+1) % n_layers == 0,
+        # it's an L0 prediction → use neg from item index (j+1) // n_layers.
+        S = max_len - 1  # same as input_tokens length
+        neg_padded = torch.full((len(seqs), S, K), -1, dtype=torch.long)
+        neg_mask = torch.zeros(len(seqs), S, K, dtype=torch.bool)
+
+        for i, nl in enumerate(neg_l0s):
+            n_items_i = nl.size(0)
+            for item_idx in range(n_items_i):
+                # This item's L0 prediction is at input position: item_idx * n_layers - 1
+                # because position j predicts token j+1, and token item_idx*n_layers
+                # is the L0 token of item_idx. So j+1 = item_idx*n_layers → j = item_idx*n_layers - 1.
+                # But item_idx=0 means j=-1 (no preceding context) → skip.
+                if item_idx == 0:
+                    continue
+                pos = item_idx * n_layers - 1
+                if pos >= S:
+                    break
+                neg_padded[i, pos] = nl[item_idx]
+                neg_mask[i, pos] = (nl[item_idx] >= 0)
+
+        result.extend([neg_padded, neg_mask])
+
+    if has_item_embs:
+        # Pad item embeddings: (B, max_items, E)
+        E = item_embs_list[0].size(1)
+        max_items = max(e.size(0) for e in item_embs_list)
+        item_embs_padded = torch.zeros(len(seqs), max_items, E, dtype=torch.float32)
+        for i, emb in enumerate(item_embs_list):
+            item_embs_padded[i, :emb.size(0)] = emb
+        result.append(item_embs_padded)
+
+    return tuple(result)
+
+
+# ============================================================
+# Contrastive embedding helpers
+# ============================================================
+
+def _build_sid_to_embedding(sid_cache_dir):
+    """Build mapping from SID tuple → mean item embedding.
+
+    Loads the SID dict (semantic_ids.npy) and embedding cache for the model_key
+    specified in config.json. For each SID tuple, computes the mean embedding
+    across all content items that share that SID.
+
+    Returns:
+        sid_to_embedding: dict mapping tuple(int,...) → np.ndarray of shape (emb_dim,)
+        emb_dim: int
+    """
+    from gr_demo.eval.preprocess_sid import _load_embedding_cache
+
+    # Load SID dict
+    sid_path = os.path.join(sid_cache_dir, 'semantic_ids.npy')
+    sid_dict = np.load(sid_path, allow_pickle=True).item()
+
+    # Load model_key from config
+    config_path = os.path.join(sid_cache_dir, 'config.json')
+    with open(config_path) as f:
+        config = json.load(f)
+    model_key = config['model_key']
+
+    # Load embedding cache
+    emb_cache, emb_dim = _load_embedding_cache(model_key)
+
+    # Parse SID dict → content_to_tokens
+    content_to_tokens, n_layers, _, _ = _parse_sid_dict(sid_dict)
+
+    # Group content items by SID tuple, compute mean embedding
+    from collections import defaultdict
+    sid_items = defaultdict(list)
+    for cid, tokens in content_to_tokens.items():
+        emb = emb_cache.get(cid)
+        if emb is not None:
+            sid_tuple = tuple(tokens)
+            sid_items[sid_tuple].append(emb)
+
+    sid_to_embedding = {}
+    for sid_tuple, embs in sid_items.items():
+        sid_to_embedding[sid_tuple] = np.mean(embs, axis=0).astype(np.float32)
+
+    print(f"  _build_sid_to_embedding: {len(sid_to_embedding):,} SID tuples "
+          f"(from {len(content_to_tokens):,} items), emb_dim={emb_dim}")
+    return sid_to_embedding, emb_dim
 
 
 # ============================================================
@@ -580,6 +685,10 @@ def train_packed(
     neg_l0_list=None,
     entp_weight=0.0,
     wandb_run=None,
+    contrastive_weight=0.0,
+    contrastive_temp=0.07,
+    contrastive_dim=0,
+    sid_to_embedding=None,
 ):
     """Train NTPModel or NTPProbe with unified sequences (causal LM style).
 
@@ -591,11 +700,24 @@ def train_packed(
         neg_l0_list: optional list of 2D lists (n_items, K) neg L0 tokens for ENTP.
         entp_weight: α weight for ENTP loss (0 = disabled).
         wandb_run: optional wandb run object for logging (rank 0 only).
+        contrastive_weight: α weight for in-batch contrastive loss (0 = disabled).
+        contrastive_temp: InfoNCE temperature τ.
+        contrastive_dim: projection dimension for contrastive head.
+        sid_to_embedding: dict mapping SID tuple → mean embedding (for contrastive).
     """
+
+    # Determine contrastive item embedding dimension from sid_to_embedding
+    _contrastive_item_dim = 0
+    if contrastive_weight > 0 and sid_to_embedding is not None:
+        _contrastive_item_dim = next(iter(sid_to_embedding.values())).shape[0]
 
     if model_type == 's-tier':
         use_moe = n_experts >= 2
         _expert_dim = expert_dim if expert_dim is not None else embed_dim * 4
+        _extra_kwargs = {}
+        if contrastive_weight > 0:
+            _extra_kwargs['contrastive_dim'] = contrastive_dim
+            _extra_kwargs['contrastive_item_dim'] = _contrastive_item_dim
         model = NTPModel(
             n_clusters_per_layer=n_clusters_per_layer,
             n_sid_layers=n_layers,
@@ -609,6 +731,7 @@ def train_packed(
             expert_dim=_expert_dim,
             parallel=False,  # packed = always causal AR
             max_seq_len=max_seq_len,
+            **_extra_kwargs,
         ).to(device)
     else:
         model = NTPProbe(
@@ -664,7 +787,11 @@ def train_packed(
         model = DDP(model, device_ids=[local_rank], **ddp_kwargs)
 
     # Data is already pre-sharded (one shard per rank from preprocess-ntp)
-    dataset = UnifiedSequenceDataset(tokens_list, split_pos_list, neg_l0_list)
+    dataset = UnifiedSequenceDataset(
+        tokens_list, split_pos_list, neg_l0_list,
+        sid_to_embedding=sid_to_embedding if contrastive_weight > 0 else None,
+        n_sid_layers=n_layers if contrastive_weight > 0 else None,
+    )
     train_loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -687,6 +814,11 @@ def train_packed(
     if use_entp:
         log(is_main, f"  ENTP-Loss enabled: α={entp_weight}")
 
+    use_contrastive = contrastive_weight > 0 and sid_to_embedding is not None
+    if use_contrastive:
+        log(is_main, f"  Contrastive-Loss enabled: α={contrastive_weight}, "
+                      f"τ={contrastive_temp}, dim={contrastive_dim}")
+
     model.train()
     total_loss = 0.0
     total_tokens = 0
@@ -694,14 +826,26 @@ def train_packed(
     t0 = time.time()
 
     for step, batch in enumerate(train_loader):
+        # Unpack batch tuple — layout depends on which optional data is present.
+        # Base: (padded, lengths, split_pos)
+        # +ENTP: ... + (neg_padded, neg_mask)
+        # +contrastive: ... + (item_embs,)
+        batch = list(batch)
+        padded, lengths, split_positions = batch[0], batch[1], batch[2]
+        idx = 3
+
+        neg_padded = None
+        neg_mask_batch = None
+        batch_item_embs = None
+
         if use_entp:
-            padded, lengths, split_positions, neg_padded, neg_mask_batch = batch
-            neg_padded = neg_padded.to(device, non_blocking=True)
-            neg_mask_batch = neg_mask_batch.to(device, non_blocking=True)
-        else:
-            padded, lengths, split_positions = batch
-            neg_padded = None
-            neg_mask_batch = None
+            neg_padded = batch[idx].to(device, non_blocking=True)
+            neg_mask_batch = batch[idx + 1].to(device, non_blocking=True)
+            idx += 2
+
+        if use_contrastive:
+            batch_item_embs = batch[idx].to(device, non_blocking=True)
+            idx += 1
 
         padded = padded.to(device, non_blocking=True)
         lengths = lengths.to(device, non_blocking=True)
@@ -727,6 +871,9 @@ def train_packed(
             neg_l0_tokens=neg_padded,
             neg_l0_mask=neg_mask_batch,
             entp_weight=entp_weight,
+            item_embeddings=batch_item_embs,
+            contrastive_weight=contrastive_weight,
+            contrastive_temp=contrastive_temp,
         )
 
         optimizer.zero_grad()
@@ -947,6 +1094,13 @@ def parse_args():
     # ENTP-Loss (DualGR, WWW 2026)
     parser.add_argument('--entp_weight', type=float, default=0.0,
                         help='ENTP-Loss weight α (0=disabled). Paper default: 0.1')
+    # In-Batch Contrastive Loss (OneMall §3.2, IDEA-onemall-0)
+    parser.add_argument('--contrastive_weight', type=float, default=0.0,
+                        help='Contrastive loss weight α (0=disabled)')
+    parser.add_argument('--contrastive_temp', type=float, default=0.07,
+                        help='InfoNCE temperature τ')
+    parser.add_argument('--contrastive_dim', type=int, default=128,
+                        help='Contrastive projection dimension')
     return parser.parse_args()
 
 
@@ -1241,6 +1395,9 @@ def main():
                     'sid_cache': sid_cache_dir,
                     'preprocessed_dir': preprocessed_dir,
                     'entp_weight': args.entp_weight,
+                    'contrastive_weight': args.contrastive_weight,
+                    'contrastive_temp': args.contrastive_temp,
+                    'contrastive_dim': args.contrastive_dim,
                     'eval_only': args.eval_only,
                 },
             )
@@ -1289,7 +1446,7 @@ def main():
                 ffn_dim=cfg.get('ffn_dim', 512),
                 max_seq_len=cfg.get('max_seq_len', max_seq_len),
             )
-        probe.load_state_dict(ckpt['model_state_dict'])
+        probe.load_state_dict(ckpt['model_state_dict'], strict=False)
         probe.to(device)
         n_params = sum(p.numel() for p in probe.parameters())
         avg_loss = 0.0
@@ -1308,6 +1465,13 @@ def main():
             n_heads = args.n_heads if args.n_heads is not None else 4
             n_transformer_layers = args.n_transformer_layers if args.n_transformer_layers is not None else 2
             lr = args.lr if args.lr is not None else 3e-3
+
+        # ── Load contrastive embeddings if needed ──
+        sid_to_embedding = None
+        if args.contrastive_weight > 0:
+            log(is_main, f"\n  Loading SID→embedding for contrastive loss...")
+            sid_to_embedding, _emb_dim = _build_sid_to_embedding(sid_cache_dir)
+            log(is_main, f"  Contrastive item dim: {_emb_dim}")
 
         log(is_main, f"\nStep 4: Training ({model_type}, packed)")
         probe, avg_loss, n_params, model_type, train_log, train_summary = train_packed(
@@ -1334,6 +1498,10 @@ def main():
             neg_l0_list=neg_l0_list,
             entp_weight=args.entp_weight,
             wandb_run=wandb_run,
+            contrastive_weight=args.contrastive_weight,
+            contrastive_temp=args.contrastive_temp,
+            contrastive_dim=args.contrastive_dim,
+            sid_to_embedding=sid_to_embedding,
         )
 
         # Update W&B config with model-specific info discovered during training
