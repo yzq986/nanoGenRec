@@ -31,6 +31,7 @@ def main():
         print("  sp-dpo-prepare  Build SP-DPO preference pairs via beam search")
         print("  rf-dpo-prepare  Build RF-DPO preference pairs from user feedback")
         print("  sp-dpo-train    Joint NTP+DPO training (SP-DPO/RF-DPO alignment)")
+        print("  alignment-eval  Evaluate alignment metrics (reward, preference acc)")
         print("  pack            Pack model.tar.gz for deployment")
         sys.exit(1)
 
@@ -77,6 +78,9 @@ def main():
     elif command == 'eval-ntp':
         from gr_demo.rl.trainer import eval_main
         eval_main()
+    elif command == 'alignment-eval':
+        from gr_demo.rl.trainer import alignment_eval_main
+        alignment_eval_main()
     elif command == 'migrate-shards':
         from gr_demo.data.migrate_shards import main as migrate_main
         migrate_main()
@@ -84,7 +88,7 @@ def main():
         print(f"Unknown command: {command}")
         print("Available commands: train, eval, eval-all, compare, hyperparam, "
               "preprocess-sid, preprocess-ntp, train-ntp, sp-dpo-prepare, rf-dpo-prepare, "
-              "sp-dpo-train, eval-ntp, pack, migrate-shards")
+              "sp-dpo-train, eval-ntp, alignment-eval, pack, migrate-shards")
         sys.exit(1)
 
 
