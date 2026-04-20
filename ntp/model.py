@@ -828,34 +828,47 @@ class NTPModel(nn.Module):
 
         return ntp_loss
 
-    def _compute_contrastive_loss(self, hidden, target_mask, item_embeddings, temperature):
+    def _compute_contrastive_loss(self, hidden, target_mask, item_embeddings, temperature,
+                                   max_pairs=2048):
         """InfoNCE between s₃ hidden states and item embeddings.
 
         s₃ positions: where input layer = L-1 (position i % L == L-1).
         The hidden state here has encoded the full item SID (s₀..s₃).
+
+        To avoid OOM on the (M, M) similarity matrix when M = B × n_items × world_size
+        can reach 200K+, we randomly sample up to `max_pairs` (h, e) pairs from the
+        local batch, then gather across GPUs. Final matrix is at most
+        (max_pairs * world_size)², which fits comfortably in memory.
         """
         B, S, D = hidden.shape
         L = self.n_sid_layers
         device = hidden.device
         N_items = item_embeddings.size(1)
 
-        # s₃ positions: every L tokens starting at L-1
         s3_indices = torch.arange(L - 1, S, L, device=device)
         n_s3 = min(len(s3_indices), N_items)
         if n_s3 == 0:
             return torch.tensor(0.0, device=device)
 
         s3_pos = s3_indices[:n_s3]
-        h_s3 = hidden[:, s3_pos, :]  # (B, n_s3, D)
+        h_s3 = hidden[:, s3_pos, :]          # (B, n_s3, D)
         item_emb = item_embeddings[:, :n_s3, :]  # (B, n_s3, E)
 
-        # Project to contrastive space
-        h_proj = self.contrastive_proj(h_s3.reshape(-1, D))  # (B*n_s3, C)
+        h_flat = h_s3.reshape(-1, D)          # (B*n_s3, D)
+        e_flat = item_emb.reshape(-1, item_emb.size(-1))  # (B*n_s3, E)
+        M_local = h_flat.size(0)
+
+        # Sub-sample to cap memory: randomly pick max_pairs from local pool
+        if M_local > max_pairs:
+            idx = torch.randperm(M_local, device=device)[:max_pairs]
+            h_flat = h_flat[idx]
+            e_flat = e_flat[idx]
+
+        h_proj = self.contrastive_proj(h_flat)
         h_proj = F.normalize(h_proj, dim=-1)
-        e_proj = self.contrastive_item_proj(item_emb.reshape(-1, item_emb.size(-1)))
+        e_proj = self.contrastive_item_proj(e_flat)
         e_proj = F.normalize(e_proj, dim=-1)
 
-        # Gather across GPUs for more negatives
         if torch.distributed.is_initialized():
             h_all = _gather_all(h_proj)
             e_all = _gather_all(e_proj)
@@ -863,8 +876,8 @@ class NTPModel(nn.Module):
             h_all = h_proj
             e_all = e_proj
 
-        # InfoNCE: h_all[i] should match e_all[i]
-        logits = torch.mm(h_all, e_all.t()) / temperature  # (M, M)
+        # (N, N) where N ≤ max_pairs * world_size (e.g. 2048*8 = 16K → 1 GiB fp32)
+        logits = torch.mm(h_all, e_all.t()) / temperature
         labels = torch.arange(logits.size(0), device=device)
         return F.cross_entropy(logits, labels)
 
