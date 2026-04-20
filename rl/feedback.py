@@ -362,6 +362,13 @@ def parse_args():
 
 def main():
     args = parse_args()
+
+    # Skip if output already exists
+    out_meta = os.path.join(args.output_dir, 'meta.json')
+    if os.path.exists(out_meta):
+        print(f"Output already exists at {args.output_dir}, skipping.")
+        return
+
     t0 = time.time()
 
     print("=" * 60)
