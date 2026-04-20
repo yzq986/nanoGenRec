@@ -414,6 +414,12 @@ def main():
     # ── Output dir ──
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     output_dir = args.output_dir or os.path.join(repo_root, 'experiments', 'sid_cache', model_key)
+
+    # Skip if output already exists
+    if os.path.exists(os.path.join(output_dir, 'semantic_ids.npy')):
+        print(f"Output already exists at {output_dir}, skipping.")
+        return
+
     os.makedirs(output_dir, exist_ok=True)
 
     print("=" * 60)

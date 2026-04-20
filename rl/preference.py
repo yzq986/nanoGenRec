@@ -582,6 +582,12 @@ def parse_args():
 def main():
     args = parse_args()
 
+    # Skip if output already exists
+    out_meta = os.path.join(args.output_dir, 'meta.json')
+    if os.path.exists(out_meta):
+        print(f"Output already exists at {args.output_dir}, skipping.")
+        return
+
     # DDP setup (optional — works single-GPU too)
     local_rank = int(os.environ.get('LOCAL_RANK', 0))
     world_size = int(os.environ.get('WORLD_SIZE', 1))
