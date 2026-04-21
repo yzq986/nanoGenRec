@@ -176,25 +176,36 @@ def load_shard(path):
 
 
 def load_shard_full(path):
-    """Load full shard data → list of dicts with tokens, split_pos, eval_cids."""
+    """Load full shard data → list of dicts with tokens, split_pos, eval_cids.
+
+    Also includes time_gaps and action_levels if present in shard.
+    """
     data = np.load(path, allow_pickle=True)
     tokens = data['tokens']
     offsets = data['offsets']
     split_pos = data['split_pos']
     eval_cids_flat = data['eval_cids_flat']
     eval_cids_offsets = data['eval_cids_offsets']
+    has_features = 'time_gaps' in data.files
+    time_gaps_all = data['time_gaps'] if has_features else None
+    action_levels_all = data['action_levels'] if has_features else None
 
     sequences = []
     for i in range(len(offsets) - 1):
-        seq_tokens = tokens[offsets[i]:offsets[i + 1]].tolist()
+        start, end = int(offsets[i]), int(offsets[i + 1])
+        seq_tokens = tokens[start:end].tolist()
         cids_start = eval_cids_offsets[i]
         cids_end = eval_cids_offsets[i + 1]
         eval_cids = eval_cids_flat[cids_start:cids_end].tolist()
-        sequences.append({
+        seq = {
             'tokens': seq_tokens,
             'split_pos': int(split_pos[i]),
             'eval_cids': eval_cids,
-        })
+        }
+        if has_features:
+            seq['time_gaps'] = time_gaps_all[start:end].tolist()
+            seq['action_levels'] = action_levels_all[start:end].tolist()
+        sequences.append(seq)
     return sequences
 
 

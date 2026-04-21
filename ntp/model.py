@@ -61,6 +61,8 @@ def constrained_beam_search(
     prefix: torch.Tensor = None,
     ctx_kv_caches=None,
     initial_logits: torch.Tensor = None,
+    ctx_time_gaps: torch.Tensor = None,
+    ctx_action_levels: torch.Tensor = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, list]:
     """Trie-constrained beam search with KV cache — every beam is a real SID.
 
@@ -82,6 +84,8 @@ def constrained_beam_search(
                 the context is encoded from input_tokens.
         initial_logits: (B, C) logits from the last context position.
                 Required when ctx_kv_caches is provided and prefix is None.
+        ctx_time_gaps: (B, T) time gap buckets for context tokens.
+        ctx_action_levels: (B, T) action levels for context tokens.
 
     Returns:
         beams: (B, actual_beams, n_layers) — token indices
@@ -100,7 +104,9 @@ def constrained_beam_search(
             model, input_tokens, trie, beam_size, prefix)
 
     if ctx_kv_caches is None:
-        initial_logits, ctx_kv_caches = model.forward_cached(input_tokens)
+        initial_logits, ctx_kv_caches = model.forward_cached(
+            input_tokens, ctx_time_gaps=ctx_time_gaps,
+            ctx_action_levels=ctx_action_levels)
 
     # ── Phase 1: beam init ──
     if prefix is not None:
@@ -667,13 +673,18 @@ class NTPModel(nn.Module):
         return self.final_norm(x), new_caches
 
     @torch.no_grad()
-    def forward_cached(self, input_tokens=None, generated_tokens=None, kv_caches=None):
+    def forward_cached(self, input_tokens=None, generated_tokens=None, kv_caches=None,
+                        ctx_time_gaps=None, ctx_action_levels=None):
         """Inference-only forward with KV cache.
 
         Calling patterns:
             Cold start: ``forward_cached(input_tokens)`` — encodes full context.
             Incremental: ``forward_cached(generated_tokens=new, kv_caches=kv)``
                 — encodes only *new* tokens using cached context.
+
+        Args:
+            ctx_time_gaps: (B, T_ctx) time gap buckets, only used on cold start.
+            ctx_action_levels: (B, T_ctx) action levels, only used on cold start.
 
         Returns:
             logits: (B, C) logits for the next token.
@@ -688,6 +699,18 @@ class NTPModel(nn.Module):
             device = tokens.device
             positions = torch.arange(T, device=device).unsqueeze(0)
             x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
+            if ctx_time_gaps is not None and hasattr(self, 'time_gap_emb'):
+                T_ctx = ctx_time_gaps.size(1)
+                pad = torch.zeros(ctx_time_gaps.size(0), T - T_ctx,
+                                  dtype=torch.long, device=device)
+                tg = torch.cat([ctx_time_gaps, pad], dim=1)
+                x = x + self.time_gap_emb(tg)
+            if ctx_action_levels is not None and hasattr(self, 'action_emb'):
+                T_ctx = ctx_action_levels.size(1)
+                pad = torch.zeros(ctx_action_levels.size(0), T - T_ctx,
+                                  dtype=torch.long, device=device)
+                al = torch.cat([ctx_action_levels, pad], dim=1)
+                x = x + self.action_emb(al)
             out, kv_caches = self._transformer_forward_cached(x)
         else:
             # Incremental — only new tokens

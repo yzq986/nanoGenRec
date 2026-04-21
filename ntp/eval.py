@@ -114,10 +114,28 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
         for i, toks in enumerate(tokens_list):
             padded[i, :len(toks)] = torch.tensor(toks, dtype=torch.long)
 
+        # Side features (time_gaps, action_levels) — pad if present
+        has_time_gap = hasattr(probe, 'time_gap_emb') and 'time_gaps' in batch_seqs[0]
+        has_action = hasattr(probe, 'action_emb') and 'action_levels' in batch_seqs[0]
+        time_gaps_padded = None
+        action_levels_padded = None
+        if has_time_gap:
+            time_gaps_padded = torch.zeros(B, max_len, dtype=torch.long, device=device)
+            for i, s in enumerate(batch_seqs):
+                tg = s['time_gaps']
+                time_gaps_padded[i, :len(tg)] = torch.tensor(tg, dtype=torch.long)
+        if has_action:
+            action_levels_padded = torch.zeros(B, max_len, dtype=torch.long, device=device)
+            for i, s in enumerate(batch_seqs):
+                al = s['action_levels']
+                action_levels_padded[i, :len(al)] = torch.tensor(al, dtype=torch.long)
+
         # LM-style shift
         input_tokens = padded[:, :-1]
         target_tokens = padded[:, 1:]
         T = input_tokens.size(1)
+        input_time_gaps = time_gaps_padded[:, :-1] if has_time_gap else None
+        input_action_levels = action_levels_padded[:, :-1] if has_action else None
 
         arange = torch.arange(T, device=device).unsqueeze(0)
         valid_mask = arange < (lengths.unsqueeze(1) - 1)
@@ -132,6 +150,10 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
         L = n_layers
         positions = torch.arange(T, device=device).unsqueeze(0)
         x = probe._embed_tokens(input_tokens) + probe._get_pos_emb(positions)
+        if input_time_gaps is not None:
+            x = x + probe.time_gap_emb(input_time_gaps)
+        if input_action_levels is not None:
+            x = x + probe.action_emb(input_action_levels)
 
         if hasattr(probe, 'encoder'):
             causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
@@ -258,6 +280,9 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
         n_items_in_seq = len(tokens) // n_layers
         split_item_idx = split_pos // n_layers
 
+        has_tg = 'time_gaps' in seq
+        has_al = 'action_levels' in seq
+
         for ei, cid in enumerate(eval_cids):
             item_idx = split_item_idx + ei
             if item_idx < 1:  # need at least 1 preceding item for context
@@ -267,11 +292,16 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
             context_tokens = tokens[:ctx_end]
             # Target: this item's SID tokens
             target_tokens = tokens[ctx_end:ctx_end + n_layers]
-            eval_items.append({
+            item = {
                 'context': context_tokens,
                 'target': target_tokens,
                 'cid': cid,
-            })
+            }
+            if has_tg:
+                item['ctx_time_gaps'] = seq['time_gaps'][:ctx_end]
+            if has_al:
+                item['ctx_action_levels'] = seq['action_levels'][:ctx_end]
+            eval_items.append(item)
 
     if not eval_items:
         return {}
@@ -297,8 +327,17 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
         target_cid = item['cid']
         target_sid_str = '_'.join(str(t) for t in target)
 
+        # Build side feature tensors for context (if available)
+        ctx_kwargs = {}
+        if 'ctx_time_gaps' in item and hasattr(probe, 'time_gap_emb'):
+            ctx_kwargs['ctx_time_gaps'] = torch.tensor(
+                item['ctx_time_gaps'], dtype=torch.long, device=device).unsqueeze(0)
+        if 'ctx_action_levels' in item and hasattr(probe, 'action_emb'):
+            ctx_kwargs['ctx_action_levels'] = torch.tensor(
+                item['ctx_action_levels'], dtype=torch.long, device=device).unsqueeze(0)
+
         beams, scores, _ = constrained_beam_search(
-            probe, ctx, sid_trie, beam_size=recall_beam_size)
+            probe, ctx, sid_trie, beam_size=recall_beam_size, **ctx_kwargs)
 
         # Check if target SID appears in any beam
         found_rank = -1
