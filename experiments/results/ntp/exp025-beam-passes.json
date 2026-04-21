@@ -1,0 +1,41 @@
+{
+  "name": "exp025-beam-passes",
+  "model_type": "s-tier",
+  "n_params": 45700096,
+  "n_active_params": 17388544,
+  "total_tokens": 132629928,
+  "total_flops": 13837448032468992,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "eval": {
+    "ppl": 25.2196,
+    "layer_ppl": [
+      334.6394,
+      10.3326,
+      4.7102
+    ],
+    "avg_loss": 3.227623,
+    "depth_hit@10": [
+      0.2069,
+      0.1844,
+      0.1831
+    ],
+    "depth_hit@10_indep": [
+      0.2061,
+      0.8141,
+      0.8553
+    ],
+    "depth_acc_beam": [
+      0.043,
+      0.026,
+      0.026
+    ],
+    "target_sid_found_rate": 0.637,
+    "n_eval_positions": 148078,
+    "n_eval_items": 49166,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.104,
+    "item_recall@50": 0.282,
+    "item_recall@100": 0.4,
+    "item_recall@500": 0.636
+  }
+}
