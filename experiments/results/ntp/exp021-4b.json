@@ -1,0 +1,41 @@
+{
+  "name": "exp021-4b",
+  "model_type": "s-tier",
+  "n_params": 45611701,
+  "n_active_params": 17300149,
+  "total_tokens": 24335640,
+  "total_flops": 2526061188062160,
+  "sid_cache": "experiments/sid_cache/qwen3-4b",
+  "eval": {
+    "ppl": 8.24,
+    "layer_ppl": [
+      161.4259,
+      2.8154,
+      1.3506
+    ],
+    "avg_loss": 2.108997,
+    "depth_hit@10": [
+      0.2837,
+      0.2759,
+      0.2756
+    ],
+    "depth_hit@10_indep": [
+      0.2778,
+      0.9887,
+      1.0061
+    ],
+    "depth_acc_beam": [
+      0.054,
+      0.038,
+      0.037
+    ],
+    "target_sid_found_rate": 0.87,
+    "n_eval_positions": 136920,
+    "n_eval_items": 44682,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.18,
+    "item_recall@50": 0.437,
+    "item_recall@100": 0.603,
+    "item_recall@500": 0.86
+  }
+}
