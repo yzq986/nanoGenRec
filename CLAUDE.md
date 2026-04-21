@@ -44,6 +44,8 @@ cd "${REPO_ROOT}"
 3. **Tokenizer 完整参数** — 如果要训练新 tokenizer，从已有 `preprocess-sid` 调用复制完整参数
 4. **已有 baseline** — 如果 baseline 已训练过（有 checkpoint），直接引用，不要重训
 
+5. **CUDA 内存设置** — grep `PYTORCH_CUDA_ALLOC_CONF` 确认是否需要 `expandable_segments:True`（训练脚本几乎都需要）
+
 **绝对禁止凭记忆编造路径、日期、参数。** 所有这些必须从已有脚本中 grep 得到。
 
 ## Git remotes
