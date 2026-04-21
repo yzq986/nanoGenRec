@@ -2,40 +2,40 @@
   "name": "exp023-all",
   "model_type": "s-tier",
   "n_params": 45700096,
-  "n_active_params": 17388544,
-  "total_tokens": 132625080,
-  "total_flops": 13836942234501120,
+  "n_active_params": 45700096,
+  "total_tokens": 0,
+  "total_flops": 0,
   "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
   "eval": {
-    "ppl": 55.1656,
+    "ppl": 25.1578,
     "layer_ppl": [
-      453.5979,
-      21.6309,
-      17.3236
+      338.0182,
+      10.3005,
+      4.6437
     ],
-    "avg_loss": 4.010339,
+    "avg_loss": 3.225169,
     "depth_hit@10": [
-      0.1688,
-      0.1345,
-      0.1275
+      0.2052,
+      0.1829,
+      0.1816
     ],
     "depth_hit@10_indep": [
-      0.1681,
-      0.7383,
-      0.7416
+      0.2044,
+      0.8169,
+      0.8587
     ],
     "depth_acc_beam": [
-      0.02,
-      0.008,
-      0.008
+      0.031,
+      0.019,
+      0.019
     ],
-    "target_sid_found_rate": 0.466,
+    "target_sid_found_rate": 0.55,
     "n_eval_positions": 148078,
     "n_eval_items": 49166,
     "n_recall_samples": 1000,
-    "item_recall@10": 0.067,
-    "item_recall@50": 0.164,
-    "item_recall@100": 0.23,
-    "item_recall@500": 0.465
+    "item_recall@10": 0.095,
+    "item_recall@50": 0.23,
+    "item_recall@100": 0.316,
+    "item_recall@500": 0.55
   }
 }
