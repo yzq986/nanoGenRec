@@ -11,4 +11,9 @@
 | 2405.16436 | RPO: Provably Mitigating Overoptimization in RLHF — SFT Loss as Adversarial Regularizer | Zhihan Liu et al. (ByteDance + Northwestern + Stanford) | 2024-12-05 | [pdf](2405.16436.pdf) | [txt](2405.16436.txt) | IDEA-rpo-0 |
 | 2603.01683 | SPoT: Surgical Post-Training — Cutting Errors, Keeping Knowledge | Wenye Lin et al. (HKU) | 2026-03-03 | [pdf](2603.01683.pdf) | [txt](2603.01683.txt) | IDEA-spot-0 |
 | 2511.12113 | MetaGDPO: Alleviating Catastrophic Forgetting with Metacognitive Knowledge through GDPO | Lanxue Zhang et al. (CAS) | 2025-11-15 | [pdf](2511.12113.pdf) | [txt](2511.12113.txt) | — |
+| 2510.20455 | Rotate Both Ways: Time-and-Order RoPE for Generative Recommendation | Xiaokai Wei et al. (Roblox) | 2025-10-23 | [pdf](2510.20455.pdf) | [txt](2510.20455.txt) | IDEA-torope-0 |
+| 2510.16804 | The Layout Is the Model: On Action-Item Coupling in GR | Xiaokai Wei et al. (Roblox) | 2025-10-19 | [pdf](2510.16804.pdf) | [txt](2510.16804.txt) | IDEA-lac-0 |
+| 2602.08612 | OneLive: Dynamically Unified Generative Framework for Live-Streaming | Shen Wang et al. (Kuaishou) | 2026-02-09 | [pdf](2602.08612.pdf) | [txt](2602.08612.txt) | IDEA-onelive-0 |
+| 2509.21777 | SynerGen: Contextualized Generative Recommender for Unified Search and Recommendation | Vianne R. Gao et al. | 2025-09-25 | [pdf](2509.21777.pdf) | [txt](2509.21777.txt) | — |
+| 2602.23671 | FuXi-Linear: Unleashing the Power of Linear Attention in Long-term Time-Aware Sequential Recommendation | Yufei Ye et al. (USTC) | 2026-02-26 | [pdf](2602.23671.pdf) | [txt](2602.23671.txt) | — |
 | 2410.06682 | mrDPO: Multi-Round DPO with Rebirth Tuning for Video Captioning | Changli Tang et al. (Tsinghua + ByteDance) | 2024-10-11 | [pdf](2410.06682.pdf) | [txt](2410.06682.txt) | — |

@@ -1,0 +1,1901 @@
+FuXi-Linear: Unleashing the Power of Linear Attention in
+Long-term Time-aware Sequential Recommendation
+Yufei Ye
+aboluo2003@mail.ustc.edu.cn
+University of Science and Technology
+of China
+Hefei, China
+Wei GuoB
+guowei67@huawei.com
+Huawei Technologies
+Shanghai, China
+Hao WangB
+wanghao3@ustc.edu.cn
+University of Science and Technology
+of China
+Hefei, China
+Luankang Zhang
+zhanglk5@mail.ustc.edu.cn
+University of Science and Technology
+of China
+Hefei, China
+Heng Chang
+heng.chang@huawei.com
+Huawei Technologies
+Beijing, China
+Hong Zhu
+zhuhong8@huawei.com
+Huawei Technologies
+Shenzhen, China
+Yuyang Ye
+yeyuyang@mail.ustc.edu.cn
+University of Science and Technology
+of China
+Hefei, China
+Yong Liu
+liu.yong6@huawei.com
+Huawei Technologies
+Shanghai, China
+Defu LianB
+Enhong Chen
+liandefu@ustc.edu.cn
+cheneh@ustc.edu.cn
+University of Science and Technology
+of China
+Hefei, China
+Abstract
+Modern recommendation systems primarily rely on attention mech-
+anisms with quadratic complexity, which limits their ability to
+handle long user sequences and slows down inference. While lin-
+ear attention is a promising alternative, existing research faces
+three critical challenges: (1) temporal signals are often overlooked
+or integrated via naive coupling that causes mutual interference
+between temporal and semantic signals while neglecting behav-
+ioral periodicity; (2) insufficient positional information provided
+by existing linear frameworks; and (3) a primary focus on short
+sequences and shallow architectures. To address these issues, we
+propose FuXi-Linear, a linear-complexity model designed for ef-
+ficient long-sequence recommendation. Our approach introduces
+two key components: (1) a Temporal Retention Channel that in-
+dependently computes periodic attention weights using temporal
+data, preventing crosstalk between temporal and semantic signals;
+(2) a Linear Positional Channel that integrates positional informa-
+tion through learnable kernels within linear complexity. Moreover,
+we demonstrate that FuXi-Linear exhibits a robust power-law scal-
+ing property at a thousand-length scale, a characteristic largely
+unexplored in prior linear recommendation studies. Extensive ex-
+periments on sequences of several thousand tokens demonstrate
+that FuXi-Linear outperforms state-of-the-art models in recommen-
+dation quality, while achieving up to 10× speedup in the prefill
+stage and up to 21× speedup in the decode stage compared to com-
+petitive baselines. Our code has been released in a public repository
+https://github.com/USTC-StarTeam/fuxi-linear.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Linear Attention, Long-term User Modeling, Time-aware Sequential
+Recommendation, Scaling Law
+1
+Introduction
+Recommender Systems (RS) have become indispensable in alleviat-
+ing information overload, where sequence modeling serves as the
+fundamental backbone. From traditional two-stage modeling frame-
+works [2, 29, 35, 46, 66, 67] to the emerging paradigm of generative
+recommendation [6, 15, 44, 47, 54, 61, 63], the ability to capture
+evolving user preferences from historical interaction sequences
+remains a pivotal component for predictive accuracy.
+The most commonly used method for sequence modeling is
+softmax-based attention [19, 58, 61]. However, its quadratic com-
+putational complexity 𝑂(𝑛2) with respect to sequence length 𝑛
+imposes a prohibitive bottleneck in long-term sequence scenarios,
+severely limiting both the exploitable sequence length and infer-
+ence throughput. While two-stage architectures utilizing target
+attention [29] offer improved efficiency, they inevitably sacrifice
+rich contextual dependencies within the sequence. In modern indus-
+trial RS, models are increasingly required to process user histories
+exceeding 104 interactions [14, 17, 35], making high-capacity yet ef-
+ficient modeling a necessity. Recently, linear attention has emerged
+as a promising alternative in NLP [5, 27, 37, 40, 59], achieving linear
+training complexity and constant-time inference while maintaining
+performance comparable to Transformers.
+Despite their potential, directly applying linear attention to RS
+encounters notable limitations given the unique temporal and po-
+sitional sensitivities of recommendation data [57]. First, existing
+linear models often overlook interaction timestamps [55, 60] or
+couple temporal signals as scalar scales into semantic attention
+arXiv:2602.23671v1  [cs.IR]  27 Feb 2026
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Yufei Ye et al.
+weights [9, 49]. Such an approach causes semantic signals and tem-
+poral signals to interfere with each other, severely compromising
+the model’s utilization of temporal information. Furthermore, tradi-
+tional methods for integrating temporal information [56, 61] violate
+the recurrent form of linear attention, causing complexity to re-
+vert to 𝑂(𝑛2). Notably, current models fail to explicitly account for
+periodicity, which is useful for capturing long-term user behav-
+iors. Second, although the attenuation of the linear models [12, 37]
+at each step can provide certain positional information, it lacks
+the granularity to distinguish between adjacent positions. Power-
+ful alternatives like Relative Position Encoding (RPE) [30, 32] are
+incompatible with linear recurrence, and recent studies suggest
+that Rotary Positional Embedding [36] underperforms compared to
+RPE in sequential recommendation tasks [61]. Furthermore, most
+existing explorations of linear attention in sequential recommenda-
+tion [9, 48, 49] remain constrained to short-sequence settings (e.g.,
+≤100 interactions) and shallow architectures (e.g., 1–2 layers), leav-
+ing their scalability and capacity in ultra-long sequence scenarios
+largely unverified.
+To bridge these gaps, we propose FuXi-Linear, a novel linear-
+complexity architecture designed for long-sequence recommenda-
+tion. We introduce the Temporal Retention Channel, which utilizes
+period-aware queries and keys generated solely from timestamps.
+This design avoids mutual interference between temporal and se-
+mantic signals and effectively captures periodic patterns without
+sacrificing linear efficiency. To supplement positional signals, we
+develop a learnable kernel-based mechanism that approximates
+the efficacy of RPE while maintaining a recurrent form. Moreover,
+unlike existing linear recommendation models that are largely con-
+fined to shallow architectures and short sequences, we demonstrate
+that FuXi-Linear exhibits a robust power-law scaling property at a
+thousand-length scale. Extensive experiments on three real-world
+datasets demonstrate that FuXi-Linear significantly outperforms
+state-of-the-art baselines. Remarkably, compared to the most com-
+petitive baselines, FuXi-Linear achieves up to 10× speedup in the
+prefill stage and up to 21× speedup during decoding. Our main
+contributions are summarized as follows:
+• We propose FuXi-Linear, a novel sequential recommendation
+model that addresses the efficiency-effectiveness dilemma in long
+sequence modeling via a refined linear attention mechanism.
+• We design the Temporal Retention Channel, which effectively
+captures periodic temporal signals and avoids semantic interfer-
+ence while adhering to linear complexity.
+• We introduce a learnable kernel function for positional model-
+ing, which provides the expressive power of relative position
+encoding while maintaining linear complexity.
+• We conduct extensive experiments on three real-world bench-
+marks, demonstrating that FuXi-Linear achieves state-of-the-art
+performance. As sequence length grows, it provides up to 21×
+faster inference than competitive baselines.
+2
+Related Work
+2.1
+Linear Attention
+In the field of language models, there have been numerous attempts
+at linear attention mechanisms, including approaches based on
+linear RNNs [8, 37, 52, 59, 65], State Space Models [5, 12], TTT
+[1, 39, 50], and Delta Rule methods [40, 51, 53]. However, rela-
+tively fewer works have explored these techniques in recommen-
+dation systems. LinRec [25] achieves linearization by first comput-
+ing the KV product, while LRURec [60] and RecBLR [23] imple-
+ment linearization through Linear Recurrent Units. Approaches
+like Mamba4Rec [24], SSD4Rec [31], and TTT4Rec [55] leverage
+their respective linear attention mechanisms to model user inter-
+ests. More recently, EchoMamba4Rec [48] and SIGMA [26] have
+employed bidirectional Mamba architectures for user sequence
+modeling, incorporating additional techniques to enhance recom-
+mendation performance. However, these studies on sequential rec-
+ommendation models with linear attention are primarily based on
+small models handling short sequences, and they lack sufficient
+temporal positional information.
+2.2
+Time-aware Sequential Recommendation
+A key difference between item sequences and text is the inclusion of
+temporal information [13, 34, 41, 45, 61]. TiSASRec [22] integrates
+temporal information by generating embedding vectors based on
+relative time intervals and adding them to the key vectors. MOJITO
+[42] employs a Gaussian mixture model to merge temporal atten-
+tion weights with item attention weights. SS4Rec [49] utilizes time
+intervals to perform discretization with the S5 model. TiM4Rec [9]
+introduces the Time-aware Structured Masked Matrix and incor-
+porates it into the SSD model. TAT4SRec [64] utilizes bucketing
+and window function weighting, encoding temporal information
+through an Encoder, and then integrating it into a Decoder. HSTU
+[61] adds temporal information using bucketed relative attention
+bias. FuXi-𝛼[56] utilizes this bias as a separate attention map, while
+FuXi-𝛽[57] employs a continuous function to avoid the hardware
+inefficiency of the bucketing process.
+However, existing approaches either require quadratic time com-
+plexity or interfere with semantic signals. Moreover, they fail to
+account for periodicity.
+2.3
+Positional Embeddings
+In Transformers, positional information is integrated using three
+main approaches: absolute positional encoding, relative positional
+encoding, and rotary positional encoding. Absolute positional en-
+coding represents position information as vectors added directly to
+embeddings. The original Transformer utilized sinusoidal positional
+embeddings [43], while BERT [7] allocates learnable positional vec-
+tors for each position. Relative positional encoding, on the other
+hand, incorporates relative information within the attention layer.
+In works such as [33], Transformer-XL [3], and DeBERTa [16],
+modifications are made to the key or value matrices based on rel-
+ative positional information. T5 [32] and Alibi [30] generate bias
+terms for attention weights through relative positional information.
+Recent work [56, 57] regard this bias term as an attention map
+to model positional information. Rotary positional encoding [36]
+involves rotating the dimensions of the query and key in groups,
+thereby incorporating both absolute and relative positional infor-
+mation during attention computation. XPos [38] extends RoPE by
+introducing decay terms to improve extrapolation.
+However, absolute positional embeddings lack relative detail, and
+rotary positional embeddings underperform in recommendation
+
+
+FuXi-Linear: Unleashing the Power of Linear Attention in Long-term Time-aware Sequential Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Multi-stage FFN
+Interaction sequence
+FuXi-Linear Block
+FuXi-Linear Block
+FuXi-Linear Block
+MLP
+Output Predictions
+Embedding Layer
+Retention
+Channel
+Linear
+Positional
+Channel
+Temporal 
+Retention 
+Channel
+Concat
+Gate
+Linear Multi-Channel 
+Attention
+Timestamp
+X
+Period-aware weights
+Temporal Retention Channel
+Position
+X
+Linear Positional Channel
+X
+Retention Channel
+Position
+Figure 1: The overall architecture of FuXi-Linear.
+tasks compared to the costly relative positional embeddings [61],
+which require a quadratic time complexity.
+3
+Problem Statement
+In time-aware sequential recommendation, the goal is to predict the
+next item a user will interact with based on their past interactions
+[18, 19, 59]. Along with item and position information, timestamps
+of interactions are crucial.
+Formally, given a set of users U and items I, each user 𝑢∈U
+has an interaction sequence:
+S𝑢=
+h
+𝑖(𝑢)
+1
+,𝑡(𝑢)
+1
+
+,
+
+𝑖(𝑢)
+2
+,𝑡(𝑢)
+2
+
+, . . . ,
+
+𝑖(𝑢)
+𝑛𝑢,𝑡(𝑢)
+𝑛𝑢
+i
+,
+where 𝑡(𝑢)
+𝑗
+denotes the timestamp when the user interacted with
+item 𝑖(𝑢)
+𝑗
+, 𝑛𝑢represents the length of the sequence for user 𝑢and
+items are ordered chronologically.
+The task is to predict the next item 𝑖(𝑢)
+𝑛𝑢+1 by estimating the prob-
+ability distribution over I: 𝑃(𝑖(𝑢)
+𝑛𝑢+1 = 𝑖| S𝑢) for 𝑖∈I. Dur-
+ing training, the model learns to predict the next item 𝑖(𝑢)
+𝑗+1 for
+each prefix of the sequence S𝑢, with the target sequence being
+[𝑖(𝑢)
+2
+,𝑖(𝑢)
+3
+, . . . ,𝑖(𝑢)
+𝑛𝑢+1] [19].
+4
+Methodology
+The overall architecture of our model is illustrated in Figure 1, pri-
+marily composed of several stacked FuXi-Linear blocks. In each
+FuXi-Linear block, the input is transformed through three sepa-
+rate channels, and the results are concatenated and passed through
+gating mechanisms. This is followed by merging through the Multi-
+stage Feed-forward Network (MFFN). Each channel supports three
+computational forms: recurrent, parallel, and chunkwise recurrent.
+The recurrent form is employed for 𝑂(1) inference, the parallel
+form is suitable for parallel training, and the chunkwise recur-
+rent form is used for parallel training with linear complexity.
+4.1
+Embedding Layer
+Each user’s interaction sequence is transformed into a fixed-length
+sequence of size 𝑛via truncation or padding prior to the embedding
+layer. Sequences shorter than 𝑛are extended by appending a special
+padding item. Within the embedding layer, every item 𝑖∈I is
+projected into a 𝑑-dimensional dense vector representation through
+a trainable embedding matrix 𝐸∈RI×𝑑, where 𝑑denotes the
+dimensionality of the latent vector space. Subsequently, a learnable
+absolute positional embedding is added to each non-padding item.
+4.2
+Retention Channel
+In this channel, we use a simple linear attention, the retention
+mechanism[37], to replace the full attention which has quadratic
+complexity, thus providing semantic information.
+Parallel Form. Suppose the input for the current layer is 𝑋∈R𝑛×𝑑.
+We then compute the query, key, and value matrices as follows:
+𝑄= 𝜙(𝑋𝑊𝑞),
+𝐾= 𝜙(𝑋𝑊𝑘),
+𝑉= 𝜙(𝑋𝑊𝑣)
+where 𝜙denotes the SiLU activation function. Next, query-key
+attention is calculated and element-wise multiplied by a matrix 𝐷,
+which is computed based on positional differences:
+Retention(𝑄, 𝐾,𝑉, 𝐷) = (𝑄𝐾𝑇⊙𝐷)𝑉
+(1)
+𝐷𝑖,𝑗=
+(
+𝛾𝑖−𝑗,
+𝑖≥𝑗
+0,
+otherwise
+(2)
+Here, 𝛾is a learnable parameter. We extend this approach to multi-
+ple heads, where the query, key, and value matrices for each head
+are denoted as (𝑄1, 𝐾1,𝑉1), · · · , (𝑄ℎ, 𝐾ℎ,𝑉ℎ). The learnable parame-
+ter for the 𝑖-th head is𝛾𝑖, and the corresponding matrix 𝐷is denoted
+as 𝐷𝑖. The output of the retention channel, 𝑌ret, is given by:
+head𝑖= Retention(𝑄𝑖, 𝐾𝑖,𝑉𝑖, 𝐷𝑖)
+(3)
+𝑌ret = Norm(Concat(head1, · · · , headℎ))
+(4)
+Recurrent Form. Suppose the input at step 𝑛is 𝑥𝑛∈R1×𝑑. Us-
+ing the same methodology, we compute the query, key, and value
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Yufei Ye et al.
+vectors for the 𝑖-th head as 𝑞(𝑖)
+𝑛,𝑘(𝑖)
+𝑛
+∈R1×𝑑𝑘, 𝑣(𝑖)
+𝑛
+∈R1×𝑑𝑣. Let
+𝑆(𝑖)
+𝑛
+∈R𝑑𝑘×𝑑𝑣denote the hidden state of the 𝑖-th head, with the
+following equation:
+𝑆(𝑖)
+𝑛
+= 𝛾𝑖𝑆(𝑖)
+𝑛−1 + (𝑘(𝑖)
+𝑛)𝑇𝑣(𝑖)
+𝑛
+(5)
+Thus, the output for the 𝑖-th head is:
+head𝑖= 𝑞(𝑖)
+𝑛𝑆(𝑖)
+𝑛
+(6)
+4.3
+Linear Positional Channel
+We aim to compute the output of the positional channel, represented
+by Í𝑛
+𝑖=1 𝑓(𝑛−𝑖)𝑣𝑖, where 𝑓is a type of relative position encoding
+method, such as T5-style relative attention bias [32], Alibi [30],
+and others. However, these methods typically require quadratic
+computational complexity. To mitigate this, we propose modeling 𝑓
+using learnable kernel functions, enabling a recurrent formulation.
+Relaxing the constraint of translation invariance, we approxi-
+mate 𝑓(𝑥−𝑦) with a kernel function:
+𝑓(𝑥−𝑦) ≈𝑔(𝑥,𝑦) = k𝑇(𝑥)k(𝑦)
+(7)
+where k is a mapping function that projects positions 𝑥and 𝑦into
+a 𝑑𝑝-dimensional vector space. Consequently, the output of the
+positional channel can be reformulated as:
+(𝑦𝑝)𝑛=
+𝑛
+∑︁
+𝑖=1
+𝑔(𝑛,𝑖)𝑣𝑖
+(8)
+= k(𝑛)
+𝑛
+∑︁
+𝑖=1
+k(𝑖)𝑇𝑣𝑖.
+(9)
+Recurrent Form We first obtain the projection (𝑣𝑝)𝑖= 𝑥𝑖𝑊𝑝and
+define the hidden state (𝑆𝑝)𝑛= Í𝑛
+𝑖=1 k(𝑖)𝑇𝑣𝑖∈R𝑑𝑝×𝑑to enable re-
+current calculation. For output generation, we enhance the current
+representation with two learnable parameters 𝛼, 𝛽∈R:
+(𝑆𝑝)𝑛= (𝑆𝑝)𝑛−1 + k(𝑛)𝑇(𝑣𝑝)𝑛
+(10)
+(𝑦𝑝)𝑛= 𝛼k(𝑛)(𝑆𝑝)𝑛+ 𝛽(𝑣𝑝)𝑛
+(11)
+In practice, a learnable embedding matrix 𝐸𝑝∈R𝑛×𝑑𝑝is used to
+represent the mapping k.
+Parallel Form. Based on the recurrent formulation, the parallel
+computation for the positional channel can be derived as:
+𝑉𝑝= 𝑋𝑊𝑝
+(12)
+𝑌𝑝=
+
+𝛼(𝐸𝑝𝐸𝑇
+𝑝⊙𝑀causal) + 𝛽𝐼
+
+𝑉𝑝
+(13)
+where 𝑀causal denotes the lower-triangular causal mask, and 𝐼is
+the identity matrix.
+4.4
+Temporal Retention Channel
+In SS4Rec [49] and TiM4Rec [9], temporal information is incorpo-
+rated by modifying the attention calculation in Mamba, specifically
+the 𝑄𝐾𝑇⊙𝐷term, where the 𝐷matrix is adjusted to encode time-
+related data. However, this approach causes interference between
+semantic and temporal information. To address this issue and in-
+troduce periodicity, we calculate periodic 𝑄𝑡and 𝐾𝑡using only
+temporal information, as well as 𝐷𝑡, and compute the output using
+(𝑄𝑡𝐾𝑇
+𝑡⊙𝐷𝑡)𝑉𝑡.
+To model periodic temporal changes, we represent time dynamics
+in the complex domain. Assume that, at a given moment, a user’s
+information is represented by the vector 𝑣∈R1×𝑑. After a time
+interval Δ𝑡, this vector evolves according to the formula 𝑣′ = 𝑒𝜆Δ𝑡𝑣,
+where 𝜆∈C. Writing 𝜆in polar form as 𝜆= 𝑟𝑒𝑖𝜃, the transformation
+becomes:
+𝑣′ = 𝑟Δ𝑡𝑒𝑖(Δ𝑡𝜃)𝑣= 𝑟Δ𝑡cos(Δ𝑡· 𝜃)𝑣+ 𝑖𝑟Δ𝑡sin(Δ𝑡· 𝜃)𝑣.
+(14)
+To ensure numerical stability, we require 0 < 𝑟< 1.
+Given the extensive temporal range of user data, a single decay
+factor 𝜆is insufficient to capture the multifaceted evolution of inter-
+ests. We therefore employ a set of 𝐻𝑡parameter pairs {(𝑟ℎ,𝜃ℎ)}𝐻𝑡
+ℎ=1
+to model multi-scale temporal dynamics. However, in long se-
+quences, the accumulated historical context in each head can some-
+times overshadow the user’s immediate intent. To help the model
+better identify and prioritize the current representation, we intro-
+duce learnable parameters 𝛼𝑡, 𝛽𝑡∈R2𝐻𝑡to adaptively balance the
+historical trends and the current state.
+Specifically, let (𝑣𝑡)(ℎ)
+𝑛
+= 𝑥𝑛𝑊(ℎ)
+𝑡
+be the projection of the cur-
+rent interaction 𝑥𝑛onto the ℎ-th subspace via the learnable matrix
+𝑊(ℎ)
+𝑡
+∈R𝑑×(𝑑/2𝐻𝑡). The temporal heads are then formulated as:
+head2ℎ−1 =
+𝑛
+∑︁
+𝑖=1
+𝑟𝑡𝑛+1−𝑡𝑖
+ℎ
+cos((𝑡𝑛+1 −𝑡𝑖)𝜃ℎ)𝑥𝑖𝑊(2ℎ−1)
+𝑡
+(15)
+head2ℎ=
+𝑛
+∑︁
+𝑖=1
+𝑟𝑡𝑛+1−𝑡𝑖
+ℎ
+sin((𝑡𝑛+1 −𝑡𝑖)𝜃ℎ)𝑥𝑖𝑊(2ℎ)
+𝑡
+(16)
+The final output 𝑦is obtained by integrating the temporal context
+with the current state (𝑣𝑡)(ℎ)
+𝑛:
+𝑦= Concat[(𝛼𝑡)1head1 + (𝛽𝑡)1(𝑣𝑡)(1)
+𝑛, . . . ,
+(𝛼𝑡)2𝐻𝑡head2𝐻𝑡+ (𝛽𝑡)2𝐻𝑡(𝑣𝑡)(2𝐻𝑡)
+𝑛
+]
+(17)
+To derive the recurrent form, consider the following trigonomet-
+ric identities:
+sin((𝑡𝑛+1 −𝑡𝑖)𝜃) = sin(𝜃· 𝑡𝑛+1) cos(𝜃· 𝑡𝑖) −cos(𝜃· 𝑡𝑛+1) sin(𝜃· 𝑡𝑖)
+=
+ sin(𝜃· 𝑡𝑛+1)
+−cos(𝜃· 𝑡𝑛+1)
+𝑇cos(𝜃· 𝑡𝑖)
+sin(𝜃· 𝑡𝑖)
+
+,
+(18)
+cos((𝑡𝑛+1 −𝑡𝑖)𝜃) = cos(𝜃· 𝑡𝑛+1) cos(𝜃· 𝑡𝑖) + sin(𝜃· 𝑡𝑛+1) sin(𝜃· 𝑡𝑖)
+=
+cos(𝜃· 𝑡𝑛+1)
+sin(𝜃· 𝑡𝑛+1)
+𝑇cos(𝜃· 𝑡𝑖)
+sin(𝜃· 𝑡𝑖)
+
+.
+(19)
+Let the query and key vectors in the (2ℎ−1)-th and 2ℎ-th heads
+be defined as follows:
+(𝑞𝑡)(2ℎ−1)
+𝑛
+= 𝑟𝑡𝑛+1−𝑡𝑛
+ℎ
+ sin(𝜃ℎ· 𝑡𝑛+1)
+−cos(𝜃ℎ· 𝑡𝑛+1)
+𝑇
+,
+(20)
+(𝑞𝑡)(2ℎ)
+𝑛
+= 𝑟𝑡𝑛+1−𝑡𝑛
+ℎ
+cos(𝜃ℎ· 𝑡𝑛+1)
+sin(𝜃ℎ· 𝑡𝑛+1)
+𝑇
+,
+(21)
+(𝑘𝑡)(2ℎ−1)
+𝑛
+= (𝑘𝑡)(2ℎ)
+𝑛
+=
+cos(𝜃ℎ· 𝑡𝑛)
+sin(𝜃ℎ· 𝑡𝑛)
+𝑇
+.
+(22)
+Additionally, define (𝐷𝑡)(2ℎ−1)
+𝑛,𝑖
+= (𝐷𝑡)(2ℎ)
+𝑛,𝑖
+= 𝑟𝑡𝑛−𝑡𝑖
+ℎ
+and (𝛾𝑡)(2ℎ−1)
+𝑛
+=
+(𝛾𝑡)(2ℎ)
+𝑛
+= 𝑟𝑡𝑛−𝑡𝑛−1
+ℎ
+. Using these definitions, two equivalent compu-
+tation forms can be derived:
+
+
+FuXi-Linear: Unleashing the Power of Linear Attention in Long-term Time-aware Sequential Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Recurrent Form For the ℎ-th head, the hidden state (𝑆𝑡)(ℎ)
+𝑛
+is
+given by:
+(𝑆𝑡)(ℎ)
+𝑛
+=
+𝑛
+∑︁
+𝑖=1
+(𝐷𝑡)(ℎ)
+𝑛,𝑖
+h
+(𝑘𝑡)(ℎ)
+𝑖
+i𝑇
+𝑥𝑖𝑊(ℎ)
+𝑡
+.
+(23)
+The recurrent update and output computation are:
+(𝑆𝑡)(ℎ)
+𝑛
+= (𝛾𝑡)(ℎ)
+𝑛
+(𝑆𝑡)(ℎ)
+𝑛−1 +
+h
+(𝑘𝑡)(ℎ)
+𝑛
+i𝑇
+𝑥𝑛𝑊(ℎ)
+𝑡
+,
+(24)
+headℎ= (𝑞𝑡)(ℎ)
+𝑛
+(𝑆𝑡)(ℎ)
+𝑛.
+(25)
+Parallel Form Let the query and key matrices for the ℎ-th head
+be 𝑄(ℎ)
+𝑡
+, 𝐾(ℎ)
+𝑡
+∈R𝑛×2. The corresponding output is computed as:
+𝑉(ℎ)
+𝑡
+= 𝑋𝑊(ℎ)
+𝑡
+(26)
+headℎ= Retention(𝑄(ℎ)
+𝑡
+, 𝐾(ℎ)
+𝑡
+,𝑉(ℎ)
+𝑡
+, 𝐷(ℎ)
+𝑡
+).
+(27)
+To ensure the trigonometric identities hold under 32-bit floating-
+point operations and to model the user’s interests across different
+time scales, we set 𝜃𝑘=
+2𝜋
+𝐵𝑏0+𝑘. In this formulation, 𝐵and 𝑏0 are
+hyperparameters, where both 𝐵and 𝐵𝑏0 are required to be integers.
+This ensures the periodicity of the trigonometric functions, 𝐵𝑏0+𝑘,
+remains an integer. When calculating 𝜃· 𝑡, first take the modulus
+with respect to the period and then multiply by 2𝜋, ensuring the pre-
+cision limitations of 32-bit floats are satisfied. And 𝑟𝑘is initialized
+as 2−𝜃𝑘/2𝜋.
+4.5
+FuXi-Linear Block
+In the FuXi-Linear Block, the input first passes through the Linear
+Multi-Channel Attention (LMCA) layer, followed by the Multi-stage
+Feed-Forward Network (MFFN). Assume that the input to this layer
+is given by 𝑋0 ∈R𝑛×𝑑. The output is computed as follows:
+𝑂= LMCA(Norm(𝑋0))
+(28)
+𝑌= MFFN(𝑂,𝑋0)
+(29)
+In our model, the normalization function utilized is RMSNorm [62].
+4.5.1
+Linear Multi-Channel Attention. Suppose the input to the
+module is 𝑋∈R𝑛×𝑑. We provide 𝑋to three different channels and
+obtain outputs 𝑌ret, 𝑌𝑝, and 𝑌𝑡from each channel, respectively. After
+normalizing these outputs, we concatenate them and then compute
+a projection using 𝑋to obtain a tensor 𝑈. The resulting tensor is
+element-wise multiplied by the concatenated output. This process
+can be viewed as a gating mechanism to filter out noise. The output
+of LMCA can be formulated as follows:
+LMCA(𝑋) = Concat(Norm(𝑌ret), Norm(𝑌𝑝), Norm(𝑌𝑡)) ⊙(𝑋𝑊𝑢)
+(30)
+4.5.2
+Multi-stage Feed-forward Network. The MFFN consists of two
+stages, with the first stage merging multi-channel outputs and resid-
+ual connections, and the second stage facilitating further feature
+interactions [56]. Assume the input to this module is represented
+as 𝑋∈R𝑛×3𝑑. The output of the MFFN is given by:
+𝑌stage1 = 𝑋𝑊0 + 𝑋0
+(31)
+˜𝑌stage1 = Norm(𝑌stage1)
+(32)
+MFFN(𝑋,𝑋0) =
+
+( ˜𝑌stage1𝑊1) ⊙𝜙( ˜𝑌stage1𝑊2)
+
+𝑊3
+(33)
+where 𝑊0 ∈R3𝑑×𝑑, 𝑊1,𝑊2 ∈R𝑑×𝑑FFN, and 𝑊3 ∈R𝑑FFN×𝑑are learn-
+able parameters. The function 𝜙represents the SiLU activation
+function, and ⊙denotes the element-wise product operation.
+4.6
+Chunkwise Recurrent Form
+The complexity of using the parallel form during training remains
+quadratic in relation to the sequence length, while employing the
+recurrent form presents challenges in parallel computation. To
+address the efficiency issues in training, we apply a chunkwise
+recurrent method [37]. This approach ensures improvements in the
+limitations of parallel computation within the recurrent form while
+maintaining low computational complexity.
+The parallel computation processes across these three channels
+can all be abstracted to the expression 𝑌= (𝑄𝐾𝑇⊙𝐷)𝑉, where
+𝑄, 𝐾∈R𝑁×𝑑𝑘,𝑉∈R𝑁×𝑑𝑣, and 𝐷∈R𝑁×𝑁is a lower triangular
+matrix. The recurrent computation process can be expressed as
+𝑆𝑖= 𝛾𝑆𝑖−1 + 𝑘𝑇
+𝑖𝑣𝑖
+(34)
+𝑦𝑖= 𝑞𝑖𝑆𝑖
+(35)
+For simplicity, we assume that 𝛾is a value independent of 𝑖. Assum-
+ing a chunk size of𝐶, we define the chunkwise variable𝑄𝑖
+[𝑡] = 𝑞𝑡𝐶+𝑖,
+𝑄[𝑡] = 𝑄1:𝐶
+[𝑡] ∈R𝐶×𝑑, and similarly define 𝐾[𝑡],𝑉[𝑡],𝑌[𝑡]. Specifically,
+the step-wise output and chunk state are derived as:
+𝑌𝑖
+[𝑡] = 𝑄𝑖
+[𝑡]𝑆𝑖
+[𝑡] =
+
+𝛾𝑖𝑄𝑖
+[𝑡]
+
+𝑆𝐶
+[𝑡−1] +
+𝑖∑︁
+𝑗=1
+𝛾𝑖−𝑗(𝑄𝑖
+[𝑡](𝐾𝑗
+[𝑡])𝑇)𝑉𝑗
+[𝑡] (36)
+𝑆𝐶
+[𝑡] = 𝛾𝐶𝑆𝐶
+[𝑡−1] +
+𝐶
+∑︁
+𝑖=1
+𝛾𝐶−𝑖(𝐾𝑖
+[𝑡])𝑇𝑉𝑖
+[𝑡]
+(37)
+Let ˜𝑄𝑖
+[𝑡] = 𝛾𝑖𝑄𝑖
+[𝑡], 𝐷in-chunk = (𝑑𝑖,𝑗)𝐶×𝐶, ˜𝐾𝑖
+[𝑡] = 𝛾𝐶−𝑖𝐾𝑖
+[𝑡], where
+𝑑𝑖𝑗=
+(
+𝛾𝑖−𝑗,
+𝑖≥𝑗
+0,
+otherwise
+(38)
+The vectorized chunk-level computation is then formulated as:
+𝑌[𝑡] = ˜𝑄[𝑡]𝑆𝐶
+[𝑡−1] +
+
+𝑄[𝑡](𝐾[𝑡])𝑇⊙𝐷in-chunk
+
+𝑉[𝑡]
+(39)
+𝑆𝐶
+[𝑡] = 𝛾𝐶𝑆𝐶
+[𝑡−1] + ( ˜𝐾[𝑡])𝑇𝑉[𝑡]
+(40)
+During training, we perform the above calculations chunk by chunk.
+4.7
+Prediction Layer & Optimization Objective
+After processing through 𝐿layers of the FuXi-Linear Block, the
+model generates latent representations for each position. Given a
+user 𝑢’s interaction history 𝑖(𝑢)
+1
+, . . . ,𝑖(𝑢)
+𝑛, the probability of the next
+item 𝑖𝑛+1 is predicted using the 𝑛-th latent representation 𝑥𝑛:
+𝑃(𝑖𝑛+1 = 𝑖𝑗| 𝑖(𝑢)
+1
+, . . . ,𝑖(𝑢)
+𝑛) = softmax(𝑥𝑛𝐸)𝑗
+(41)
+For efficient training, the model is trained autoregressively using a
+sampled softmax loss with 𝑁negative samples [20].
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Yufei Ye et al.
+5
+Analysis
+5.1
+Complexity Analysis
+We conduct a simplified analysis of the space and time complexity
+required to compute a user sequence using a single layer of atten-
+tion. Let us assume the chunk size is 𝐶, the sequence length is 𝑛,
+and the embedding size is 𝑑.
+• Space Complexity. Storing the parameters 𝑄, 𝐾,𝑉for each item
+requires 𝑂(𝑛𝑑) space. In chunkwise recurrent computation, cal-
+culating the key-value product for each chunk requires 𝑂  𝑛
+𝐶𝑑2
+space, while storing the attention map requires 𝑂(𝑛𝐶) space.
+Therefore, the total complexity is 𝑂(𝑛(𝐶+ 𝑑) + 𝑛𝑑2
+𝐶). During
+inference, only the previous hidden state needs to be stored, and
+assuming there are ℎheads, the required space is 𝑂
+
+𝑑2
+ℎ
+
+.
+• Time Complexity. Computing the parameters 𝑄, 𝐾,𝑉for each
+item requires 𝑂(𝑛𝑑2) time. The key-value product for each chunk
+requires 𝑂(𝑑2) time, and calculating attention within the chunk
+requires 𝑂(𝐶2𝑑) time. Thus, the time complexity is 𝑂(𝑛(𝐶+𝑑)𝑑).
+During inference, the bottleneck lies in the computation of the
+product between the query vector and the hidden state, with a
+time complexity of 𝑂
+
+𝑑2
+ℎ
+
+.
+Since only 𝐶and batch size need to be set to exploit the paral-
+lelism of in-chunk computation, 𝐶is a constant independent of 𝑛.
+Thus, our model has 𝑂(𝑛) space-time complexity during parallel
+training and 𝑂(1) space-time complexity during inference with
+respect to sequence length 𝑛.
+5.2
+Relationship with Existing Models
+In this section, we provide a comparative analysis to highlight
+the architectural distinctions between FuXi-Linear and existing
+sequence models.
+• FuXi-𝛼[56] and FuXi-𝛽[57]. While FuXi-𝛼and FuXi-𝛽uti-
+lize 𝑂(𝑛2) mechanisms for temporal and positional modeling,
+FuXi-Linear achieves 𝑂(𝑛) complexity by introducing the Linear
+Positional Channel and Temporal Retention Channel. Beyond
+the efficiency gain, our model explicitly incorporates periodic
+temporal patterns, which are not specifically addressed in the
+previous FuXi variants.
+• TiM4Rec [9] and SS4Rec [49]. These models incorporate tem-
+poral signals by scaling attention weights, a method that often
+leads to mutual interference between temporal and semantic
+information and lacks periodicity modeling. In contrast, our Tem-
+poral Retention Channel decouples these signals by computing
+queries and keys derived solely from timestamps. Furthermore,
+whereas TiM4Rec and SS4Rec rely on the implicit decay of linear
+attention for order, we introduce the Linear Positional Channel
+to compensate for the lack of granular positional information in
+standalone linear mechanisms.
+6
+Experiments
+6.1
+Experiment Setup
+6.1.1
+Datasets. To evaluate the performance of the proposed FuXi-
+Linear architecture, we conduct extensive experiments on three
+public datasets, which are described as follows:
+Table 1: Dataset statistics.
+Dataset
+User
+Item
+Interactions Avg. Len.
+MovieLens-20M 138,493
+26,744
+20,000,263
+144.41
+Kuairand-27K
+27,284
+131,090
+97,010,279
+3555.57
+KuaiRec
+7,176
+9,958
+12,529,113
+1745.97
+• MovieLens-20M 1: A well-known benchmark dataset for movie
+recommendations, containing rich user ratings and tagging ac-
+tivities. We use its extensive 20M subset for testing.
+• Kuairand 27k2 [11]: Collected from a video-sharing app, this
+dataset features long user interaction sequences, capturing high
+engagement levels.
+• KuaiRec3 [10]: Sourced from another popular video-sharing
+platform, this dataset also includes long sequences, aiding in the
+examination of user preferences and engagement.
+For MovieLens-20M, we adopted exactly the same preprocess-
+ing method as HSTU 4. For the other two datasets, a similar pre-
+processing method was applied. In Kuairand-27K, we retained
+only the interaction records where users provided no negative feed-
+back and items with more than 100 interactions. The statistical
+information for the datasets is shown in Table 1.
+6.1.2
+Compared Baseline. To comprehensively evaluate the per-
+formance of FuXi-Linear, we employ two representative categories
+of baselines: i) models based on full attention: SASRec [19], HSTU
+[61], FuXi-𝛼[56], FuXi-𝛽[57] ii) models based on linear attention:
+RecBLR [23], Mamba4Rec [24], TTT4Rec [55], TiM4Rec [9], RetNet
+[37]. We exclude SS4Rec [49] from our comparison because it ex-
+hibits significant numerical instability and incurs prohibitive GPU
+memory overhead during training.
+6.1.3
+Evaluation Metrics. We utilize the commonly used top-K Hit
+Ratio (HR@𝐾), Normalized Discounted Cumulative Gain (NDCG@𝐾,
+abbreviated as NG@𝐾in tables), and Mean Reciprocal Rank (MRR)
+to assess recall performance. For each of these metrics, a higher
+value indicates better performance. By default, we evaluate the
+ranking of the ground-truth item from the entire set of items and
+report the performance for 𝐾= 10, 50.
+6.1.4
+Implementation. We implemented our proposed FuXi-Linear
+using PyTorch [28]. To enable large-scale model training, we uti-
+lize multi-card parallelism with the Accelerate library [21]. In the
+following experiment, the position channel of FuXi-Linear was con-
+figured with 𝑑𝑝= 32, while in the temporal channel, we configured
+𝐻𝑡as 8. Based on the distribution of timestamps in the datasets, we
+empirically set 𝐵to 8 for both Kuairand-27K and KuaiRec, and 𝐵to
+16 for MovieLens-20M.
+6.2
+Performance Comparison
+6.2.1
+Parameter Settings. For Kuairand-27K, KuaiRec, and ML-
+20M, we set the number of layers to 4, 4, and 8, respectively, and the
+embedding size to 128, 128, and 256, respectively. In order to ensure
+a fair comparison, we adjust the sizes of some hidden layers so that
+all models are of comparable scale. Detailed parameter settings are
+1https://grouplens.org/datasets/movielens/
+2https://kuairand.com/
+3https://kuairec.com/
+4https://github.com/facebookresearch/generative-recommenders
+
+
+FuXi-Linear: Unleashing the Power of Linear Attention in Long-term Time-aware Sequential Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+listed in Appendix A. The sizes of the non-embedding parameters
+for these models are listed in Table 2.
+Table 2: The sizes of models across various datasets.
+Model
+Time-aware Kuairand 27K ML-20M KuaiRec
+SASRec (4d)
+×
+791.04K
+6.31M
+791.04K
+RecBLR (4d)
+×
+860.67K
+6.85M
+860.67K
+Mamba4Rec (4d)
+×
+1.04M
+7.91M
+1.04M
+TTT4Rec (3d)
+×
+991.12K
+7.38M
+991.12K
+RetNet (3d)
+×
+918.66K
+7.34M
+918.66K
+TiM4Rec (1d)
+✓
+984.16K
+7.57M
+984.16K
+HSTU (4d)
+✓
+926.81K
+7.40M
+926.81K
+FuXi-𝛼(2d)
+✓
+992.34K
+7.87M
+992.34K
+FuXi-𝛽(3d)
+✓
+926.30K
+7.35M
+926.30K
+FuXi-Linear (1d)
+✓
+917.66K
+7.34M
+917.66K
+6.2.2
+Public Dataset Performance. In this section, we evaluate the
+effectiveness of FuXi-Linear by comparing it against state-of-the-
+art baselines across three public datasets. The empirical results,
+summarized in Table 3, lead to the following key observations:
+• FuXi-Linear consistently achieves the best performance across
+all evaluation metrics, with improvements being particularly sub-
+stantial in long-sequence scenarios. Specifically, on the Kuairand-
+27K and KuaiRec datasets, FuXi-Linear significantly advances the
+state-of-the-art by achieving average relative improvements of
+9.26%, 7.24%, 9.01%, 5.11%, and 8.33% in NDCG@10, NDCG@50,
+HR@10, HR@50, and MRR, respectively.
+• The experimental results underscore that the modeling of tempo-
+ral signals is essential for recommendations. Models that effec-
+tively integrate temporal information, such as HSTU, FuXi-alpha,
+FuXi-beta, and FuXi-Linear, consistently and significantly out-
+perform time-agnostic models like SASRec and Mamba4Rec.
+• While temporal information is crucial, the efficacy of its utiliza-
+tion is equally important for model performance. For instance,
+although TiM4Rec attempts to incorporate temporal signals, it
+fails to achieve competitive results. This is likely due to its overly
+complex transformations, which lead to the loss of raw temporal
+patterns and a failure to harmonize time with semantic features.
+As a result, its performance is similar to that of linear models
+that ignore temporal information.
+6.3
+Efficiency Comparison
+We select several of the best-performing models—FuXi-Linear, FuXi-
+𝛼, FuXi-𝛽, and HSTU—for a comprehensive efficiency comparison.
+We evaluate their performance under two scenarios:
+• Prefill: Computes cache information based on existing user in-
+teraction sequences.
+• Decode: Generating the next item and updating the cache to
+provide real-time recommendations.
+For a fair evaluation, all models are configured with 2 layers (𝐿= 2),
+an embedding size of 𝑑= 256, and consistent head dimensions.
+We set 𝑑FFN = 𝑑, and for FuXi-Linear, the chunk size is 𝐶= 128.
+To more objectively reflect the intrinsic computational complexity
+of each model, we employ FlashAttention-2 [4] to accelerate all
+models. The experiments use batch sizes of 64 for prefilling and 1024
+for decoding, with results averaged over 10 batches. As illustrated
+in Figure 2, FuXi-Linear demonstrates a substantial speedup over
+other models as the sequence length increases, owing to its lower
+computational complexity. At a sequence length of 8k, FuXi-Linear
+outperforms FuXi-𝛼, FuXi-𝛽, and HSTU in the Prefill stage with
+speedup ratios of 10×, 3.1×, and 7.8×, respectively. In the Decode
+stage, these ratios reach 21×, 4.2×, and 18×. These results highlight
+that FuXi-Linear offers a highly efficient solution for processing
+ultra-long sequences in recommendation systems.
+6.4
+Different Variants Comparison
+6.4.1
+Comparison of Different Temporal Encoding Methods. To eval-
+uate the effectiveness of the Linear Temporal Channel, we conduct
+a comparative analysis against several representative temporal
+modeling methods. The results on the Kuairand-27K dataset are
+summarized in Table 4. The empirical results indicate that while ab-
+solute sinusoidal encoding [43] is computationally efficient, it yields
+limited performance gains as it fails to capture complex temporal
+dependencies. Although TiSSD [9] also has linear complexity, it fails
+to effectively disentangle semantic and temporal signals, resulting
+in a slight decline in performance. Furthermore, although models
+such as HSTU [61] achieve better accuracy by leveraging relative
+temporal information, they are hindered by quadratic complexity.
+In contrast, our proposed method outperforms all baselines by ef-
+fectively modeling both relative temporal intervals and periodic
+patterns, while maintaining linear complexity.
+6.4.2
+Comparison of Different Positional Encoding Methods. To
+evaluate the Linear Positional Channel, we conduct a compara-
+tive study with several widely-used positional encoding schemes,
+including relative position-based methods such as FuXi [56, 57],
+T5 [32], and Alibi [30] as well as RoPE [36]. The results are sum-
+marized in Table 5. The empirical results demonstrate that our
+proposed method achieves competitive performance compared to
+the strongest relative positional modeling baselines. Notably, while
+high-performing relative methods often incur quadratic computa-
+tional overhead, our approach delivers comparable effectiveness
+while maintaining linear complexity, demonstrating a superior
+trade-off between modeling capacity and efficiency.
+6.5
+Ablation Study
+We conduct an ablation study on the Kuairand-27K dataset to eval-
+uate the contribution of each component within FuXi-Linear, with
+results summarized in Table 6.
+The empirical evidence shows that removing any single module
+results in a performance decline, highlighting their collective neces-
+sity. Notably, the temporal channel proves most critical; its removal
+leads to the most substantial performance drop. Specifically, ex-
+cluding 𝑄𝑡and 𝐾𝑡impairs the model’s capacity to capture periodic
+information, which is vital for temporal modeling. The positional
+channel ranks second in importance; while temporal sequences of-
+fer coarse ordering, the positional channel provides the fine-grained
+structural information necessary to resolve these limitations. Fi-
+nally, although the retention channel yields the smallest marginal
+improvement, it enhances the model’s ability to selectively retrieve
+relevant historical data through semantic query-key attention.
+Hyper-parameter Study. Complementing the module-level
+ablation, we further investigate the sensitivity of FuXi-Linear to its
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Yufei Ye et al.
+Table 3: Overall performance comparison on public datasets.
+Dataset
+Kuairand 27K
+MovieLens-20M
+KuaiRec
+Model
+NG@10 NG@50 HR@10 HR@50
+MRR
+NG@10 NG@50 HR@10 HR@50
+MRR
+NG@10 NG@50 HR@10 HR@50
+MRR
+SASRec
+0.0472
+0.0737
+0.0902
+0.2125
+0.0422
+0.1787
+0.2356
+0.3138
+0.5713
+0.1524
+0.1154
+0.1612
+0.1895
+0.4027
+0.1059
+RecBLR
+0.0451
+0.0711
+0.0849
+0.2049
+0.0409
+0.1739
+0.2316
+0.3049
+0.5659
+0.1491
+0.1102
+0.1565
+0.1837
+0.3983
+0.1010
+Mamba4Rec
+0.0470
+0.0743
+0.0881
+0.2140
+0.0427
+0.1862
+0.2426
+0.3220
+0.5765
+0.1595
+0.1165
+0.1622
+0.1951
+0.4068
+0.1058
+TTT4Rec
+0.0467
+0.0743
+0.0874
+0.2148
+0.0425
+0.1722
+0.2277
+0.3013
+0.5526
+0.1475
+0.1135
+0.1622
+0.1885
+0.4151
+0.1042
+RetNet
+0.0448
+0.0715
+0.0827
+0.2061
+0.0413
+0.1877
+0.2445
+0.3236
+0.5803
+0.1610
+0.1143
+0.1618
+0.1915
+0.4115
+0.1044
+TiM4Rec
+0.0454
+0.0720
+0.0850
+0.2076
+0.0414
+0.1850
+0.2418
+0.3206
+0.5772
+0.1584
+0.1149
+0.1609
+0.1894
+0.4029
+0.1053
+HSTU
+0.0534
+0.0822
+0.0994
+0.2319
+0.0479
+0.2095
+0.2663
+0.3548
+0.6107
+0.1798
+0.1265
+0.1755
+0.2074
+0.4358
+0.1155
+FuXi-𝛼
+0.0543
+0.0825
+0.1005
+0.2300
+0.0487
+0.2102
+0.2671
+0.3550
+0.6121
+0.1806
+0.1281
+0.1764
+0.2090
+0.4326
+0.1170
+FuXi-𝛽
+0.0526
+0.0809
+0.0974
+0.2279
+0.0472
+0.2116
+0.2688
+0.3562
+0.6146
+0.1820
+0.1238
+0.1702
+0.2039
+0.4197
+0.1125
+FuXi-Linear
+0.0609
+0.0906
+0.1124
+0.2488
+0.0540
+0.2131
+0.2700
+0.3592
+0.6161
+0.1830
+0.1368
+0.1851
+0.2242
+0.4486
+0.1235
+256
+512
+1024
+2048
+4096
+6144
+8192
+Sequence Length
+0.00
+0.25
+0.50
+0.75
+1.00
+1.25
+Prefill Time (s/batch)
+HSTU (1d)
+FuXi-  (1d)
+FuXi-  (1d)
+FuXi-Linear (1d)
+(a) Prefill
+256
+512
+1024
+2048
+4096
+6144
+8192
+Sequence Length
+0.00
+0.02
+0.04
+0.06
+0.08
+0.10
+0.12
+Decode Time (s/batch)
+HSTU (1d)
+FuXi-  (1d)
+FuXi-  (1d)
+FuXi-Linear (1d)
+(b) Decode
+Figure 2: The efficiency comparison across different sequence lengths.
+Table 4: Comparison of different temporal encoding methods
+on Kuairand-27K.
+Method
+NG@10 NG@50 HR@10 HR@50 MRR Complexity
+Ours
+0.0609
+0.0906
+0.1124
+0.2488 0.0540
+𝑂(𝑛𝑑)
+Method in FuXi-𝛼
+0.0564
+0.0858
+0.1045
+0.2397
+0.0504
+𝑂(𝑛2𝑑)
+Method in FuXi-𝛽
+0.0540
+0.0831
+0.0996
+0.2327
+0.0487
+𝑂(𝑛2𝑑)
+Bias in HSTU
+0.0538
+0.0825
+0.1007
+0.2326
+0.0480
+𝑂(𝑛2)
+Absolute Embedding
+0.0504
+0.0776
+0.0948
+0.2199
+0.0452
+𝑂(𝑛𝑑)
+TiSSD (in TiM4Rec)
+0.0468
+0.0737
+0.0887
+0.2132
+0.0421
+𝑂(𝑛𝑑)
+None
+0.0471
+0.0738
+0.0892
+0.2122
+0.0424
+0
+Table 5: Comparison of different positional encoding meth-
+ods on Kuairand-27K.
+Method
+NG@10 NG@50 HR@10 HR@50
+MRR
+Additional Cost
+Ours
+0.0609
+0.0906
+0.1124
+0.2488
+0.0540
+𝑂(𝑛𝑑)
+Used in FuXi-𝛼/𝛽
+0.0607
+0.0900
+0.1115
+0.2456
+0.0539
+𝑂(𝑛2𝑑)
+RoPE
+0.0575
+0.0872
+0.1071
+0.2433
+0.0511
+𝑂(𝑛𝑑)
+T5Bias
+0.0580
+0.0866
+0.1077
+0.2389
+0.0513
+𝑂(𝑛2)
+Alibi
+0.0574
+0.0865
+0.1065
+0.2407
+0.0509
+𝑂(𝑛2)
+None
+0.0568
+0.0854
+0.1067
+0.2385
+0.0501
+0
+Table 6: Ablation Study of FuXi-Linear on Kuairand-27K.
+Setting
+NG@10 NG@50 HR@10 HR@50
+MRR
+Base
+0.0609
+0.0906
+0.1124
+0.2488
+0.0540
+w/o temporal channel
+0.0471
+0.0738
+0.0892
+0.2122
+0.0424
+w/o 𝑄𝑡, 𝐾𝑡
+0.0566
+0.0857
+0.1051
+0.2388
+0.0504
+w/o positional channel
+0.0568
+0.0854
+0.1067
+0.2385
+0.0501
+w/o retention channel
+0.0588
+0.0880
+0.1071
+0.2409
+0.0527
+core internal parameters, including the number of temporal heads
+(𝐻𝑡), retention heads (𝐻), and the positional embedding dimension
+(𝑑𝑝). These analyses reinforce our design intuitions, such as the
+necessity of multi-scale temporal modeling and the effectiveness
+of the multi-head mechanism in reducing state overhead. Detailed
+results are provided in Appendix B.
+6.6
+Scaling Experiment
+To verify the scalability of our model, we conducted experiments
+using the Kuairand-27K dataset. We fixed the sequence length at
+𝑛= 1024 and set the head dimension to 32 with 𝑑FFN = 4𝑑. We then
+incrementally enlarged the model by adjusting only the embedding
+dimension 𝑑and the number of layers 𝐿. As shown in Figure 3,
+FuXi-Linear exhibits a robust power-law scaling property across
+multiple metrics as non-embedding parameters increase. Specifi-
+cally, NG@10 and HR@10 scale consistently from 0.0472 and 0.0881
+(188K parameters) to 0.0710 and 0.1288 (20M parameters), respec-
+tively. This sustained improvement across two orders of magnitude
+in model size underscores the excellent capacity and stability of the
+FuXi-Linear architecture.
+7
+Conclusion
+In this work, we presented FuXi-Linear, a novel linear-complexity
+architecture designed to resolve the efficiency-effectiveness dilemma
+in long-term sequential recommendation. We introduced the Tem-
+poral Retention Channel, which effectively captures periodic pat-
+terns while decoupling temporal signals from semantic features to
+
+
+FuXi-Linear: Unleashing the Power of Linear Attention in Long-term Time-aware Sequential Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+106
+107
+Non-embedding Parameters (Log Scale)
+0.04
+0.06
+0.08
+0.10
+0.12
+0.14
+NDCG@10
+NDCG@10 (Observed)
+NDCG@10 Fit: y = 0.018 x0.082
+HR@10 (Observed)
+HR@10 Fit: y = 0.037 x0.076
+0.07
+0.08
+0.09
+0.10
+0.11
+0.12
+0.13
+0.14
+HR@10
+Figure 3: Scaling performance of FuXi-Linear with respect to
+model size on Kuairand-27K.
+prevent mutual interference. Furthermore, we developed the Linear
+Positional Channel, which leverages learnable kernels to approxi-
+mate the expressive power of relative position encoding within a
+strictly linear-time recurrent formulation. Extensive experiments
+on three real-world benchmarks demonstrate that FuXi-Linear sig-
+nificantly outperforms state-of-the-art baselines, particularly in
+long-sequence scenarios. We further validated that our architec-
+ture possesses a robust power-law scaling property at a thousand-
+length scale, demonstrating sustained performance gains as model
+capacity increases. Compared to competitive baselines, FuXi-Linear
+achieves up to 10× speedup in the prefill stage and 21× higher
+inference throughput during decoding. Overall, FuXi-Linear pro-
+vides a promising and scalable solution for ultra-long sequence
+modeling in modern recommender systems. In the future, we plan
+to further optimize the efficiency of our model and extend our
+method to encompass more diverse and complex multi-behavior
+user sequences.
+References
+[1] Ali Behrouz, Peilin Zhong, and Vahab Mirrokni. 2024. Titans: Learning to memo-
+rize at test time. arXiv preprint arXiv:2501.00663 (2024).
+[2] Jianxin Chang, Chenbin Zhang, Zhiyi Fu, Xiaoxue Zang, Lin Guan, Jing Lu, Yiqun
+Hui, Dewei Leng, Yanan Niu, Yang Song, et al. 2023. TWIN: TWo-stage interest
+network for lifelong user behavior modeling in CTR prediction at kuaishou. In
+Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining. 3785–3794.
+[3] Zihang Dai, Zhilin Yang, Yiming Yang, Jaime Carbonell, Quoc V Le, and Ruslan
+Salakhutdinov. 2019. Transformer-xl: Attentive language models beyond a fixed-
+length context. arXiv preprint arXiv:1901.02860 (2019).
+[4] Tri Dao. 2023. Flashattention-2: Faster attention with better parallelism and work
+partitioning. arXiv preprint arXiv:2307.08691 (2023).
+[5] Tri Dao and Albert Gu. 2024.
+Transformers are ssms: Generalized models
+and efficient algorithms through structured state space duality. arXiv preprint
+arXiv:2405.21060 (2024).
+[6] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[7] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. Bert:
+Pre-training of deep bidirectional transformers for language understanding. In
+Proceedings of the 2019 conference of the North American chapter of the association
+for computational linguistics: human language technologies, volume 1 (long and
+short papers). 4171–4186.
+[8] Jusen Du, Weigao Sun, Disen Lan, Jiaxi Hu, and Yu Cheng. 2025. Mom: Linear
+sequence modeling with mixture-of-memories. arXiv preprint arXiv:2502.13685
+(2025).
+[9] Hao Fan, Mengyi Zhu, Yanrong Hu, Hailin Feng, Zhijie He, Hongjiu Liu, and
+Qingyang Liu. 2025. Tim4rec: An efficient sequential recommendation model
+based on time-aware structured state space duality model. Neurocomputing
+(2025), 131270.
+[10] Chongming Gao, Shijun Li, Wenqiang Lei, Jiawei Chen, Biao Li, Peng Jiang,
+Xiangnan He, Jiaxin Mao, and Tat-Seng Chua. 2022. KuaiRec: A Fully-Observed
+Dataset and Insights for Evaluating Recommender Systems. In Proceedings of
+the 31st ACM International Conference on Information & Knowledge Management
+(Atlanta, GA, USA) (CIKM ’22). 540–550. doi:10.1145/3511808.3557220
+[11] Chongming Gao, Shijun Li, Yuan Zhang, Jiawei Chen, Biao Li, Wenqiang Lei,
+Peng Jiang, and Xiangnan He. 2022. KuaiRand: An Unbiased Sequential Rec-
+ommendation Dataset with Randomly Exposed Videos. In Proceedings of the
+31st ACM International Conference on Information and Knowledge Management
+(Atlanta, GA, USA) (CIKM ’22). 3953–3957. doi:10.1145/3511808.3557624
+[12] Albert Gu and Tri Dao. 2023. Mamba: Linear-time sequence modeling with
+selective state spaces. arXiv preprint arXiv:2312.00752 (2023).
+[13] Hongchao Gu, Dexun Li, Kuicai Dong, Hao Zhang, Hang Lv, Hao Wang, Defu
+Lian, Yong Liu, and Enhong Chen. 2025. RAPID: Efficient Retrieval-Augmented
+Long Text Generation with Writing Planning and Information Discovery. In
+Findings of the Association for Computational Linguistics: ACL 2025, Wanxiang
+Che, Joyce Nabende, Ekaterina Shutova, and Mohammad Taher Pilehvar (Eds.).
+Association for Computational Linguistics, Vienna, Austria, 16742–16763. doi:10.
+18653/v1/2025.findings-acl.859
+[14] Lin Guan, Jia-Qi Yang, Zhishan Zhao, Beichuan Zhang, Bo Sun, Xuanyuan Luo,
+Jinan Ni, Xiaowen Li, Yuhang Qi, Zhifang Fan, et al. 2025. Make It Long, Keep
+It Fast: End-to-End 10k-Sequence Modeling at Billion Scale on Douyin. arXiv
+preprint arXiv:2511.06077 (2025).
+[15] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, et al. 2025. MTGR: Industrial-
+Scale Generative Recommendation Framework in Meituan.
+arXiv preprint
+arXiv:2505.18654 (2025).
+[16] Pengcheng He, Xiaodong Liu, Jianfeng Gao, and Weizhu Chen. 2020.
+De-
+berta: Decoding-enhanced bert with disentangled attention.
+arXiv preprint
+arXiv:2006.03654 (2020).
+[17] Yuqing Huang, Rongyang Zhang, Xuesong He, Xuyang Zhi, Hao Wang, Xin
+Li, Feiyang Xu, Deguang Liu, Huadong Liang, Yi Li, et al. 2024. ChemEval: A
+Comprehensive Multi-Level Chemical Evaluation for Large Language Models.
+arXiv preprint arXiv:2409.13989 (2024).
+[18] Yuqing Huang, Rongyang Zhang, Qimeng Wang, Chengqiang Lu, Yan Gao, Yi
+Wu, Yao Hu, Xuyang Zhi, Guiquan Liu, Xin Li, et al. 2025. SelfAug: Mitigating
+Catastrophic Forgetting in Retrieval-Augmented Generation via Distribution
+Self-Alignment. arXiv preprint arXiv:2509.03934 (2025).
+[19] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[20] Anton Klenitskiy and Alexey Vasilev. 2023. Turning Dross Into Gold Loss: is
+BERT4Rec really better than SASRec?. In Proceedings of the 17th ACM Conference
+on Recommender Systems (RecSys ’23). ACM, 1120–1125. doi:10.1145/3604915.
+3610644
+[21] John P Kotter. 2012. Accelerate. Harvard business review 90, 11 (2012), 45–58.
+[22] Jiacheng Li, Yujie Wang, and Julian McAuley. 2020. Time interval aware self-
+attention for sequential recommendation. In Proceedings of the 13th international
+conference on web search and data mining. 322–330.
+[23] Chengkai Liu, Jianghao Lin, Hanzhou Liu, Jianling Wang, and James Caverlee.
+2024. Behavior-dependent linear recurrent units for efficient sequential recom-
+mendation. In Proceedings of the 33rd ACM international conference on information
+and knowledge management. 1430–1440.
+[24] Chengkai Liu, Jianghao Lin, Jianling Wang, Hanzhou Liu, and James Caverlee.
+2024. Mamba4rec: Towards efficient sequential recommendation with selective
+state space models. arXiv preprint arXiv:2403.03900 (2024).
+[25] Langming Liu, Liu Cai, Chi Zhang, Xiangyu Zhao, Jingtong Gao, Wanyu Wang,
+Yifu Lv, Wenqi Fan, Yiqi Wang, Ming He, et al. 2023. Linrec: Linear attention
+mechanism for long-term sequential recommender systems. In Proceedings of
+the 46th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 289–299.
+[26] Ziwei Liu, Qidong Liu, Yejing Wang, Wanyu Wang, Pengyue Jia, Maolin Wang,
+Zitao Liu, Yi Chang, and Xiangyu Zhao. 2025. SIGMA: Selective Gated Mamba for
+Sequential Recommendation. In Proceedings of the AAAI Conference on Artificial
+Intelligence, Vol. 39. 12264–12272.
+[27] Hang Lv, Sheng Liang, Hao Wang, Hongchao Gu, Yaxiong Wu, Wei Guo, Defu
+Lian, Yong Liu, and Enhong Chen. 2025. CoSteer: Collaborative Decoding-Time
+Personalization via Local Delta Steering. arXiv preprint arXiv:2507.04756 (2025).
+[28] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory
+Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, et al. 2019.
+Pytorch: An imperative style, high-performance deep learning library. Advances
+in neural information processing systems 32 (2019).
+[29] Qi Pi, Guorui Zhou, Yujing Zhang, Zhe Wang, Lejian Ren, Ying Fan, Xiaoqiang
+Zhu, and Kun Gai. 2020. Search-based user interest modeling with lifelong
+sequential behavior data for click-through rate prediction. In Proceedings of the
+29th ACM International Conference on Information & Knowledge Management.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Yufei Ye et al.
+2685–2692.
+[30] Ofir Press, Noah A Smith, and Mike Lewis. 2021. Train short, test long: At-
+tention with linear biases enables input length extrapolation. arXiv preprint
+arXiv:2108.12409 (2021).
+[31] Haohao Qu, Yifeng Zhang, Liangbo Ning, Wenqi Fan, and Qing Li. 2024. Ssd4rec:
+a structured state space duality model for efficient sequential recommendation.
+arXiv preprint arXiv:2409.01192 (2024).
+[32] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang,
+Michael Matena, Yanqi Zhou, Wei Li, and Peter J Liu. 2020. Exploring the limits
+of transfer learning with a unified text-to-text transformer. Journal of machine
+learning research 21, 140 (2020), 1–67.
+[33] Peter Shaw, Jakob Uszkoreit, and Ashish Vaswani. 2018. Self-attention with
+relative position representations. arXiv preprint arXiv:1803.02155 (2018).
+[34] Tingjia Shen, Hao Wang, Chuan Qin, Ruijun Sun, Yang Song, Defu Lian, Heng-
+shu Zhu, and Enhong Chen. 2025. GenKI: Enhancing Open-Domain Question
+Answering with Knowledge Integration and Controllable Generation in Large
+Language Models. arXiv preprint arXiv:2505.19660 (2025).
+[35] Zihua Si, Lin Guan, ZhongXiang Sun, Xiaoxue Zang, Jing Lu, Yiqun Hui, Xingchao
+Cao, Zeyu Yang, Yichen Zheng, Dewei Leng, et al. 2024. Twin v2: Scaling ultra-
+long user behavior sequence modeling for enhanced ctr prediction at kuaishou.
+In Proceedings of the 33rd ACM International Conference on Information and
+Knowledge Management. 4890–4897.
+[36] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng
+Liu. 2024. Roformer: Enhanced transformer with rotary position embedding.
+Neurocomputing 568 (2024), 127063.
+[37] Yutao Sun, Li Dong, Shaohan Huang, Shuming Ma, Yuqing Xia, Jilong Xue, Jiany-
+ong Wang, and Furu Wei. 2023. Retentive network: A successor to transformer
+for large language models. arXiv preprint arXiv:2307.08621 (2023).
+[38] Yutao Sun, Li Dong, Barun Patra, Shuming Ma, Shaohan Huang, Alon Benhaim,
+Vishrav Chaudhary, Xia Song, and Furu Wei. 2023. A Length-Extrapolatable
+Transformer. In Proceedings of the 61st Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers). 14590–14604.
+[39] Yu Sun, Xinhao Li, Karan Dalal, Jiarui Xu, Arjun Vikram, Genghan Zhang, Yann
+Dubois, Xinlei Chen, Xiaolong Wang, Sanmi Koyejo, et al. 2024. Learning to (learn
+at test time): Rnns with expressive hidden states. arXiv preprint arXiv:2407.04620
+(2024).
+[40] Kimi Team, Yu Zhang, Zongyu Lin, Xingcheng Yao, Jiaxi Hu, Fanqing Meng,
+Chengyin Liu, Xin Men, Songlin Yang, Zhiyuan Li, et al. 2025. Kimi linear:
+An expressive, efficient attention architecture. arXiv preprint arXiv:2510.26692
+(2025).
+[41] Junxiong Tong, Mingjia Yin, Hao Wang, Qiushi Pan, Defu Lian, and Enhong
+Chen. 2024. Mdap: A multi-view disentangled and adaptive preference learning
+framework for cross-domain recommendation. In International Conference on
+Web Information Systems Engineering. Springer, 164–178.
+[42] Viet Anh Tran, Guillaume Salha-Galvan, Bruno Sguerra, and Romain Hennequin.
+2023. Attention mixtures for time-aware sequential recommendation. In Proceed-
+ings of the 46th international ACM SIGIR conference on research and development
+in information retrieval. 1821–1826.
+[43] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. Advances in neural information processing systems 30 (2017).
+[44] Hao Wang, Wei Guo, Luankang Zhang, Jin Yao Chin, Yufei Ye, Huifeng Guo, Yong
+Liu, Defu Lian, Ruiming Tang, and Enhong Chen. 2025. Generative large recom-
+mendation models: Emerging trends in llms for recommendation. In Companion
+Proceedings of the ACM on Web Conference 2025. 49–52.
+[45] Hao Wang, Yongqiang Han, Kefan Wang, Kai Cheng, Zhen Wang, Wei Guo, Yong
+Liu, Defu Lian, and Enhong Chen. 2024. Denoising Pre-Training and Customized
+Prompt Learning for Efficient Multi-Behavior Sequential Recommendation. arXiv
+preprint arXiv:2408.11372 (2024).
+[46] Jiancheng Wang, Mingjia Yin, Junwei Pan, Ximei Wang, Hao Wang, and Enhong
+Chen. 2025. Enhancing CTR Prediction with De-correlated Expert Networks.
+arXiv preprint arXiv:2505.17925 (2025).
+[47] Kefan Wang, Hao Wang, Wei Guo, Yong Liu, Jianghao Lin, Defu Lian, and Enhong
+Chen. 2025. DLF: Enhancing Explicit-Implicit Interaction via Dynamic Low-
+Order-Aware Fusion for CTR Prediction. In Proceedings of the 48th International
+ACM SIGIR Conference on Research and Development in Information Retrieval.
+2213–2223.
+[48] Yuda Wang, Xuxin He, and Shengxin Zhu. 2024. EchoMamba4Rec: Harmonizing
+bidirectional state space models with spectral filtering for advanced sequential
+recommendation. arXiv preprint arXiv:2406.02638 (2024).
+[49] Wei Xiao, Huiying Wang, and Qifeng Zhou. 2025.
+SS4Rec: Continuous-
+Time Sequential Recommendation with State Space Models.
+arXiv preprint
+arXiv:2502.08132 (2025).
+[50] Wenjia Xie, Hao Wang, Minghao Fang, Ruize Yu, Wei Guo, Yong Liu, Defu Lian,
+and Enhong Chen. 2025. Breaking the Bottleneck: User-Specific Optimization and
+Real-Time Inference Integration for Sequential Recommendation. In Proceedings
+of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining V.
+2. 3333–3343.
+[51] Songlin Yang, Jan Kautz, and Ali Hatamizadeh. 2024. Gated delta networks:
+Improving mamba2 with delta rule. arXiv preprint arXiv:2412.06464 (2024).
+[52] Songlin Yang, Bailin Wang, Yikang Shen, Rameswar Panda, and Yoon Kim. 2023.
+Gated linear attention transformers with hardware-efficient training. arXiv
+preprint arXiv:2312.06635 (2023).
+[53] Songlin Yang, Bailin Wang, Yu Zhang, Yikang Shen, and Yoon Kim. 2024. Paral-
+lelizing linear transformers with the delta rule over sequence length. Advances
+in neural information processing systems 37 (2024), 115491–115522.
+[54] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, et al. 2025. Sparse meets dense: Unified generative
+recommendations with cascaded sparse-dense representations. arXiv preprint
+arXiv:2503.02453 (2025).
+[55] Zhaoqi Yang, Yanan Wang, and Yong Ge. 2024. TTT4Rec: A Test-Time Training
+Approach for Rapid Adaption in Sequential Recommendation. arXiv preprint
+arXiv:2409.19142 (2024).
+[56] Yufei Ye, Wei Guo, Jin Yao Chin, Hao Wang, Hong Zhu, Xi Lin, Yuyang Ye, Yong
+Liu, Ruiming Tang, Defu Lian, et al. 2025. FuXi-𝛼: Scaling Recommendation
+Model with Feature Interaction Enhanced Transformer. In Companion Proceedings
+of the ACM on Web Conference 2025. 557–566.
+[57] Yufei Ye, Wei Guo, Hao Wang, Hong Zhu, Yuyang Ye, Yong Liu, Huifeng Guo,
+Ruiming Tang, Defu Lian, and Enhong Chen. 2025. FuXi-\beta: Towards a
+Lightweight and Fast Large-Scale Generative Recommendation Model. arXiv
+preprint arXiv:2508.10615 (2025).
+[58] Mingjia Yin, Junwei Pan, Hao Wang, Ximei Wang, Shangyu Zhang, Jie Jiang, Defu
+Lian, and Enhong Chen. [n. d.]. From Feature Interaction to Feature Generation:
+A Generative Paradigm of CTR Prediction Models. In Forty-second International
+Conference on Machine Learning.
+[59] Haocheng Yu, Yaxiong Wu, Hao Wang, Wei Guo, Yong Liu, Yawen Li, Yuyang
+Ye, Junping Du, and Enhong Chen. 2025. Thought-Augmented Planning for
+LLM-Powered Interactive Recommender Agent. arXiv preprint arXiv:2506.23485
+(2025).
+[60] Zhenrui Yue, Yueqi Wang, Zhankui He, Huimin Zeng, Julian McAuley, and Dong
+Wang. 2024. Linear recurrent units for sequential recommendation. In Proceedings
+of the 17th ACM international conference on web search and data mining. 930–938.
+[61] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Jiayuan He, et al. 2024. Actions Speak Louder than Words:
+Trillion-Parameter Sequential Transducers for Generative Recommendations. In
+International Conference on Machine Learning. PMLR, 58484–58509.
+[62] Biao Zhang and Rico Sennrich. 2019. Root mean square layer normalization.
+Advances in neural information processing systems 32 (2019).
+[63] Luankang Zhang, Kenan Song, Yi Quan Lee, Wei Guo, Hao Wang, Yawen Li,
+Huifeng Guo, Yong Liu, Defu Lian, and Enhong Chen. 2025. Killing two birds
+with one stone: Unifying retrieval and ranking with a single generative recom-
+mendation model. In Proceedings of the 48th International ACM SIGIR Conference
+on Research and Development in Information Retrieval. 2224–2234.
+[64] Yihu Zhang, Bo Yang, Haodong Liu, and Dongsheng Li. 2023. A time-aware self-
+attention based neural network model for sequential recommendation. Applied
+Soft Computing 133 (2023), 109894.
+[65] Yu Zhang, Songlin Yang, Rui-Jie Zhu, Yue Zhang, Leyang Cui, Yiqiao Wang,
+Bolun Wang, Freda Shi, Bailin Wang, Wei Bi, et al. 2024. Gated slot attention
+for efficient linear-time sequence modeling. Advances in Neural Information
+Processing Systems 37 (2024), 116870–116898.
+[66] Guorui Zhou, Na Mou, Ying Fan, Qi Pi, Weijie Bian, Chang Zhou, Xiaoqiang
+Zhu, and Kun Gai. 2019. Deep interest evolution network for click-through rate
+prediction. In Proceedings of the AAAI conference on artificial intelligence, Vol. 33.
+5941–5948.
+[67] Rui Zhou, Hao Wang, Wei Guo, Qinglin Jia, Wenjia Xie, Xiang Xu, Yong Liu,
+Defu Lian, and Enhong Chen. 2025. MIT: A Multi-Tower Information Transfer
+Framework Based on Hierarchical Task Relationship Modeling. In Companion
+Proceedings of the ACM on Web Conference 2025. 651–660.
+A
+Detailed Parameter Settings
+By default, we set the number of training epochs to 100 for all
+datasets. For Kuairand-27K and KuaiRec, we set the batch size to
+128 and the learning rate to 10−3. For MovieLens-20M, we use a
+batch size of 1024 and a learning rate of 4 × 10−3. However, due to
+the unstable training of architectures such as SASRec and Mamba
+at a learning rate of 4 × 10−3, which makes effective optimization
+challenging, we used a learning rate of 2 × 10−4 for these models,
+increasing the number of training epochs to 200.
+For models such as SASRec, FuXi-𝛼, FuXi-𝛽, RetNet, TTT4Rec,
+and RecBLR, we increased model size by adjusting the hidden layer
+
+
+FuXi-Linear: Unleashing the Power of Linear Attention in Long-term Time-aware Sequential Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+parameters of the feed-forward network. Let 𝑑denote the embed-
+ding size; we set the hidden layer parameters to 4𝑑, 2𝑑, 3𝑑, 3𝑑,
+3𝑑, and 4𝑑, respectively. For HSTU, we increased model size by
+adjusting the dimension of the value vector in the attention mecha-
+nism to 4𝑑. For Mamba and TiM4Rec, we set the expand parameter
+to 2, 𝑑conv to 4, and ensure 𝑑state matches the head dimension of
+query-key attention based models.
+B
+Hyperparameter Study
+B.1
+Number of Temporal Heads (𝐻𝑡)
+We vary 𝐻𝑡while fixing the total temporal coverage (𝐵𝐻𝑡= 32)
+to examine the model’s multi-scale temporal modeling capacity.
+As shown in Figure 4(a), performance improves consistently as 𝐻𝑡
+increases from 2 to 16. This trend validates that providing a rich
+set of discrete time-scales is essential for the model to perceive and
+aggregate the vast range of temporal dynamics present in long-
+term recommendation sequences. However, performance declines
+at 𝐻𝑡= 32 due to a representational bottleneck: with a fixed total
+dimension, an excessive number of heads results in prohibitively
+small dimensions for the value vectors 𝑣𝑡, impairing the expressive
+power of temporal features at each scale.
+B.2
+Number of Retention Heads (𝐻)
+We vary the number of retention heads 𝐻with a fixed dimension
+𝑑= 128, where the total recurrent state size for inference is 𝑑2/𝐻
+(Section 5). Figure 4(b) shows that performance peaks at 𝐻= 4.
+Small 𝐻(1 or 2) yields suboptimal results despite a larger state capac-
+ity, as fewer heads limit the model’s ability to decouple diverse user
+interests. Conversely, when 𝐻> 4, the shrinking head dimensions
+and overall state size lead to information loss, causing performance
+to degrade. These results demonstrate that FuXi-Linear achieves
+superior performance without necessitating a large state size.
+B.3
+Positional Dimension (𝑑𝑝)
+We vary the embedding dimension of the positional channel𝑑𝑝from
+8 to 128 to characterize the learnable kernel’s expressive power. As
+illustrated in Figure 4(c), performance rises sharply up to 𝑑𝑝= 32,
+indicating that low dimensions lack sufficient rank to approximate
+complex positional dependencies. Notably, performance enters a
+stable plateau beyond 𝑑𝑝= 32 with only marginal fluctuations. This
+suggests that a relatively low dimension (𝑑𝑝= 32) is sufficient for
+effective positional modeling.
+Received 20 February 2007; revised 12 March 2009; accepted 5 June 2009
+2
+4
+8
+16
+32
+Number of Temporal Heads (Ht)
+0.056
+0.058
+0.060
+0.062
+0.064
+NDCG@10
+NDCG@10
+HR@10
+0.1000
+0.1025
+0.1050
+0.1075
+0.1100
+0.1125
+0.1150
+HR@10
+(a) Number of temporal heads
+1
+2
+4
+8
+16
+Number of Retention Heads (H)
+0.058
+0.060
+0.062
+0.064
+0.066
+NDCG@10
+Rel. State Size
+NDCG@10
+HR@10
+4.0x
+2.0x
+1.0x
+0.5x
+0.25x
+0.095
+0.100
+0.105
+0.110
+0.115
+0.120
+HR@10
+(b) Number of retention heads
+8
+12
+16
+24
+32
+48
+64
+96 128
+Positional Embedding Dimension (dp)
+0.057
+0.058
+0.059
+0.060
+0.061
+NDCG@10
+NDCG@10
+HR@10
+0.108
+0.110
+0.112
+0.114
+0.116
+HR@10
+(c) Positional embedding dimension
+Figure 4: Hyperparameter study on FuXi-Linear performance.

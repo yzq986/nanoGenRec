@@ -1,0 +1,1430 @@
+Rotate Both Ways: Time-and-Order RoPE for Generative
+Recommendation
+Xiaokai Wei
+xwei@roblox.com
+Roblox
+San Mateo, California, USA
+Jiajun Wu
+jiajunwu@roblox.com
+Roblox
+San Mateo, California, USA
+Daiyao Yi
+dyi@roblox.com
+Roblox
+San Mateo, California, USA
+Reza Shirkavand∗
+rezashkv@umd.edu
+University of Maryland
+College Park, Maryland, USA
+Michelle Gong
+mgong@roblox.com
+Roblox
+San Mateo, California, USA
+Abstract
+Generative recommenders, typically as transformer-based autore-
+gressive models, predict the next item/action from a user’s interac-
+tion history. Their effectiveness relies on how the model represents
+where an interaction event occurs in the sequence (discrete index)
+and when it occurred in wall-clock time. Prevailing approaches
+inject time via learned embeddings or relative attention biases. In
+this paper, we argue RoPE-based approaches, if designed properly,
+could be a stronger alternative for jointly modeling the temporal
+and sequential information in user behavior sequences.
+While vanilla RoPE in LLM only considers the index/order of
+tokens, generative recommendation requires to incorporate both
+event time and token index. To tackle the challenges, we propose
+Time-and-Order RoPE (TO-RoPE), a family of rotary position em-
+bedding (RoPE) designs that treat index and time as angle sources
+that shape the geometry of 𝑄, 𝐾directly. In particular, three in-
+stantiations of this framework are presented and discussed: early
+fusion, split-by-dim and split-by-head. We perform extensive ex-
+periments on both publicly available dataset and proprietary in-
+dustrial dataset, and show TO-RoPE variants consistently improve
+Hit@K/NDCG@K over existing approaches to encoding time and
+index. Our results position rotary embedding as a simple, principled,
+and deployment-friendly foundation for generative recommenda-
+tion.
+CCS Concepts
+• Computing methodologies →Machine learning algorithms.
+Keywords
+Generative Recommendation, Position Embedding
+∗Contribution was made while being a graduate collaborator at Roblox.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+ACM Reference Format:
+Xiaokai Wei, Jiajun Wu, Daiyao Yi, Reza Shirkavand, and Michelle Gong.
+2018. Rotate Both Ways: Time-and-Order RoPE for Generative Recommen-
+dation. In Proceedings of Make sure to enter the correct conference title from
+your rights confirmation email (Conference acronym ’XX). ACM, New York,
+NY, USA, 10 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Modern recommender systems increasingly rely on user behav-
+ior sequences for enabling higher-quality recommendations and
+more precise, timely personalization [5, 11, 25–27, 29, 30]. Modeling
+behavior as a sequence is appealing because it captures evolving
+intent, contextual dependencies, and cross-item transitions that
+static user/item features cannot. For example, in e-commerce, the
+ordered pattern view →compare →add-to-cart is far more predic-
+tive of a purchase than any single action in isolation. In streaming,
+the trajectory S1E1 →S1E2 →S1E3 strongly implies S1E4 next,
+whereas unrelated popular titles might be recommended without
+utilizing the sequential pattern.
+As Transformer-based architectures demonstrate strong scaling
+behavior across parameters and data in diverse domains (LLMs,
+vision) [13, 17], recent sequence modeling methods has largely con-
+verged on Transformers, especially in generative recommendation
+(GR). Analogous to language modeling, GR (e.g., HSTU [26] and
+related models [9][29][24]) typically adopts a next-item prediction
+objective, treating user histories as token sequences and items as
+the vocabulary. This formulation scales naturally with data, bene-
+fits from well-optimized attention kernels, and unifies training and
+inference in an autoregressive manner.
+Despite the analogy to LLM training, a key distinction between
+GR and LLM is that user behavior sequences exhibit structure along
+two axes: discrete order (index) and occurrence time. Unlike text,
+user interactions arrive irregularly with gaps, session boundaries,
+and calendar effect. In practice, three temporal/sequential patterns
+usually arise:
+• Short-term burstiness. Users generate dense micro-sessions
+(e.g., binge multiple shows/videos or try multiple games
+within hours) separated by long inactive periods.
+• Long-term rhythms. Interests resurface after weeks or
+months (e.g., returning to a franchise or genre previously
+enjoyed), requiring sensitivity to distant yet relevant history.
+• Temporal periodicity (calendar effects) User behavior of-
+ten aligns with time-of-day/day-of-week/season (e.g., party
+arXiv:2510.20455v1  [cs.IR]  23 Oct 2025
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wei et al.
+Figure 1: Illustration of typical user behavior sequence. Sev-
+eral time patterns conoccur, including short-term burstness,
+long-term patterns and periodicity.
+games on Saturday nights, commute playlists on weekday
+mornings), demanding phase-aware modeling beyond mono-
+tone recency.
+An illustrative user history sequence in gaming domain is shown
+in Figure 1. Capturing these patterns reliably requires positional
+encodings that incorporate order and time jointly and effectively.
+Existing sequence modeling techniques often inject time via heuris-
+tics such as time gaps [4, 12], simple temporal embeddings [29]
+concatenated to item tokens, or relative time biases [20] [26] added
+to attention scores. These choices are easy to implement but frag-
+ile: they often require manual feature engineering, over-impose
+inductive bias and struggle to capture calendar effects.
+An ideal encoding should readily handle these temporal/sequential
+characterisitics of user behavior without heavy reliance on hand-
+crafted time features (e.g., fixed buckets for time gaps), instead
+letting the model learn appropriate timescales for effective informa-
+tion utilization. In this paper, we argue Rotary Position Embedding
+(RoPE) [21] based methodology provides a versatile and solid foun-
+dation for meeting these criteria. Nevertheless, directly applying
+vanilla RoPE to recommendation which treats user logs as a purely
+ordered sequence and ignores time, would be suboptimal for ir-
+regular, bursty, and periodic user behavior. The open question is
+therefore: how should we coordinate discrete order and time within
+rotary embeddings so they act in synergy rather than competition?
+To address the challenges, we propose a unified framework and
+methodology: Time-and-Order RoPE (TO-RoPE) that incorporates
+both time and order/index as angle sources for rotary embeddings.
+Our general formulation supports multiple instantiations: (a) early
+fusion of time and index in the angle domain with learnable gates
+and timescales, and two practical specializations that improve sta-
+bility and interpretability: (b) split-by-head, where some heads
+rotate by time and others by index (head-level gating), and (c) split-
+by-dimension, where some rotary planes within a head use time
+while others use index (dimension-level gating). These designs pre-
+serve standard attention kernels (Flash-Attention [6, 7] compatible)
+and add neglible additional parameters. Together, these factors
+position TO-RoPE not merely as a positional add-on, but as a prin-
+cipled geometric prior for unifying time and order in generative
+recommendation.
+Our contributions can be summarized as follows:
+• Criteria. We articulate the desiderata for positional encod-
+ings in generative recommendation (burstiness, long-range
+rhythms, periodicity), and discuss where existing heuris-
+tics fall short and why RoPE offers strong promise on these
+aspects.
+• Effective Approaches with a Unified View Reconizing
+the limitation of either index-only RoPE or time only RoPE,
+we design a Time-and-Order RoPE family that integrates time
+and order with a unified view. Also, we discuss in details
+three instantiations (early fusion, split-by-head and split-by-
+dim) and their characteristics.
+• Evaluation. We conduct extensive experiments on both
+public (e.g., MovieLens-20M) dataset and proprietary large-
+scale industrial dataset. In addition, we study the tradeoff
+between different capacity allocation strategies to provide
+practical guidance. We also include attention analysis to
+help explain why RoPE-based designs better capture user
+behavior.
+2
+Related Work
+2.1
+Incorporate Time in User History Modeling
+In recommender systems, temporal patterns usually plays an impor-
+tant role in modeling user behavior sequence. Existing sequential
+recommenadtion models often explicitly construct time interval fea-
+tures to capture the temporal information [3, 4, 12, 19, 20, 28]. For
+example, LONGER [2] and TransAct [25] directly encode timestamp
+as embedding which is used as input to the transformer models.
+[20] and [12] incorporate time interval into attention bias, similar
+to the idea of T5-bias [17] or ALiBi [15]. Recently, a growing line
+of work in recommendation focuses on a generative paradigm. Re-
+cent progress in this direction [5, 9, 18, 19, 26, 29] demonstrates
+strong potential of this paradigm: scaling up in parameter sizes
+significantly improves the model prediction accuracy. On positional
+encoding, HSTU relies on relative bias calculated from time and
+index; Onerec [29] uses learnable position embedding as model
+input.
+2.2
+Position Embedding for LLMs
+Positional encoding is essential for transformer-based models as the
+multi-head self-attention [22] is permutation-invariant. Early abso-
+lute schemes include fixed sinusoidal embeddings [22] or learne-
+able absolute embeddings [16], which might extrapolate poorly and
+overfit to the maximum context seen in training. Relative methods
+condition attention on token distance rather than index, and for
+instance, additive relative bias matrices capture pairwise offsets.
+Efficient variants include T5-bias [17] and ALiBi [15], which adds
+head-dependent linear slopes to the logits and yields strong long-
+context extrapolation with negligible overhead. Table 1 summarizes
+the charateristics of representative positional embedding methods.
+Among alternatives, Rotary Position Embedding (RoPE) [21]
+rotates each even–odd channel pair of 𝑄, 𝐾by an angle linear in
+position, turning inner products into relative phase comparisons.
+RoPE is parameter-light, extrapolates well [14], and preserves com-
+patibility with optimized attention kernels. Beyond text, RoPE has
+been adapted to vision [10] by applying rotations along spatial axes
+and to video [8] [23] by extending rotations over spatial–temporal
+dimensions.
+3
+Preliminaries
+3.1
+Rotary Position Embeddings (RoPE)
+Given input sequence embeddings 𝑋∈R𝑇×𝑑model (with 𝑇time
+steps and model width 𝑑model), Multi-Head Attention (MHA) [22]
+
+
+Rotate Both Ways: Time-and-Order RoPE for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Method
+Type
+Key Feature
+Pros
+Cons
+Sinusoidal [22]
+Absolute (fixed)
+Fixed sin/cos of position
+No learned params; extrapolates
+to long sequences
+Not data-adaptive; limited ex-
+pressivity
+Absolute Learnable [16]
+Absolute (table)
+Learned embedding per index
+Flexible; fits task distributions
+Poor extrapolation beyond max
+length; larger memory
+T5 Bias [17]
+Relative (bucketed)
+Learned attention bias by distance
+Captures relative distances; light-
+weight
+Heuristic buckets; affects logits
+only
+ALiBi [15]
+Relative (linear)
+Head-specific linear bias to scores
+No table; strong long-context ex-
+trapolation
+Low expressivity; no periodic
+patterns
+RoPE [21]
+Relative (rotary)
+Rotate 𝑄/𝐾planes by angle (phase)
+Extrapolates well; multi-scale;
+enables time+order fusion
+Needs scale calibration; less in-
+terpretable than biases
+Table 1: Representative positional encoding methods.
+computes per-head projections (h=1,...,H):
+𝑄ℎ= 𝑋𝑊𝑄
+ℎ,
+𝐾ℎ= 𝑋𝑊𝐾
+ℎ,
+𝑉ℎ= 𝑋𝑊𝑉
+ℎ.
+with 𝑊𝑄
+ℎ,𝑊𝐾
+ℎ,𝑊𝑉
+ℎ∈R𝑑model×𝑑and head width 𝑑(even). Each head
+computes
+Attnℎ(𝑋) = softmax
+ 𝑄ℎ𝐾⊤
+ℎ
+√
+𝑑
+
+𝑉ℎ,
+MHA(𝑋) =
+h
+∥𝐻
+ℎ=1Attnℎ(𝑋)
+i
+𝑊𝑂.
+RoPE injects position by rotating the even–odd channel pairs
+of 𝑄ℎand 𝐾ℎin each head, while 𝑉ℎis unchanged [21]. For plane
+𝑘∈{0, . . . , 𝑑
+2 −1} and position 𝑖,
+ 𝑞′
+𝑖,2𝑘
+𝑞′
+𝑖,2𝑘+1
+
+=
+cos𝜃𝑖,𝑘
+−sin𝜃𝑖,𝑘
+sin𝜃𝑖,𝑘
+cos𝜃𝑖,𝑘
+
+|                     {z                     }
+𝑅(𝜃𝑖,𝑘)
+ 𝑞𝑖,2𝑘
+𝑞𝑖,2𝑘+1
+
+,
+"
+𝑘′
+𝑗,2𝑘
+𝑘′
+𝑗,2𝑘+1
+#
+= 𝑅(𝜃𝑗,𝑘)
+ 𝑘𝑗,2𝑘
+𝑘𝑗,2𝑘+1
+
+.
+(1)
+With vanilla RoPE (index-only), the rotation angle is linear in the
+discrete position 𝑖:
+𝜃𝑝
+𝑖,𝑘= 𝑖𝜔𝑝
+𝑘,
+so each plane contributes a relative-phase term to the score,
+⟨𝑞′
+𝑖,𝑘′
+𝑗⟩∝
+𝑑
+2 −1
+∑︁
+𝑘=0
+cos (𝑖−𝑗) 𝜔𝑝
+𝑘
+,
+(2)
+so attention depends on relative index gaps Δ𝑖= 𝑖−𝑗. Because
+{𝜔pos
+𝑘
+} spans low→high frequencies, RoPE simultaneously supports
+long-range (Δ𝑖large; low 𝜔) and local (Δ𝑖small; high 𝜔) relations.
+RoPE uses a fixed, log-spaced bank of per-plane frequencies.
+𝜔𝑝
+𝑘= base−2𝑘
+𝑑,
+𝑘= 0, . . . , 𝑑
+2 −1.
+(3)
+where base is typically 10000. The same ladder is shared by 𝑄ℎand
+𝐾ℎwithin a head and typically across heads, ensuring consistent
+phase geometry before the softmax.
+3.2
+Rotary Embeddings: From Index to Time
+Vanilla RoPE encodes discrete index 𝑖, but for modeling user se-
+quences in recommendation we often need a geometry over con-
+tinous time. In this subsection, we discuss how to adapt and base
+RoPE calculation on the time sequence of interaction events. This
+requires to replace the index angle with a time angle so attention
+depends on relative time.
+Let raw timestamps be datestrings or Unixtime 𝑢𝑖. Normalize
+the raw timestamp 𝑢𝑖to a scalar (e.g., seconds or days depending
+on particular application):
+𝜏𝑖= 𝑢𝑖−𝑢ref
+𝑠
+where 𝑢ref is a chosen anchor (e.g., global date) and 𝑠is normaliza-
+tion factor to make the time scalar in reasonable range (e.g., similar
+order of magnitude as index range). This produces a one-to-one
+aligned sequence [𝜏𝑖] for the user’s interactions. In rotary embed-
+dings, since attention depends on relative time Δ𝜏= 𝜏𝑖−𝜏𝑗, it is
+timezone-invariant and anchor-invariant.
+Define the time angle
+𝜃𝑡
+𝑖,𝑘= 𝜏𝑖𝜔𝑡
+𝑘
+or
+𝜃𝑡
+𝑖,𝑘= 𝜏𝑖𝛼𝑡
+𝑘𝜔𝑡
+𝑘,
+𝛼𝑡
+𝑘> 0.
+The effective period per plane is then 𝜆t
+𝑘= 2𝜋
+𝜔𝑡
+𝑘. This allows direct
+inspection of learned bands that correponds to certain periodicity
+(e.g., day/week/seasonal). For a head with 𝑁= 𝑑
+2 planes and time
+frequency bank {𝜔𝑡
+𝑘> 0}𝑁
+𝑘=1,
+𝜃𝑡
+𝑖,𝑘= 𝜏𝑖𝜔𝑡
+𝑘,
+Δ𝜃𝑡
+𝑖𝑗,𝑘= (𝜏𝑖−𝜏𝑗) 𝜔𝑡
+𝑘= Δ𝜏𝑖𝑗𝜔𝑡
+𝑘,
+and the plane-𝑘contribution behaves like a time kernel cos(Δ𝜏𝑖𝑗𝜔𝑡
+𝑘).
+High𝜔𝑡
+𝑘emphasizes short gaps (bursts); low𝜔𝑡
+𝑘captures long-range
+recency. A head’s similarity can be written as follows:
+𝑆(Δ𝜏) ∝
+∑︁
+𝑘
+𝑤𝑘cos Δ𝜏𝜔𝑡
+𝑘
+,
+so two interactions harmonically align when their gap Δ𝜏places
+them at similar phases across relevant bands—e.g., near multiples
+of the daily period 2𝜋/𝜔day and the weekly period 2𝜋/𝜔week. This
+yields large, constructive contributions and a high dot product in
+𝑄/𝐾space.
+Similar to index-only RoPE, one need to keep 𝜔𝑘monotone
+(log-spaced) to avoid band swaps; ensure 𝜔min covers the longest
+rhythms and 𝜔max responds to session bursts. Two ways can be
+considered to build {𝜔𝑡
+𝑘}:
+(1) Base-form: 𝜔𝑡
+𝑘= base
+−2(𝑘−1)
+𝑑
+𝑡
+with base𝑡∈[103, 105]; add 𝛼𝑡
+𝑘
+to adapt magnitudes to your units.
+(2) Wavelength-targeted: choose periods 𝜆∈[𝜆min, 𝜆max] in
+the units of 𝜏(e.g., seconds or days), set
+𝜔max = 2𝜋
+𝜆min
+,
+𝜔min = 2𝜋
+𝜆max
+,
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wei et al.
+and log-space between them: 𝜔𝑡
+𝑘= 𝜔max
+  𝜔min
+𝜔max
+ 𝑘−1
+𝑁−1 .
+3.3
+Why RoPE Fits Generative
+Recommendation
+Now we discuss why RoPE could be a stronger alternative to exist-
+ing methods in generative recommendation. RoPE rotates (𝑄, 𝐾) by
+angles so similarity depends on relative phase across planes. This
+re-shapes feature geometry before softmax. Relative-bias methods
+(e.g., T5/ALiBi/HSTU-like) add terms to logits only, and absolute
+PEs add vectors that memorize positions without a clean relative no-
+tion. Besides, relative-bias typically needs separate tuned biases for
+time and index and cannot alter 𝑄/𝐾geometry; absolute schemes
+require concatenating engineered time features (gaps, TOD/DOW)
+and relying on MLPs to learn interactions.
+RoPE provides a frequency ladder (high→low) and each rotary
+plane acts as a band-pass filter over time (and/or index), so with
+more data the model allocates capacity across frequencies to fit
+bursts, rhythms, and periodic cycles—rather than relying on hand-
+crafted, monotone biases (e.g., “longer gap ⇒larger penalty”). This
+matches scaling behavior: as datasets grow, gradient descent dis-
+covers learns which bands and phases matter from data, not from
+fixed decay curves. Relative-bias is mostly monotone in distance
+(linear/bucketed), weak for periodicity; absolute PEs depend on
+coarse binning of time.
+Additionally, RoPE is intrinsically relative and extrapolates to
+longer contexts [14], absolute learned tables degrade beyond the
+trained max index/time; relative-bias extrapolates better but with
+a fixed functional form (e.g., linear decay), limiting multi-scale
+expressivity.
+3.4
+Limitations of Single Source RoPE
+Though RoPE provides a solid foundation for modeling temporal or
+sequential information, single source RoPE (i.e., index-only or time-
+only) is likely to be suboptimal for generative recommendation, as
+explained in the following examples.
+Why Index-Only RoPE is insufficient. Index-only RoPE enforces or-
+dinal locality but ignores staleness and temporal periodicity. Incor-
+porating wall-clock time is essential for robust and context-aware
+recommendation.
+Staleness vs. adjacency (close in index but stale).
+• E-commerce. A user adds-to-cart a jacket, disappears for 3
+weeks, then returns and buys electronics. Index-only (Δ𝑖=1)
+over-weights the jacket, despite a long gap indicating intent
+drift.
+• Short-form video. A user watches a cooking clip, closes
+the app, and after 48 hours opens a skateboarding clip. Index-
+only over-credits the cooking clip due to index adjacency;
+time-aware decay with large Δ𝜏reduces its influence.
+Temporal periodicity (calendar effects).
+• Food delivery. Saturday-evening orders repeat weekly: index-
+only can’t align “Saturday 7pm” with earlier Saturdays to
+anticipate replenishment.
+• Music. A user listens to jazz every weekday morning com-
+mute and EDM on Friday nights. Index-only mixes these
+regimes; time-aware angles align by time-of-day/day-of-
+week.
+Why Time-Only RoPE is insufficient. Similar values of Δ𝜏can mask
+very different index separations, which carry evidence of topical
+drift.
+• Gaming.
+– (Δ𝜏=1 hour, Δ𝑖=1): user has a good likelihood on resuming
+the same builder genre;
+– (Δ𝜏=1 hour, Δ𝑖≫1): multiple shooter sessions intervened;
+next-item is likely to follow shooter cadence.
+• Video.
+– (Δ𝜏=7 days, Δ𝑖=1): likely re-engage the same creator/topic.
+– (Δ𝜏=7 days, Δ𝑖≫1): dozens of intervening clips (cooking,
+travel); topical center moved.
+4
+Methodology
+In this section, we discuss how to effectively encode both temporal
+and sequential information in RoPE. We first present a unified
+formulation for the proposed Time-and-Order RoPE (TO-RoPE),
+which is a family of fusion methods for time and index. Then we
+consider multiple instantiations of TO-RoPE (early fusion, split-by-
+dim, split-by-head), and discuss their relative strengths.
+• Early Fusion: a variant couples them inside each rotary
+plane by adding angles
+• Split-by-dimension: dedicate some rotary planes to index
+(𝜃=𝜃pos) and others to time (𝜃=𝜃time). This removes per-plane
+interference to become more stable, and offers an explicit
+capacity knob (e.g., 70% time / 30% index).
+• Split-by-head: specialize heads (some index-only, others
+time-only) so each head retains full plane capacity; interac-
+tions emerge across heads via multi-head mixing.
+4.1
+Time-and-Order RoPE: A Unified View
+4.1.1
+Formulation. We denote the discrete index by 𝑖and a per-
+token time scalar by𝜏𝑖(e.g., normalized timestamp). Let an attention
+head have rotary dimension 𝑑with 𝑁= 𝑑
+2 rotary planes indexed
+by 𝑘∈{1, . . . , 𝑁}. Each plane rotates an even–odd channel pair of
+(𝑄, 𝐾) by an angle 𝜃𝑘(𝑖). TO-RoPE expresses 𝜃𝑘as a linear fusion
+(in the angle domain) of index and time contributions:
+𝜃𝑘(𝑖) = (1 −𝜆𝑘) 𝛼𝑝
+𝑘𝑖𝜔𝑝
+𝑘+ 𝜆𝑘𝛼𝑡
+𝑘𝜏𝑖𝜔𝑡
+𝑘,
+𝜆𝑘∈[0, 1], 𝛼𝑝
+𝑘, 𝛼𝑡
+𝑘> 0.
+(4)
+Here 𝜔𝑝
+𝑘and 𝜔𝑡
+𝑘are (fixed or learnable) frequency banks for index
+and time (e.g., geometric ladders); 𝛼are optional (fixed or learnable)
+positive (e.g., softplus) scales, and 𝜆is a (fixed or learnable) gate
+(sigmoid).
+For a pair of tokens (𝑖, 𝑗), attention depends only on the relative
+phase
+Δ𝜃𝑘:= 𝜃𝑘(𝑖)−𝜃𝑘(𝑗) = ˜𝜔𝑝
+𝑘Δ𝑖+ ˜𝜔𝑡
+𝑘Δ𝜏,
+Δ𝑖:= 𝑖−𝑗, Δ𝜏:= 𝜏𝑖−𝜏𝑗,
+with effective frequencies
+˜𝜔𝑝
+𝑘= (1 −𝜆𝑘) 𝛼𝑝
+𝑘𝜔𝑝
+𝑘,
+˜𝜔𝑡
+𝑘= 𝜆𝑘𝛼𝑡
+𝑘𝜔𝑡
+𝑘.
+Thus TO-RoPE is a two-feature linear model in the angle space per
+plane, where ( ˜𝜔𝑝
+𝑘, ˜𝜔𝑡
+𝑘) governs the plane’s sensitivity to order vs.
+time.
+
+
+Rotate Both Ways: Time-and-Order RoPE for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+(a) Index only
+(b) Time only
+(c) Early fusion
+(d) Split by Head
+(e) Split by Dim
+Figure 2: First row: single source RoPE. Second row: TO-RoPE variants which can incorporate both index and time information
+Equation (4) can be written by learning the plane-wise effective
+frequencies directly:
+𝜃𝑘(𝑖) = ˜𝜔𝑝
+𝑘𝑖+ ˜𝜔𝑡
+𝑘𝜏𝑖,
+˜𝜔𝑝
+𝑘, ˜𝜔𝑡
+𝑘≥0,
+optionally with a monotone ladder over 𝑘to preserve multi-scale
+coverage.
+4.1.2
+Special cases (instantiations). As shown in Figure 2, the uni-
+fied form subsumes common designs by constraining 𝜆𝑘(or 𝜔𝑘):
+• Index-only/Time-only: it becomes index-only RoPE when
+all 𝜆𝑘= 0 or time-only RoPE when 𝜆𝑘= 1.
+• Early fusion (global): 𝜆𝑘≡𝜆, 𝛼(·)
+𝑘
+≡𝛼(·) for all 𝑘(or per-
+head). Angles add inside each plane; most expressive but
+susceptible to per-plane interference.
+• Split-by-dimension: hard gate per plane, 𝜆𝑘∈{0, 1}. A
+subset P uses index-only (𝜔𝑡
+𝑘=0), the complement uses time-
+only (𝜔𝑝
+𝑘=0). Removes within-plane interference; exposes an
+explicit capacity knob.
+• Split-by-head: tie the same hard gate across planes within
+head ℎ, i.e., 𝜆ℎ,𝑘≡𝜆ℎ∈{0, 1}. Heads specialize to index or
+time; interactions emerge via multi-head mixing.
+• Other possible instatiations: split-by-layer which ties
+gates by depth (𝜆ℓ) or split-by-group which enables KV-
+group (𝜆𝑔) specialization for GQA [1].
+4.2
+Instantiation: Early Fusion
+4.2.1
+Formulation. Early fusion couples index and time inside each
+rotary plane by forming a single angle per plane. Let a head have
+𝑁= 𝑑
+2 rotary planes indexed by 𝑘. For token 𝑖(index 𝑖and time
+scalar 𝜏𝑖), the plane-𝑘angle is
+𝜃𝑖,𝑘= 𝑖𝜔𝑝
+𝑘+ 𝜏𝑖𝜔𝑡
+𝑘,
+(5)
+with 𝜔𝑝
+𝑘,𝜔𝑡
+𝑘> 0 (e.g., geometric ladders). Applying the 2×2 rotation
+𝑅(𝜃𝑖,𝑘) to (𝑄, 𝐾) yields, for token pair (𝑖, 𝑗),
+𝑠(𝑘)
+𝑖𝑗
+∝cos
+
+(𝑖−𝑗) 𝜔𝑝
+𝑘
+|     {z     }
+index term
++ (𝜏𝑖−𝜏𝑗) 𝜔𝑡
+𝑘
+|        {z        }
+time term
+
+.
+(6)
+Thus, each plane𝑘behaves as a bivariate cosine kernel over (Δ𝑖, Δ𝜏),
+and the head score is the sum Í𝑁
+𝑘=1 𝑠(𝑘)
+𝑖𝑗.
+Using the trigonometric identity cos(𝑎+𝑏) = cos𝑎cos𝑏−sin𝑎sin𝑏,
+the (normalized) similarity in plane 𝑘depends on the single differ-
+ence angle
+Δ𝜃𝑖𝑗,𝑘= Δ𝑖𝜔𝑝
+𝑘+ Δ𝜏𝜔𝑡
+𝑘,
+Δ𝑖= 𝑖−𝑗, Δ𝜏= 𝜏𝑖−𝜏𝑗,
+and can be written as
+cos(Δ𝜃𝑖𝑗,𝑘) = cos(Δ𝑖𝜔𝑝
+𝑘) cos(Δ𝜏𝜔𝑡
+𝑘)
+|                       {z                       }
+constructive term
+−sin(Δ𝑖𝜔𝑝
+𝑘) sin(Δ𝜏𝜔𝑡
+𝑘)
+|                      {z                      }
+interference term
+.
+This single decomposition makes explicit the two interaction path-
+ways within a single rotary plane and explains both position-conditioned
+periodicity and interference.
+If both gaps are small in the plane’s units, |Δ𝑖𝜔𝑝
+𝑘| ≪1 and
+|Δ𝜏𝜔𝑡
+𝑘| ≪1, then cos(Δ𝑖𝜔𝑝
+𝑘) ≈1, cos(Δ𝜏𝜔𝑡
+𝑘) ≈1, and the sine
+terms are negligible, so cos(Δ𝜃𝑖𝑗,𝑘) ≈1. Hence high-frequency
+planes (large 𝜔) spike only under simultaneous locality in index
+and time, sharpening micro-burst attention. With periodic time
+channels (e.g., time-of-day), the combined phase realizes patterns
+like “near a 24h multiple and near in index,” enabling calendar-
+aware recency.
+4.2.2
+Discussion: Destructive interference. When the gaps disagree
+(e.g., |Δ𝑖𝜔𝑝
+𝑘| ≪1 but |Δ𝜏𝜔𝑡
+𝑘| is moderate), the cosine product
+is attenuated while the interference (sine) term grows, driving
+cos(Δ𝜃𝑖𝑗,𝑘) toward zero or negative values: a large time-induced
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wei et al.
+phase can undo index alignment within the same plane (and vice
+versa).
+If we take a gradient view, one can see that per-plane sensitivities
+are as follows:
+𝜕
+𝜕(Δ𝑖) cos(Δ𝜃𝑖𝑗,𝑘) = −𝜔𝑝
+𝑘sin(Δ𝜃𝑖𝑗,𝑘),
+(7)
+𝜕
+𝜕(Δ𝜏) cos(Δ𝜃𝑖𝑗,𝑘) = −𝜔𝑡
+𝑘sin(Δ𝜃𝑖𝑗,𝑘).
+(8)
+When interference pushes Δ𝜃𝑖𝑗,𝑘near ± 𝜋
+2 , sin(Δ𝜃𝑖𝑗,𝑘) dominates
+and flips sign rapidly across pairs, leading to unstable scale learning
+and oscillatory updates. This helps explain the empirical stability
+of split variants we will introduce next, which remove the cross
+sine-cosine interaction by isolating time and index into disjoint
+planes or heads.
+4.3
+Instantiation: Split-by-Dimension (Planes)
+Let a head have rotary dimension 𝑑with 𝑁=
+𝑑
+2 planes 𝑘∈
+{1, . . . , 𝑁}. Use a plane gate 𝜆𝑘∈{0, 1} that selects the source
+per plane: 𝜆𝑘= 0 for pos-only, 𝜆𝑘= 1 for time-only. The per-plane
+angle in the unified TO-RoPE form is
+𝜃𝑘(𝑖) = 𝜆𝑘(𝑖𝜔𝑝
+𝑘) + (1 −𝜆𝑘) (𝜏𝑖𝜔𝑡
+𝑘),
+𝜔(·)
+𝑘
+> 0,
+so that each plane encodes either index or time. Let 𝑃={𝑘: 𝑚𝑘=1}
+and 𝑇={𝑘: 𝜆𝑘=0} with |𝑃|+|𝑇|=𝑁.
+For a query at 𝑖and a key at 𝑗, the rotary similarity in head ℎ
+decomposes additively across planes:
+𝑠(ℎ)
+𝑖𝑗
+=
+∑︁
+𝑘∈𝑃
+
+𝑅(Δ𝑖𝜔𝑝
+𝑘)𝑞(ℎ)
+𝑘, 𝑘(ℎ)
+𝑘
+
++
+∑︁
+𝑘∈𝑇
+
+𝑅(Δ𝜏𝑖𝑗𝜔𝑡
+𝑘)𝑞(ℎ)
+𝑘, 𝑘(ℎ)
+𝑘
+
+,
+(9)
+where Δ𝑖=𝑖−𝑗, Δ𝜏𝑖𝑗=𝜏𝑖−𝜏𝑗, 𝑅(·) denotes a 2×2 rotation on the even-
+odd channel pair, and 𝑞(ℎ)
+𝑘,𝑘(ℎ)
+𝑘
+∈R2 are the plane-𝑘slices of 𝑄, 𝐾.
+Under a random-feature view with energy-normalized planes, (9)
+behaves like a bank of cosine kernels:
+E[𝑠(ℎ)
+𝑖𝑗] ∝
+∑︁
+𝑘∈𝑃
+cos(Δ𝑖𝜔𝑝
+𝑘) +
+∑︁
+𝑘∈𝑇
+cos(Δ𝜏𝑖𝑗𝜔𝑡
+𝑘).
+Capacity allocation on time/index is explicit: one can choose a large
+fraction 𝜌=|𝑇|/𝑁(e.g., 0.7) to skew capacity toward time if time is
+more important for a particular dataset.
+If we compare the split-by-dim variant to the early fusion ap-
+proach, split-by-dim has the following advantages:
+• No per-plane interference: a plane never mixes time and
+index, preventing destructive phase cancellation.
+• Interpretable: 𝑃captures ordinal locality; 𝑇captures wall-
+clock effects; frequency routing is transparent.
+• Periodic channels: dedicate selected planes in𝑇to different
+periodicity bands (e.g., daily/weekly).
+4.4
+Instantiation: Split-by-Head
+Partition heads into 𝐻𝑝(pos-only) and 𝐻𝑡(time-only) with
+𝐻𝑝∪𝐻𝑡={1, . . . , 𝐻}, 𝐻𝑝∩𝐻𝑡=∅.
+For ℎ∈𝐻𝑝, every plane uses 𝜃(ℎ)
+𝑘
+(𝑖) = 𝑖𝜔𝑝
+𝑘and for ℎ∈𝐻𝑡,
+𝜃(ℎ)
+𝑘
+(𝑖) = 𝜏𝑖𝜔𝑡
+𝑘. Denote the head-wise attention scores
+𝑠(ℎ)
+𝑖𝑗
+=
+𝑁
+∑︁
+𝑘=1
+
+𝑅(𝜃(ℎ)
+𝑘
+(𝑖) −𝜃(ℎ)
+𝑘
+(𝑗)) 𝑞(ℎ)
+𝑘, 𝑘(ℎ)
+𝑘
+
+,
+ℎ∈𝐻𝑝∪𝐻𝑡,
+and the multi-head aggregation 𝑆𝑖𝑗=
+1
+√
+𝑑
+Í𝐻
+ℎ=1 𝑠(ℎ)
+𝑖𝑗
+with the usual
+softmax over 𝑗. Modality interactions occur when head outputs are
+mixed by the output projection 𝑊𝑜and subsequent layers:
+out𝑖=
+ 𝐻
+ℎ=1
+∑︁
+𝑗
+softmax𝑗(𝑆𝑖𝑗) 𝑉(ℎ)
+𝑗
+
+𝑊𝑜,
+so that information from 𝐻𝑝and 𝐻𝑡combines in the concatenation
+and 𝑊𝑜mixing.
+It is straightforward to implement and compatible with SDPA/Flash-
+Attention [6, 7]. In this variant, each head keeps all 𝑁planes for
+its modality (i.e., index or time) , enabling fine frequency coverage
+within the head. Some heads could focus on short-range order (pos),
+while others focus on long-range recency/periodicity (time).
+Consdier the streaming example for a user with watchpath: S1E1
+→S1E2 →S1E3 (tight), then two weeks later movie night. Index
+heads emphasize continuation (E3 →E4) despite the later movie,
+while time heads temper influence from long-paused items and
+emphasize recent modality switches. The (aggregated) multi-head
+attention score would try to strike a balance between these tensions
+in a data-driven manner. By constrast, index-only tends to over-
+pull the paused show after long gaps and time-only might ignore
+episodic order.
+5
+Experiments
+In this section, we empirically evaluate TO-RoPE across public and
+proprietary datasets and organize our study around three research
+questions:
+• RQ1 (Comparative performance). How does time–and–order
+RoPE compare to popular alternatives such as relative-bias
+positional encodings (e.g., HSTU-style relative bias [26]) and
+absolute schemes (sinusoidal, learned tables) in terms of pre-
+diction accuracy?
+• RQ2 (Qualitative Analysis & Case studies). What factors
+might explain the effectiveness of TO-RoPE compared to
+alternatives (e.g., absolute time or relative bias)
+• RQ3 (Capacity allocation). How does capacity allocation/split
+ratio between time and index (by dimension and by head)
+affect model performance across different datasets?
+5.1
+Experiment Setup
+5.1.1
+Datasets. We evaluate using two distinct datasets:
+• MovieLens-20M: This is the MovieLens dataset consisting
+of user, movie and corresponding ratings and timestamps.
+Following established preprocessing protocols, we apply 5-
+core filtering, retaining only users and movies with at least
+five interactions.
+• Proprietary Dataset: A large-scale, in-house dataset from
+an online gaming platform, which consists of tens of millions
+of users and their interations with content on this platform
+over one year. This dataset presents more challenges from
+
+
+Rotate Both Ways: Time-and-Order RoPE for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Aspect
+Early fusion
+Split-by-dim (planes)
+Split-by-head
+Geometry effect on 𝑄/𝐾
+Modifies 𝑄/𝐾jointly (phase interac-
+tions within a plane).
+Changes𝑄/𝐾but separately per plane
+(no interference).
+Changes 𝑄/𝐾but separately per head
+(no interference).
+Short-term bursts
+Good: high-freq planes peak only
+when Δ𝑖and Δ𝜏are small.
+Good, via separate planes (less within-
+plane sharpness).
+Good, via specialized heads (needs
+cross-head mixing).
+Long-range rhythms
+Can be suppressed if poorly scaled.
+Good (allocate low-freq planes to
+time).
+Good (time heads capture long gaps).
+Periodicity (TOD/DOW/season)
+Pos-conditioned
+periodicity
+can
+emerge within planes.
+Good: dedicate planes to periodic
+bands.
+Good: dedicate heads to periodic
+bands.
+Robustness
+Weaker due to the angle interference.
+Robust; explicit capacity split limits
+interference.
+Robust; head specialization contains
+errors.
+Table 2: Comparison of three RoPE-based strategies to combine discrete index and wall-clock time in generative recommendation.
+Early fusion modifies the 𝑄/𝐾geometry jointly, enabling within-plane interactions but requiring careful scale calibration.
+Split-by-dim allocates rotary planes; split-by-head allocates entire heads.
+Table 3: Performance comparison between different PE variants on our proprietary dataset. Boldface denotes the highest value
+while underline indicates the second best result.
+Model
+HR@10
+NDCG@10
+HR@50
+NDCG@50
+HR@300
+Baseline
+Index APE
+0.5493
+0.3805
+0.7588
+0.4273
+0.9245
+Index APE + time APE
+0.5510
+0.3818
+0.7605
+0.4286
+0.9256
+Relative Bias(HSTU-style)
+0.5513
+0.3820
+0.7604
+0.4287
+0.9255
+RoPE
+Index only RoPE
+0.5537
+0.3841
+0.7612
+0.4305
+0.9253
+Time only RoPE
+0.5568
+0.3865
+0.7653
+0.4331
+0.9278
+Index only RoPE + time APE
+0.5547
+0.3848
+0.7627
+0.4313
+0.9262
+Time-and-Order RoPE
+Early fusion
+0.5562
+0.3855
+0.7648
+0.4321
+0.9277
+Split head
+0.5582
+0.3875
+0.7663
+0.4340
+0.9281
+Split dim
+0.5582
+0.3874
+0.7663
+0.4339
+0.9281
+real-world scenario, including large number of users, longer
+sequence lengths and a much larger action space.
+5.1.2
+Models and Baselines. For both public and proprietary datasets,
+we experiment with different positional encoding methods using
+the same generative recommendation model backbone, which is
+an autoregressive decoder-only (GPT-2 style [16]) with 12 trans-
+former layer and about 85M parameters. We consider the following
+baselines and TO-RoPE variants:
+• Absolute Positional Encoding (APE): learnable position em-
+bedding based on index (GPT-2 style [16]) or bucktized time.
+• Relative Positional Encoding (RPE): similar to T5-bias [17]
+and HSTU [26], where we add time-interval and index based
+relative bias to attention logits.
+• Single-Source Rotary Positional Encoding: index-only RoPE
+and time-only RoPE.
+• TO-RoPE instantiations: early fusion, split-by-head and split-
+by-dim.
+5.1.3
+Evaluation Metrics. For evaluation on MovieLens-20M, we
+follow the convention of leave-one-out strategy [11] to split train,
+validation and test sets. For our proprietary dataset, we leave out the
+last day for testing, the second last day for validation, and the rest
+for training. For both datasets, we use top-k Hit Rate (𝐻𝑅@𝑘) and
+Normalized Discounted Cumulative Gain (𝑁𝐷𝐶𝐺@𝑘) as metrics
+to evaluate different methods, where 𝑘∈{10, 50, 200} for ML-20M
+dataset and 𝑘∈{10, 50, 300} for our proprietary dataset.
+5.1.4
+Implementation Details. For MovieLens-20M, we set the max-
+imum input sequence length to 50. We adopt the commonly used
+sequential recommendation practices [11] in the literacture includ-
+ing full shuffle and multi-epoch training. We use a learning rate of
+0.001, batch size of 128 and dropout ratio of 0.2. For proprietary
+dataset, the maximum sequence length is set to 1024.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wei et al.
+5.2
+RQ1 — Comparative Performance
+Question. How does time–and–order RoPE compare to relative-
+bias positional encodings (e.g., HSTU-style rab [26]) and absolute
+schemes (sinusoidal, learned tables) on top-𝐾metrics?
+Result. We compare different positional encoding setup on both
+public and proprietary datasets. For more comprehensive compar-
+ison, for index-only baselines, we also include different variants
+that have both order and time information present. Results are
+shown in Table 3 for proprietary data and Table 4 for Movielens-
+20M data. First, RoPE variants consistantly outperform their APE
+(Absolute Position Encoding) and RPE (Relative Position Encoding)
+counterparts. Second, time only RoPE performs better than index
+only RoPE on both datasets, incidating the usefulness of time in-
+formation under sequential recommendation settings. Third, early
+fusion method sometimes fails to outperform time-only RoPE (e.g.,
+on our proprietary dataset). This indicates the interference effect
+in RoPE’s rotation with fused time and index angle is not always
+constructive, which validates our motivation to explore and develop
+better instantiations under TO-RoPE framework. Fourth, by careful
+design of the way to combine time and index in RoPE, our proposed
+split-by-dim and split-by-head approaches outperform all other
+positional encoding variants on both datasets.
+5.3
+RQ2 - Understanding the effect the RoPE on
+Modeling User sequence
+Question. Why TO-RoPE tend to be more effective compared to
+alternatives (e.g., absolute time or relative bias)?
+Result. We evaluate on the real user action sequence in our propri-
+etary dataset to help understand the mechanism behind TO-RoPE.
+We look into the attention pattern for different position encoding
+variants, and measure the attention distance and entropy on 1𝑘
+randomly sampled users who have at least 500 interactions. We
+average the result across the user and head dimention and report
+the average metrics per layer. Attention distance works as a good
+indicator for range of attention interaction and entropy is good for
+measuring the number of tokens involved. As can be seen from
+Figure 3 and Figure 4, compared with APE, RoPE variants show sig-
+nificant increase in both attention distance and entropy in middle
+layers. Compared with index only RoPE, our TO-RoPE approach
+tend to exhibit higher distance and entropy across all layers. These
+results indicate TO-RoPE is more capable of attending to longer-
+range and more interactions/items in the user history. We speculate
+such improved context retrieval ability contributes to the perfor-
+mance improvement.
+5.4
+RQ3 - Capacity Allocation
+Question. How does capacity allocation/split ratio between time
+and index (by dimension and by head) affect model performance
+across different datasets?
+Result. As shown in the previous results, the split-by-dim and split-
+by-head variants tend to be stronger variants which outperform
+early fusion variant. In this subsection, we invetigate how sensitive
+these variants are w.r.t different ratios of capacity (head/dim) allo-
+cation. Concretely, we vary the split ratios in {0.1, 0.3, 0.5, 0.9} for
+these two methods on our propritary dataset as well as ML-20M,
+Figure 3: Attention distances for different positonal encod-
+ing variants. We measure the average attention distance by
+weighting query-key distance with attention probabilities.
+Figure 4: Attention entropy for different positonal encoding
+variants. Higher entropy indicates more tokens are involved
+in attention.
+and report the comparison in Table 5. We observe that split-by-
+head and split-by-dim with ratio 0.3 - 0.5 could typically provide
+decent performance, and such ratio might be a safe default choice.
+Practically, one can tune the split-ratio as a hyperparameter for
+their specific data and use cases, to achieve capacity (head/dim)
+allocation that maximizes information utilization.
+6
+Conclusion
+Rotary Position Embedding (RoPE) has become a default choice
+in modern LLMs because it can inject relative, multi-scale posi-
+tional structure into attention, while remaining kernel-friendly
+and cache-friendly. This paper argues that these desirable prop-
+erties also make RoPE particularly well-suited for modeling user
+histories in transformer-based generative recommendation. In rec-
+ommendation scenarios, as temporal information is an important
+dimension in additional to positional/sequential information, we
+pose the central question: how to enable RoPE to encode both time
+and index effectively. To answer this question, we present a unified
+Time-and-Order RoPE (TO-RoPE) framework that fuses sources
+in the angle/frequency domain. With this unified view, we discuss
+expressivity–stability trade-offs and how this framework provides
+principled knobs for frequency capacity allocation. To instantiate
+the framework, three practical designs are derived and presented: (i)
+
+
+Rotate Both Ways: Time-and-Order RoPE for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 4: Performance comparison between different PE variants on the ML-20M dataset. Boldface denotes the highest value
+while underline indicates the second best result.
+Model
+HR@10
+HR@50
+HR@200
+NDCG@10
+NDCG@50
+NDCG@200
+Baseline
+Index APE
+0.3318
+0.5729
+0.7669
+0.2007
+0.2540
+0.2835
+Index APE + time APE
+0.3335
+0.5739
+0.7682
+0.2023
+0.2554
+0.2849
+Relative Bias(HSTU-style)
+0.3341
+0.5727
+0.7668
+0.2023
+0.2550
+0.2845
+RoPE
+Index only RoPE
+0.3347
+0.5737
+0.7681
+0.2026
+0.2555
+0.2850
+Time only RoPE
+0.3341
+0.5746
+0.7697
+0.2027
+0.2559
+0.2856
+Index only RoPE + time APE
+0.3353
+0.5746
+0.7690
+0.2031
+0.2561
+0.2856
+Time-and-Order RoPE
+Early fusion
+0.3362
+0.5765
+0.7790
+0.2037
+0.2569
+0.2864
+Split head
+0.3388
+0.5767
+0.7709
+0.2048
+0.2574
+0.2869
+Split dim
+0.3406
+0.5791
+0.7711
+0.2059
+0.2587
+0.2879
+Table 5: Comparison between different frequency allocation strategies on different datasets. Boldface denotes the highest value
+while underline indicates the second best result. Higher split ratio indicates higher time side contribution.
+Model
+Proprietary
+ML-20M
+HR@10
+NDCG@10
+HR@50
+NDCG@50
+HR@10
+NDCG@10
+HR@50
+NDCG@50
+Split By Head
+Split head 0.1
+0.5580
+0.3873
+0.7662
+0.4338
+0.3367
+0.2042
+0.5772
+0.2574
+Split head 0.3
+0.5582
+0.3875
+0.7663
+0.4340
+0.3388
+0.2048
+0.5767
+0.2574
+Split head 0.5
+0.5579
+0.3871
+0.7662
+0.4336
+0.3370
+0.2039
+0.5760
+0.2567
+Split head 0.9
+0.5577
+0.3871
+0.7662
+0.4336
+0.3370
+0.2038
+0.5765
+0.2568
+Split By Dim
+Split dim 0.1
+0.5572
+0.3866
+0.7654
+0.4331
+0.3338
+0.2026
+0.5734
+0.2556
+Split dim 0.3
+0.5578
+0.3871
+0.7660
+0.4336
+0.3350
+0.2032
+0.5742
+0.2560
+Split dim 0.5
+0.5582
+0.3874
+0.7663
+0.4339
+0.3406
+0.2059
+0.5791
+0.2587
+Split dim 0.9
+0.5574
+0.3868
+0.7661
+0.4334
+0.3371
+0.2037
+0.5774
+0.2569
+early fusion (angles add within a plane), (ii) split-by-dim (dedicated
+planes), and (iii) split-by-head (head specialization). On both pub-
+lic and proprietary/industrial datasets, we find properly designed
+TO-RoPE (especially split-by-dim or split-by-head) consistently
+outperforms absolute embeddings and relative-bias baselines. Our
+findings demonstrate the potential of TO-RoPE as an effective build-
+ing block for modeling user behavior sequence in recommendation
+systems.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wei et al.
+References
+[1] Joshua Ainslie, James Lee-Thorp, Michiel de Jong, Yury Zemlyanskiy, Federico
+Lebr’on, and Sumit K. Sanghai. 2023. GQA: Training Generalized Multi-Query
+Transformer Models from Multi-Head Checkpoints. ArXiv abs/2305.13245 (2023).
+https://api.semanticscholar.org/CorpusID:258833177
+[2] Zheng Chai, Qin Ren, Xijun Xiao, Hui Yang, Bo Han, Sijun Zhang, Di Chen, Hui
+Lu, Wenlin Zhao, Lele Yu, Xionghang Xie, Shiru Ren, Xiang Sun, Yaocheng Tan,
+Peng Xu, Yuchao Zheng, and Di Wu. 2025. LONGER: Scaling Up Long Sequence
+Modeling in Industrial Recommenders. In ACM Conference on Recommender
+Systems. https://api.semanticscholar.org/CorpusID:278367674
+[3] Gaode Chen, Xinghua Zhang, Yanyan Zhao, Cong Xue, and Jinlin Xiang. 2021.
+Exploring Periodicity and Interactivity in Multi-Interest Framework for Sequen-
+tial Recommendation. In International Joint Conference on Artificial Intelligence.
+https://api.semanticscholar.org/CorpusID:235367811
+[4] Lihua Chen, Ning Yang, and Philip S. Yu. 2022. Time Lag Aware Sequential Recom-
+mendation. Proceedings of the 31st ACM International Conference on Information
+& Knowledge Management (2022).
+https://api.semanticscholar.org/CorpusID:
+251442390
+[5] Xiangyi Chen, Kousik Rajesh, Matthew Lawhon, Zelun Wang, Hanyu Li, Haomiao
+Li, Saurabh Vishwas Joshi, Pong Eksombatchai, Jaewon Yang, Yi-Ping Hsu, Jiajing
+Xu, and Chuck Rosenberg. 2025. PinFM: Foundation Model for User Activity
+Sequences at a Billion-scale Visual Discovery Platform. ArXiv abs/2507.12704
+(2025). https://api.semanticscholar.org/CorpusID:280219665
+[6] Tri Dao. 2023. FlashAttention-2: Faster Attention with Better Parallelism and
+Work Partitioning. ArXiv abs/2307.08691 (2023). https://api.semanticscholar.org/
+CorpusID:259936734
+[7] Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher R’e.
+2022.
+FlashAttention: Fast and Memory-Efficient Exact Attention with IO-
+Awareness.
+ArXiv abs/2205.14135 (2022).
+https://api.semanticscholar.org/
+CorpusID:249151871
+[8] Mingze Gao, Jingyu Liu, Mingda Li, Jiangtao Xie, Qingbin Liu, Bo Zhao, Xi Chen,
+and Hui Xiong. 2024. TC-LLaVA: Rethinking the Transfer from Image to Video
+Understanding with Temporal Considerations. ArXiv abs/2409.03206 (2024).
+https://api.semanticscholar.org/CorpusID:272423598
+[9] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi
+Ma, Mincong Huang, Xiaoguang Li, Chunzhen Jing, Yueming Han, Menglei
+Zhou, Lei Yu, Chuan Liu, and Wei Lin. 2025. MTGR: Industrial-Scale Gener-
+ative Recommendation Framework in Meituan. ArXiv abs/2505.18654 (2025).
+https://api.semanticscholar.org/CorpusID:278905055
+[10] Byeongho Heo, Song Park, Dongyoon Han, and Sangdoo Yun. 2024. Rotary
+Position Embedding for Vision Transformer. In European Conference on Computer
+Vision. https://api.semanticscholar.org/CorpusID:268536717
+[11] Wang-Cheng Kang and Julian McAuley. 2018. Self-Attentive Sequential Recom-
+mendation. 2018 IEEE International Conference on Data Mining (ICDM) (2018),
+197–206. https://api.semanticscholar.org/CorpusID:52127932
+[12] Jiacheng Li, Yujie Wang, and Julian McAuley. 2020. Time Interval Aware Self-
+Attention for Sequential Recommendation. Proceedings of the 13th International
+Conference on Web Search and Data Mining (2020). https://api.semanticscholar.
+org/CorpusID:208780552
+[13] William S. Peebles and Saining Xie. 2022. Scalable Diffusion Models with Trans-
+formers. 2023 IEEE/CVF International Conference on Computer Vision (ICCV)
+(2022), 4172–4182. https://api.semanticscholar.org/CorpusID:254854389
+[14] Bowen Peng, Jeffrey Quesnelle, Honglu Fan, and Enrico Shippole. 2023. YaRN:
+Efficient Context Window Extension of Large Language Models.
+ArXiv
+abs/2309.00071 (2023). https://api.semanticscholar.org/CorpusID:261493986
+[15] Ofir Press, Noah A. Smith, and Mike Lewis. 2021. Train Short, Test Long: Attention
+with Linear Biases Enables Input Length Extrapolation. ArXiv abs/2108.12409
+(2021). https://api.semanticscholar.org/CorpusID:237347130
+[16] Alec Radford, Jeff Wu, Rewon Child, David Luan, Dario Amodei, and Ilya
+Sutskever. 2019. Language Models are Unsupervised Multitask Learners. https:
+//api.semanticscholar.org/CorpusID:160025533
+[17] Colin Raffel, Noam M. Shazeer, Adam Roberts, Katherine Lee, Sharan Narang,
+Michael Matena, Yanqi Zhou, Wei Li, and Peter J. Liu. 2019. Exploring the Limits
+of Transfer Learning with a Unified Text-to-Text Transformer. J. Mach. Learn. Res.
+21 (2019), 140:1–140:67. https://api.semanticscholar.org/CorpusID:204838007
+[18] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan H. Keshavan,
+Trung Hieu Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah
+Samost, Maciej Kula, Ed H. Chi, and Maheswaran Sathiamoorthy. 2023. Rec-
+ommender Systems with Generative Retrieval. ArXiv abs/2305.05065 (2023).
+https://api.semanticscholar.org/CorpusID:258564854
+[19] Reza Shirkavand, Xiaokai Wei, Chen Wang, Zheng Hui, Heng Huang, and
+Michelle Gong. 2025.
+Catalog-Native LLM: Speaking Item-ID Dialect with
+Less Entanglement for Recommendation.
+arXiv:2510.05125 [cs.CL]
+https:
+//arxiv.org/abs/2510.05125
+[20] Zihua Si, Lin Guan, ZhongXiang Sun, Xiaoxue Zang, Jing Lu, Yiqun Hui, Xingchao
+Cao, Zeyu Yang, Yichen Zheng, Dewei Leng, Kai Zheng, Chenbin Zhang, Ya-Ling
+Niu, Yang Song, and Kun Gai. 2024. TWIN V2: Scaling Ultra-Long User Behavior
+Sequence Modeling for Enhanced CTR Prediction at Kuaishou. Proceedings of the
+33rd ACM International Conference on Information and Knowledge Management
+(2024). https://api.semanticscholar.org/CorpusID:271334070
+[21] Jianlin Su, Yu Lu, Shengfeng Pan, Bo Wen, and Yunfeng Liu. 2021. RoFormer:
+Enhanced Transformer with Rotary Position Embedding. ArXiv abs/2104.09864
+(2021). https://api.semanticscholar.org/CorpusID:233307138
+[22] Ashish Vaswani, Noam M. Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. 2017. Attention is All you
+Need. In Neural Information Processing Systems. https://api.semanticscholar.org/
+CorpusID:13756489
+[23] Xilin Wei, Xiaoran Liu, Yuhang Zang, Xiao wen Dong, Pan Zhang, Yuhang Cao,
+Jian Tong, Haodong Duan, Qipeng Guo, Jiaqi Wang, Xipeng Qiu, and Dahua Lin.
+2025. VideoRoPE: What Makes for Good Video Rotary Position Embedding? ArXiv
+abs/2502.05173 (2025). https://api.semanticscholar.org/CorpusID:276236126
+[24] Xiaokai Wei, Jiajun Wu, Daiyao Yi, Reza Shirkavand, and Michelle Gong. 2025.
+The Layout Is the Model: On Action-Item Coupling in Generative Recommenda-
+tion. arXiv:2510.16804 [cs.IR] https://arxiv.org/abs/2510.16804
+[25] Xue Xia, Pong Eksombatchai, Nikil Pancha, Dhruvil Deven Badani, Po-Wei
+Wang, Neng Gu, Saurabh Vishwas Joshi, Nazanin Farahpour, Zhiyuan Zhang,
+and Andrew Zhai. 2023.
+TransAct: Transformer-based Realtime User Ac-
+tion Model for Recommendation at Pinterest. Proceedings of the 29th ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining (2023).
+https:
+//api.semanticscholar.org/CorpusID:258999754
+[26] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Michael He, Yin-Hua Lu, and Yu Shi. 2024. Actions
+Speak Louder than Words: Trillion-Parameter Sequential Transducers for Genera-
+tive Recommendations. ArXiv abs/2402.17152 (2024). https://api.semanticscholar.
+org/CorpusID:268033327
+[27] Luankang Zhang, Kenan Song, Yi Lee, Wei Guo, Hao Wang, Yawen Li, Huifeng
+Guo, Yong Liu, Defu Lian, and Enhong Chen. 2025. Killing Two Birds with One
+Stone: Unifying Retrieval and Ranking with a Single Generative Recommen-
+dation Model. In Annual International ACM SIGIR Conference on Research and
+Development in Information Retrieval. https://api.semanticscholar.org/CorpusID:
+278002064
+[28] Yihu Zhang, Bo Yang, Haodong Liu, and Dongsheng Li. 2022. A time-aware self-
+attention based neural network model for sequential recommendation. Appl. Soft
+Comput. 133 (2022), 109894. https://api.semanticscholar.org/CorpusID:254357469
+[29] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo,
+Qianqian Wang, Qigen Hu, Rui Huang, Shiyao Wang, Weifeng Ding, Wuchao
+Li, Xinchen Luo, Xing-Yao Wang, Zexuan Cheng, Zixing Zhang, Bin Zhang,
+Bo-Wen Wang, Chao Ma, Cheng bin Song, Chenhui Wang, Di Wang, Dongxue
+Meng, Fan Yang, Fang-Peng Zhang, Feng Jiang, Fuxing Zhang, Gang Wang,
+Guowang Zhang, Han Li, Hengrui Hu, Hezheng Lin, Hongtao Cheng, Hong
+Cao, Huanjie Wang, Jiaming Huang, Jiapeng Chen, Jiaqian Liu, Jinghui Jia, Kun
+Gai, Lantao Hu, Liang Zeng, Liao Yu, Qiang Wang, Qidong Zhou, Shengzhe
+Wang, Shi He, Shuang Yang, Shu-Jun Yang, Sui Huang, Tao Wu, TIAN-CHEN
+He, Tingting Gao, Wei Yuan, Xiaoyan Liang, Xiao-Xue Xu, Xugang Liu, Yan
+Wang, Yi Wang, Yiwu Liu, Yue Song, Yufei Zhang, Yun-Hong Wu, Yunfeng Zhao,
+and Zhanyun Liu. 2025. OneRec Technical Report. ArXiv abs/2506.13695 (2025).
+https://api.semanticscholar.org/CorpusID:279410085
+[30] Pablo Zivic, Hernán Ceferino Vázquez, and Jorge Sánchez. 2024. Scaling Se-
+quential Recommendation Models with Transformers. Proceedings of the 47th
+International ACM SIGIR Conference on Research and Development in Information
+Retrieval (2024). https://api.semanticscholar.org/CorpusID:271114613
+Received 20 February 2007; revised 12 March 2009; accepted 5 June 2009

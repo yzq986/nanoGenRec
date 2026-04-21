@@ -11,13 +11,13 @@
 | [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision/Capacity/VRQ/MMQ/GeoSID) | 12 | ~~sid-0~~ ❌ |
 | [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性/Caption) | 6 | — |
 | [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale) | 23 | — |
-| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum) | 17 | onemall-0 |
+| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum/LAC/OneLive-BOS) | 19 | onemall-0 |
 | [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR/RPO/ElasticTether) | 12 | — |
 | [inference.md](inference.md) | 推理优化 (Dynamic Beam/CSR约束/Register压缩/PRM-Beam/GRC/FP8-PTQ) | 7 | — |
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | ~~oneloc-4~~ 部分完成 |
 | [ntp-features.md](ntp-features.md) | NTP 特征注入 (TimeGap/ActionType/SegmentEmb/Category/UserProfile/ContTime) | 6 | feat-0, feat-1, feat-2 |
 
-**总计: 86 ideas (6 P0 / 55 P1 / 25 P2)**
+**总计: 88 ideas (6 P0 / 57 P1 / 25 P2)**
 
 ## 全局演进图
 
@@ -354,6 +354,8 @@ Text → [Qwen3-0.6B] → 1024D → [MLP-FSQ h=64] → 3-token SID → [NTP S-ti
 | IDEA-genrec-2 | RL | GRPO-SR + Hybrid Rewards (防 Reward Hacking) |
 | IDEA-orecv2-0 | Inference | FP8 PTQ 推理加速 (-49% latency, +92% throughput) |
 | IDEA-rclrec-0 | Training | 反向课程学习稀疏转化 (+2.09% revenue) |
+| IDEA-lac-0 | Training | Lagged Action Conditioning (action 延迟一个 item, 消除泄漏) |
+| IDEA-onelive-0 | Training | BOS 全局时间注入 + Gated Attention (快手直播部署) |
 
 ### P2 — 有前置依赖 / NTP 后再看
 

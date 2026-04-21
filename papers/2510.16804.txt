@@ -1,0 +1,1309 @@
+The Layout Is the Model: On Action-Item Coupling in Generative
+Recommendation
+Xiaokai Wei
+xwei@roblox.com
+Roblox
+San Mateo, California, USA
+Jiajun Wu
+jiajunwu@roblox.com
+Roblox
+San Mateo, California, USA
+Daiyao Yi
+dyi@roblox.com
+Roblox
+San Mateo, California, USA
+Reza Shirkavand∗
+rezashkv@umd.edu
+University of Maryland
+College Park, Maryland, USA
+Michelle Gong
+mgong@roblox.com
+Roblox
+San Mateo, California, USA
+Abstract
+Generative Recommendation (GR) models treat a user’s interaction
+history as a sequence to be autoregressively predicted. When both
+items and actions (e.g., watch time, purchase, comment) are mod-
+eled, the layout—the ordering and visibility of item/action tokens—
+critically determines what information the model can use and how
+it generalizes. We present a unified study of token layouts for GR
+grounded in first principles: (P1) maximize item/action signal in
+both input/output space, (P2) preserve the conditioning relationship
+“action given item” and (P3) no information leakage.
+While interleaved layout (where item and action occupy separate
+tokens) naturally satisfies these principles, it also bloats sequence
+length with larger training/inference cost. On the non-interleaved
+front, we design a novel and effective approach, Lagged Action Con-
+ditioning (LAC), which appears strange on the surface but aligns
+well with the design principles to yield strong accuracy. Comprehen-
+sive experiments on public datasets and large-scale production logs
+evaluate different layout options and empirically verifies the design
+principles. Our proposed non-interleaved method, LAC, achieves
+competitive or superior quality at substantially lower FLOPs than
+interleaving. Our findings offer actionable guidance for assembling
+GR systems that are both accurate and efficient.
+CCS Concepts
+• Computing methodologies →Machine learning algorithms.
+Keywords
+Generative Recommendation, Recommender System
+∗Contribution was made while being a graduate collaborator at Roblox.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Generative Recommendation (GR) [7, 11, 17, 19] treats a user’s in-
+teraction history as a sequence to be autoregressively modeled: past
+tokens condition a decoder that predicts future tokens, which are
+then mapped to recommended items (and optionally their actions).
+By operating over a compact token vocabulary decoupled from
+catalog size, GR offers appealing scalability and memory efficiency
+while leveraging sequence modeling progress from language mod-
+els [6, 20]. Yet how we arrange information in that sequence, i.e.,
+the layout of item and action tokens and their allowed attention,
+critically determines what the model can learn, what it can safely
+condition on, and at what computational cost.
+In traditional Deep Learning Recommendation System (DLRM)
+[2, 15], the training example construction is relatively straightfor-
+ward. Each example is a fixed (features, label) pair. Everything in
+the feature vector is, by construction, legal to use for predicting
+the label; leakage is easy to avoid (do not include the target or a
+deterministic proxy). Compute is predictable (embedding lookups
++ MLP), and the interface is simple: build features →train classi-
+fier/regressor.
+In constrast, generative recommendation has stronger scaling
+laws [17][4][19] but layout-sensitive. GR reframes supervision as a
+token sequence: (1) what used to be “features” becomes the prefix
+(observed history); (2) what used to be the “label” becomes the next
+token under a causal mask. That forces deliberate choices about (i)
+which symbols (items/actions) become tokens, (ii) their order, and
+(iii) which earlier tokens each position may attend to (the visibility
+policy). These choices, the layout, control both what the model can
+learn and the efficiency of training/inference.
+Hence, in generative recommendation (GR), the layout is a hidden
+degree of freedom—and we argue layout should be treated as a first-
+class design axis. While in DLRM legality and leakage avoidance are
+baked into the feature vector, in GR they are created by the layout
+of tokens. The same backbone and data can vary in quality/latency
+purely from layout choices, so we must design to clear principles,
+not stumble into them.
+From first principles, an effective layout should: (i) maximize
+useful information in the conditioning set without leakage, (ii) pre-
+serve the natural causal direction “action given item”, while keep-
+ing sequence length short for efficiency. A growing line of work
+[4, 17, 18] interleaves item and action tokens, e.g., I1, A1, I2, A2, . . .,
+so that the action at step 𝑡can attend to its same-step item I𝑡. This
+arXiv:2510.16804v1  [cs.IR]  19 Oct 2025
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wei et al.
+design captures (ii) causal direction “action given item” but it dou-
+bles sequence length and increases the 𝑂(𝑇2) attention cost. Recent
+variants (e.g., dual-flow training [3]) mitigate some overhead by
+using two mirrored flows during training and a single flow at infer-
+ence, but they still complicate implementation and deployment. At
+the other extreme, dropping actions preserves efficiency but vio-
+lates (i) by discarding strong predictors such as recent engagement
+intensity.
+In this paper, we focus on efficient non-interleaved layouts and
+aim to close the gap by systematically investigating the implications
+of different layouts. The result is effective non-interleaved designs
+that are leakage-safe, causally faithful, and compute-efficient, pre-
+serving the crucial action-given-item dependency without paying
+the full interleaving penalty. This provides a principled recipe for
+assembling GR systems that meet industrial constraints while re-
+taining the expressivity needed for high-quality ranking.
+Our contributions can be summarized as follows:
+• Practical pricinples for layout-centric GR design We
+recognize the importance of token choreography in GR and
+analyze the tension of action-item coupling in GR model lay-
+out. We formalize several principles to guide layout design,
+especially for non-interleaved setting.
+• Novel and effective layout. We introduce a simple and
+effective layout that preserve action-given-item condition-
+ing, while keeping sequence length 𝑇and avoiding special-
+ized implementations. Though the proposed Lagged-Action-
+Conditioning (LAC) approach seems to have a mismatched
+input, we show how the emergent specialized attention pat-
+tern makes this design a sensible and elegant one.
+• Evaluation with comprehensive ablations. We perform
+extensive evaluation on both public and proprietary indus-
+trial datasets to demonstrate the superior performance of
+our approach. We also instantiate > 10 action/item layout
+variants to empirically validate the design principles we de-
+veloped. We also study whether the competitive performance
+of LAC persists when scaling up model sizes and with more
+than one tasks.
+2
+Related Work
+Deep learning based recommendation system (DLRM) [2, 15] typ-
+ically utilize feature crossing network (e.g., DCNv2 [15] to fuse
+multiple input features. Recently, generative recommendation [1,
+4, 5, 7, 11, 13, 18, 19] have emerged as a promising paradigm. The
+generative recommenders predominatly employs a decoder-only
+[10] autoregressive model. Similar to the pretraining objectives of
+LLM, typically next-item-prediction (or multi-token-prediction) are
+employed. To better generalize to less popular items, certain work
+[8, 11, 16, 19, 21] also explored constructing semantic ID for items
+based on the item content (e.g., textual/visual or other modalities)
+instead of (hashed) item IDs.
+To enable the capability of scoring items, interleaved paradigm
+is adopted by multiple generative recommendation models such
+as [17] [4] [18]. The downside is also obvious: input sequence is
+inflated to twice the original length, which could incur higher
+FLOPs for training and inference. Considering such drawback of
+interleaved approaches, recent models start to pay attention to non-
+interleaved approach. For example, [5], [7] and [1] try to employe
+non-interleaved layout for unbloated sequence length. However, to
+our best knowledge, no prior work has systematically discussed the
+trade-offs of different layout designs. As we will discuss in the fol-
+lowing sections, more optimal design trade-off exists, which makes
+non-interleaved approach have comparable accuracy as interleaved
+approaches.
+3
+Preliminaries
+3.1
+Formulation
+We model each user 𝑢as a sequence of timestamped interactions
+{𝑒𝑡}𝑇𝑢
+𝑡=1 with 𝑒𝑡= (𝑖𝑡,𝑎𝑡), where 𝑖𝑡∈I is an item (e.g., a video/pro-
+duct/game) and 𝑎𝑡∈A is an action/engagement signal (e.g., watch
+time, like, comment, purchase value or review rating). A layout L
+maps interactions to a token sequence
+y(𝑢)
+1:𝐿𝑢= Ltokens
+ {(𝑖𝑡,𝑎𝑡)}𝑇𝑢
+𝑡=1
+,
+together with a causal visibility mask M (𝑢) = Lmask. A GR model
+maximizes the AR likelihood under the mask:
+max
+𝜃
+∑︁
+𝑢
+𝐿𝑢
+∑︁
+𝑘=1
+log𝑝𝜃
+ 𝑦(𝑢)
+𝑘
+𝑦(𝑢)
+<𝑘; M (𝑢),
+where 𝑦𝑘are layout-defined tokens and the mask enforces causal
+validity (no leakage).
+Retrieval and scoring in the AR view. At time 𝑡(with prefix 𝑦≤𝑘
+corresponding to history up to 𝑡), retrieval ranks candidates 𝑐∈I
+by
+𝑆ret(𝑐| 𝑦≤𝑘) = 𝑝𝜃
+ 𝑖𝑡+1=𝑐
+𝑦≤𝑘
+,
+while ranking/scoring is made target-aware by additionally model-
+ing
+𝑆rank(𝑐| 𝑦≤𝑘) ∝E𝜃
+
+𝑎𝑡+1
+𝑖𝑡+1=𝑐, 𝑦≤𝑘
+
+or
+𝑝𝜃
+ 𝑎𝑡+1
+𝑖𝑡+1=𝑐, 𝑦≤𝑘
+,
+depending on whether 𝑎𝑡+1 is continuous (e.g., watch time and
+purchase value) or discrete (e.g., like/comment/share).
+3.2
+Retrieval in generative recommendation.
+The retrieval task constructs a small candidate set C𝑢,𝑡⊂I by rank-
+ing items with the next-item distribution 𝑝𝜃(𝑖𝑡+1 | 𝑦≤𝑘) induced by
+the chosen layout and mask. Training commonly uses the next-item
+objective with sampled softmax or contrastive NCE, tying output
+weights to the item embedding table for stability [10]. At inference,
+the context state ℎ𝑡is computed once and items are scored via
+a dot product ℎ𝑡𝑊⊤
+𝐼
+(or a calibrated variant), selecting top-𝐾as
+candidates. While item-only GR can perform retrieval task, layouts
+that inject actions often improve 𝑝(𝑖𝑡+1 | ·) by incorporating action
+value as additional context.
+3.3
+Scoring/Ranking in generative
+recommendation.
+The scoring task (or referred to as ranking in some existing work
+[17]) estimates a user’s response to a specific item given context—e.g.,
+𝑝(𝑎𝑡+1 | 𝑖𝑡+1, history) or E[𝑎𝑡+1 | 𝑖𝑡+1, history], where 𝑎can be
+watch time, like, purchase value, playtime, etc. Scoring operates
+after retrieval (in industrial setting the retrieval stage typically
+
+
+The Layout Is the Model: On Action-Item Coupling in Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+employs multiple sources/approaches to get diverse candidates)
+has produced C𝑢,𝑡. The model assigns a target-aware score to each
+𝑐∈C𝑢,𝑡so the system can rank items by fusion of multiple business
+objectives. Unlike next-item likelihoods, scoring captures value-
+conditioned-on-item and is central across different domains:
+• E-commerce: rank by purchase probability or expected
+GMV (price × 𝑝(purchase)).
+• Short-video: rank by expected watch time/completion ratio
+and other types of engagement (e.g., comment/like/share)
+for retention and session health.
+• Games: prioritize by expected session duration or in-game
+purchase.
+• Feeds: combine calibrated predictions on multiple objectives
+(e.g., click/dwell time/thumbs-up/quality) under diversity/fa-
+tigue/policy constraints.
+Layouts that enable action-given-item (e.g., non-interleaved patched
+conditioning) support fast per-candidate evaluation by reusing the
+trunk state. This is crucial in modern recommendation systems as
+it opens room for inference optimization. It is also one important
+reason why we aim to investigate layout candidates that might lead
+to stronger scoring/ranking performance.
+3.4
+Item-only next-item training (retrieval
+only).
+Choose a layout with item tokens only:
+y(𝑢)
+1:𝐿𝑢= (𝑖(𝑢)
+1
+, 𝑖(𝑢)
+2
+, . . . , 𝑖(𝑢)
+𝑇𝑢)
+⇒
+𝐿𝑢= 𝑇𝑢.
+Train with the next-item objective
+Litem = −
+∑︁
+𝑢
+𝑇𝑢−1
+∑︁
+𝑡=1
+log𝑝𝜃
+ 𝑖(𝑢)
+𝑡+1
+𝑖(𝑢)
+≤𝑡
+.
+This supports retrieval via 𝑆ret but does not yield a target-aware
+𝑆rank, since actions {𝑎𝑡} are neither tokens nor conditionals in y.
+3.5
+Interleaved item-action: joint prediction for
+retrieval and ranking.
+Use an interleaved layout with two tokens per interaction
+y(𝑢)
+1:𝐿𝑢=  𝑖(𝑢)
+1
+,𝑎(𝑢)
+1 , 𝑖(𝑢)
+2
+,𝑎(𝑢)
+2 , . . . , 𝑖(𝑢)
+𝑇𝑢,𝑎(𝑢)
+𝑇𝑢
+,
+𝐿𝑢≈2𝑇𝑢,
+and a mask that (i) is causal over time and (ii) lets the action token
+at step 𝑡+1 attend to the same-step item token 𝑖𝑡+1 (teacher forcing).
+The AR loss decomposes as
+LIL = −
+∑︁
+𝑢
+𝑇𝑢−1
+∑︁
+𝑡=1
+h
+log𝑝𝜃
+ 𝑖(𝑢)
+𝑡+1
+𝑦(𝑢)
+≤𝑘(𝑡)
+
+|                  {z                  }
+retrieval
++ log𝑝𝜃
+ 𝑎(𝑢)
+𝑡+1
+𝑦(𝑢)
+≤𝑘(𝑡), 𝑖(𝑢)
+𝑡+1
+
+|                         {z                         }
+target-aware ranking
+i
+,
+where 𝑘(𝑡) indexes the position of 𝑎𝑡in y. This enables both tasks
+but doubles 𝐿(higher 𝑂(𝐿2) cost).
+Keep one token per interaction (𝐿𝑢= 𝑇𝑢) but preserve target-
+aware conditioning via the layout and heads. Keeping 𝐿=𝑇improves
+throughput and permits longer contexts under fixed compute, a
+practical edge that translates into accuracy gains.
+4
+Methodology: Layout Design for GR
+4.1
+First principles for layout design
+In this subsection, we discuss the principles that could guide the
+layout design of GR models, as well as concrete examples that
+respect or violate these principles. Figure 1 (a)-(d) summarizes the
+common anti-patterns for layout design.
+P1. Maximize useful information in the input/output space
+If leakage is avoided, more predictive context per step is strictly
+better. For example, at step 𝑡, conditioning on (𝑖𝑡,𝑎𝑡) to predict
+𝑖𝑡+1 dominates conditioning on 𝑖𝑡alone, because 𝑎𝑡summarizes the
+user’s engagement with 𝑖𝑡.
+• Weak. Input: 𝑖𝑡→Predict: 𝑖𝑡+1
+(legal and efficient, but
+discards 𝑎𝑡).
+• Better but not full utilization. Input: 𝑖𝑡+𝑎𝑡→Predict: 𝑖𝑡+1
+(uses engagement with𝑖𝑡to inform the next-item; more infor-
+mative than item-only but fails to utilize action as auxiliary
+supervision in output space).
+Input: 𝑖𝑡→Predict: 𝑖𝑡+1+𝑎𝑡
+(uses both item and action as
+supervision but only feeding item 𝑖𝑡without engagement
+intensity is suboptimal).
+• Caveat (P1 vs P2). Input: 𝑖𝑡+𝑎𝑡→Predict: (𝑖𝑡+1,𝑎𝑡+1) (rich
+context for both targets, but see P2: 𝑎𝑡+1 cannot condition
+on 𝑖𝑡+1 in this organization).
+P2. Preserve the natural causal direction “action given
+item” Many business metrics depend on 𝑝(𝑎𝑡+1 | 𝑖𝑡+1, history). A
+good layout allows the model to condition 𝑎𝑡+1 on 𝑖𝑡+1 (not the
+other way around) during training and inference.
+• Satisfy (same-step variant). Input: 𝑖𝑡→Predict: 𝑎𝑡
+(mod-
+els “action given item” at time 𝑡; useful when the business
+objective is same-step).
+• Violate (no target-aware conditioning). Input: 𝑖𝑡→Pre-
+dict: 𝑎𝑡+1
+(action is predicted without access to 𝑖𝑡+1).
+Input: 𝑖𝑡+𝑎𝑡→Predict: 𝑎𝑡+1
+(still lacks 𝑖𝑡+1 in the condi-
+tioning set).
+Input: 𝑖𝑡→Predict: (𝑖𝑡+1,𝑎𝑡+1)
+(both predicted from the
+same hidden state; 𝑎𝑡+1 cannot see 𝑖𝑡+1).
+P3. Be leakage-safe. Do not ask the model to predict a variable
+that is already present (explicitly or deterministically) in the visible
+prefix.
+• Satisfy. Input: 𝑖𝑡→Predict: 𝑎𝑡
+(no 𝑎𝑡in input).
+Input: 𝑖𝑡→Predict: 𝑖𝑡+1
+(future item only).
+Input: 𝑖𝑡+𝑎𝑡→Predict: 𝑖𝑡+1
+(𝑎𝑡pertains to time 𝑡, target is
+𝑡+1).
+• Violate. Input: 𝑖𝑡+𝑎𝑡→Predict: 𝑎𝑡
+(direct self-label leak-
+age).
+Input: 𝑖𝑡+𝑎𝑡→Predict: (𝑎𝑡,𝑖𝑡+1)
+(leak on 𝑎𝑡; 𝑖𝑡+1 is fine).
+Input: 𝑖𝑡+𝑎𝑡→Predict: (𝑎𝑡,𝑖𝑡+1,𝑎𝑡+1)
+(leak on 𝑎𝑡; addition-
+ally, 𝑎𝑡+1 lacks access to 𝑖𝑡+1, violating P2).
+4.2
+Patched Conditioning
+Recognizing the lack of conditioning on 𝑖𝑡+1 when using a single
+hidden state to predict both 𝑖𝑡+1 and 𝑎𝑡+1 from inputs like (𝑖𝑡,𝑎𝑡) →
+(𝑖𝑡+1,𝑎𝑡+1), one might add conditioning on the item as a patch. This
+can be done as late fusion between the target item embedding
+and the autoregressive model’s last-layer hidden state. [7] employs
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wei et al.
+Autoregressive Model
+I(2)
+I(3)
+I(4)
+I(5)
+I(n+1)
+I(1)
+I(2)
+I(3)
+I(4)
+I(n)
+Autoregressive Model
+A(1)
+I(2)
+A(2)
+A(n)
+I(1)
+A(1)
+I(2)
+A(2)
+I(n)
+Autoregressive Model
+I(2)
+I(3)
+I(4)
+I(5)
+I(n+1)
+?
+?
+?
+?
+?
+I(1)
+I(2)
+I(3)
+I(4)
+I(n)
+?
+?
+?
+?
+?
+I(3)
+1. Item-only layout: Straightforward
+2. Item-action layout: Interleaved
+3. Item-action layout: Non-interleaved
+t-step
+I(t)
+A(t)
+…
+…
+I(t+1)
+t-step
+I(t)
+A(t)
+…
+…
+I(t+1)
+A(t)
+t-step
+I(t)
+A(t+1)
+…
+…
+I(t+1)
+A(t)
+t-step
+I(t)
+A(t)
+…
+…
+I(t+1)
+A(t-1)
+a.  Suboptimal information utilization 
+in input
+c. Information leakage in 
+input/output
+d. Lack of action/item 
+conditioning
+e. Lagged Action Conditioning (LAC)
+t-step
+I(t)
+…
+…
+I(t+1)
+b.  Suboptimal information 
+utilization in output
+A(t)
+t-step
+I(t)
+A(t+1)
+…
+…
+I(t+1)
+A(t)
+f. Patched Conditioning (PC)
+I(t+1) Emb
+…
+…
+…
+…
+…
+…
+Figure 1: Item-action layout in GR. a-d are examples that violate the design pricinples
+this way of conditioning and we refer to such condioning style
+as Patched Conditioning (PC). Concretely, one can factor the joint
+next-step objective as
+𝑝(𝑖𝑡+1,𝑎𝑡+1 | hist𝑡) = 𝑝(𝑖𝑡+1 | hist𝑡) 𝑝(𝑎𝑡+1 | 𝑖𝑡+1, hist𝑡) .
+and train with
+L = −
+∑︁
+𝑡
+h
+log𝑝(𝑖𝑡+1 | h𝑡) + log𝑝(𝑎𝑡+1 | 𝑖𝑡+1, h𝑡)
+i
+.
+Architecturally, the method separates concerns. A non-interleaved
+trunk produces a compact context state ℎ𝑡(unbloated sequence, low
+𝑂(𝑇2) cost). The item head estimates 𝑝(𝑖𝑡+1 | hist𝑡), while a light-
+weight coupler 𝑔(ℎ𝑡,𝑒(𝑖)) injects the candidate’s representation into
+the action head to realize 𝑝(𝑎𝑡+1 | 𝑖, hist𝑡). During training, teacher
+forcing supplies 𝑒(𝑖𝑡+1) to fit the conditional; at inference, one need
+to plug in 𝑒(ˆ𝑖𝑡+1) for the decoded item or evaluate {𝑔(ℎ𝑡,𝑒(𝑐))}𝑐∈C
+in parallel for per-candidate scoring without re-running attention.
+Accordingly, PC enables “action-given-item” conditioning for infer-
+ence as the action estimate is explicitly conditioned on the specific
+candidate item.
+4.3
+Proposed: Lagged Action Conditioning
+We propose a novel non-interleaved layout that offers a better
+trade-off for item-action coupling in generative recommendation:
+(𝑖𝑡, 𝑎𝑡−1) −→(𝑖𝑡+1, 𝑎𝑡) .
+where we pair the 𝑡-th item with lagged action, i.e., action value on
+previous item (𝑖𝑡−1), at each step. We refer to the proposed approach
+as Lagged Action Conditioning (LAC).
+This layout preserves short sequence length (𝐿=𝑇) while aligning
+supervision with causal structure. We predict 𝑎𝑡given 𝑖𝑡and 𝑎<𝑡;
+since 𝑎𝑡is not in the prefix, there is no self-label leakage. This
+matches the desired conditional 𝑝(𝑎𝑡| 𝑖𝑡, hist𝑡−1) and respects the
+“action-given-item” direction at time 𝑡. The previous action 𝑎𝑡−1
+enriches the conditioning set for next-item prediction, improving
+𝑝(𝑖𝑡+1 | 𝑖𝑡,𝑎𝑡−1, . . .) over item-only input. It is easy to verify that
+this layout satisfies P1/P2/P3, and in the next section we will discuss
+with more details why LAC could have better prediction power
+compared to patched conditioning.
+5
+Discussion
+5.1
+Why LAC works despite an apparent input
+mismatch
+The LAC layout feeds Input (𝑖𝑡,𝑎𝑡−1) and supervises with Output
+(𝑖𝑡+1,𝑎𝑡). Superficially, this looks misaligned because the action
+feature in the input is corresponds to the previous item. In this
+subsection, we discuss why such design could be a reasonable
+approach to fuse action signals at the right causal moment while
+remaining leakage-safe and compute-efficient.
+5.1.1
+Attention head learns the lag-by-one pattern. Transformers,
+as very expressive model backbone, could readily internalize a
+lag-by-one binding in a data-driven manner. As 𝑖𝑡−1 and 𝑎𝑡−1 co-
+occur as adjacent tokens with fixed offset = 1, gradient descent
+discovers and amplifies such lag-by-one retrieval/fusion pattern
+without hand-crafted wiring. At query position 𝑡, certain head(s)
+learn keys/queries that place high probability on the source index
+𝑡−1 (retrieving a representation carrying 𝑖𝑡−1 and its context) while
+the token at index 𝑡carries the local channel for 𝑎𝑡−1. The block
+then performs early fusion:
+𝑧𝑡= 𝑓 ℎ(𝐼)
+𝑡−1, 𝑎𝑡−1, 𝑖𝑡, ℎ<𝑡−1
+,
+where ℎ(𝐼)
+𝑡−1 is the retrieved item-centric vector and the fusion 𝑓is
+realized by the MLP and short-range attention in transformer layers.
+
+
+The Layout Is the Model: On Action-Item Coupling in Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+This fusion creates a compact joint code of “what was shown” and
+“how it landed” before any target-aware head fires, giving both the
+next-item and action heads access to the same semantically aligned
+evidence.
+To verify that the model does learn about the lag-by-one pattern,
+we construct a dummy user sequence [0 : 𝑢𝑛𝑘_𝑖𝑑, 1 : 𝑖𝑡𝑒𝑚1, 2 :
+𝑢𝑛𝑘_𝑖𝑑, 3 : 𝑢𝑛𝑘_𝑖𝑑, 4 : 𝑢𝑛𝑘_𝑖𝑑, 5 : 𝑖𝑡𝑒𝑚1] and visualize last layer’s
+attention map in Figure 2. One could notice that last token’s query
+pays higher attention to both 1 : 𝑖𝑡𝑒𝑚1 and 2 : 𝑢𝑛𝑘_𝑖𝑑. Though the
+item token 𝑢𝑛𝑘_𝑖𝑑at position 2 is not very informative, position
+2 also has action on 𝑖𝑡𝑒𝑚1 as input (by design of LAC), since it is
+right after the 1 : 𝑖𝑡𝑒𝑚1 token. This indicates the model attempts
+to aggregate the information of both 1 : 𝑖𝑡𝑒𝑚1 and its associated
+(lagging) action at position 2 in the previous layers and fuse the
+information for final prediction.
+Figure 2: Attention map illustration of the LAC model. We
+construct a dummy user sequence and visualize last layers
+attention map. Same with traditional attention map visual-
+izations, X axis presents key index and Y axis presents query
+index.
+5.1.2
+Sufficient statistics and AR(1). We also interpret LAC’s effec-
+tiveness statistically through two conditionals:
+𝑝(𝑎𝑡| 𝑖𝑡, hist𝑡−1)
+and
+𝑝(𝑖𝑡+1 | 𝑖𝑡,𝑎𝑡−1, hist𝑡−1).
+The first encodes the business-critical dependency “action given
+item” at time 𝑡without leaking 𝑎𝑡into its own prediction. The
+second leverages the freshest pre-treatment covariate 𝑎𝑡−1, which
+summarizes short-term state (binge, fatigue, spending streak) yet
+is unaffected by the current exposure 𝑖𝑡. Information-theoretically,
+𝐼 (𝑖𝑡,𝑎𝑡−1); 𝑖𝑡+1
+ ≥𝐼 𝑖𝑡; 𝑖𝑡+1
+,
+with strict improvement whenever 𝑎𝑡−1 carries incremental signal
+about imminent choice. From a time-series perspective, user en-
+gagement often exhibits AR(1) structure (most basic model in time
+series) after modest de-trending
+𝑎𝑡≈𝛼𝑎𝑡−1 + 𝑔(𝑖𝑡, state) + 𝜖𝑡,
+so conditioning on 𝑎𝑡−1 captures a large fraction of predictable
+variance. In addition, 𝑎𝑡−1 is observed at train and test time, yielding
+short, deterministic gradient paths (attend 𝑡−1 then fuse locally)
+and reducing the teacher-forcing/exposure bias that arises when
+training on future, model-predicted variables.
+Takeaway. What looks like an index mismatch is in fact a causally
+faithful and optimization-friendly layout of tokens. As a result,
+early-fused, fully observed evidence serves both retrieval and scor-
+ing prediction heads.
+5.2
+Why LAC could outperform PC
+LAC as target-aware attention (early fusion with target item).
+In LAC, at each step-𝑡, the model predicts 𝑎𝑡given 𝑖𝑡and the
+user’s history. Because 𝑖𝑡is part of the step-𝑡token, the atten-
+tion itself (queries/keys/values in the trunk) is conditioned on the
+target item. Attention heads can therefore learn query-dependent
+retrieval patterns such as: “for this item, attend more to prior in-
+teractions with similar attributes (e.g., brand/price band/genre).”
+This realizes target-aware attention at the representation stage
+(early fusion), enabling the multi-layer transformer trunk to distill
+item-specific history into last layer’s ℎ𝑡, before any head-specific
+projection during either training or inference.
+PC as target-agnostic attention (late fusion with target item). In
+PC, the trunk produces the last layer’s state ℎ𝑡without the target
+item that conditions action prediction. Only after the stacked layers
+of transformer does the model inject the item embedding 𝑒(𝑖𝑡+1)
+through a lightweight (e.g., MLP) coupler 𝑔(ℎ𝑡,𝑒(𝑖𝑡+1)) to estimate
+𝑝(𝑎𝑡+1 | 𝑖𝑡+1, history). Thus, target awareness enters only in the
+final prediction head, not in the attention that summarized history.
+This late fusion is often not expressive enough to reintroduce item-
+conditioned retrieval patterns, leading to underuse of historical
+signals for context-dependent actions.
+To summarize, the effective layout design of LAC makes target-
+aware early fusion possible while satisfying the principles P1-P3.
+Consequently, LAC can yield higher accuracy for action predic-
+tion, especially when outcomes rely on subtle, item-specific cues
+embedded in long user histories.
+5.3
+Inference with Parallel Scoring
+In industrial multi-stage recommendation systems (retrieval →
+ranking →re-ranking), the ranking stage typically scores 103–104
+candidates per user under tight latency/compute budgets. To meet
+these constraints while maintaining high MFU (Model FLOPs Uti-
+lization) on GPU tensor cores, an effective GR layout should support
+one-pass parallel scoring that reuses the encoded user history in-
+stead of recomputing it per candidate. In this subsection, we discuss
+how both LAC and PC admit one-pass parallel scoring of 𝐶can-
+didates during inference, and the difference lies in where target
+awareness enters and how compute scales with 𝐶.
+LAC (early fusion via attention). Pack a single sequence
+[ history
+|  {z  }
+𝑇
+| 𝑐1, . . . ,𝑐𝐶
+|     {z     }
+C
+],
+where each candidate token 𝑐𝑘contains that item’s embedding and
+other contextual features (e.g., request time). Apply a customized
+block-causal mask:
+• history tokens use standard causal visibility;
+• each candidate token attends to all history/itself and no other
+candidates.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wei et al.
+We take the hidden state at each candidate token to score
+𝑝(𝑎𝑡+1 | 𝑖𝑡+1=𝑐𝑘, history
+for 𝑘= 1, . . . ,𝐶.
+Per layer, the attention computation is
+𝐸(𝑇,𝐶) = 1
+2𝑇2 + 𝐶𝑇,
+and projection/MLP FLOPs is 𝑂(𝑇+𝐶). This yields target-aware
+parallel scoring with near-linear growth in 𝐶for fixed 𝑇.
+PC (late fusion at the head). PC encodes history once with target-
+agnostic attention to obtain a context ℎ𝑡, then injects each candidate
+via a lightweight coupler 𝑔(ℎ𝑡,𝑒(𝑐𝑘)) to produce
+𝑝(𝑎𝑡+1 | 𝑖𝑡+1=𝑐𝑘, hist𝑡) = Prediction_head 𝑔(ℎ𝑡,𝑒(𝑐𝑘)),
+for all 𝑐𝑘(𝑘= 1, . . . ,𝐶) in a single dense, batched GEMM. Complex-
+ity is 𝑂(Trunk) + 𝑂(𝐶𝑑) with the attention cost independent of
+𝐶.
+Hence, while both approaches admit one-pass parallel scoring
+(Figure 3), LAC provides early, target-aware attention over history
+with strong action accuracy; PC’s late fusion is a light-weight ap-
+proach at the cost of target awareness appearing only in the head.
+Figure 3: Different inference scoring patterns for LAC and
+PC. Both approaches allow for parallel scoring of potentially
+many candidates
+5.4
+FLOPs: interleaved vs. non-interleaved
+We briefly discuss how much PAC as a non-interleaved approach
+improves over interleaved in terms of FLOPs, assuming the same
+autoregressive backbone. Let width 𝑑, layers 𝑁ℓ, batch 𝐵, history
+length 𝑇, candidates 𝐶(packed scoring with a customized causal
+mask, no KV-cache). History tokens: 𝐿non
+ℎ
+= 𝑇, 𝐿int
+ℎ
+≈2𝑇. Packed
+length 𝐿= 𝐿ℎ+ 2𝐶.
+Training (full sequence). Per layer,
+FLOPsattn ∝𝐵𝐿2
+ℎ𝑑,
+FLOPslin/MLP ∝𝐵𝐿ℎ𝑑2.
+Hence
+FLOPsint
+train
+FLOPsnon
+train
+≈4 (attn) + 2 (lin)
+1 (attn) + 1 (lin) ∈[2, 4],
+(1)
+approaching 4 when attention dominates (longer contexts), and 2
+when MLP/linear dominates.
+Inference (parallel scoring, no cache). Pack a single sequence
+[ history𝐿ℎ| 𝑖(1), . . . ,𝑖(𝐶) ] and use a block-causal mask: history
+tokens are causal; each candidate item 𝑖(𝑐) attends to all history/it-
+self and to no other candidates. The per-layer attention edge count
+is
+𝐸(𝐿ℎ,𝐶) =
+1
+2𝐿2
+ℎ+ 𝐶𝐿ℎ,
+(2)
+hence the complexity scales as
+FLOPsattn ∝𝐸(𝐿ℎ,𝐶) 𝑑,
+FLOPslin/MLP ∝(𝐿ℎ+𝐶) 𝑑2.
+(3)
+Interleaved vs. non-interleaved. Setting 𝐿non
+ℎ
+= 𝑇and 𝐿int
+ℎ
+≈2𝑇,
+the attention-FLOP ratio is
+FLOPsint
+attn
+FLOPsnon
+attn
+=
+1
+2 (2𝑇)2 + 𝐶(2𝑇)
+1
+2𝑇2 + 𝐶𝑇
+= 2𝑇2 + 2𝐶𝑇
+1
+2𝑇2 + 𝐶𝑇
+∈[2, 4],
+(4)
+approaching 4 when history dominates (𝑇≫𝐶) and 2 when candi-
+dates dominate (𝐶≫𝑇). For projection/MLP terms,
+FLOPsint
+lin
+FLOPsnon
+lin
+= 2𝑇+ 𝐶
+𝑇+ 𝐶
+∈(1, 2],
+(5)
+tending to 2 as 𝑇≫𝐶and to 1 as 𝐶≫𝑇.
+With packed candidate tokens and parallel scoring, interleaved
+layouts incur roughly 2–4× more attention FLOPs (and up to 2×
+more linear/MLP FLOPs) than non-interleaved under parallel scor-
+ing, with the factor governed by the history/candidate mix.
+6
+Experiments
+In this section, we empirically examine how layout choices shape
+the behavior of generative recommendation models through five
+research questions:
+RQ1: Compare the proposed LAC layout against Interleaved
+(HSTU-style) and Non-interleaved Patched Conditioning (PC) across
+public and industrial datasets, measuring quality and efficiency.
+RQ2: Test the non-interleaved design principles (P1–P3) by eval-
+uating ten carefully constructed layouts and analyzing predicted
+failure modes.
+RQ3: Examine task sensitivity, contrasting tradoffs between
+multiple action objectives.
+RQ4: Study scaling laws under different layouts via sweeps of
+model size.
+RQ5: How do Interleaved and Non-interleaved layouts differ in
+training efficiency?
+6.1
+Experimental Settings
+6.1.1
+Datasets. We evaluate using three distinct datasets:
+• Amazon Reviews [9] We use standard Amazon Reviews
+subsets (e.g., Beauty). Following established preprocessing
+protocols, we apply 5-core filtering, retaining only users and
+movies with at least five interactions.
+• Kuaisar [14] This dataset offers authetic user behavior se-
+quence on a short video platform Kuaishou, which contains
+more informative user actions including play time. For pre-
+processing, we also apply 5-core filtering.
+• Proprietary Dataset To validate the effectiveness of the
+proposed layout on large scale data, we also train and eval-
+uate on our in-house industrial-scale dataset that consists
+of tens of millions of users and their behavior sequence on
+tens of thousands of items, over a period of more than one
+year. We use the last day of data for evaluation. For scoring
+task, we select one duration related action and one purchase
+related action.
+
+
+The Layout Is the Model: On Action-Item Coupling in Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 1: Performance comparison on public datasets. Boldface denotes the best value while underline indicates the second best
+result. Metrics marked with ↓are lower is better; metrics marked with ↑are higher is better.
+Category
+Layout
+Amazon Beauty
+Kuaisar
+Rating RMSE ↓
+HR@10 ↑
+HR@50 ↑
+NDCG@10 ↑
+NDCG@50 ↑
+Play Time RMSE ↓
+HR@5 ↑
+HR@10 ↑
+NDCG@5 ↑
+NDCG@10 ↑
+Interleaved
+HSTU-style
+0.2489
+0.0861
+0.1843
+0.0497
+0.0712
+0.1020
+0.5750
+0.6770
+0.4640
+0.4945
+Non Interleaved
+LAC
+0.2435 (-2.2%)
+0.0869 (+0.9%)
+0.1816 (-1.5%)
+0.0504 (+1.4%)
+0.0710 (-0.3%)
+0.0990 (-2.9%)
+0.5621 (-2.2%)
+0.6534 (-3.5%)
+0.4780 (+3.0%)
+0.5108 (+3.3%)
+PC
+0.2480 (-0.4%)
+0.0863 (+0.2%)
+0.1807 (-2.0%)
+0.0499 (+0.4%)
+0.0703 (-1.3%)
+0.1020 (+0.0%)
+0.5698 (-0.9%)
+0.6800 (+0.4%)
+0.4771 (+2.8%)
+0.5066 (+2.4%)
+6.1.2
+Models and Baselines. For both public and proprietary datasets,
+we experiment with different layout variants based on our internal
+generative model, which uses a standard 12-layer GPT-2 style [10]
+decoder only transformer with 85M parameters. For the interleaved
+approach, we follow the layout arrangement from HSTU[17].
+6.1.3
+Evaluation Metrics. For the recommendation task on Ama-
+zon Beauty and Kuaisar, we adopt the widely used leave-one-out
+strategy [6] to split train, validation and test sets. For our propri-
+etary dataset, we leave out the last day for testing. We present both
+ranking task and retrieval task metrics for all datasets. For retrieval
+related metrics, we use top-k Hit Rate (𝐻𝑅@𝑘) and Normalized
+Discounted Cumulative Gain (𝑁𝐷𝐶𝐺@𝑘). We choose different k
+to accomodate for different dataset characteristics, 𝑘∈{10, 50} for
+Amazon and KuaiSAR and 𝑘∈{1, 5, 300} for proprietary dataset.
+When calculating retrieval metrics, we default to test against the
+whole item vocabulary, except for KuaiSAR where we follow [12]
+and randomly sample 99 negative samples from items user have not
+interacted with. For ranking tasks, we present Root Mean Squared
+Error(𝑅𝑀𝑆𝐸) on chosen action regression tasks. We choose rating
+for Amazon data and play time for KuaiSAR. For our proprietary
+dataset we use the above mentiond one duration related action and
+one purchase related action. For all variants that predict current
+item’s action, we input the current item for action prediction during
+evaluation.
+6.1.4
+Implementation Details. For Amazon Beauty and KuaiSAR,
+we set the maximum input sequence length to 50. We adopt the
+commonly used sequential recommendation practices in literacture
+including full shuffle and multi-epoch training. We use a learning
+rate of 0.001, batch size of 128 and dropout ratio of 0.2. For KuaiSAR,
+considering the huge vocab size, we used infoNCE loss to replace
+the original cross entropy loss during training. For proprietary
+dataset, the maximum length is set to 1024. We employ a stream
+training setting, where max tokens per batch is set to 32768. We
+use a learning rate of 0.0001 and a linear warm-up of 5000 steps.
+6.2
+RQ1:Effectiveness
+Question. How does LAC compare to two strong baselines: In-
+terleaved (HSTU-style) and Non-interleaved PAC, across public
+and internal datasets?
+Result. We compare three most competitive layout candidates: our
+proposed LAC approach, PC and industry standard interleaved ap-
+proach. We show public dataset results in Table 1 and proprietary
+dataset results in Table 2. For scoring/ranking tasks like action pre-
+diction, our LAC approach significantly outperforms other layout
+variants on both proprietary and public datasets. For retrieval tasks
+like next item prediction, our LAC approach performs on par with
+other top candidates.
+Result 1: LAC approach does empirically outperforms com-
+petitive baselines on multiple datasets.
+6.3
+RQ2: Do the non-interleaved principles
+hold?
+Question. Do P1 (useful context), P2 (action-given-item) and P3 (no
+leakage) predict performance across a diverse set of non-interleaved
+layouts?
+Result. Comparison between different layout options on the pro-
+prietary dataset can be found in Table 2. Of all variants, we strictly
+adhere to principle P3, with no information leakage during training
+and inference. We can clearly see in the results that adding action in-
+formation in the input and output phase can both benifit the model
+performance, which validates our principle P1. We also notice that
+directly predicting next item’s action without item conditioning
+make the prediction less accurate. Comparing row 9 with both row
+8 and row 10, we show that conditioning techniques like PC and
+LAC can both help with action prediction greatly, which further
+validates our principle P2.
+Result 2: By comparing more than ten combinations, we
+can observe that the proposed principles for non-interleaved
+layout align with the emprical observations.
+6.4
+RQ3: Task sensitivity to layout
+Question. How do layouts behave across multiple scoring tasks
+(e.g., duration related action vs. purchase related action)?
+Result. Since we formulate each tokens prediction task as a multi-
+task prediction problem, we investigate the efficiency of trade-offs
+between these targets as a proxy to overall model performance. We
+fix the relative weight ratio between retrieval(i.e. next item pre-
+diction) and scoring/ranking(i.e. action prediction) objectives and
+tune the relative weight between two scoring tasks. We show the
+multitask metrics tradeoff of our proposed LAC approach, against
+the industry standard interleaved approach. Results can be seen in
+Table 4. Our proposed LAC approach tend to achieve overall decent
+tradeoff in multi-task scoring setting, compared to the interleaved
+approach.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wei et al.
+Table 2: Performance comparison between different layout options on proprietary dataset. Boldface denotes the best value
+while underline indicates the second best result.
+Category
+Layout
+HR@1
+HR@5
+HR@300
+Duration Action RMSE
+Purchase Action RMSE
+Baseline
+𝐼𝑡↦→𝐼𝑡+1
+0.2439
+0.4647
+0.9186
+-
+-
+Action only in input
+(𝐼𝑡,𝐴𝑡) ↦→𝐼𝑡+1
+0.2500
+0.4694
+0.9192
+-
+-
+(𝐼𝑡,𝐴𝑡−1) ↦→𝐼𝑡+1
+0.2492
+0.4674
+0.9188
+-
+-
+Action only in output
+𝐼𝑡↦→𝐴𝑡
+-
+-
+-
+0.2146
+0.0315
+𝐼𝑡↦→𝐴𝑡+1
+-
+-
+-
+0.2423
+0.0316
+𝐼𝑡↦→(𝐼𝑡+1,𝐴𝑡+1)
+0.2444
+0.4663
+0.9190
+0.2454
+0.0316
+Action in both input and output
+(𝐼𝑡,𝐴𝑡) ↦→𝐴𝑡+1
+-
+-
+-
+0.2633
+0.0516
+(𝐼𝑡,𝐴𝑡−1) ↦→(𝐼𝑡+1,𝐴𝑡) (LAC)
+0.2516
+0.4694
+0.9188
+0.1973
+0.0307
+(𝐼𝑡,𝐴𝑡) ↦→(𝐼𝑡+1,𝐴𝑡+1)
+0.2493
+0.4690
+0.9193
+0.2323
+0.0311
+(𝐼𝑡,𝐴𝑡) ↦→(𝐼𝑡+1,𝐴𝑡+1) with PC
+0.2487
+0.4682
+0.9190
+0.2164
+0.0311
+Interleaved
+HSTU-style
+0.2511
+0.4701
+0.9198
+0.1985
+0.0311
+Table 3: Scaling performance of different layout variants.
+Our proposed LAC still performs on par with more compu-
+tationally expensive interleaved approach and outperforms
+PC under a larger scale setting.
+Model
+Scale
+HR@1
+HR@5
+Duration RMSE
+Interleaved
+50M
+0.2511
+0.4701
+0.1985
+355M
+0.2639
+0.4942
+0.1966
+LAC
+50M
+0.2516
+0.4694
+0.1973
+(non-interleaved)
+355M
+0.2639
+0.4943
+0.1945
+PC
+50M
+0.2487
+0.4682
+0.2164
+(non-interleaved)
+355M
+0.2599
+0.4922
+0.2085
+Result 3: In multi-task setting, the proposed LAC approach
+also demonstrates strong trade-offs on potentially conflicting
+tasks.
+Table 4: Multitask tradeoff of different layout variants.
+Models
+W_duration : W_purchase
+Duration RMSE
+Purchase RMSE
+Interleaved
+W = 1 : 50
+0.1982
+0.0304
+W = 1 : 1
+0.1978
+0.0304
+W = 50 : 1
+0.1951
+0.0313
+LAC
+W = 1 : 50
+0.1979
+0.0299
+W = 1 : 1
+0.1967
+0.0300
+W = 50 : 1
+0.1958
+0.0305
+6.5
+RQ4: Scaling under different layouts
+Question. How does layout impact model parameter scaling in
+GR?
+Result. We evaluate the model scaling performance with different
+parameter sizes (50𝑀, 85𝑀, 355𝑀), and report the performance
+scaling curve. As shown in Table 3, our proposed LAC approach
+scales well with the model complexity and consistently performs
+on par or even better than the interleaved approach, which is more
+computationally expensive. Compared with layout candidates of
+similar computational complexity like PC, our LAC approach per-
+forms better at all scales. Visualization of the performnance scaling
+curve can be found in Figure 4.
+Figure 4: Performance Scaling Curve under different param-
+eter scales. Our proposed LAC outperforms other variants
+and scales well as we increase model parameters.
+Result 4: The proposed layout (LAC) consistently has com-
+petitive prediction accuracy with different parameter sizes
+6.6
+RQ5: Efficiency of interleaved vs.
+non-interleaved
+Question. How do Interleaved and Non-interleaved layouts dif-
+fer in training efficiency under equal hardware and comparable
+model/data settings?
+
+
+The Layout Is the Model: On Action-Item Coupling in Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Result. We compare the training time the proposed non-interleaved
+LAC approach and the traditional interleaved approach under dif-
+ferent scales. When measuring training cost, we keep all the other
+parameters the same, including data pipeline settings, max tokens
+per batch and number of gpus. As shown in Table 5, compared with
+the interleaved approach, our LAC approach achieves at least 31.3%
+training cost reduction, while achieving similar and even better
+ranking/retrieval metric performance.
+Table 5: Training cost savings of a non-interleaved approach
+like LAC compared to interleaved baseline at different model
+scales. We keep all the other training settings the same and
+only change the layout structure.
+Scale
+Training Cost Saving (%)
+50M
+-38.8
+355M
+-42.7
+774M
+-31.3
+Result 5: Non-interleaved approach such as LAC signifi-
+cantly improves the efficiency of generative recommenders.
+7
+Conclusion
+In the paradigm of generative recommendation, interleaved layouts
+reliably enforce action-given-item conditioning but substantially
+inflate training and inference costs with lengthened sequences. We
+recognize action–item layout as an important design axis and de-
+velop a methodology for non-interleaved token layout grounded in
+three principles. Within this framework, we propose Lagged Ac-
+tion Conditioning (LAC), which effectively addresses item–action
+coupling without doubling length. Experiments on public data and
+large-scale proprietary data show that LAC achieves superior ac-
+curacy–efficiency trade-offs, matching or surpassing interleaved
+baselines while reducing compute, and outperforming late-fusion
+alternatives.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wei et al.
+References
+[1] Xiangyi Chen, Kousik Rajesh, Matthew Lawhon, Zelun Wang, Hanyu Li, Haomiao
+Li, Saurabh Vishwas Joshi, Pong Eksombatchai, Jaewon Yang, Yi-Ping Hsu, Jiajing
+Xu, and Chuck Rosenberg. 2025. PinFM: Foundation Model for User Activity
+Sequences at a Billion-scale Visual Discovery Platform. ArXiv abs/2507.12704
+(2025). https://api.semanticscholar.org/CorpusID:280219665
+[2] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra,
+Hrishikesh B. Aradhye, Glen Anderson, Gregory S. Corrado, Wei Chai, Mustafa
+Ispir, Rohan Anil, Zakaria Haque, Lichan Hong, Vihan Jain, Xiaobing Liu, and
+Hemal Shah. 2016. Wide & Deep Learning for Recommender Systems. Proceedings
+of the 1st Workshop on Deep Learning for Recommender Systems (2016). https:
+//api.semanticscholar.org/CorpusID:3352400
+[3] Hao Guo, Erpeng Xue, Lei Huang, Shichao Wang, Xiaolei Wang, Lei Wang,
+Jinpeng Wang, and Sheng Chen. 2025. Action is All You Need: Dual-Flow Gen-
+erative Ranking Network for Recommendation. ArXiv abs/2505.16752 (2025).
+https://api.semanticscholar.org/CorpusID:278788688
+[4] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi
+Ma, Mincong Huang, Xiaoguang Li, Chunzhen Jing, Yueming Han, Menglei
+Zhou, Lei Yu, Chuan Liu, and Wei Lin. 2025. MTGR: Industrial-Scale Gener-
+ative Recommendation Framework in Meituan. ArXiv abs/2505.18654 (2025).
+https://api.semanticscholar.org/CorpusID:278905055
+[5] Yanhua Huang, Yuqi Chen, Xiong Cao, Rui Yang, Mingliang Qi, Ying Zhu,
+Qingchang Han, Yaowei Liu, Zhaoyu Liu, Xuefeng Yao, Yuting Jia, Leilei Ma,
+Yinqi Zhang, Taoyu Zhu, Liujie Zhang, Lei Chen, Weihang Chen, Mingdong Zhu,
+Ruiwen Xu, and Lei Zhang. 2025. Towards Large-scale Generative Ranking. ArXiv
+abs/2505.04180 (2025). https://api.semanticscholar.org/CorpusID:278368412
+[6] Wang-Cheng Kang and Julian McAuley. 2018. Self-Attentive Sequential Recom-
+mendation. 2018 IEEE International Conference on Data Mining (ICDM) (2018),
+197–206. https://api.semanticscholar.org/CorpusID:52127932
+[7] Kirill Khrylchenko, Artem Matveev, Sergei Makeev, and Vladimir Baikalov.
+2025. Scaling Recommender Transformers to One Billion Parameters. ArXiv
+abs/2507.15994 (2025). https://api.semanticscholar.org/CorpusID:280159497
+[8] Guanghan Li, Xun Zhang, Yufei Zhang, Yifan Yin, Guojun Yin, and Wei Lin.
+2024. Semantic Convergence: Harmonizing Recommender Systems via Two-
+Stage Alignment and Behavioral Semantic Tokenization. ArXiv abs/2412.13771
+(2024). https://api.semanticscholar.org/CorpusID:274822677
+[9] Julian McAuley, Christopher Targett, Qinfeng Shi, and Anton Van Den Hengel.
+2015. Image-based recommendations on styles and substitutes. In Proceedings
+of the 38th international ACM SIGIR conference on research and development in
+information retrieval. 43–52.
+[10] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever,
+et al. 2019. Language models are unsupervised multitask learners. OpenAI blog
+1, 8 (2019), 9.
+[11] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan H. Keshavan,
+Trung Hieu Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah
+Samost, Maciej Kula, Ed H. Chi, and Maheswaran Sathiamoorthy. 2023. Rec-
+ommender Systems with Generative Retrieval. ArXiv abs/2305.05065 (2023).
+https://api.semanticscholar.org/CorpusID:258564854
+[12] Teng Shi, Zihua Si, Jun Xu, Xiao Zhang, Xiaoxue Zang, Kai Zheng, Dewei Leng,
+Yanan Niu, and Yang Song. 2024. UniSAR: Modeling User Transition Behaviors
+between Search and Recommendation. In Proceedings of the 47th International
+ACM SIGIR Conference on Research and Development in Information Retrieval.
+1029–1039.
+[13] Reza Shirkavand, Xiaokai Wei, Chen Wang, Zheng Hui, Heng Huang, and
+Michelle Gong. 2025.
+Catalog-Native LLM: Speaking Item-ID Dialect with
+Less Entanglement for Recommendation.
+arXiv:2510.05125 [cs.CL]
+https:
+//arxiv.org/abs/2510.05125
+[14] Zhongxiang Sun, Zihua Si, Xiaoxue Zang, Dewei Leng, Yanan Niu, Yang Song,
+Xiao Zhang, and Jun Xu. 2023. KuaiSar: A unified search and recommendation
+dataset. In Proceedings of the 32nd ACM international conference on information
+and knowledge management. 5407–5411.
+[15] Ruoxi Wang, Rakesh Shivanna, Derek Zhiyuan Cheng, Sagar Jain, Dong Lin,
+Lichan Hong, and Ed H. Chi. 2020. DCN V2: Improved Deep & Cross Network
+and Practical Lessons for Web-scale Learning to Rank Systems. Proceedings of the
+Web Conference 2021 (2020). https://api.semanticscholar.org/CorpusID:224845398
+[16] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable Item Tokenization for Generative
+Recommendation.
+Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management (2024). https://api.semanticscholar.org/
+CorpusID:269757237
+[17] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Michael He, Yin-Hua Lu, and Yu Shi. 2024. Actions
+Speak Louder than Words: Trillion-Parameter Sequential Transducers for Genera-
+tive Recommendations. ArXiv abs/2402.17152 (2024). https://api.semanticscholar.
+org/CorpusID:268033327
+[18] Luankang Zhang, Kenan Song, Yi Lee, Wei Guo, Hao Wang, Yawen Li, Huifeng
+Guo, Yong Liu, Defu Lian, and Enhong Chen. 2025. Killing Two Birds with One
+Stone: Unifying Retrieval and Ranking with a Single Generative Recommen-
+dation Model. In Annual International ACM SIGIR Conference on Research and
+Development in Information Retrieval. https://api.semanticscholar.org/CorpusID:
+278002064
+[19] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo,
+Qianqian Wang, Qigen Hu, Rui Huang, Shiyao Wang, Weifeng Ding, Wuchao
+Li, Xinchen Luo, Xing-Yao Wang, Zexuan Cheng, Zixing Zhang, Bin Zhang,
+Bo-Wen Wang, Chao Ma, Cheng bin Song, Chenhui Wang, Di Wang, Dongxue
+Meng, Fan Yang, Fang-Peng Zhang, Feng Jiang, Fuxing Zhang, Gang Wang,
+Guowang Zhang, Han Li, Hengrui Hu, Hezheng Lin, Hongtao Cheng, Hong
+Cao, Huanjie Wang, Jiaming Huang, Jiapeng Chen, Jiaqian Liu, Jinghui Jia, Kun
+Gai, Lantao Hu, Liang Zeng, Liao Yu, Qiang Wang, Qidong Zhou, Shengzhe
+Wang, Shi He, Shuang Yang, Shu-Jun Yang, Sui Huang, Tao Wu, TIAN-CHEN
+He, Tingting Gao, Wei Yuan, Xiaoyan Liang, Xiao-Xue Xu, Xugang Liu, Yan
+Wang, Yi Wang, Yiwu Liu, Yue Song, Yufei Zhang, Yun-Hong Wu, Yunfeng Zhao,
+and Zhanyun Liu. 2025. OneRec Technical Report. ArXiv abs/2506.13695 (2025).
+https://api.semanticscholar.org/CorpusID:279410085
+[20] Guorui Zhou, Cheng-Ning Song, Xiaoqiang Zhu, Xiao Ma, Yanghui Yan, Xi-
+Wang Dai, Han Zhu, Junqi Jin, Han Li, and Kun Gai. 2017.
+Deep Interest
+Network for Click-Through Rate Prediction.
+Proceedings of the 24th ACM
+SIGKDD International Conference on Knowledge Discovery & Data Mining (2017).
+https://api.semanticscholar.org/CorpusID:1637394
+[21] Jieming Zhu, Mengqun Jin, Qijiong Liu, Zexuan Qiu, Zhenhua Dong, and Xiu Li.
+2024. CoST: Contrastive Quantization based Semantic Tokenization for Genera-
+tive Recommendation. Proceedings of the 18th ACM Conference on Recommender
+Systems (2024). https://api.semanticscholar.org/CorpusID:272524588
+Received 20 February 2007; revised 12 March 2009; accepted 5 June 2009
