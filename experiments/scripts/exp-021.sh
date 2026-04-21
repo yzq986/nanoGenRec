@@ -110,24 +110,18 @@ if [ "${START_FROM}" -le 1 ]; then
         --date_start 2026-03-18 \
         --date_end 2026-03-31
 
-    # Train NTP probe
+    # Train NTP (s-tier model, same as baseline)
     if [ "${N_GPUS}" -gt 1 ]; then
         torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
             --preprocessed_dir "${NTP_DATA_4B}" \
             --output_dir "${CKPT_4B}" \
-            --model probe \
-            --lr 3e-4 \
-            --epochs 3 \
-            --wandb \
+            --model s-tier \
             --name exp021-4b
     else
         python run.py train-ntp \
             --preprocessed_dir "${NTP_DATA_4B}" \
             --output_dir "${CKPT_4B}" \
-            --model probe \
-            --lr 3e-4 \
-            --epochs 3 \
-            --wandb \
+            --model s-tier \
             --name exp021-4b
     fi
 
@@ -170,24 +164,18 @@ if [ "${START_FROM}" -le 2 ]; then
         --date_start 2026-03-18 \
         --date_end 2026-03-31
 
-    # Train NTP probe
+    # Train NTP (s-tier model, same as baseline)
     if [ "${N_GPUS}" -gt 1 ]; then
         torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
             --preprocessed_dir "${NTP_DATA_4B_H128}" \
             --output_dir "${CKPT_4B_H128}" \
-            --model probe \
-            --lr 3e-4 \
-            --epochs 3 \
-            --wandb \
+            --model s-tier \
             --name exp021-4b-h128
     else
         python run.py train-ntp \
             --preprocessed_dir "${NTP_DATA_4B_H128}" \
             --output_dir "${CKPT_4B_H128}" \
-            --model probe \
-            --lr 3e-4 \
-            --epochs 3 \
-            --wandb \
+            --model s-tier \
             --name exp021-4b-h128
     fi
 
