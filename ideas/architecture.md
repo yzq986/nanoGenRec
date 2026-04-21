@@ -903,3 +903,58 @@ JD GenRec 提出 Asymmetric Token Merger: 在 prefilling (encoder/prompt) 侧，
 1. 当前处于 retrieval 阶段, reranking 是后续工作 → P2
 2. NSGR 需要 evaluator 模型 (额外训练成本)
 3. 在线 NSGR 只在 candidate set ≥20 时有显著优势, 如果 beam=50 则值得考虑
+
+---
+
+## IDEA-cobra-0: Cascaded Sparse-Dense 生成式检索 (SID + Dense Vector 联合生成)
+
+**优先级**: P2 (NTP 后)
+**来源**: COBRA, Baidu (arxiv 2503.02453, Mar 2025)
+**状态**: 待讨论
+
+### 核心思想
+
+COBRA 发现纯 SID 生成存在信息损失（量化丢细粒度），纯 dense retrieval 缺乏语义结构。提出 **级联 sparse-dense 统一生成**:
+
+1. **Cascaded Representation**: 每个 item 表示为 (sparse_ID, dense_vector)。Sparse ID 由 RQ-VAE 生成，dense vector 由 end-to-end 可训练 text encoder 生成
+2. **Sequential Modeling**: Transformer decoder 的输入序列为 [e1, v1, e2, v2, ...], 每个 item 占两个 token position (SID embedding + dense vector)
+3. **Probabilistic Decomposition**: P(ID_{t+1}, v_{t+1}|S_{1:t}) = P(ID_{t+1}|S_{1:t}) · P(v_{t+1}|ID_{t+1}, S_{1:t})
+4. **Training**: L_sparse (CE on SID) + L_dense (contrastive on dense vector)
+5. **Inference — Coarse-to-Fine**: 先 beam search 生成 M 个 SID → 每个 SID append 到序列 → 生成 dense vector → ANN 检索 top-N items
+6. **BeamFusion**: 融合 beam score (SID 置信度) 和 cosine similarity (dense 精度): Φ = Softmax(τ·φ_ID) × Softmax(ψ·cos(v̂, a))
+
+**核心结果**:
+- Beauty R@10: 0.0725 (TIGER 0.0648, +12%)
+- Toys R@10: 0.0781 (TIGER 0.0712, +10%)
+- Industrial (Baidu Ads, 5M users, 2M ads): R@500 0.3716 (vs w/o Dense 0.2709 +37%, vs w/o ID 0.2466 +51%)
+- **Online A/B**: conversion +3.60%, ARPU +4.15% (200M+ DAU)
+- Dense + Sparse 互为补充: 去掉任一都大幅降低
+
+### 与当前项目的关联
+
+- COBRA 的核心 insight: SID (离散) 捕获 categorical/coarse 语义，dense vector (连续) 捕获 fine-grained 细节 → 两者互补
+- 与我们的 beam search 推理直接相关: 当前 beam search 只返回 SID → item mapping，COBRA 额外生成 dense vector 做二次精排
+- BeamFusion 机制可以应用于我们的推理: beam score × item embedding similarity
+- **但架构改动大**: 需要 (1) 在每个 item token 后添加 dense vector position, (2) 新增 dense prediction head, (3) 推理时增加 ANN 步骤
+- 与 IDEA-genrec-1 (Token Merger) 冲突: Merger 减少 token 数, COBRA 增加 token 数
+- 200M+ DAU online A/B 是强验证 → 架构方向有长期价值
+
+### 实验设计草案
+
+**Phase 1 — BeamFusion (不改架构)**:
+- 保持当前 NTP 生成 SID → beam search 输出多个 candidate SID
+- 对每个 candidate SID，查找对应 item 的 text embedding
+- Rerank: beam_score × cosine(user_embedding, item_embedding)
+- 不需要训练新模型，只需推理时加 reranking 步骤
+
+**Phase 2 — Full Cascaded Architecture**:
+- 在 NTP 序列中每个 item 后添加 dense vector token
+- 新增 dense prediction head + contrastive loss
+- 修改 inference pipeline: SID generation → dense vector generation → ANN
+
+### 关键问题
+
+1. Phase 1 (BeamFusion reranking) 几乎零成本 → 可以最快验证 dense refinement 的价值
+2. Full cascaded 需要序列长度翻倍 → 训练成本翻倍
+3. 与 IDEA-flexcode-0 的区别: FlexCode 在 tokenizer 层融合 CF+semantic, COBRA 在 generation 层融合 sparse+dense
+4. NTP 后阶段考虑 full architecture change → P2, 但 Phase 1 BeamFusion 可以更早尝试

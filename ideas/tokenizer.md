@@ -497,6 +497,8 @@ UniRec 在 RQ tokenizer 训练中发现严重的 **token collapse** 问题：部
 | P2 | IDEA-pit-0 | Co-gen Tokenizer | 待定，NTP 后 (前置: NTP baseline) |
 | P2 | IDEA-r3vae-0 | Reference Vector SID | 待定，NTP 后 (主要价值在评估指标) |
 | P2 | IDEA-unirec-1 | Capacity-Constrained SID | 待定，NTP 后 (与 sid-2 合并评估) |
+| P2 | IDEA-flexcode-0 | 双码本 CF+Semantic + MoE 分配 | 待定，NTP 后 (需 CF model) |
+| P2 | IDEA-crab-0 | Codebook Rebalancing 去偏 | 待定，NTP 后 (post-hoc 方法) |
 
 ---
 
@@ -590,3 +592,105 @@ UniRec 在 RQ tokenizer 训练中发现严重的 **token collapse** 问题：部
 1. 当前无多模态数据 → 无法直接实验
 2. Shared-Specific 思路可在单模态下测试 (semantic vs collaborative 双 expert)，但价值未验证
 3. NTP 后阶段再考虑 tokenizer 扩展 → P2
+
+---
+
+## IDEA-flexcode-0: 双码本 (CF + Semantic) + MoE 动态分配
+
+**优先级**: P2 (NTP 后)
+**来源**: FlexCode, Roblox (arxiv 2511.20673, Nov 2025)
+**状态**: 待讨论
+
+### 核心思想
+
+FlexCode 发现单一码本同时编码语义和协同信号导致"表示纠缠"——head item 被语义稀释，tail item 被噪声协同信号主导。提出 **双码本 + 自适应分配**:
+
+1. **Semantic Codebook (C_SEM)**: RQ-VAE 量化 text/visual embedding，捕获内容语义
+2. **Collaborative Codebook (C_CF)**: SASRec-style 对 co-purchase/co-view 序列学习协同 embedding，再 RQ-VAE 量化
+3. **Cross-Codebook Alignment (CCA)**: InfoNCE 对比 loss 对齐两个码本的重建 embedding，防止空间漂移
+4. **MoE Router**: 基于 item 统计特征 (log(popularity), age, sparsity, uncertainty) 路由，head items → 更多 CF tokens, tail items → 更多 semantic tokens
+5. **固定总 token 预算 L**: L_CF(i) + L_SEM(i) = L，通过 sigmoid mask 实现可微分配
+
+**核心结果**:
+- KuaiRand: NDCG@10 0.0632, 比 URL +8.0%, 比 TIGER +42%
+- Industrial (1.5M+ users): NDCG@10 +13.2% over SASRec baseline
+- Tail items NDCG@10 +11.3% (最大提升)，Head +3.0%
+- FlexCode-Fix (50/50 静态) 已经 beats baselines → 双码本本身有价值
+- MoE 动态分配额外贡献 12.5% (KuaiRand)
+
+### 与当前项目的关联
+
+- **直接回应用户关切**: NTP 缺乏 cross-user collaborative signal → FlexCode 在 tokenizer 层注入 CF
+- 当前 MLP-FSQ tokenizer 只用 text embedding (纯语义)，与 FlexCode 的 "SID Only" 对应
+- 双码本方案不改 NTP 模型架构——只改 SID 的生成方式，NTP 仍然做 token 预测
+- 与 IDEA-sid-1 (协同信号增强 embedding) 目标一致但方案更系统: sid-1 是直接 fine-tune text embedding，FlexCode 是独立码本 + 动态融合
+- 与 IDEA-pit-0 (co-generative tokenizer) 互补: PIT 是联合训练 tokenizer+NTP，FlexCode 是独立训练双码本
+- MoE Router 与 IDEA-onemall-4 (MoE Load Balancing) 相关
+
+### 实验设计草案
+
+**Phase 1 — CF Codebook 构造**:
+- 用 SASRec-style 模型在行为序列上训练 → 得到 item collaborative embedding
+- 对 CF embedding 做 RQ-VAE → 生成 CF tokens
+- 与现有 semantic tokens (MLP-FSQ) concat → 双 SID
+
+**Phase 2 — MoE Router**:
+- 按 item interaction frequency 路由: 前 20% items 多分 CF tokens, 后 80% 多分 semantic tokens
+- 固定总预算 L=3, 测试 {(2CF,1SEM), (1CF,2SEM), (MoE 动态)}
+
+### 关键问题
+
+1. CF embedding 需要训练一个 SASRec 模型 → 额外训练成本
+2. 我们 5M items 中 head/tail 分布与 FlexCode 的 KuaiRand/Industrial 是否可比
+3. 双 SID concat 后 NTP 输入长度翻倍 → 需要 Token Merger (IDEA-genrec-1) 配合
+4. NTP 后阶段再考虑 tokenizer 改进 → P2
+
+---
+
+## IDEA-crab-0: 过度热门 Token 分裂去偏 (Codebook Rebalancing)
+
+**优先级**: P2 (NTP 后)
+**来源**: CRAB, Walmart (arxiv 2604.05113, Apr 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+CRAB 发现 GeneRec 的 popularity bias 根源在 **codebook 不均衡**: 语义相似的热门 items 映射到同一 token，累积交互频次后该 token 变成"过度热门 token"，模型训练偏向生成这些 token → 放大 popularity bias (比 SASRec 高 7.2%)。
+
+提出 **post-hoc 去偏** (不需要从头重训):
+1. **Token 分裂**: 识别 top-5% 热门 tokens，将其 child tokens 通过 regularized K-means 重新分配到 M 个新 parent tokens
+2. **Balanced Loss**: 约束分裂后的新 tokens popularity 均匀: L_bal = Σ(P(c_k(m)) - P_avg)²
+3. **Hierarchical Semantic Regularizer**: tree-structure-aware loss 促进 sibling tokens 表示一致性，同时帮助新 token 从语义邻居迁移知识
+4. LoRA 高效微调 (只 1/11 训练时间)
+
+**核心结果**:
+- Industrial dataset: MGU@10 降低 16.5% (popularity bias), HR@10 持平
+- 分裂中间层 (Level B) 效果最好 — "Hourglass 现象": 中间层语义过度集中
+- 10% splitting ratio 最优，过度分裂破坏语义完整性
+- 高效: 只需 0.28h (vs RW 3.11h, D2LR 2.75h)
+
+### 与当前项目的关联
+
+- 当前 MLP-FSQ 前两层 KMeans Gini=0.31，存在不均衡
+- CRAB 是 **post-hoc** 方法 → 不需要改 tokenizer 训练，直接对已有码本操作
+- 与 IDEA-sid-2 (Balanced KMeans) 互补: sid-2 在训练时强制均衡，CRAB 在训练后分裂修复
+- 与 IDEA-unirec-1 (Capacity-Constrained SID) 目标一致但方法不同: 一个是训练时约束，一个是训练后修复
+- "Hourglass 现象" insight 有价值: 我们的 3 层 SID 中间层 (L2) 是否也有过度集中
+
+### 实验设计草案
+
+**Phase 1 — Token Popularity 分析**:
+- 统计当前 SID 各层 token 的 popularity (关联 item 的交互频次之和)
+- 可视化 Gini + Top 5% token 占比
+- 验证是否存在 Hourglass 现象
+
+**Phase 2 — Token 分裂**:
+- 对 top-10% popular tokens 做分裂 (M=2~3)
+- 用 regularized K-means 保持 hierarchical structure
+- LoRA 微调 NTP 模型适应新码本
+
+### 关键问题
+
+1. 分裂后 SID vocab 增大 → NTP 模型的 embedding table 需要扩展 (新 token 需要初始化)
+2. 我们用 RQ-KMeans (非 RQ-VAE)，tree structure 严格 → Eq.5 直接适用
+3. NTP 后阶段再做 codebook 调优 → P2

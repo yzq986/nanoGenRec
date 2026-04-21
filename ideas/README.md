@@ -8,16 +8,16 @@
 
 | 文件 | 维度 | Ideas 数 | P0 |
 |------|------|---------|-----|
-| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision/Capacity/VRQ/MMQ/GeoSID) | 12 | ~~sid-0~~ ❌ |
+| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision/Capacity/VRQ/MMQ/GeoSID/DualCodebook/Rebalance) | 14 | ~~sid-0~~ ❌ |
 | [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性/Caption) | 6 | — |
-| [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale) | 23 | — |
-| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum/LAC/OneLive-BOS) | 19 | onemall-0 |
+| [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale/CascadedSparseDense) | 24 | — |
+| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum/LAC/OneLive-BOS/CF-SoftLabel) | 20 | onemall-0 |
 | [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR/RPO/ElasticTether) | 12 | — |
 | [inference.md](inference.md) | 推理优化 (Dynamic Beam/CSR约束/Register压缩/PRM-Beam/GRC/FP8-PTQ) | 7 | — |
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | ~~oneloc-4~~ 部分完成 |
 | [ntp-features.md](ntp-features.md) | NTP 特征注入 (TimeGap/ActionType/SegmentEmb/Category/UserProfile/ContTime) | 6 | feat-0, feat-1, feat-2 |
 
-**总计: 88 ideas (6 P0 / 57 P1 / 25 P2)**
+**总计: 92 ideas (6 P0 / 58 P1 / 28 P2)**
 
 ## 全局演进图
 
@@ -203,6 +203,10 @@ graph LR
 | `rclrec` | RCLRec (Alibaba International, arxiv 2603.28124) | 反向课程学习稀疏转化建模 |
 | `rpo` | RPO (ByteDance+Northwestern+Stanford, arxiv 2405.16436, NeurIPS 2024) | SFT Loss as Adversarial Regularizer |
 | `spot` | SPoT (HKU, arxiv 2603.01683, Mar 2026) | Elastic Tether — DPO 隐式正则化 |
+| `flexcode` | FlexCode (Roblox, arxiv 2511.20673, Nov 2025) | 双码本 CF+Semantic + MoE 动态分配 |
+| `cobra` | COBRA (Baidu, arxiv 2503.02453, Mar 2025) | Cascaded Sparse-Dense 生成式检索 |
+| `tca` | TCA4Rec (USTC+Ant, arxiv 2601.18457, WWW 2026) | Token-level CF Soft Label Alignment |
+| `crab` | CRAB (Walmart, arxiv 2604.05113, Apr 2026) | Codebook Rebalancing 去偏 |
 
 ## 核心设计原则
 
@@ -356,6 +360,7 @@ Text → [Qwen3-0.6B] → 1024D → [MLP-FSQ h=64] → 3-token SID → [NTP S-ti
 | IDEA-rclrec-0 | Training | 反向课程学习稀疏转化 (+2.09% revenue) |
 | IDEA-lac-0 | Training | Lagged Action Conditioning (action 延迟一个 item, 消除泄漏) |
 | IDEA-onelive-0 | Training | BOS 全局时间注入 + Gated Attention (快手直播部署) |
+| IDEA-tca-0 | Training | Token-level CF Soft Label Alignment (WWW 2026, plug-and-play) |
 
 ### P2 — 有前置依赖 / NTP 后再看
 
@@ -386,3 +391,6 @@ Text → [Qwen3-0.6B] → 1024D → [MLP-FSQ h=64] → 3-token SID → [NTP S-ti
 | IDEA-onevision-0 | Tokenizer | VRQ 视觉对齐 RQ + 动态剪枝 |
 | IDEA-mmq-0 | Tokenizer | 共享-专有多模态混合量化 |
 | IDEA-nsgr-0 | Architecture | Next-Scale 粗到细重排序 (Meituan CTR +2.89%) |
+| IDEA-flexcode-0 | Tokenizer | 双码本 CF+Semantic + MoE 动态分配 (Roblox) |
+| IDEA-crab-0 | Tokenizer | Codebook Rebalancing 去偏 (Walmart) |
+| IDEA-cobra-0 | Architecture | Cascaded Sparse-Dense 生成 (Baidu 200M+ DAU) |

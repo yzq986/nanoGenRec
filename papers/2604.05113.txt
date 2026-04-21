@@ -1,0 +1,836 @@
+CRAB: Codebook Rebalancing for Bias Mitigation in Generative
+Recommendation
+Ziheng Chen∗
+albertchen1993pokemon@gmail.com
+Walmart Global Tech
+Sunnyvale, USA
+Zezhong Fan∗
+zezhong.fan@walmart.com
+Walmart Global Tech
+Sunnyvale, USA
+Luyi Ma
+luyi.ma@walmart.com
+Walmart Global Tech
+Sunnyvale, USA
+Jin Huang
+jin.huang@stonybrook.edu
+Stony Brook University, NY, USA
+Stony Brook, USA
+Lalitesh Morishetti
+lalitesh.morishetti@walmart.com
+Walmart Global Tech
+Sunnyvale, USA
+Kaushiki Nag
+kaushiki.nag@walmart.com
+Walmart Global Tech
+Sunnyvale, USA
+Sushant Kumar
+sushant.kumar@walmart.com
+Walmart Global Tech
+Sunnyvale, USA
+Kannan Achan
+kannan.achan@walmart.com
+Walmart Global Tech
+Sunnyvale, USA
+ABSTRACT
+Generative recommendation (GeneRec) has introduced a new para-
+digm that represents items as discrete semantic tokens and predicts
+items in a generative manner. Despite its strong performance across
+multiple recommendation tasks, existing GeneRec approaches still
+suffer from severe popularity bias and may even exacerbate it. In this
+work, we conduct a comprehensive empirical analysis to uncover
+the root causes of this phenomenon, yielding two core insights: 1)
+imbalanced tokenization inherits and can further amplify popularity
+bias from historical item interactions; 2) current training procedures
+disproportionately favor popular tokens while neglecting semantic
+relationships among tokens, thereby intensifying popularity bias.
+Building on these insights, we propose CRAB, a post-hoc debias-
+ing strategy for GeneRec that reduces popularity bias by rebalancing
+semantic token frequencies. Specifically, given a well-trained model,
+we first identify and split over-popular tokens while preserving
+the overall hierarchical structure of the codebook. Based on the
+adjusted codebook, we further introduce a hierarchical regularizer
+to enhance semantic consistency, encouraging more informative
+representations for unpopular tokens during training. Experiments
+on real-world datasets demonstrate that CRAB effectively alleviates
+popularity bias while maintaining competitive performance.
+1
+INTRODUCTION
+Generative recommendation (GeneRec) [3, 10, 15] has emerged as a
+promising paradigm for sequential recommendation, demonstrating
+strong empirical performance across diverse domains [2, 8, 13]. It
+formulates recommendation as a sequence-to-sequence generation
+task: a tokenizer maps each item into a sequence of discrete code-
+book tokens [17], and the model autoregressively predicts the next
+item based on the concatenated tokenized interaction history [12].
+This design enables modeling over a compact token vocabulary,
+∗Both authors contributed equally to this research.
+Conference’17, July 2017, Washington, DC, USA
+2026. ACM ISBN 978-x-xxxx-xxxx-x/YY/MM...$15.00
+https://doi.org/10.1145/nnnnnnn.nnnnnnn
+facilitating efficiency and adaptation to new items. Moreover, pow-
+erful sequence models such as LLMs can be naturally incorporated
+to enhance long-sequence modeling performance.
+Despite their strong performance, GeneRec often exhibit pop-
+ularity bias. To quantify this effect, we follow [11] and define the
+top 20% of items by historical interaction frequency as popular
+items, which collectively account for a disproportionately large
+share of interactions, and the remaining items as unpopular ones.
+As shown in the left part of Figure 1, generative recommenders
+tend to recommend popular items more frequently than traditional
+methods. Specifically, compared with SASRec, the recommenda-
+tion frequency of popular items increases by 6.7% and 7.2% for
+Mini-OneRec (MOR) [8] and TIGER [13], respectively, while the
+frequency for unpopular items decreases by 3.8% and 4.1%.
+However, existing debiasing methods for LLM-based recommen-
+dation [6, 11] do not generalize well to GeneRec. The key reason is
+that these approaches focus solely on mitigating bias at the model
+level, while overlooking the bias inherited and amplified by over-
+popular tokens in the codebook (see Section 3). Although some
+methods attempt to construct balanced codebooks [2, 5, 9], they
+typically constrain the number of items assigned to each token
+to prevent highly concentrated mappings, rather than addressing
+token popularity driven by historical interactions.
+In this paper, we propose CRAB, a post-hoc approach for miti-
+gating popularity bias in GeneRec. CRAB decouples the debiasing
+process into two stages: Codebook Rebalancing and Hierarchical
+Semantic Alignment. In the first stage, we identify over-popular
+tokens in the existing codebook and split them while preserving
+the hierarchical semantic structure of the remaining tokens; this
+process is formulated as a regularized K-means problem. In the
+second stage, we introduce a hierarchy-aware regularizer to en-
+hance the representation of unpopular tokens by leveraging richer
+supervision signals from the semantics induced by the codebook.
+Overall, our key contributions are summarized as follows:
+• Problem: We present the first investigation demonstrating
+that imbalanced codebooks give rise to over-popular tokens,
+arXiv:2604.05113v1  [cs.IR]  6 Apr 2026
+
+
+Conference’17, July 2017, Washington, DC, USA
+Ziheng Chen, Zezhong Fan, Luyi Ma, Jin Huang, Lalitesh Morishetti, Kaushiki Nag, Sushant Kumar, and Kannan Achan
+which in turn bias the model toward popular items contain-
+ing these tokens, thereby exacerbating popularity bias.
+• Method: We propose CRAB, an effective and efficient frame-
+work for mitigating popularity bias in GeneRec. It identifies
+and splits over-popular tokens in the codebook, and further
+enhances the representations of unpopular tokens through
+a hierarchical semantic regularizer.
+• Performance: Extensive experiments on real-world datasets
+demonstrate that CRAB reduces popularity bias by 16.5%
+while improving recommendation performance.
+2
+BACKGROUND AND PRELIMINARIES
+We consider the sequential recommendation task. Let U denote
+the set of users and I the set of items. Given a user 𝑢∈U with a
+chronologically ordered interaction history H𝑢= {𝑖1, . . . ,𝑖𝑇}, the
+goal is to predict the next item 𝑖𝑇+1. Following recent GeneRec
+frameworks, each item is first converted into a sequence of discrete
+semantic tokens from its textual description via residual quantiza-
+tion methods (RQ-KMeans or RQ-VAE). An LLM is then trained to
+generate the token sequence of the next item.
+2.1
+Residual Quantization
+For each item 𝑖∈I, its textual description is first passed through
+a frozen encoder to obtain a continuous embedding 𝒛𝑖. We aim to
+quantize it using 𝐿hierarchical tokens with 𝐿codebooks in a coarse-
+to-fine generation manner. At the 𝑙-th level, the codebook C𝑙=
+
+𝒄𝑙
+𝑘|𝑘= 1, · · · 𝐾
+	
+consists of 𝐾codeword embeddings 𝒄𝑙
+𝑘. When
+𝑙= 1, the initial residual is defined as 𝒓1
+𝑖= 𝒛𝑖. Then at 𝑙-th level, the
+item token 𝑠𝑙
+𝑖can be defined as the index of the closest codeword
+embedding from the codebook C𝑙, and the residual at 𝑙+ 1-th level
+𝒓𝑙+1
+𝑖
+is updated as follows:
+𝑠𝑙
+𝑖= arg min
+𝑘
+||𝒓𝑙
+𝑖−𝑐𝑙
+𝑘||2,
+𝒓𝑙+1
+𝑖
+= 𝒓𝑙
+𝑖−𝒄𝑙
+𝑠𝑙
+𝑖
+(1)
+The above process is repeated recursively 𝐿times to get a tuple
+of 𝐿codewords that represent the Semantic ID(SID) for item 𝑖. In
+RQ-KMeans, the codeword embedding 𝒄𝑙
+𝑘∈C𝑙is defined as the
+centroid of the 𝑘-th cluster obtained by applying K-means to the
+residual set R𝑙= {𝒓𝑙
+𝑖| 𝑖∈I} at level 𝑙[16].
+2.2
+Autoregressive Generation
+By applying the residual quantization to each item in H𝑢, the input
+is transformered into a flattened token sequence 𝑋. Accordingly,
+the target next item 𝑖𝑇+1 is also encoded as 𝑌:
+𝑿=
+
+𝑠1
+1,𝑠2
+1, . . . ,𝑠𝐿
+1
+|        {z        }
+𝑖1
+, . . . ,𝑠1
+𝑇,𝑠2
+𝑇, . . . ,𝑠𝐿
+𝑇
+|         {z         }
+𝑖𝑇
+
+,
+𝒀= [𝑠1
+𝑇+1,𝑠2
+𝑇+1, · · ·𝑠𝐿
+𝑇+1
+|                {z                }
+𝑖𝑇+1
+]
+where 𝑠𝑙
+𝑖denotes the 𝑙-th token of item 𝑖. The LLM is then trained
+to predict the SID of 𝒀by minimizing L𝑅𝑒𝑐
+L𝑅𝑒𝑐= −
+𝐿
+∑︁
+𝑙=1
+log 𝐹(𝒀𝑙| 𝑿, 𝒀<𝑙) .
+(2)
+Here, 𝒀𝑙denotes the 𝑙-th token of 𝒀, and 𝐹(·) represents the condi-
+tional probability modeled by the LLM.
+0
+1
+2
+3
+4
+Popularity Group
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+Rec Frequency
+(a) Recommendation Frequency
+Gpop
+Gunp
+Item Groups
+0.3
+0.2
+0.1
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+GU@10
+0.160
+-0.090
+0.289
+-0.152
+0.278
+-0.136
+0.190
+-0.136
+(b) Group Unfairness (GU)
+SASRec
+Tiger
+MOR
+CRAB
+Figure 1: Left: Popularity bias of GeneRec on the industrial
+dataset, with the x-axis representing item groups by popu-
+larity. Right: The GU of item groups grouped by token popu-
+larity.
+3
+MOTIVATION
+In this section, we empirically analyze how an imbalanced codebook
+amplifies item popularity bias in historical interactions. With a
+slight abuse of notation, let 𝑐𝑙
+𝑘denote the 𝑘-th token in the 𝑙-th
+level codebook C𝑙. We define token popularity as the total frequency
+of its associated items in the training data. Specifically, given item
+frequency 𝑓𝑖and the item set I𝑐𝑙
+𝑘whose 𝑙-th semantic token is 𝑐𝑙
+𝑘,
+the popularity score 𝑃(𝑐𝑙
+𝑘) is defined as [7, 18]
+𝑃(𝑐𝑙
+𝑘) =
+∑︁
+𝑖∈I𝑐𝑙
+𝑘
+𝑓𝑖,
+I𝑐𝑙
+𝑘= {𝑖∈I | 𝑠𝑙
+𝑖= 𝑐𝑙
+𝑘}
+(3)
+At each level, we rank tokens by popularity and categorize them
+into the top 5% over-popular tokens 𝑇pop, 5% −95% neural tokens
+𝑇neu and the remaining 5% unpopular tokens 𝑇unp. Items associated
+with 𝑇pop and 𝑇unp form two groups, denoted as 𝐺𝑝𝑜𝑝and 𝐺𝑢𝑛𝑝,
+respectively. We measure Group Unfairness (GU) [6], defined as
+the discrepancy between recommendation exposure and historical
+interaction frequency, to quantify bias amplification. As shown
+in Figure 1, tokens in 𝑇pop exhibit significantly stronger bias am-
+plification. On MOR, the GU gap between 𝐺𝑝𝑜𝑝and 𝐺𝑢𝑛𝑝reaches
+0.42, indicating that items associated with popular tokens receive
+disproportionately higher exposure—1.8× that of SASRec.
+Mechanistically, this issue stems from the codebook construction
+process. Semantically similar items are mapped to the same token;
+when such items are popular, their interactions accumulate on that
+token, further increasing its frequency. After training on these token
+sequences, the recommender becomes biased toward generating
+items associated with this dominant token, thereby amplifying
+popularity bias.
+4
+METHOD
+In this section, we introduce the two stages of CRAB respectively.
+4.1
+Rebalancing the Codebook
+The hierarchical token assignment in Equation 1 induces a par-
+ent–child relation between tokens at consecutive levels, denoted
+by {𝑐𝑙
+𝑘→𝑐𝑙+1
+𝑗
+} if there exists at least one item whose 𝑙-th and
+
+
+CRAB: Codebook Rebalancing for Bias Mitigation in Generative Recommendation
+Conference’17, July 2017, Washington, DC, USA
+UG
+1
+2
+3
+1
+2
+3
+4
+5
+1
+2
+3
+4
+5
+OR
+3
+Residual
+Residual
+Concatenate
+Input
+Target
+5
+Residual
+LLM
+Encoder
+Latent Embedding
+Title:MLCS 9080
+Billy Pedal
+Deadman Switch
+Semantic
+Information
+Output
+Figure 2: Illustration of CRAB with a three-level codebook in MOR. Over-popular tokens are split by redistributing their child
+tokens via regularized Kmeans. For clarity, we denote 𝑐1
+𝑖, 𝑐2
+𝑗, and 𝑐3
+𝑘as A𝑖, B𝑗, and C𝑘, respectively.
+(𝑙+ 1)-th tokens are 𝑐𝑙
+𝑘and 𝑐𝑙+1
+𝑗
+, respectively. Accordingly, for any
+token 𝑐𝑙
+𝑘∈C𝑙, its children set is defined as
+Ch(𝑐𝑙
+𝑘) =
+
+𝑐𝑙+1
+𝑗
+∈C𝑙+1  𝑐𝑙
+𝑘→𝑐𝑙+1
+𝑗
+	
+.
+(4)
+Following Equation 3, we identify over-popular tokens 𝑐𝑙
+𝑘and
+split each of them into 𝑀new tokens by clustering the residual
+representations of its associated items. Since codebook tokens en-
+code hierarchical semantic information from textual descriptions,
+the splitting procedure should ensure semantic coherence within
+each newly created token, while preserving the semantic integrity
+of the (𝑙+1)-th level tokens. To this end, we further impose a hard
+constraint that items sharing the same (𝑙+1)-th level semantic token
+are assigned to the same new token in the 𝑙-th level. Under the
+induced tree structure shown in Figure 2, this constraint implies
+that parent tokens are split by redistributing their child tokens,
+while each child token 𝑐𝑙+1
+𝑗
+∈Ch(𝑐𝑙
+𝑘), together with its associated
+items, remains intact.
+Moreover, to mitigate over-popular tokens, we aim to approxi-
+mately balance the popularity scores of the newly generated tokens.
+Based on the definition of popularity score(Equation 3), we have
+𝑃(𝑐𝑙
+𝑘) = Í
+𝑐𝑙+1
+𝑗
+∈Ch(𝑐𝑙
+𝑘) 𝑃(𝑐𝑙+1
+𝑗
+), indicating that the popularity score
+is preserved between a parent token and its children. Formally, for
+each 𝑐𝑙+1
+𝑗
+∈Ch(𝑐𝑙
+𝑘), we introduce a one-hot vector 𝒛𝑗∈R𝑀to
+indicate the assignment of it to one of the 𝑀new tokens. Hence
+the popularity score for each new token 𝑐𝑘(𝑚) can be calculated as
+follows, and we thereby introducing a balanced loss L𝑏𝑎𝑙
+𝑃(𝑐𝑙
+𝑘(𝑚)) =
+|Ch(𝑐𝑙
+𝑘) |
+∑︁
+𝑗=1
+𝒛𝑗[𝑚]𝑃(𝑐𝑙+1
+𝑗
+), L𝑏𝑎𝑙=
+𝑀
+∑︁
+𝑚=1
+
+𝑃(𝑐𝑙
+𝑘(𝑚)) −¯𝑃
+2
+(5)
+Here 𝒛𝑗[𝑚] ∈0, 1 denotes the 𝑚-th element of 𝒛𝑗, and ¯𝑃represents
+the average score. Accordingly, splitting an over-popular token 𝑐𝑙
+𝑘
+can be formulated as a regularized K-means problem that redis-
+tributes its child tokens 𝑐𝑙+1
+𝑗
+∈Ch(𝑐𝑙
+𝑘) into 𝑀new parent tokens.
+min
+𝒛
+𝑀
+∑︁
+𝑚=1
+|Ch(𝑐𝑙
+𝑘) |
+∑︁
+𝑗=1
+𝒛𝑗[𝑚]𝑛𝑗
+¯r𝑙
+𝑗−¯𝜇𝑚
+
+2
++ 𝜆L𝑏𝑎𝑙,
+𝑛𝑗= |I𝑐𝑙+1
+𝑗
+|
+s.t. 𝒛𝑗[𝑚] ∈{0, 1},
+𝑀
+∑︁
+𝑚=1
+𝒛𝑗[𝑚] = 1,
+∀𝑐𝑙+1
+𝑗
+∈Ch(𝑐𝑙
+𝑘),
+(6)
+Where ¯r𝑙
+𝑗denotes the mean residual of items 𝑖∈I𝑐𝑙+1
+𝑗
+at the 𝑙-th
+level, and ¯𝜇𝑚is the centroid of the newly formed cluster correspond-
+ing to 𝑐𝑘(𝑚). Eq. 6 is derived from the variance decomposition in
+K-means [1]:
+𝑛𝑗
+∑︁
+𝑖=1
+∥r𝑙
+𝑖−¯𝜇𝑚∥2 =
+𝑛𝑗
+∑︁
+𝑖=1
+∥r𝑙
+𝑖−¯r𝑙
+𝑗∥2 + 𝑛𝑗∥¯r𝑙
+𝑗−¯𝜇𝑚∥2, ¯r𝑙
+𝑗=
+Í𝑛𝑗
+𝑖=1 r𝑙
+𝑖
+𝑛𝑗
+(7)
+Since all 𝑖∈I𝑐𝑙+1
+𝑗
+are assigned to same cluster, the first term in Eq. 7
+is constant. Hence, the optimization reduces to the second term.
+The regularized K-means objective can be efficiently optimized
+using the framework of [14]. Note that Eq. 5 holds when the tree
+structure is strictly maintained in the codebook(e.g., RQ-Kmeans) [2].
+To accommodate settings where a child token may have multiple
+parents (e.g., RQ-VAE) [8], we revise Eq. 5 by aggregating frequen-
+cies only over items associated with both tokens 𝑐𝑙+1
+𝑗
+and 𝑐𝑙
+𝑘:
+𝑃(𝑐𝑙
+𝑘(𝑚)) =
+|Ch(𝑐𝑙
+𝑘) |
+∑︁
+𝑗=1
+𝒛𝑗[𝑚]𝑃(𝑐𝑙+1
+𝑗
+|𝑐𝑙
+𝑘), 𝑃(𝑐𝑙+1
+𝑗
+|𝑐𝑙
+𝑘) =
+∑︁
+𝑖∈I𝑐𝑙+1
+𝑗
+∩I𝑐𝑙
+𝑘
+𝑓𝑖(8)
+
+
+Conference’17, July 2017, Washington, DC, USA
+Ziheng Chen, Zezhong Fan, Luyi Ma, Jin Huang, Lalitesh Morishetti, Kaushiki Nag, Sushant Kumar, and Kannan Achan
+4.2
+Hierarchical Semantic Alignment
+Splitting the token 𝑐𝑙
+𝑘introduces 𝑀new tokens. To adapt the LLM
+to the rebalanced codebook and mitigate bias, we introduce a tree-
+structure-aware regularizer L𝑇that promotes representation con-
+sistency among tokens sharing the same parent.
+L𝑇=
+𝐿−1
+∑︁
+𝑙=1
+| C𝑙|
+∑︁
+𝑘=1
+1
+|Ch(𝑐𝑙
+𝑘)|
+∑︁
+𝑐∈Ch(𝑐𝑙
+𝑘)
+𝑒(𝑐) −¯𝑒𝑙
+𝑘
+
+2
+2
+(9)
+where 𝑒(𝑐) denotes the LLM embedding of token 𝑐, and ¯𝑒𝑙
+𝑘is the
+mean embedding of the child tokens of𝑐𝑙
+𝑘. The regularizer applies to
+both new and existing tokens, serving two purposes: (1) enhancing
+under-represented tokens via supervision from semantically related
+siblings, and (2) enabling efficient knowledge transfer to newly
+introduced tokens after rebalancing.
+4.3
+Model Optimization
+To mitigate popularity bias in GeneRec, we jointly optimize the
+recommendation loss L𝑅𝑒𝑐and the hierarchical regularizer L𝑇:
+L = L𝑅𝑒𝑐+ 𝛾L𝑇
+(10)
+where 𝛾is a hyperparameter controlling the strength of regular-
+ization. During optimization, we update the embedding layers for
+both existing and newly introduced tokens. To improve efficiency,
+LoRA adapters are applied only to the attention layers of the LLM.
+5
+EXPERIMENTS
+In this section, we evaluate the performance of CRAB.
+5.1
+Experimental Settings
+Datasets Experiments are carried out on two real-world datasets
+Office and Industrial. Following [8], we first filter out users and
+items with fewer than five interactions. For each dataset, interac-
+tions are split chronologically into training, validation, and test sets
+with an 8:1:1 ratio. Evaluation Metrics Following [8], we evaluate
+recommendation performance using NDCG@K and HR@K, and
+measure bias amplification with MGU@K and DGU@K [6]. We also
+report time cost to assess efficiency. Baselines To evaluate CRAB,
+we compare it against two backbone generative models: Tiger [13]
+and MiniOneRec (MOR) [8]. We also implement three SOTA pop-
+ularity debiasing methods atop MOR for a fair comparison: (1)
+Reweighting [6] balances loss contribution via item popularity;
+(2) Reranking [6] penalizes popular items during post-processing;
+and (3) D2LR [11] employs propensity score weighting for LLMs.
+Implementation We implement CRAB based on the MOR frame-
+work using Qwen2-0.5B as the backbone. The model is trained on
+4× NVIDIA A100 GPUs for 10 epochs. We employ the AdamW
+optimizer with a global batch size of 128. The learning rate is set to
+1 × 10−4 with a weight decay of 0.01. To efficiently train the model,
+we utilize LoRA [4] with the rank 𝑟= 8, 𝛼= 16. For our codebook
+rebalancing strategy, we perform a hierarchical split at each level of
+the codebook with a 10% splitting ratio. The number of new tokens
+𝑀is determined by the ratio between the frequency of the target
+token and the average frequency at the same layer, with an upper
+bound of 𝑀≤3.
+5.2
+Experimental Results
+Overall Performance We compare CRAB with the baselines in
+Section 5.1, as shown in Table 1. Overall, CRAB achieves perfor-
+mance comparable to MOR while significantly mitigating popu-
+larity bias. Specifically, on the Industrial dataset, CRAB improves
+HR@10 by 15.2%, 7.8%, and 3.4% over Tiger, RW, and RR, respec-
+tively, demonstrating its ability to alleviate bias without sacrificing
+recommendation quality. In terms of debiasing effectiveness, CRAB
+achieves the best results, reducing DGU@10 by 14.8% compared to
+MOR and 13.2% compared to D2LR, while lowering MGU@10 by
+16.5% and 14.2%, respectively. Although RW also mitigates bias, it
+causes severe performance degradation. In contrast, CRAB achieves
+a better trade-off between accuracy and fairness. Moreover, CRAB
+is highly efficient, requiring only about 1/11 and 1/10 of the train-
+ing time of RW and D2LR. Although RR is more efficient due to
+re-ranking, CRAB achieves superior performance and fairness.
+5%
+10%
+15%
+20%
+0.09
+0.10
+0.11
+0.12
+0.13
+0.14
+0.15
+A
+B
+C
+0.10
+0.11
+0.12
+0.13
+0.14
+0.15
+NDCG@10
+HR@10
+MGU@10
+Figure 3: Left: MOR performance under different splitting
+ratios (5%–20%) at each level on the Industrial dataset. Right:
+MOR performance when splitting the top 5% most popular
+tokens at levels A, B, and C separately.
+0
+0.2
+0.4
+0.6
+0.8
+0.075
+0.100
+0.125
+0.150
+w/ LoRA
+w/o LoRA
+0.08
+0.10
+0.12
+0.14
+0.16
+NDCG@10
+HR@10
+MGU@10
+Figure 4: Left: Effect of 𝛾Right: Effect of LoRA
+5.3
+In-depth Analysis
+Impact of Splitting Ratio We analyze how the proportion of
+tokens to split at each level affects CRAB. As shown in the left part of
+Figure 3, as the proportion increases, the performance first improves
+and then declines, showing a similar trend to bias amplification.
+This suggests that splitting a small fraction(less than 10%) of popular
+tokens can smooth token popularity and enhance the representation
+of unpopular tokens, thereby improving long-tail items exposure.
+However, over-splitting tokens may disrupt the semantic integrity
+of the codebook and lead to performance degradation.
+Impact of Splitting Position We analyze splitting at different
+levels by splitting only the top-5% popular tokens from level A, B,
+and C in MOR separately. From the right part of Figure 3, splitting
+
+
+CRAB: Codebook Rebalancing for Bias Mitigation in Generative Recommendation
+Conference’17, July 2017, Washington, DC, USA
+Table 1: Performance and Efficiency Comparison on Industrial and Office Datasets.
+Industrial
+Office
+Metric
+MOR
+Tiger
+RW
+RR
+D2LR
+CRAB
+MOR
+Tiger
+RW
+RR
+D2LR
+CRAB
+HR@10 ↑
+0.152
+0.132
+0.126
+0.141
+0.147
+0.152
+0.161
+0.137
+0.131
+0.146
+0.153
+0.160
+NDCG@10 ↑
+0.116
+0.090
+0.070
+0.107
+0.113
+0.117
+0.122
+0.100
+0.090
+0.119
+0.119
+0.122
+DGU@10 ↓
+0.418
+0.423
+0.367
+0.406
+0.410
+0.356
+0.423
+0.427
+0.386
+0.410
+0.414
+0.368
+MGU@10 ↓
+0.109
+0.112
+0.105
+0.109
+0.106
+0.091
+0.111
+0.113
+0.108
+0.110
+0.110
+0.093
+Time (h) ↓
+-
+-
+3.11
+0.21
+2.75
+0.28
+-
+-
+3.25
+0.28
+3.16
+0.38
+over-popular tokens at level B improves representation while signif-
+icantly mitigating bias, suggesting that intermediate-level tokens
+concentrate excessive semantic information, consistent with the
+“Hourglass” phenomenon [9]. In contrast, splitting only the last level
+may hurt performance, as its semantics are already fine-grained.
+Ablation Study We first examine the effect of the hyperparameter
+𝛾, which balances the recommendation objective and representa-
+tion consistency. As shown in Figure 4(left), as 𝛾increases, CRAB
+places more emphasis on L𝑇. When 𝛾≤0.2, the recommendation
+performance remains stable. However, for 𝛾> 0.2, NDCG drops
+sharply. To achieve a proper trade-off, we set 𝛾= 0.2. We then
+evaluate the necessity of LoRA and observe that removing LoRA
+leads to noticeable drops in both NDCG and HR from the Figure.
+6
+CONCLUSION
+In this paper, we present the first systematic investigation of pop-
+ularity bias in GeneRec and propose CRAB, a novel method that
+mitigates bias by rebalancing the codebook.
+REFERENCES
+[1] Johannes Blömer, Christiane Lammersen, Melanie Schmidt, and Christian Sohler.
+2016. Theoretical analysis of the k-means algorithm–a survey. In Algorithm
+Engineering: Selected Results and Surveys. Springer, 81–116.
+[2] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[3] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, et al. 2025. Mtgr: Industrial-
+scale generative recommendation framework in meituan. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+5731–5738.
+[4] Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean
+Wang, Lu Wang, Weizhu Chen, et al. 2022. Lora: Low-rank adaptation of large
+language models. ICLR 1, 2 (2022), 3.
+[5] Zheng Hui, Xiaokai Wei, Reza Shirkavand, Chen Wang, Weizhi Zhang, Ale-
+jandro Peláez, and Michelle Gong. 2025. Semantics Meet Signals: Dual Code-
+book Representationl Learning for Generative Recommendation. arXiv preprint
+arXiv:2511.20673 (2025).
+[6] Meng Jiang, Keqin Bao, Jizhi Zhang, Wenjie Wang, Zhengyi Yang, Fuli Feng, and
+Xiangnan He. 2024. Item-side fairness of large language model-based recommen-
+dation system. In Proceedings of the ACM Web Conference 2024. 4717–4726.
+[7] Marios Kokkodis and Theodoros Lappas. 2020.
+Your hometown matters:
+Popularity-difference bias in online reputation platforms. Information Systems
+Research 31, 2 (2020), 412–430.
+[8] Xiaoyu Kong, Leheng Sheng, Junfei Tan, Yuxin Chen, Jiancan Wu, An Zhang,
+Xiang Wang, and Xiangnan He. 2025. Minionerec: An open-source framework
+for scaling generative recommendation. arXiv preprint arXiv:2510.24431 (2025).
+[9] Zhirui Kuai, Zuxu Chen, Huimu Wang, Mingming Li, Dadong Miao, Wang Binbin,
+Xusong Chen, Li Kuang, Yuxing Han, Jiaxing Wang, et al. 2024. Breaking the
+Hourglass Phenomenon of Residual Quantization: Enhancing the Upper Bound of
+Generative Retrieval. In Proceedings of the 2024 Conference on Empirical Methods
+in Natural Language Processing: Industry Track. 677–685.
+[10] Zhanyu Liu, Shiyao Wang, Xingmei Wang, Rongzhou Zhang, Jiaxin Deng,
+Honghui Bao, Jinghao Zhang, Wuchao Li, Pengfei Zheng, Xiangyu Wu, et al.
+2025. Onerec-think: In-text reasoning for generative recommendation. arXiv
+preprint arXiv:2510.11639 (2025).
+[11] Sijin Lu, Zhibo Man, Fangyuan Luo, and Jun Wu. 2025. Dual Debiasing in
+LLM-based Recommendation. In Proceedings of the 48th International ACM SIGIR
+Conference on Research and Development in Information Retrieval. 2685–2689.
+[12] Zheqi Lv, Shaoxuan He, Tianyu Zhan, Shengyu Zhang, Wenqiao Zhang, Jingyuan
+Chen, Zhou Zhao, and Fei Wu. 2024. Semantic codebook learning for dynamic
+recommendation models. In Proceedings of the 32nd ACM International Conference
+on Multimedia. 9611–9620.
+[13] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[14] Jakob Raymaekers and Ruben H Zamar. 2022. Regularized k-means through
+hard-thresholding. Journal of Machine Learning Research 23, 93 (2022), 1–48.
+[15] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable item tokenization for generative
+recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management. 2400–2409.
+[16] Tianxin Wei, Xuying Ning, Xuxing Chen, Ruizhong Qiu, Yupeng Hou, Yan Xie,
+Shuang Yang, Zhigang Hua, and Jingrui He. 2025. CoFiRec: Coarse-to-Fine
+Tokenization for Generative Recommendation. arXiv preprint arXiv:2511.22707
+(2025).
+[17] Jiahui Yu, Xin Li, Jing Yu Koh, Han Zhang, Ruoming Pang, James Qin, Alexander
+Ku, Yuanzhong Xu, Jason Baldridge, and Yonghui Wu. 2021. Vector-quantized
+image modeling with improved vqgan. arXiv preprint arXiv:2110.04627 (2021).
+[18] Ziwei Zhu, Yun He, Xing Zhao, Yin Zhang, Jianling Wang, and James Caverlee.
+2021. Popularity-opportunity bias in collaborative filtering. In Proceedings of the
+14th ACM international conference on web search and data mining. 85–93.

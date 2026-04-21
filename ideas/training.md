@@ -984,3 +984,71 @@ BOS 时间注入方案可以最低成本验证"全局时间是否有用":
 1. 我们的 NTP 序列没有 [BOS] token — 需要新增还是注入到第一个 item 的第一个 SID token
 2. 直播场景的时间敏感度远高于内容推荐 — 效果可能打折扣
 3. 快手论文没有单独 ablation BOS 时间注入的贡献
+
+---
+
+## IDEA-tca-0: Token-level CF Soft Label Alignment (CF 信号注入 NTP Loss)
+
+**优先级**: P1
+**来源**: TCA4Rec, USTC + Ant Group (arxiv 2601.18457, WWW 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+TCA4Rec 解决 NTP 模型缺乏 collaborative filtering 信号的核心问题。核心 insight: CF 模型做 **item-level** 排序，NTP 做 **token-level** 预测，两者优化粒度不匹配 → 之前的方法只能把 CF 作为 soft prompt 或 representation bias 被动注入。
+
+TCA4Rec 提出 **显式 token-level CF alignment**:
+
+1. **Collaborative Tokenizer**: 从预训练 CF 模型 (如 SASRec) 获取 item-level logits (z_u,i = dot(e_u, e_i))，通过三步变换为 token-level 分布:
+   - Step 1: 收集当前 decode position 的 valid items (前缀匹配)
+   - Step 2: Softmax 归一化为概率分布 π_u,i
+   - Step 3: 按 next token 聚合 (共享同一 next token 的 items 概率求和)
+   
+2. **Soft Label Alignment**: 将 CF token-level 分布与 one-hot 标签融合: ỹ_j(v) = (1-α)·1_{v=y_j} + α·p_u(v|y_{<j})
+3. **Soft NTP Loss**: L_soft = -Σ log(Σ ỹ_j(v)·P(v|x_u,y_{<j}))
+
+α=0 退化为标准 NTP, α=1 完全跟 CF。最优 α ≈ 0.01~0.05 (CF 信号作为 gentle regularizer)。
+
+**与 Auxiliary KL Loss 的关键区别**: Soft NTP 的梯度是 **adaptive** (权重 q_j 依赖模型当前预测 P_j)，而 KL 用固定权重 ỹ_j。Adaptive 权重使模型能平衡 CF 信号和自身世界知识。
+
+**核心结果**:
+- 在 4 种 LLM-based 推荐架构上一致提升 (TallRec, LLaRA, CoLLM, MSL)
+- MSL+TCA on Toys: NDCG@5 0.0145→0.0332 (+129%), H@5 0.0204→0.0452 (+121%)
+- 对 SID-based 方法也有效: TIGER+TCA, LETTER+TCA
+- Collaborative Consistency 随 α 单调增加，但性能先升后降 (α 过大引入 CF 噪声)
+- Model-agnostic + plug-and-play: 不改模型架构，只改 loss
+
+### 与当前项目的关联
+
+- **直接回应 NTP 缺乏 cross-user signal 的问题**: CF 模型的 logits 天然包含 cross-user collaborative 信号，TCA 通过 loss 层面注入
+- 我们的 NTP 模型用 SID (不是 item title text)，Collaborative Tokenizer 需要适配:
+  - SID token 空间 (L1=1024, L2=1024, L3=4096) vs LLM vocab
+  - 前缀匹配变成 SID 前缀匹配 (L1 → L1+L2 → L1+L2+L3)
+  - 概率聚合按 SID token group 而非 text token
+- 前置条件: 需要一个预训练的 CF 模型 (SASRec) — 与 IDEA-flexcode-0 共享此依赖
+- 与 IDEA-onemall-0 (In-Batch Contrastive Loss) 互补: onemall-0 在 representation 层加 CL loss，TCA 在 output token distribution 层加 soft label
+- **Zero model architecture change** — 只改 loss function → 实验成本极低
+
+### 实验设计草案
+
+**Phase 1 — 预训练 SASRec CF 模型**:
+- 在相同用户行为序列上训练 SASRec → 获取 user/item embedding
+- 为每个训练样本计算 CF logits (user dot-product all items)
+
+**Phase 2 — Collaborative Tokenizer for SID**:
+- 对每个 decode position j (L1/L2/L3):
+  - 根据已生成的 SID 前缀筛选 valid items
+  - Softmax normalize CF logits
+  - 按 SID layer-j token 聚合概率
+- 产出: 每个训练样本每个 decode position 的 token-level CF 分布
+
+**Phase 3 — Soft NTP Training**:
+- 修改 NTP loss: (1-α)·CE + α·CF_soft_label
+- 超参搜索 α ∈ {0.001, 0.005, 0.01, 0.05, 0.1}
+
+### 关键问题
+
+1. **效率**: 每个训练样本需要计算 CF logits (dot product with all items) — 5M items 时是否可行? 可能需要 ANN 近似 top-K
+2. SASRec CF 模型的质量是否足够? 论文用的是 academic datasets (19K users)，我们规模大很多
+3. SID token 空间远小于 LLM vocab → 前缀匹配的 valid item set 在 L1 层可能很大 (每个 L1 token 对应 ~5000 items)
+4. 与 IDEA-flexcode-0 的 CF 模型可以共享，但 TCA 的 CF 信号注入方式更轻量 (只改 loss)

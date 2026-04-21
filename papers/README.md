@@ -16,4 +16,8 @@
 | 2602.08612 | OneLive: Dynamically Unified Generative Framework for Live-Streaming | Shen Wang et al. (Kuaishou) | 2026-02-09 | [pdf](2602.08612.pdf) | [txt](2602.08612.txt) | IDEA-onelive-0 |
 | 2509.21777 | SynerGen: Contextualized Generative Recommender for Unified Search and Recommendation | Vianne R. Gao et al. | 2025-09-25 | [pdf](2509.21777.pdf) | [txt](2509.21777.txt) | — |
 | 2602.23671 | FuXi-Linear: Unleashing the Power of Linear Attention in Long-term Time-Aware Sequential Recommendation | Yufei Ye et al. (USTC) | 2026-02-26 | [pdf](2602.23671.pdf) | [txt](2602.23671.txt) | — |
+| 2511.20673 | FlexCode: Dual Codebook Representational Learning for Generative Recommendation | Zheng Hui et al. (Roblox) | 2025-11-15 | [pdf](2511.20673.pdf) | [txt](2511.20673.txt) | IDEA-flexcode-0 |
+| 2503.02453 | COBRA: Cascaded Sparse-Dense Representations for Generative Recommendations | Yuhao Yang et al. (Baidu) | 2025-03-04 | [pdf](2503.02453.pdf) | [txt](2503.02453.txt) | IDEA-cobra-0 |
+| 2601.18457 | TCA4Rec: Token-level Collaborative Alignment for LLM-based Generative Recommendation | Fake Lin et al. (USTC + Ant Group) | 2026-01-26 | [pdf](2601.18457.pdf) | [txt](2601.18457.txt) | IDEA-tca-0 |
+| 2604.05113 | CRAB: Codebook Rebalancing for Bias Mitigation in Generative Recommendation | Zezhong Fan et al. (Walmart) | 2026-04-06 | [pdf](2604.05113.pdf) | [txt](2604.05113.txt) | IDEA-crab-0 |
 | 2410.06682 | mrDPO: Multi-Round DPO with Rebirth Tuning for Video Captioning | Changli Tang et al. (Tsinghua + ByteDance) | 2024-10-11 | [pdf](2410.06682.pdf) | [txt](2410.06682.txt) | — |
