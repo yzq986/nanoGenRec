@@ -39,11 +39,63 @@
 
 ---
 
-## EXP-023: NTP Side Information — Time Gap + Action Type + Segment Embedding
+## EXP-024: Side Feature Shift — 消除 time_gap/action_level 信息泄漏
 
 **Date**: 2026-04-21
 **Status**: planned
 **Results**: TBD
+
+### Background
+
+EXP-023 发现 time_gap 和 action_level 存在训练-推理信息泄漏：
+- 训练时 side features 按 item 复制 3 次铺到所有 token 位置，包括 target item 的 L0/L1/L2
+- 模型在 intra-item 预测（L0→L1, L1→L2）时学会依赖 target item 自身的 action_level
+- Beam search 推理时不知道 target item 的特征 → L1/L2 预测偏移 → recall 崩溃
+- action 影响最严重：PPL 27.5（好于 baseline 28.4）但 R@500 仅 28.5%（baseline 60.7%）
+
+Segment embedding 不受影响（纯位置信息），EXP-023 已验证有效（PPL 25.94, R@500 61.2%）。
+
+### Hypothesis
+
+将 side features 延迟一个 item：每个 item 的 3 个 token 位置使用**上一个 item** 的 time_gap/action_level（第一个 item 用 padding=0）。这样：
+- 预测 item K+1 的 L0 时：使用 item K 的 features（已知 ✓）
+- 预测 item K+1 的 L1/L2 时：同样使用 item K 的 features（已知 ✓）
+- 训练与推理完全一致
+
+预期：
+- time_gap shifted: R@500 与 baseline 持平或略优（时间信号对 L0 跨 item 预测有帮助）
+- action shifted: R@500 恢复到 baseline 水平或略优（消除泄漏后，仍提供历史行为强度信号）
+- segment + shifted_all: 最佳组合，预计 R@500 > 61.2%
+
+### Design
+- **Variable**: side feature 组合 (4 configs)
+  - segment-only: 仅 segment_emb（EXP-023 已有结果，作为 baseline）
+  - seg+timegap: segment + shifted time_gap
+  - seg+action: segment + shifted action_level
+  - seg+all: segment + shifted time_gap + shifted action_level
+- **Fixed**: S-tier model (17.5M active, 256d/6L/8E top-2), 14d data (03-18~03-31), batch=4096, lr=1e-3, 1 epoch
+- **Metric**: train loss, eval PPL, Recall@{10, 50, 100, 500}
+- **Data**: 需重新 preprocess-ntp（shifted features），segment-only 可复用 EXP-023 数据
+
+### Run
+`bash experiments/scripts/exp-024.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
+## EXP-023: NTP Side Information — Time Gap + Action Type + Segment Embedding
+
+**Date**: 2026-04-21
+**Status**: completed
+**Results**: [./ntp_checkpoints/exp023-*/](./ntp_checkpoints/exp023-*/)
 
 ### Background
 当前 NTP 模型输入仅为 SID token 序列 + 单一位置编码。三个 P0 低成本 additive 特征（IDEA-feat-0/1/2）可同时实现并独立验证：
@@ -74,13 +126,32 @@ Baseline: EXP-016 B-14d-S (PPL=27.05, R@500=58.5%)
 `bash experiments/scripts/exp-023.sh`
 
 ### Results
-TBD
+
+| Config | PPL | L0 PPL | L1 PPL | L2 PPL | R@10 | R@50 | R@100 | R@500 |
+|--------|-----|--------|--------|--------|------|------|-------|-------|
+| baseline | 28.41 | 351.4 | 12.15 | 5.45 | 11.0% | 25.9% | 34.9% | 60.7% |
+| timegap | 28.78 | 340.8 | 10.82 | 6.56 | 10.9% | 27.3% | 36.8% | 60.1% |
+| action | 27.50 | 359.2 | 12.30 | 4.78 | 4.9% | 11.1% | 15.9% | 28.5% |
+| segment | **25.94** | 346.9 | 11.75 | 4.35 | 10.9% | 24.9% | 35.4% | **61.2%** |
+| all | **25.16** | **338.0** | **10.30** | 4.64 | 9.5% | 23.0% | 31.6% | 55.0% |
 
 ### Analysis
-TBD
+
+**Segment embedding 唯一有效且可信**：PPL 25.94 (-8.7%)，R@500 61.2% (+0.5pp)。纯位置信息，训练和推理完全一致。
+
+**time_gap 和 action_level 存在训练-推理信息泄漏**：
+- 训练时 side features 按 item 复制 3 次铺开到所有 token 位置，包括 target item 的 L0/L1/L2
+- 模型学会在 intra-item 预测（L0→L1, L1→L2）时依赖 target item 自己的 action_level/time_gap
+- Teacher-forced eval 有同样的泄漏 → PPL 虚好
+- Beam search 推理时不知道 target item 的特征 → L1/L2 预测偏移 → recall 崩溃
+- action 影响最大（直接编码用户对 target 的行为强度，推理时本质不可知），R@500 仅 28.5%
+- time_gap 影响小（intra-item 预测不太依赖时间差），R@500 基本持平
+
+**结论**：segment_emb 是 confirmed positive。time_gap/action_level 需修复信息泄漏后重新验证。
 
 ### Next Steps
-TBD
+
+EXP-024：将 side features 按 item 延迟一步（每个 item 的 3 个 token 位置使用上一个 item 的 features），消除对 target item 的信息泄漏。同时修复 teacher-forced eval 使其与 beam search 一致。
 
 ---
 
