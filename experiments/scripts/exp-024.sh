@@ -16,6 +16,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 export PYTHONPATH="$(dirname "${REPO_ROOT}"):${PYTHONPATH:-}"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd "${REPO_ROOT}"
 
 # ── Paths (grep'd from exp-023.sh) ──
