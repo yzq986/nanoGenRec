@@ -45,6 +45,7 @@ cd "${REPO_ROOT}"
 4. **已有 baseline** — 如果 baseline 已训练过（有 checkpoint），直接引用，不要重训
 
 5. **CUDA 内存设置** — grep `PYTORCH_CUDA_ALLOC_CONF` 确认是否需要 `expandable_segments:True`（训练脚本几乎都需要）
+6. **日期窗口对齐** — `preprocess-sid` 和 `preprocess-ntp` 的日期范围必须兼容：SID 覆盖的 item 集合必须包含 NTP 行为数据中的 item。注意 `--behavior_path auto` 解析的日期取决于运行时间，不同时间跑同一脚本会得到不同结果，必须显式指定 `--date_start/--date_end`
 
 **绝对禁止凭记忆编造路径、日期、参数。** 所有这些必须从已有脚本中 grep 得到。
 
