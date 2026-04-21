@@ -1,11 +1,30 @@
 {
-  "name": "exp021-4b-h128",
-  "model_type": "s-tier",
+  "n_train": 595193,
+  "n_eval": 46119,
+  "n_clusters_per_layer": [
+    4096,
+    4096,
+    2998
+  ],
+  "n_layers": 3,
+  "n_items": 10,
   "n_params": 45218230,
-  "n_active_params": 16906678,
-  "total_tokens": 24327624,
-  "total_flops": 2467795832838432,
+  "train_loss": 2.973006,
   "sid_cache": "experiments/sid_cache/qwen3-4b-h128-31d",
+  "preprocessed_dir": "experiments/ntp_data/exp021-4b-h128-v2",
+  "timestamp": "2026-04-21 10:39:51",
+  "train": {
+    "n_params": 45218230,
+    "n_active_params": 16906678,
+    "total_tokens": 24327624,
+    "total_flops": 2467795832838432,
+    "throughput_tok_per_s": 60777.5,
+    "wall_time_s": 400.3,
+    "batch_size": 152,
+    "world_size": 8,
+    "n_batches": 489,
+    "max_seq_len": 512
+  },
   "eval": {
     "ppl": 8.4415,
     "layer_ppl": [
