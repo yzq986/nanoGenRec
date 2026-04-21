@@ -48,6 +48,8 @@ def parse_args():
                         help='If > 0, load exposure data and build neg_l0 for ENTP loss')
     parser.add_argument('--entp_k', type=int, default=5,
                         help='Max negative L0 tokens per position for ENTP')
+    parser.add_argument('--shift_features', action='store_true', default=False,
+                        help='Shift time_gap/action_level by one item to avoid target leakage')
     return parser.parse_args()
 
 
@@ -284,7 +286,8 @@ def main():
             sid_dict, behavior_data=behavior_data,
             n_items=args.n_items, max_seq_len=args.max_seq_len,
             n_eval_target=args.n_eval_target,
-            exposure_neg_data=exposure_neg_data, entp_k=args.entp_k)
+            exposure_neg_data=exposure_neg_data, entp_k=args.entp_k,
+            shift_features=args.shift_features)
 
     del sid_dict, behavior_data, exposure_neg_data  # free memory
 

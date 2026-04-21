@@ -174,7 +174,8 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
 
 def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_len=512,
                             n_eval_target=50000, verbose_fn=print,
-                            exposure_neg_data=None, entp_k=5):
+                            exposure_neg_data=None, entp_k=5,
+                            shift_features=False):
     """Build unified per-user sequences with split_pos for train/eval masking.
 
     Each user → one complete SID token sequence. split_pos marks the boundary
@@ -207,20 +208,22 @@ def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_le
         # ── ENTP mode: compact positive + neg_iids from PySpark ──
         return _build_sequences_from_exposure(
             exposure_neg_data, content_to_tokens, n_layers, n_clusters_per_layer,
-            entp_k, max_seq_len, n_eval_target, verbose_fn)
+            entp_k, max_seq_len, n_eval_target, verbose_fn,
+            shift_features=shift_features)
     else:
         # ── Legacy mode: behavior data only ──
         if behavior_data is None:
             raise ValueError("Either behavior_data or exposure_neg_data must be provided")
         return _build_sequences_from_behavior(
             behavior_data, content_to_tokens, n_layers, n_clusters_per_layer,
-            max_seq_len, n_eval_target, verbose_fn)
+            max_seq_len, n_eval_target, verbose_fn,
+            shift_features=shift_features)
 
 
 def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
                                    n_layers, n_clusters_per_layer,
                                    entp_k, max_seq_len, n_eval_target,
-                                   verbose_fn):
+                                   verbose_fn, shift_features=False):
     """Build sequences from compact ENTP negative data (PySpark output).
 
     Input: exposure_neg_data dict with uid, iid, first_ts, neg_iids.
@@ -334,6 +337,11 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
                 time_gaps.append(bucket)
                 action_levels.append(1)
 
+        if shift_features:
+            L = n_layers
+            time_gaps = [0] * L + time_gaps[:-L]
+            action_levels = [0] * L + action_levels[:-L]
+
         sequences.append({
             'tokens': flat,
             'split_pos': split_token_pos,
@@ -400,7 +408,8 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
 
 def _build_sequences_from_behavior(behavior_data, content_to_tokens,
                                    n_layers, n_clusters_per_layer,
-                                   max_seq_len, n_eval_target, verbose_fn):
+                                   max_seq_len, n_eval_target, verbose_fn,
+                                   shift_features=False):
     """Build sequences from behavior data only (no ENTP negatives)."""
     uids_s, iids_s, ts_s, actions_s, starts, ends, _ = \
         _build_user_items(behavior_data, content_to_tokens, verbose_fn)
@@ -470,6 +479,11 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
             for _ in range(n_layers):
                 time_gaps.append(bucket)
                 action_levels.append(level)
+
+        if shift_features:
+            L = n_layers
+            time_gaps = [0] * L + time_gaps[:-L]
+            action_levels = [0] * L + action_levels[:-L]
 
         sequences.append({
             'tokens': flat,
