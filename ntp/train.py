@@ -1572,6 +1572,9 @@ def main():
                 top_k=cfg.get('top_k', 2),
                 expert_dim=cfg.get('expert_dim', 1024),
                 max_seq_len=cfg.get('max_seq_len', max_seq_len),
+                n_time_buckets=cfg.get('n_time_buckets', 0),
+                n_action_levels=cfg.get('n_action_levels', 0),
+                use_segment_emb=cfg.get('use_segment_emb', False),
             )
         else:
             probe = NTPProbe(
