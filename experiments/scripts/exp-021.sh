@@ -84,9 +84,9 @@ fi
 # ============================================================
 # Config 1: Qwen3-4B — same FSQ hidden (64)
 # ============================================================
-SID_CACHE_4B="experiments/sid_cache/qwen3-4b"
-NTP_DATA_4B="experiments/ntp_data/exp021-4b"
-CKPT_4B="experiments/ntp_checkpoints/exp021-4b"
+SID_CACHE_4B="experiments/sid_cache/qwen3-4b-31d"
+NTP_DATA_4B="experiments/ntp_data/exp021-4b-v2"
+CKPT_4B="experiments/ntp_checkpoints/exp021-4b-v2"
 
 if [ "${START_FROM}" -le 1 ]; then
     echo ""
@@ -95,6 +95,7 @@ if [ "${START_FROM}" -le 1 ]; then
     echo "============================================================"
 
     # Train SID tokenizer for 4B (same config as 0.6B baseline: 4096×3, FSQ 12d_4096, MLP h=64)
+    # IMPORTANT: date range must match baseline (03-01~03-31), NOT auto (which resolves to recent 14d)
     python run.py preprocess-sid \
         --model qwen3-4b \
         --output_dir "${SID_CACHE_4B}" \
@@ -103,7 +104,9 @@ if [ "${START_FROM}" -le 1 ]; then
         --fsq_levels 12d_4096 \
         --fsq_projection mlp \
         --fsq_mlp_hidden 64 \
-        --fsq_epochs 50
+        --fsq_epochs 50 \
+        --date_start 2026-03-01 \
+        --date_end 2026-03-31
 
     # Preprocess NTP data (14d window, same as EXP-016 B-14d)
     python run.py preprocess-ntp \
@@ -138,9 +141,9 @@ fi
 # ============================================================
 # Config 2: Qwen3-4B — larger FSQ hidden (128)
 # ============================================================
-SID_CACHE_4B_H128="experiments/sid_cache/qwen3-4b-h128"
-NTP_DATA_4B_H128="experiments/ntp_data/exp021-4b-h128"
-CKPT_4B_H128="experiments/ntp_checkpoints/exp021-4b-h128"
+SID_CACHE_4B_H128="experiments/sid_cache/qwen3-4b-h128-31d"
+NTP_DATA_4B_H128="experiments/ntp_data/exp021-4b-h128-v2"
+CKPT_4B_H128="experiments/ntp_checkpoints/exp021-4b-h128-v2"
 
 if [ "${START_FROM}" -le 2 ]; then
     echo ""
@@ -149,6 +152,7 @@ if [ "${START_FROM}" -le 2 ]; then
     echo "============================================================"
 
     # Train SID tokenizer for 4B with larger FSQ hidden (128 vs baseline 64)
+    # IMPORTANT: date range must match baseline (03-01~03-31)
     python run.py preprocess-sid \
         --model qwen3-4b \
         --output_dir "${SID_CACHE_4B_H128}" \
@@ -157,7 +161,9 @@ if [ "${START_FROM}" -le 2 ]; then
         --fsq_levels 12d_4096 \
         --fsq_projection mlp \
         --fsq_mlp_hidden 128 \
-        --fsq_epochs 50
+        --fsq_epochs 50 \
+        --date_start 2026-03-01 \
+        --date_end 2026-03-31
 
     # Preprocess NTP data (14d window, same as EXP-016 B-14d)
     python run.py preprocess-ntp \
