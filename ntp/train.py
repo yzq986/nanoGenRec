@@ -175,7 +175,7 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
 def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_len=512,
                             n_eval_target=50000, verbose_fn=print,
                             exposure_neg_data=None, entp_k=5,
-                            shift_features=False):
+                            shift_features=False, action_l2_only=False):
     """Build unified per-user sequences with split_pos for train/eval masking.
 
     Each user → one complete SID token sequence. split_pos marks the boundary
@@ -217,7 +217,7 @@ def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_le
         return _build_sequences_from_behavior(
             behavior_data, content_to_tokens, n_layers, n_clusters_per_layer,
             max_seq_len, n_eval_target, verbose_fn,
-            shift_features=shift_features)
+            shift_features=shift_features, action_l2_only=action_l2_only)
 
 
 def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
@@ -409,7 +409,8 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
 def _build_sequences_from_behavior(behavior_data, content_to_tokens,
                                    n_layers, n_clusters_per_layer,
                                    max_seq_len, n_eval_target, verbose_fn,
-                                   shift_features=False):
+                                   shift_features=False,
+                                   action_l2_only=False):
     """Build sequences from behavior data only (no ENTP negatives)."""
     uids_s, iids_s, ts_s, actions_s, starts, ends, _ = \
         _build_user_items(behavior_data, content_to_tokens, verbose_fn)
@@ -479,6 +480,11 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
             for _ in range(n_layers):
                 time_gaps.append(bucket)
                 action_levels.append(level)
+
+        if action_l2_only:
+            for i in range(len(action_levels)):
+                if (i + 1) % n_layers != 0:
+                    action_levels[i] = 0
 
         if shift_features:
             L = n_layers

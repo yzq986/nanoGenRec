@@ -39,11 +39,65 @@
 
 ---
 
-## EXP-024: Side Feature Shift — 消除 time_gap/action_level 信息泄漏
+## EXP-025: Beam Search Feature Passing — 正确消除 side feature 训练-推理 gap
 
 **Date**: 2026-04-21
 **Status**: planned
 **Results**: TBD
+
+### Background
+
+EXP-024 的 shift 方案被证明方向错误：
+- time_gap shift 后 R@500 = 59.8%（反而低于 baseline 61.2%），因为让 context 信息变陈旧
+- action shift 后 R@500 = 52.9%，仍远低于 baseline
+- 根本原因：shift 只解决训练侧泄漏，但没解决 beam search incremental path 不传 features 的问题
+
+正确分析：
+- **time_gap 完全已知**：item K 到 K+1 的时间间隔是历史事实，推理时 context items 的 time_gap 全部已知。生成 target item 的 token 时，target 的 time_gap（到上一个 context item 的间隔）也已知。
+- **action_level 部分未知**：context items 的 action_level 已知，但 target item 的 action_level 未知（还没发生行为）。
+- 当前 `forward_cached` incremental path（生成 L0→L1→L2 token）完全不传 features → 即使 context encoding 正确，生成 token 仍有 gap。
+
+### Hypothesis
+
+**Config 1** (beam_passes): 不 shift 数据。训练正常（time_gap + action 在所有 token）。Beam search incremental path 传入：
+- time_gap = target item 的真实 time_gap（已知）
+- action_level = 最后一个 context item 的 action_level（carry-forward）
+
+预期 time_gap 贡献 1-2% R@500 提升（跨 item 间隔信号）；action carry-forward 可能略有帮助。
+
+**Config 2** (action_l2_only): 训练时 action_level 只作用于每个 item 的 L2 token 位置（L0/L1 位置强制 action=0）。Beam search 对生成 token 传 action=0，完全一致：
+- L0/L1 生成：action=0（训练也是 0 → 无 gap）
+- L2 生成：action=0（训练是真值，但只在最后一层，对 recall 影响有限）
+- 好处：彻底消除 action 对 L0/L1 recall 的负面影响
+
+### Design
+- **Variable**: beam search feature passing 策略 (2 configs)
+  - Config 1 (seg+all+beam_passes): segment_emb + time_gap + action，beam search 传 features
+  - Config 2 (seg+time+action_l2): segment_emb + time_gap(all) + action(L2-only)，beam search 传 time_gap
+- **Baseline**: exp023-segment (PPL=25.94, R@500=61.2%)
+- **Fixed**: S-tier model, 14d data (03-18~03-31), EXP-023 NTP data（不 shift）
+- **Metric**: train loss, eval PPL, Recall@{10, 50, 100, 500}
+- **Data**: Config 1 复用 EXP-023 数据；Config 2 新 preprocess（action_l2_only）
+
+### Run
+`bash experiments/scripts/exp-025.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
+## EXP-024: Side Feature Shift — 消除 time_gap/action_level 信息泄漏
+
+**Date**: 2026-04-21
+**Status**: completed
+**Results**: [./ntp_checkpoints/exp024-*/](./ntp_checkpoints/exp024-*/)
 
 ### Background
 
@@ -81,13 +135,26 @@ Segment embedding 不受影响（纯位置信息），EXP-023 已验证有效（
 `bash experiments/scripts/exp-024.sh`
 
 ### Results
-TBD
+
+| Config | PPL | R@10 | R@50 | R@100 | R@500 |
+|--------|-----|------|------|-------|-------|
+| exp023-segment (baseline) | 25.94 | 13.2% | 33.8% | 43.9% | 61.2% |
+| exp024-seg-timegap | ~26 | — | — | — | 59.8% |
+| exp024-seg-action | ~27 | — | — | — | 52.9% |
+| exp024-seg-all | ~26 | — | — | — | ~55% |
 
 ### Analysis
-TBD
+
+Shift 方案**完全失败**：
+1. **time_gap shifted (59.8%)**: 比 baseline 还低 1.4%。Shift 让 context items 使用的是「上上个」item 的 time_gap，信息变陈旧反而干扰学习。
+2. **action shifted (52.9%)**: 虽然比 EXP-023 未修复版 (28.5%) 好很多，但仍远低于 baseline。说明 action carry-forward 信息较弱。
+3. **根本问题**：shift 解决了训练侧泄漏（target token 不再有自身 features），但 beam search incremental path 仍然不传任何 features。只要 incremental 生成时特征为 0，而训练时是非 0，就存在不可消除的 gap。
+
+**结论**：shift 是错误方向。正确做法是不 shift 训练数据，转而修复 beam search incremental path 使其传入正确 features（EXP-025）。
 
 ### Next Steps
-TBD
+
+EXP-025: 修复 beam search incremental path，正确传入 time_gap（真值已知）和 action_level（carry-forward 或 L2-only 设计）。
 
 ---
 

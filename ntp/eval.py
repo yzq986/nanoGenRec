@@ -299,8 +299,12 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
             }
             if has_tg:
                 item['ctx_time_gaps'] = seq['time_gaps'][:ctx_end]
+                # Target item's time_gap is known at inference (historical fact)
+                item['gen_time_gap'] = seq['time_gaps'][ctx_end]
             if has_al:
                 item['ctx_action_levels'] = seq['action_levels'][:ctx_end]
+                # Carry-forward: use last context item's action (target's is unknown)
+                item['gen_action_level'] = seq['action_levels'][ctx_end - 1]
             eval_items.append(item)
 
     if not eval_items:
@@ -332,9 +336,11 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
         if 'ctx_time_gaps' in item and hasattr(probe, 'time_gap_emb'):
             ctx_kwargs['ctx_time_gaps'] = torch.tensor(
                 item['ctx_time_gaps'], dtype=torch.long, device=device).unsqueeze(0)
+            ctx_kwargs['gen_time_gap'] = item['gen_time_gap']
         if 'ctx_action_levels' in item and hasattr(probe, 'action_emb'):
             ctx_kwargs['ctx_action_levels'] = torch.tensor(
                 item['ctx_action_levels'], dtype=torch.long, device=device).unsqueeze(0)
+            ctx_kwargs['gen_action_level'] = item['gen_action_level']
 
         beams, scores, _ = constrained_beam_search(
             probe, ctx, sid_trie, beam_size=recall_beam_size, **ctx_kwargs)

@@ -63,6 +63,8 @@ def constrained_beam_search(
     initial_logits: torch.Tensor = None,
     ctx_time_gaps: torch.Tensor = None,
     ctx_action_levels: torch.Tensor = None,
+    gen_time_gap: int = None,
+    gen_action_level: int = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, list]:
     """Trie-constrained beam search with KV cache — every beam is a real SID.
 
@@ -86,6 +88,8 @@ def constrained_beam_search(
                 Required when ctx_kv_caches is provided and prefix is None.
         ctx_time_gaps: (B, T) time gap buckets for context tokens.
         ctx_action_levels: (B, T) action levels for context tokens.
+        gen_time_gap: scalar int, time_gap bucket for generated tokens (target item).
+        gen_action_level: scalar int, action_level for generated tokens (target item).
 
     Returns:
         beams: (B, actual_beams, n_layers) — token indices
@@ -108,14 +112,31 @@ def constrained_beam_search(
             input_tokens, ctx_time_gaps=ctx_time_gaps,
             ctx_action_levels=ctx_action_levels)
 
+    # ── Build step feature tensors for generated tokens ──
+    _has_tg = gen_time_gap is not None and hasattr(model, 'time_gap_emb')
+    _has_al = gen_action_level is not None and hasattr(model, 'action_emb')
+
+    def _step_features(n_tok):
+        """Return step_time_gap, step_action_level tensors for n_tok tokens."""
+        stg = torch.full((n_tok, 1), gen_time_gap, dtype=torch.long,
+                         device=device) if _has_tg else None
+        sal = torch.full((n_tok, 1), gen_action_level, dtype=torch.long,
+                         device=device) if _has_al else None
+        return stg, sal
+
     # ── Phase 1: beam init ──
     if prefix is not None:
         P = prefix.size(1)
         beams = prefix.unsqueeze(1)  # (B, 1, P)
         start_step = P
         step_kv = [c.clone() for c in ctx_kv_caches]
+        stg_pfx = torch.full((B, P), gen_time_gap, dtype=torch.long,
+                             device=device) if _has_tg else None
+        sal_pfx = torch.full((B, P), gen_action_level, dtype=torch.long,
+                             device=device) if _has_al else None
         current_logits, step_kv = model.forward_cached(
-            generated_tokens=prefix, kv_caches=step_kv)
+            generated_tokens=prefix, kv_caches=step_kv,
+            step_time_gap=stg_pfx, step_action_level=sal_pfx)
     else:
         beams = torch.zeros(B, 1, 0, dtype=torch.long, device=device)
         start_step = 0
@@ -129,8 +150,10 @@ def constrained_beam_search(
 
         if step > start_step:
             last_tokens = beams[:, :, -1].reshape(B * n_beams, 1)
+            stg_step, sal_step = _step_features(B * n_beams)
             current_logits, step_kv = model.forward_cached(
-                generated_tokens=last_tokens, kv_caches=step_kv)
+                generated_tokens=last_tokens, kv_caches=step_kv,
+                step_time_gap=stg_step, step_action_level=sal_step)
 
         log_probs = F.log_softmax(
             current_logits.view(B, n_beams, -1), dim=-1)
@@ -674,7 +697,8 @@ class NTPModel(nn.Module):
 
     @torch.no_grad()
     def forward_cached(self, input_tokens=None, generated_tokens=None, kv_caches=None,
-                        ctx_time_gaps=None, ctx_action_levels=None):
+                        ctx_time_gaps=None, ctx_action_levels=None,
+                        step_time_gap=None, step_action_level=None):
         """Inference-only forward with KV cache.
 
         Calling patterns:
@@ -685,6 +709,8 @@ class NTPModel(nn.Module):
         Args:
             ctx_time_gaps: (B, T_ctx) time gap buckets, only used on cold start.
             ctx_action_levels: (B, T_ctx) action levels, only used on cold start.
+            step_time_gap: (B, T_new) time gap for incremental generated tokens.
+            step_action_level: (B, T_new) action level for incremental generated tokens.
 
         Returns:
             logits: (B, C) logits for the next token.
@@ -721,6 +747,10 @@ class NTPModel(nn.Module):
             x = self._embed_tokens_at_offset(new_tokens, offset)
             positions = torch.arange(offset, offset + T_new, device=device).unsqueeze(0)
             x = x + self._get_pos_emb(positions)
+            if step_time_gap is not None and hasattr(self, 'time_gap_emb'):
+                x = x + self.time_gap_emb(step_time_gap)
+            if step_action_level is not None and hasattr(self, 'action_emb'):
+                x = x + self.action_emb(step_action_level)
             out, kv_caches = self._transformer_forward_cached(x, kv_caches)
 
         T_total = kv_caches[0].size(1)

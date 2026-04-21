@@ -50,6 +50,8 @@ def parse_args():
                         help='Max negative L0 tokens per position for ENTP')
     parser.add_argument('--shift_features', action='store_true', default=False,
                         help='Shift time_gap/action_level by one item to avoid target leakage')
+    parser.add_argument('--action_l2_only', action='store_true', default=False,
+                        help='Zero out action_level at L0/L1 positions, keep only at L2')
     return parser.parse_args()
 
 
@@ -287,7 +289,8 @@ def main():
             n_items=args.n_items, max_seq_len=args.max_seq_len,
             n_eval_target=args.n_eval_target,
             exposure_neg_data=exposure_neg_data, entp_k=args.entp_k,
-            shift_features=args.shift_features)
+            shift_features=args.shift_features,
+            action_l2_only=args.action_l2_only)
 
     del sid_dict, behavior_data, exposure_neg_data  # free memory
 
