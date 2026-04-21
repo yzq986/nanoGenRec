@@ -20,6 +20,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 export PYTHONPATH="$(dirname "${REPO_ROOT}"):${PYTHONPATH:-}"
 cd "${REPO_ROOT}"
 
+# Fix CUDA memory fragmentation
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 SKIP_SMOKE=false
 FORCE=false
 START_FROM=1
