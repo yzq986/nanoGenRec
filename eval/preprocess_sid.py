@@ -253,10 +253,13 @@ def main_incremental(args):
         print("\nStep 2: Loading embedding shards & computing diff...")
 
     if is_distributed:
-        # Distributed: each rank loads only its own shard
-        cache_dict, _ = _load_embedding_cache(model_key, shard_idx=rank)
+        my_shards = [i for i in range(NUM_SHARDS) if i % world_size == rank]
+        cache_dict = {}
+        for si in my_shards:
+            shard_data, _ = _load_embedding_cache(model_key, shard_idx=si)
+            cache_dict.update(shard_data)
+        print(f"  [Rank {rank}] Loaded shards {my_shards}: {len(cache_dict):,} embeddings")
     else:
-        # Single-process: load all shards merged
         cache_dict, _ = _load_embedding_cache(model_key)
 
     all_keys = set(str(k) for k in cache_dict.keys())

@@ -168,7 +168,7 @@ def load_date_data(date_path, rank, world_size, cached_ids):
             if str(cid) in cached_ids:
                 n_cached += 1
                 continue
-            if cid_to_shard(cid, world_size) == rank:
+            if cid_to_shard(cid) % world_size == rank:
                 my_content_ids.append(cid)
                 my_texts.append(text)
 
@@ -372,18 +372,18 @@ def main():
     output_dir = f"{args.output_dir}/{args.model}"
     os.makedirs(output_dir, exist_ok=True)
 
-    shard_file = f"{output_dir}/shard_{rank}.npy"
+    my_shard_ids = [i for i in range(NUM_SHARDS) if i % world_size == rank]
 
     # Resolve dates (newest first)
     dates = _resolve_dates(args.date_start, args.date_end)
 
     if rank == 0:
         print("=" * 60)
-        print(f"Multi-GPU Embedding Generation (8-shard, per-date)")
+        print(f"Multi-GPU Embedding Generation ({NUM_SHARDS}-shard, per-date)")
         print("=" * 60)
         print(f"Model: {model_name}")
         print(f"Dates: {dates[0]} ~ {dates[-1]} ({len(dates)} days, newest first)")
-        print(f"World size: {world_size}")
+        print(f"World size: {world_size}, shards per rank: {NUM_SHARDS // world_size}")
         print(f"Batch size per GPU: {batch_size}")
         print(f"Output: {output_dir}")
         print("=" * 60)
@@ -429,13 +429,19 @@ def main():
     if rank == 0:
         print(f"All ranks have {len(cached_ids):,} cached IDs\n")
 
-    # 加载已有 shard
-    existing_shard = {}
-    if os.path.exists(shard_file):
-        try:
-            existing_shard = np.load(shard_file, allow_pickle=True).item()
-        except:
-            pass
+    # 加载已有 shard (每个 rank 可能管多个 shard)
+    existing_shards = {}
+    for si in my_shard_ids:
+        sf = f"{output_dir}/shard_{si}.npy"
+        if os.path.exists(sf):
+            try:
+                existing_shards[si] = np.load(sf, allow_pickle=True).item()
+            except:
+                existing_shards[si] = {}
+        else:
+            existing_shards[si] = {}
+    print(f"  [Rank {rank}] Managing shards {my_shard_ids}, "
+          f"{sum(len(s) for s in existing_shards.values()):,} existing items")
 
     embedder = None  # 惰性加载模型
     text_cache = LFUCache()  # 短文本 → embedding LRU 缓存 (跨日期复用)
@@ -468,17 +474,19 @@ def main():
         new_embeddings = encode_batch(
             embedder, my_cids, my_texts, batch_size, rank, text_cache=text_cache)
 
-        # 追加到 shard
-        existing_shard.update(new_embeddings)
-        # 更新 cached_ids (这样后续日期的重复 cid 会被跳过)
+        # 按 cid_to_shard 分配到对应 shard
+        for cid, emb in new_embeddings.items():
+            si = cid_to_shard(cid)
+            existing_shards[si][cid] = emb
         cached_ids.update(str(cid) for cid in new_embeddings.keys())
 
         n_new = len(new_embeddings)
         total_new += n_new
         print(f"    [Rank {rank}] +{n_new:,} embeddings")
 
-        # 每个日期处理完后保存 shard (断点续跑)
-        np.save(shard_file, existing_shard)
+        # 每个日期处理完后保存所有管辖的 shard (断点续跑)
+        for si in my_shard_ids:
+            np.save(f"{output_dir}/shard_{si}.npy", existing_shards[si])
 
         if world_size > 1:
             dist.barrier()
@@ -490,8 +498,9 @@ def main():
         print(f"\n[Rank {rank}] Text cache: {text_cache.hits:,} hits / "
               f"{total_lookups:,} lookups ({hit_rate:.1%}), "
               f"size: {len(text_cache):,}")
-    print(f"[Rank {rank}] Shard {rank}: {len(existing_shard):,} total "
-          f"(+{total_new:,} new) -> {shard_file}")
+    total_items = sum(len(s) for s in existing_shards.values())
+    print(f"[Rank {rank}] Shards {my_shard_ids}: {total_items:,} total "
+          f"(+{total_new:,} new)")
 
     if world_size > 1:
         dist.barrier()
@@ -500,7 +509,7 @@ def main():
     if rank == 0:
         print("Updating cached_ids.txt...")
         all_ids = set()
-        for i in range(world_size):
+        for i in range(NUM_SHARDS):
             sf = f"{output_dir}/shard_{i}.npy"
             if os.path.exists(sf):
                 try:
