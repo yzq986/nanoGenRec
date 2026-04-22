@@ -12,8 +12,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from gr_demo.model.rkmeans import FaissKMeansLayer
-from gr_demo.model.fsq import FSQLayer, LearnedFSQLayer, fsq_layer_from_state
+from model.rkmeans import FaissKMeansLayer
+from model.fsq import FSQLayer, LearnedFSQLayer, fsq_layer_from_state
 
 
 class ResKmeansFSQ:

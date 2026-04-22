@@ -5,7 +5,7 @@ set -euo pipefail
 # Only re-runs eval (training is skipped automatically)
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-export PYTHONPATH="$(dirname "${REPO_ROOT}"):${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 cd "${REPO_ROOT}"
 
 NTP_DATA="experiments/ntp_data/exp023-14d-features"

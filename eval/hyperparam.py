@@ -11,18 +11,18 @@ from typing import Dict, List, Tuple
 import numpy as np
 import torch
 
-from gr_demo.config import MODEL_CONFIGS, EFS_EMBEDDING_CACHE
-from gr_demo.model.rkmeans import ResidualQuantizationMultiGPU
-from gr_demo.model.semantic_ids import generate_semantic_ids
-from gr_demo.model.fsq import FSQ_LEVEL_CONFIGS
-from gr_demo.model.rkmeans_fsq import ResKmeansFSQ, generate_semantic_ids_fsq
-from gr_demo.model.opq import OPQQuantizer
-from gr_demo.data.loaders import load_exposed_iids
-from gr_demo.eval.wrapper import RKMeansModelWrapper, ResKmeansFSQModelWrapper, OPQModelWrapper
-from gr_demo.eval.evaluator import MetricsEvaluator
-from gr_demo.eval.behavior import BehaviorMetricsEvaluator
+from config import MODEL_CONFIGS, EFS_EMBEDDING_CACHE
+from model.rkmeans import ResidualQuantizationMultiGPU
+from model.semantic_ids import generate_semantic_ids
+from model.fsq import FSQ_LEVEL_CONFIGS
+from model.rkmeans_fsq import ResKmeansFSQ, generate_semantic_ids_fsq
+from model.opq import OPQQuantizer
+from data.loaders import load_exposed_iids
+from eval.wrapper import RKMeansModelWrapper, ResKmeansFSQModelWrapper, OPQModelWrapper
+from eval.evaluator import MetricsEvaluator
+from eval.behavior import BehaviorMetricsEvaluator
 
-from gr_demo.metrics import INTRINSIC_METRICS, BEHAVIOR_METRICS, MetricResult
+from metrics import INTRINSIC_METRICS, BEHAVIOR_METRICS, MetricResult
 
 
 # ============================================================
@@ -61,7 +61,7 @@ def run_single_experiment(
     run_ntp: bool = False,
 ) -> Tuple[Dict[str, float], float]:
     """运行单次 RKMeans 训练 + eval，返回 (metrics_dict, train_seconds)"""
-    from gr_demo.eval.behavior import BehaviorMetricsEvaluator
+    from eval.behavior import BehaviorMetricsEvaluator
 
     t0 = time.time()
 
@@ -158,7 +158,7 @@ def run_single_experiment_fsq(
     fsq_epochs: int = 50,
 ) -> Tuple[Dict[str, float], float]:
     """Run single ResKmeansFSQ train + eval, return (metrics_dict, train_seconds)"""
-    from gr_demo.eval.behavior import BehaviorMetricsEvaluator
+    from eval.behavior import BehaviorMetricsEvaluator
 
     t0 = time.time()
 
@@ -236,7 +236,7 @@ def run_single_experiment_fsq(
     # Add FSQ-specific fields
     results['quantizer_type'] = 'rkmeans_fsq'
     results['fsq_levels_key'] = fsq_levels_key
-    from gr_demo.model.fsq import _codebook_size
+    from model.fsq import _codebook_size
     results['fsq_codebook_size'] = _codebook_size(fsq_levels)
     results['fsq_projection'] = fsq_projection
     results['fsq_mlp_hidden'] = fsq_mlp_hidden
@@ -809,8 +809,8 @@ def parse_args():
 
 def run_from_sid_cache(args):
     """Load cached SIDs from preprocess-sid, run eval only (skip tokenizer training)."""
-    from gr_demo.eval.behavior import BehaviorMetricsEvaluator
-    from gr_demo.eval.wrapper import load_model_wrapper
+    from eval.behavior import BehaviorMetricsEvaluator
+    from eval.wrapper import load_model_wrapper
 
     cache_dir = args.sid_cache
     run_ntp = args.run_ntp and not args.skip_ntp
@@ -823,7 +823,7 @@ def run_from_sid_cache(args):
     # ── NTP-only fast path: checkpoint has everything, skip heavy loading ──
     if run_ntp and args.ntp_checkpoint:
         print(f"NTP eval from checkpoint: {args.ntp_checkpoint}")
-        from gr_demo.ntp.eval import SemanticIDPredictionMetric
+        from ntp.eval import SemanticIDPredictionMetric
         metric = SemanticIDPredictionMetric()
         metric_result = metric.compute(
             embeddings=None,
@@ -876,7 +876,7 @@ def run_from_sid_cache(args):
         print(f"  Loaded {len(eval_tensor):,} embeddings")
 
         # Load behavior data
-        from gr_demo.eval.batch import load_all_behavior_data
+        from eval.batch import load_all_behavior_data
         behavior_data = load_all_behavior_data()
         print(f"  Behavior data: {len(behavior_data['uid']):,} interactions")
 
@@ -1012,7 +1012,7 @@ def main():
     run_ntp = args.run_ntp and not args.skip_ntp
     need_behavior = args.behavior_path or args.only_sid or run_ntp
     if need_behavior:
-        from gr_demo.eval.batch import load_all_behavior_data
+        from eval.batch import load_all_behavior_data
         try:
             behavior_data = load_all_behavior_data()
             print(f"Behavior data loaded: {len(behavior_data['uid']):,} interactions")

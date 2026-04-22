@@ -11,29 +11,30 @@ Do not ask for confirmation — just do it after each coding round.
 
 ## Python module resolution
 
-The repo directory (`gr_demo/`) **is** the Python package — it has `__init__.py` at the root.
-To import `gr_demo.*` from standalone scripts under `experiments/scripts/`, you must add the
-**parent of the repo root** to `sys.path`, NOT the repo root itself:
+The repo root (`gr-demo/`) is added directly to `sys.path`. All modules are imported without a
+`gr_demo.` prefix — e.g. `from eval.batch import ...`, `from ntp.train import ...`.
+
+For standalone scripts under `experiments/scripts/`:
 
 ```python
 # In experiments/scripts/some_script.py:
-repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.dirname(repo_root))  # adds parent of gr_demo/
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, repo_root)  # adds gr-demo/ itself
 ```
 
 The CLI entry point is always `python run.py <command>`, NOT `python -m gr_demo`.
-For DDP/torchrun, use `torchrun ... run.py <command>`, NOT `torchrun -m gr_demo.<module>`.
+For DDP/torchrun, use `torchrun ... run.py <command>`.
 
 **Shell 脚本 (.sh) 也必须设置 PYTHONPATH**：任何 `experiments/scripts/*.sh` 中如果调用
 `python -c "..."` 或 `python run.py`，脚本顶部（`set -euo pipefail` 之后）必须加：
 
 ```bash
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-export PYTHONPATH="$(dirname "${REPO_ROOT}"):${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 cd "${REPO_ROOT}"
 ```
 
-注意是 `$(dirname "${REPO_ROOT}")` —— 即 repo root 的**父目录**。因为 repo 目录本身就是 Python 包（`gr_demo/`），`import gr_demo` 需要在其父目录中查找。**不是 `${REPO_ROOT}` 本身！**
+注意是 `${REPO_ROOT}` 本身（即 `gr-demo/`），**不是父目录**。
 
 ## 写实验脚本的硬性要求
 

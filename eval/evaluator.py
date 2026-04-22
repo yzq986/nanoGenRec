@@ -9,18 +9,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from gr_demo.metrics import (
+from metrics import (
     AVAILABLE_METRICS,
     BaseMetric,
     MetricResult,
     ReportGenerator,
     print_metric_result,
 )
-from gr_demo.data.loaders import (
+from data.loaders import (
     load_results_from_s3, load_model_from_s3,
     load_local_results, load_local_model,
 )
-from gr_demo.eval.wrapper import RKMeansModelWrapper, load_model_wrapper
+from eval.wrapper import RKMeansModelWrapper, load_model_wrapper
 
 
 # ============================================================

@@ -29,8 +29,8 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
-from gr_demo.ntp.baseline import NTPProbe
-from gr_demo.ntp.model import NTPModel
+from ntp.baseline import NTPProbe
+from ntp.model import NTPModel
 
 
 # ============================================================
@@ -715,7 +715,7 @@ def _build_sid_to_embedding(sid_cache_dir):
         print(f"  _build_sid_to_embedding: loaded from cache ({len(sid_to_embedding):,} SID tuples, dim={emb_dim})")
         return sid_to_embedding, emb_dim
 
-    from gr_demo.eval.preprocess_sid import _load_embedding_cache
+    from eval.preprocess_sid import _load_embedding_cache
 
     # Load SID dict
     sid_path = os.path.join(sid_cache_dir, 'semantic_ids.npy')
@@ -1267,12 +1267,12 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
 
     Returns dict with PPL, depth_hit@10, recall@K, etc. (meaningful only on rank 0).
     """
-    from gr_demo.ntp.eval import (
+    from ntp.eval import (
         _batched_teacher_forced_eval, _beam_search_recall,
         _build_sid_to_items,
     )
-    from gr_demo.ntp.preprocess import load_shard_full
-    from gr_demo.ntp.model import SIDTrie
+    from ntp.preprocess import load_shard_full
+    from ntp.model import SIDTrie
 
     if not (preprocessed_dir and os.path.isdir(preprocessed_dir)):
         log(is_main, "  Warning: no preprocessed_dir, skipping inline eval")
@@ -1447,7 +1447,7 @@ def main():
             f"Shard {shard_path} not found. "
             f"Expected {prep_meta['n_shards']} shards but world_size={world_size}. "
             f"Re-run preprocess-ntp with --n_shards {world_size}.")
-    from gr_demo.ntp.preprocess import load_shard
+    from ntp.preprocess import load_shard
     shard_data = load_shard(shard_path)
     tokens_list = shard_data['tokens_list']
     split_pos_list = shard_data['split_pos_list']
@@ -1580,7 +1580,7 @@ def main():
         model_type = cfg.get('model_type', 'probe')
 
         if model_type == 's-tier':
-            from gr_demo.ntp.model import NTPModel
+            from ntp.model import NTPModel
             probe = NTPModel(
                 n_clusters_per_layer=cfg['n_clusters_per_layer'],
                 n_sid_layers=cfg['n_sid_layers'],

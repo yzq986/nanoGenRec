@@ -7,8 +7,8 @@ import shutil
 import tarfile
 import tempfile
 
-from gr_demo.s3_utils import download_from_s3
-from gr_demo.config import RAVEN_ENDPOINT, EFS_MODEL_CACHE, EFS_DEFAULT_OUTPUT
+from s3_utils import download_from_s3
+from config import RAVEN_ENDPOINT, EFS_MODEL_CACHE, EFS_DEFAULT_OUTPUT
 
 
 def download_qwen_model(model_name: str, local_dir: str):
@@ -171,7 +171,7 @@ def main():
     print("Done!")
     if not args.upload:
         print(f"\nTo upload manually:")
-        print(f"  from gr_demo.model.pack import upload_model_to_raven")
+        print(f"  from model.pack import upload_model_to_raven")
         print(f"  upload_model_to_raven('{args.model_name}', '{args.output_path}')")
     print("=" * 60)
 

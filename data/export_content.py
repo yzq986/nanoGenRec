@@ -9,7 +9,7 @@
 # %%
 from datetime import datetime, timedelta
 
-from gr_demo.config import (
+from config import (
     S3_CONTENT_TEXT_EXPOSED,
     HIVE_BEHAVIOR_TABLE, HIVE_CONTENTS_TABLE,
 )

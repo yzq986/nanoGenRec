@@ -8,10 +8,9 @@ Usage:
 import sys
 import os
 
-# 把上级目录加到 Python path，这样 gr_demo 包可被发现
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from gr_demo.cli import main
+from cli import main
 
 if __name__ == '__main__':
     main()

@@ -23,9 +23,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from gr_demo.metrics.base import BaseMetric, MetricResult
-from gr_demo.ntp.baseline import NTPProbe
-from gr_demo.ntp.model import NTPModel, SIDTrie, constrained_beam_search
+from metrics.base import BaseMetric, MetricResult
+from ntp.baseline import NTPProbe
+from ntp.model import NTPModel, SIDTrie, constrained_beam_search
 
 
 def _build_sid_to_items(sid_cache_dir):
@@ -45,7 +45,7 @@ def _build_sid_to_items(sid_cache_dir):
 
 def _load_eval_sequences(preprocessed_dir, n_shards):
     """Load all shards and return unified sequences that have eval positions."""
-    from gr_demo.ntp.preprocess import load_shard_full
+    from ntp.preprocess import load_shard_full
     all_seqs = []
     for i in range(n_shards):
         shard_path = os.path.join(preprocessed_dir, f'train_shard_{i}.npz')
@@ -549,9 +549,9 @@ class SemanticIDPredictionMetric(BaseMetric):
             sid_dict = np.load(
                 os.path.join(sid_cache_dir, 'semantic_ids.npy'), allow_pickle=True
             ).item()
-            from gr_demo.eval.batch import load_all_behavior_data
+            from eval.batch import load_all_behavior_data
             behavior_data_loaded = load_all_behavior_data()
-            from gr_demo.ntp.train import build_unified_sequences
+            from ntp.train import build_unified_sequences
             sequences, _nl, _ncpl, _split_ts, _seq_stats = build_unified_sequences(
                 sid_dict, behavior_data_loaded, n_items=n_items)
             eval_sequences = [s for s in sequences

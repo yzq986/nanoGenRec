@@ -27,9 +27,9 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-# Add project root's parent to path so `from gr_demo.xxx` works
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.dirname(REPO_ROOT))
+# Add project root's parent to path so `from xxx` works
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 
 # ============================================================
@@ -85,8 +85,8 @@ def compute_total_bits(n_clusters, fsq_levels):
 
 def load_data():
     """Load embeddings (filtered by exposure) + behavior data."""
-    from gr_demo.config import EFS_EMBEDDING_CACHE
-    from gr_demo.data.loaders import load_exposed_iids
+    from config import EFS_EMBEDDING_CACHE
+    from data.loaders import load_exposed_iids
 
     model_key = 'qwen3-0.6b'
     embedding_cache_dir = f'{EFS_EMBEDDING_CACHE}/{model_key}'
@@ -120,7 +120,7 @@ def load_data():
 
     # Behavior data
     print("Loading behavior data...")
-    from gr_demo.eval.batch import load_all_behavior_data
+    from eval.batch import load_all_behavior_data
     behavior_data = load_all_behavior_data()
     print(f"  {len(behavior_data['uid']):,} interactions")
 
@@ -133,7 +133,7 @@ def load_data():
 
 def train_kmeans_layers(embeddings: torch.Tensor, n_clusters: int, device: str):
     """Train 2-layer KMeans, return (kmeans_layers, residuals_after_L2)."""
-    from gr_demo.model.rkmeans import FaissKMeansLayer
+    from model.rkmeans import FaissKMeansLayer
 
     n_samples = embeddings.shape[0]
     n_features = embeddings.shape[1]
@@ -179,10 +179,10 @@ def run_fsq_on_residuals(
     n_clusters, fsq_levels_key, behavior_data, device='cuda',
 ):
     """Train FSQ on pre-computed residuals, evaluate with key metrics only."""
-    from gr_demo.model.fsq import FSQ_LEVEL_CONFIGS, LearnedFSQLayer, _codebook_size
-    from gr_demo.model.rkmeans_fsq import ResKmeansFSQ, generate_semantic_ids_fsq
-    from gr_demo.eval.wrapper import ResKmeansFSQModelWrapper
-    from gr_demo.eval.behavior import BehaviorMetricsEvaluator
+    from model.fsq import FSQ_LEVEL_CONFIGS, LearnedFSQLayer, _codebook_size
+    from model.rkmeans_fsq import ResKmeansFSQ, generate_semantic_ids_fsq
+    from eval.wrapper import ResKmeansFSQModelWrapper
+    from eval.behavior import BehaviorMetricsEvaluator
 
     fsq_levels = FSQ_LEVEL_CONFIGS[fsq_levels_key]
     n_features = embeddings.shape[1]
@@ -258,9 +258,9 @@ def run_fsq_on_residuals(
 
 def run_opq_config(embeddings, content_ids, behavior_data, n_sub, n_cpersub, device='cuda'):
     """Run single OPQ experiment with key metrics only."""
-    from gr_demo.model.opq import OPQQuantizer
-    from gr_demo.eval.wrapper import OPQModelWrapper
-    from gr_demo.eval.behavior import BehaviorMetricsEvaluator
+    from model.opq import OPQQuantizer
+    from eval.wrapper import OPQModelWrapper
+    from eval.behavior import BehaviorMetricsEvaluator
 
     n_features = embeddings.shape[1]
     t0 = time.time()
@@ -391,7 +391,7 @@ def load_existing_results():
 
 def run_fsq_group(cluster_size, fsq_configs, embeddings, content_ids, behavior_data, device):
     """Run a single KMeans group: train KMeans once, sweep FSQ variants."""
-    from gr_demo.model.fsq import FSQ_LEVEL_CONFIGS
+    from model.fsq import FSQ_LEVEL_CONFIGS
 
     # Pin this process to the assigned GPU (FAISS uses CUDA_VISIBLE_DEVICES)
     gpu_id = int(device.split(':')[1]) if ':' in device else 0

@@ -122,7 +122,7 @@ def main():
     if args.pref_dir:
         pref_dir = args.pref_dir
     else:
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         pref_dir = os.path.join(repo_root, 'experiments', 'sp_dpo_data', 'exp017', 'sft-pfx')
 
     # Check how many shards

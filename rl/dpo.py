@@ -52,7 +52,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
-from gr_demo.ntp.model import SparseMoEBlock
+from ntp.model import SparseMoEBlock
 
 
 @contextmanager

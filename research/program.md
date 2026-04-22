@@ -10,7 +10,7 @@
 
 每次被唤起时，严格按此顺序执行：
 
-1. **同步代码**：`git pull company "$(git branch --show-current)" --rebase`
+1. **同步代码**：`git pull origin "$(git branch --show-current)" --rebase`
    - 即拉取当前分支对应的远端分支（当前为 `prometheus`）
    - 如果 rebase 冲突 → STOP，写 outbox（type: error），不要尝试自动解决
 2. **读状态**：`research/status.md` — 了解当前进度和上次结果
@@ -72,7 +72,7 @@ set -euo pipefail
 # 动机和 config 列表
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-export PYTHONPATH="$(dirname "${REPO_ROOT}"):${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd "${REPO_ROOT}"
 
@@ -144,7 +144,7 @@ EXP-015 拟合。可用于预判模型大小的收益。
 1. **禁止凭记忆编造路径、日期、参数** — 全部从已有脚本 grep
 2. **禁止用 `hash()` 做分布式路由** — 必须用 `hashlib.sha256`
 3. **Eval-only 改动不需要重训** — 用已有 checkpoint re-eval
-4. **PYTHONPATH 设置**：Shell 脚本必须用 `$(dirname "${REPO_ROOT}")`（repo root 的父目录）
+4. **PYTHONPATH 设置**：Shell 脚本必须用 `"${REPO_ROOT}"`（repo root 本身，不是父目录）
 5. **不确定的 API 必须验证** — 先 grep/search 确认属性名
 
 ---

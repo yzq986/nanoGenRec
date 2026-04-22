@@ -20,17 +20,17 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-# Add project root's parent to path so `from gr_demo.xxx` works
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, os.path.dirname(REPO_ROOT))
+# Add project root's parent to path so `from xxx` works
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
-from gr_demo.model.rkmeans import FaissKMeansLayer
-from gr_demo.model.fsq import FSQ_LEVEL_CONFIGS, LearnedFSQLayer
-from gr_demo.model.rkmeans_fsq import ResKmeansFSQ, generate_semantic_ids_fsq
-from gr_demo.model.opq import OPQQuantizer
-from gr_demo.eval.wrapper import ResKmeansFSQModelWrapper, OPQModelWrapper
-from gr_demo.eval.behavior import BehaviorMetricsEvaluator
-from gr_demo.metrics import INTRINSIC_METRICS
+from model.rkmeans import FaissKMeansLayer
+from model.fsq import FSQ_LEVEL_CONFIGS, LearnedFSQLayer
+from model.rkmeans_fsq import ResKmeansFSQ, generate_semantic_ids_fsq
+from model.opq import OPQQuantizer
+from eval.wrapper import ResKmeansFSQModelWrapper, OPQModelWrapper
+from eval.behavior import BehaviorMetricsEvaluator
+from metrics import INTRINSIC_METRICS
 
 
 # ============================================================
@@ -65,8 +65,8 @@ NORMALIZE_RESIDUALS = True
 
 def load_data():
     """Load embeddings (filtered by exposure) + behavior data."""
-    from gr_demo.config import MODEL_CONFIGS, EFS_EMBEDDING_CACHE
-    from gr_demo.data.loaders import load_exposed_iids
+    from config import MODEL_CONFIGS, EFS_EMBEDDING_CACHE
+    from data.loaders import load_exposed_iids
 
     model_key = 'qwen3-0.6b'
     embedding_cache_dir = f'{EFS_EMBEDDING_CACHE}/{model_key}'
@@ -100,7 +100,7 @@ def load_data():
 
     # Behavior data
     print("Loading behavior data...")
-    from gr_demo.eval.batch import load_all_behavior_data
+    from eval.batch import load_all_behavior_data
     behavior_data = load_all_behavior_data()
     print(f"  {len(behavior_data['uid']):,} interactions")
 
@@ -209,7 +209,7 @@ def run_fsq_on_residuals(
     for mr in metric_results.values():
         results.update(mr.to_flat_dict())
 
-    from gr_demo.model.fsq import _codebook_size
+    from model.fsq import _codebook_size
     results['quantizer_type'] = 'rkmeans_fsq'
     results['fsq_levels_key'] = fsq_levels_key
     results['fsq_codebook_size'] = _codebook_size(fsq_levels)
@@ -221,7 +221,7 @@ def run_fsq_on_residuals(
 
 def run_opq_config(embeddings, content_ids, behavior_data, n_sub, n_cpersub, device='cuda'):
     """Run single OPQ experiment."""
-    from gr_demo.eval.hyperparam import run_single_experiment_opq
+    from eval.hyperparam import run_single_experiment_opq
     n_features = embeddings.shape[1]
 
     metrics, train_time = run_single_experiment_opq(

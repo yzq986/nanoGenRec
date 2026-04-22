@@ -212,7 +212,7 @@ class NTPProbe(nn.Module):
         Returns:
             loss: scalar
         """
-        from gr_demo.ntp.model import _compute_entp_loss
+        from ntp.model import _compute_entp_loss
 
         B, S = input_tokens.size()
         device = input_tokens.device

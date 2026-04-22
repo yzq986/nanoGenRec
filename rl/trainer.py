@@ -29,16 +29,16 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, Dataset
 
-from gr_demo.ntp.model import NTPModel
-from gr_demo.ntp.baseline import NTPProbe
-from gr_demo.ntp.train import (
+from ntp.model import NTPModel
+from ntp.baseline import NTPProbe
+from ntp.train import (
     UnifiedSequenceDataset, unified_collate_fn,
     setup_ddp, cleanup_ddp, log, format_eta, save_checkpoint,
 )
-from gr_demo.rl.dpo import (
+from rl.dpo import (
     compute_sid_logprobs_batch, softmax_dpo_loss, _freeze_moe_bias,
 )
-from gr_demo.rl.preference import load_preference_shard
+from rl.preference import load_preference_shard
 
 
 # ============================================================
@@ -772,7 +772,7 @@ def main():
         tokens_list, split_pos_list = [], []
         log(is_main, f"  Pure DPO mode: skipping NTP shard load")
     else:
-        from gr_demo.ntp.preprocess import load_shard
+        from ntp.preprocess import load_shard
         shard_path = os.path.join(args.preprocessed_dir, f'train_shard_{local_rank}.npz')
         if not os.path.exists(shard_path):
             shard_path = os.path.join(args.preprocessed_dir, 'train_shard_0.npz')
@@ -914,7 +914,7 @@ def main():
     # ── Inline NTP eval ──
     if 'eval' not in existing_meta:
         log(is_main, "\n  Running inline evaluation...")
-        from gr_demo.ntp.train import _run_inline_eval
+        from ntp.train import _run_inline_eval
         model.to(device)
         eval_results = _run_inline_eval(
             probe=model,
@@ -1082,7 +1082,7 @@ def eval_main():
     log(is_main, f"  n_recall:         {args.n_recall}")
 
     # Run eval
-    from gr_demo.ntp.train import _run_inline_eval
+    from ntp.train import _run_inline_eval
     eval_results = _run_inline_eval(
         probe=model,
         sid_cache_dir=sid_cache_dir,

@@ -7,18 +7,18 @@ from typing import List
 import numpy as np
 import torch
 
-from gr_demo.config import (
+from config import (
     MODEL_CONFIGS, Config, EFS_EMBEDDING_CACHE, DEFAULT_DATE,
 )
-from gr_demo.s3_utils import upload_to_s3
-from gr_demo.data.loaders import (
+from s3_utils import upload_to_s3
+from data.loaders import (
     load_text_from_s3, load_old_embeddings_from_s3,
     load_exposed_iids, export_results_to_s3, load_model_from_s3,
 )
-from gr_demo.model.embedders import Qwen3VLEmbedder, Qwen3TextEmbedder
-from gr_demo.model.rkmeans import ResidualQuantizationMultiGPU
-from gr_demo.model.semantic_ids import generate_semantic_ids
-from gr_demo.model.encode import encode_with_qwen3, encode_with_qwen3_text
+from model.embedders import Qwen3VLEmbedder, Qwen3TextEmbedder
+from model.rkmeans import ResidualQuantizationMultiGPU
+from model.semantic_ids import generate_semantic_ids
+from model.encode import encode_with_qwen3, encode_with_qwen3_text
 
 
 def _run_intrinsic_eval(
@@ -28,8 +28,8 @@ def _run_intrinsic_eval(
     config: Config,
 ):
     """运行 intrinsic metrics (不需要 behavior 数据)"""
-    from gr_demo.metrics import INTRINSIC_METRICS
-    from gr_demo.eval.wrapper import RKMeansModelWrapper
+    from metrics import INTRINSIC_METRICS
+    from eval.wrapper import RKMeansModelWrapper
 
     # 构造 RKMeansModelWrapper 兼容的 model_data dict
     model_data = {

@@ -15,7 +15,7 @@ import time
 
 import numpy as np
 
-from gr_demo.config import EFS_EMBEDDING_CACHE
+from config import EFS_EMBEDDING_CACHE
 
 NUM_SHARDS = 8
 
