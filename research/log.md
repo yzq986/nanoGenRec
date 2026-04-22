@@ -63,3 +63,23 @@ Beam search feature passing (time_gap + action carry-forward) confirmed positive
 New best config: segment_emb + time_gap + action + beam search feature passing.
 
 ## [2026-04-22 18:35] OUTBOX_WRITE: 002-experiment-analysis (EXP-022~025 trends + proposals)
+
+---
+
+## [2026-04-22 19:15] STARTUP: Research agent activated (session 3)
+
+git pull company/prometheus failed (remote unreachable). No inbox changes since session 2. status.md current_task=null.
+
+## [2026-04-22 19:20] PAPER_READ: 2603.28124 (RCLRec — Reverse Curriculum Learning for Conversions, Alibaba)
+
+Sparse conversion problem in GR. RCPM selects k conversion-relevant history items as decoder prefix using pay-conditioned query. +10%+ on industrial and Tmall datasets. Medium relevance — encoder-decoder architecture, needs adaptation for decoder-only NTP. Connection: IDEA-dualgr-0 (conversion-aware sample weighting).
+
+## [2026-04-22 19:22] PAPER_READ: 2603.11486 (Quantized Inference for OneRec-V2, Kuaishou)
+
+FP8 PTQ for GR model: 49% latency reduction, 92% throughput gain, no online metric degradation. Low relevance now (deployment concern). Key finding: GR models with MoE (like ours) have LLM-like weight/activation distributions, making FP8 quantization feasible.
+
+## [2026-04-22 19:25] PAPER_READ: 2603.01683 (SPOT — Surgical Post-Training, HKU)
+
+HIGH RELEVANCE: reveals DPO structural flaw for rigid correctness tasks (optimizes margin via suppressing y- rather than boosting y+). SPoT-BCO: decoupled BCE with adaptive reward shift δ, avoids gradient vanishing and catastrophic forgetting. Direct application: replace SP-DPO loss with SPoT-BCO. Also: LCS quality filtering for beam-target pairs.
+
+## [2026-04-22 19:30] OUTBOX_WRITE: 005-spot-dpo-finding (SPOT finding + IDEA-spot-0 proposal)
