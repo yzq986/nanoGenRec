@@ -1,5 +1,5 @@
 ---
-last_updated: "2026-04-22T18:40:00"
+last_updated: "2026-04-22T19:35:00"
 current_task: null
 next_experiment_number: 26
 best_result:
@@ -7,29 +7,35 @@ best_result:
   ppl: 25.22
   recall_500: 0.636
 total_experiments_run: 0
-total_papers_read: 3
+total_papers_read: 6
 ---
 
 # Research Agent Status
 
 ## Current State
 
-Idle. Awaiting human response on outbox/002-experiment-analysis.md (Page-wise NTP proposal).
+Idle. Awaiting human response on:
+- outbox/002-experiment-analysis.md (Page-wise NTP proposal)
+- outbox/005-spot-dpo-finding.md (IDEA-spot-0: SPoT-BCO for SP-DPO, 需要 rl/ 源码授权)
 
 ## Recent Activity
 
 - [2026-04-22 18:05] Activated session 2
 - [2026-04-22 18:10~18:14] Read 3 papers: CRAB (2604.05113), NSGR (2604.05314), GenRec (2604.14878)
-- [2026-04-22 18:20] Collected ALL EXP-022 results (5 configs) → contrastive loss DISCARD
+- [2026-04-22 18:20] Collected ALL EXP-022 results → contrastive loss DISCARD
 - [2026-04-22 18:22] Collected EXP-025 results → beam_passes NEW BEST (R@500=63.6%)
 - [2026-04-22 18:30] Wrote decision records: 003 (EXP-022 discard), 004 (EXP-025 merge)
 - [2026-04-22 18:35] Wrote outbox/002 with full analysis + experiment proposals
-- Updated experiments/log.md with complete EXP-022 and EXP-025 results
+- [2026-04-22 19:15] Activated session 3
+- [2026-04-22 19:20~19:25] Read 3 papers: RCLRec (2603.28124), OneRec-V2 Quant (2603.11486), SPOT (2603.01683)
+- [2026-04-22 19:30] Wrote outbox/005 with SPOT finding + IDEA-spot-0 proposal
 
 ## Experiment Queue
 
 Pending ideas (by priority):
-- **IDEA-genrec-0** (P1, training.md): Page-wise NTP — 最高优先级, 需人类授权源码修改
+- **IDEA-genrec-0** (P1, training.md): Page-wise NTP — 最高优先级, 需人类授权 ntp/ 源码修改
+- **IDEA-spot-0** (P1, rl-alignment.md): SPoT-BCO 替换 SP-DPO loss — 需人类授权 rl/ 源码修改
+- IDEA-mtgr-0 (P0, training.md): User-Level Packing + Causal Mask — 需人类授权 ntp/ 源码修改
 - IDEA-feat-3 (P2): Item Category Token — lower priority
 - IDEA-feat-4 (P2): User Profile Prefix — lower priority
 
@@ -41,7 +47,9 @@ Completed/Closed:
 
 1. [outbox/002] Page-wise NTP 实验是否授权修改 ntp/preprocess.py 和 ntp/train.py?
 2. [outbox/002] Session 分割标准偏好? (时间间隔 >30min vs 按天)
+3. [outbox/005] IDEA-spot-0 (SPoT-BCO for SP-DPO) 是否授权修改 rl/ 源码?
 
 ## Blockers
 
-- 提案 A (Page-wise NTP) 需要源码修改授权
+- 所有高优先级实验均需源码修改授权 (ntp/ 或 rl/)
+- 13 篇论文待读 (可在等待授权期间继续)
