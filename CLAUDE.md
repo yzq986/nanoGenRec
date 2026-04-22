@@ -76,3 +76,24 @@ Three remotes are configured:
 - 本地没有 GPU，代码推到远端才能测。写 CUDA 相关代码要格外小心。
 - **实现优化不能破坏数学语义**：当为了性能/显存把一个公式拆成多步实现时（如 split backward、分块计算），原本由框架隐式保证的数学性质（权重缩放、归一化、梯度累加比例等）会变成需要手动维护的不变量。写完优化后，回到原始公式逐项核对：公式里的每个系数是否都反映在了实际计算路径上，而不仅仅出现在日志和 config 里。
 - **只改 eval 代码不需要重训**：如果改动只影响推理/评测路径（如 beam search 传参修复），而训练数据和模型结构不变，应该直接用已有 checkpoint re-eval（参考 `exp-023-reeval.sh`），不要浪费 GPU 重训一遍相同模型。写实验脚本前先判断：这个 config 的训练数据+flags 是否与已有 checkpoint 完全相同？
+
+## Research Agent Mode
+
+当作为自主研究 Agent 运行时（用户指示 "follow research/program.md" 或类似指令）：
+
+1. **先读 `research/program.md`** — 那是你的完整操作手册
+2. **检查 `research/inbox/`** 获取人类指令
+3. **执行实验前必须估算运行时间**：
+   ```bash
+   python experiments/scripts/estimate_runtime.py --active_params <N> --total_tokens <T> --gpus 8
+   ```
+4. **不超过 30 分钟时间预算**（除非人类明确批准）
+5. **不修改源码**（`ntp/`, `rl/`, `model/`, `data/`, `eval/`）除非通过 outbox 获得人类批准
+6. **每个动作完成后更新** `research/status.md` 和 `research/log.md`
+7. **每个动作完成后 commit + push**：
+   ```bash
+   git add research/ experiments/ ideas/
+   git commit -m "research-agent: <动作描述>"
+   ./push.sh
+   ```
+8. 所有通信格式见 `research/schema.md`
