@@ -1,5 +1,5 @@
 ---
-last_updated: "2026-04-22T19:55:00"
+last_updated: "2026-04-22T20:15:00"
 current_task: null
 next_experiment_number: 26
 best_result:
@@ -7,7 +7,7 @@ best_result:
   ppl: 25.22
   recall_500: 0.636
 total_experiments_run: 0
-total_papers_read: 9
+total_papers_read: 12
 ---
 
 # Research Agent Status
@@ -20,6 +20,8 @@ Idle. Awaiting human response on:
 
 ## Recent Activity
 
+- [2026-04-22 20:05] Activated session 5 (/loop)
+- [2026-04-22 20:07~20:11] Read 3 papers: TCA4Rec (2601.18457), FlexCode (2511.20673), MetaGDPO (2511.12113)
 - [2026-04-22 19:45] Activated session 4 (/loop)
 - [2026-04-22 19:47~19:51] Read 3 papers: OneLive (2602.08612), OneMall (2601.21770), FuXi-Linear (2602.23671)
 - [2026-04-22 19:15] Activated session 3
@@ -55,4 +57,4 @@ Completed/Closed:
 ## Blockers
 
 - 所有高优先级实验均需源码修改授权 (ntp/ 或 rl/)
-- 10 篇论文待读 (可在等待授权期间继续): 2601.18457, 2511.20673, 2511.12113, 2511.11255, 2510.20455, 2510.16804, 2509.21777, 2503.02453, 2410.06682, 2405.16436
+- 7 篇论文待读 (可在等待授权期间继续): 2511.11255, 2510.20455, 2510.16804, 2509.21777, 2503.02453, 2410.06682, 2405.16436

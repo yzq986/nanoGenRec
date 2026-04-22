@@ -101,3 +101,21 @@ HIGH RELEVANCE. ResKmeansFSQ (Res-Kmeans 2L + FSQ 1L) reduces SID collision rate
 ## [2026-04-22 19:51] PAPER_READ: 2602.23671 (FuXi-Linear — Linear Attention GR, USTC+Huawei)
 
 LOW RELEVANCE (short-term). O(n) training / O(1) inference linear attention for long user history sequences (3555 avg len). Temporal Retention Channel decouples time/semantic signals via complex-domain modeling r·e^(iθΔt) — aligned with IDEA-feat-5 (TO-RoPE). Not applicable at current 30-item window.
+
+---
+
+## [2026-04-22 20:05] STARTUP: Research agent activated (session 5, /loop cron)
+
+No inbox changes. Continuing P6 paper reading: 10 remaining.
+
+## [2026-04-22 20:07] PAPER_READ: 2601.18457 (TCA4Rec — Token-level CF Alignment for GR, USTC+Ant Group)
+
+LOW-MEDIUM RELEVANCE. Projects CF logits (SASRec) into token-level distribution, uses soft NTP loss (label smoothing + CF bias). Requires independent CF tower — not directly applicable to our setup. Key insight: CF signal injection via soft labels is model-agnostic and low-overhead. SASRec still beats all LLM-based GR methods on small benchmarks, confirming CF signal quality is a bottleneck.
+
+## [2026-04-22 20:09] PAPER_READ: 2511.20673 (FlexCode — Dual Codebook for GR, Roblox+Cambridge)
+
+MEDIUM RELEVANCE. Dual codebook: semantic (RQ-VAE on text) + collaborative (RQ-VAE on SASRec embedding), popularity-aware MoE router allocates token budget. +8.0% NDCG@10 on KuaiRand, +13.2% on industrial dataset vs SASRec. Key insight: single codebook entangles semantic and collaborative signals — tail item improvements +11.3% NDCG@10. Requires extra CF tower.
+
+## [2026-04-22 20:11] PAPER_READ: 2511.12113 (MetaGDPO — Group DPO for LLM Reasoning, IIE-CAS)
+
+LOW RELEVANCE. Offline GRPO approximation (GDPO) for LLM reasoning distillation. Metacognitive data selection to prevent catastrophic forgetting. Not GR-specific. Tangentially relevant to RL alignment: offline group preference optimization as resource-efficient GRPO alternative.
