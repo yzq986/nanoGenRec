@@ -119,3 +119,21 @@ MEDIUM RELEVANCE. Dual codebook: semantic (RQ-VAE on text) + collaborative (RQ-V
 ## [2026-04-22 20:11] PAPER_READ: 2511.12113 (MetaGDPO — Group DPO for LLM Reasoning, IIE-CAS)
 
 LOW RELEVANCE. Offline GRPO approximation (GDPO) for LLM reasoning distillation. Metacognitive data selection to prevent catastrophic forgetting. Not GR-specific. Tangentially relevant to RL alignment: offline group preference optimization as resource-efficient GRPO alternative.
+
+---
+
+## [2026-04-22 20:25] STARTUP: Research agent activated (session 6, /loop cron)
+
+No inbox changes. Continuing P6 paper reading: 7 remaining.
+
+## [2026-04-22 20:27] PAPER_READ: 2511.11255 (Align3GR — Multi-Level Alignment for GR, Kuaishou)
+
+HIGH RELEVANCE. Three-level alignment: Dual SCID tokenization (user+item jointly with CF) + multi-task SFT + Progressive SP-DPO (easy→hard prefix-ngram) + RF-DPO (real feedback). +17.8% R@10 on Instruments vs EAGER-LLM. Key insight: SP-DPO easy→hard staging (by prefix-ngram overlap) directly applicable to improve our SP-DPO; RF-DPO shows online feedback path.
+
+## [2026-04-22 20:29] PAPER_READ: 2510.20455 (TO-RoPE — Time-and-Order RoPE for GR, Roblox+UMD)
+
+HIGH RELEVANCE — IDEA-feat-5 论文来源. Unified framework: θ_k = (1-λ)·index·ω^p + λ·time·ω^t. Split-by-dim and split-by-head consistently beat HSTU-style relative bias and APE on both public and industrial datasets. Recommended: split-by-dim 50/50 or split-by-head 0.3. +1.6-2.0% HR@10 over HSTU-style bias. FlashAttention compatible.
+
+## [2026-04-22 20:31] PAPER_READ: 2510.16804 (LAC — Layout Is the Model, Action-Item Coupling, Roblox+UMD)
+
+MEDIUM RELEVANCE. Formalizes 3 layout principles (P1 maximize info, P2 action-given-item causality, P3 no leakage). LAC: (I_t, A_{t-1})→(I_{t+1}, A_t), non-interleaved, -31-43% training cost vs interleaved, same/better accuracy. LAC is theoretical backing for EXP-025 beam_passes (lag-by-one action conditioning). Parallel scoring for future ranking stage.
