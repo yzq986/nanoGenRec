@@ -3,6 +3,7 @@ from: human
 date: "2026-04-22"
 priority: normal
 subject: "Bootstrap: 启动自主研究循环"
+read: "2026-04-22 17:55"
 ---
 
 欢迎启动。请按以下顺序开始：

@@ -42,12 +42,8 @@
 ## EXP-025: Beam Search Feature Passing — 正确消除 side feature 训练-推理 gap
 
 **Date**: 2026-04-21
-**Status**: planned
-**Results**: TBD
-
-### Background
-
-EXP-024 的 shift 方案被证明方向错误：
+**Status**: completed
+**Results**: [./ntp_checkpoints/exp025-*/](./ntp_checkpoints/exp025-*/)：
 - time_gap shift 后 R@500 = 59.8%（反而低于 baseline 61.2%），因为让 context 信息变陈旧
 - action shift 后 R@500 = 52.9%，仍远低于 baseline
 - 根本原因：shift 只解决训练侧泄漏，但没解决 beam search incremental path 不传 features 的问题
@@ -83,13 +79,29 @@ EXP-024 的 shift 方案被证明方向错误：
 `bash experiments/scripts/exp-025.sh`
 
 ### Results
-TBD
+
+| Config | PPL | L0 PPL | L1 PPL | L2 PPL | R@10 | R@50 | R@100 | R@500 |
+|--------|-----|--------|--------|--------|------|------|-------|-------|
+| exp023-segment (baseline) | 25.94 | 346.9 | 11.75 | 4.35 | 10.9% | 24.9% | 35.4% | 61.2% |
+| **exp025-beam-passes** | **25.22** | 334.6 | 10.33 | 4.71 | 10.4% | 28.2% | 40.0% | **63.6%** |
+| exp025-action-l2only | 24.85 | 331.4 | 10.30 | 4.57 | 5.5% | 13.2% | 17.3% | 27.0% |
 
 ### Analysis
-TBD
+
+**beam_passes 是 NEW BEST** (R@500=63.6%, +2.4pp)：
+1. 训练不做任何 shift，正常使用 segment_emb + time_gap + action_level
+2. Beam search incremental 传入 time_gap=target真值（已知）+ action=carry-forward上一context item
+3. PPL 也改善至 25.22（-0.72），说明完整 features 让模型学得更好
+4. R@50 和 R@100 提升更显著（+3.3pp, +4.6pp），说明 mid-range recall 受益最大
+
+**action_l2only 完全失败** (R@500=27.0%)：
+1. PPL 是最好的 24.85（L2 PPL 4.57），但 R@500 仅 27.0%
+2. 原因：训练时 L0/L1 的 action=0，但 beam search 对 L0/L1 仍传 action=0 → 训练一致，但 L2 位置训练有真 action 而 beam search 无法给出 → gap 依旧
+3. target_sid_found_rate=27%（beam_passes 是 63.7%）— 大量 item 无法被 beam search 找到
 
 ### Next Steps
-TBD
+- exp025-beam-passes 成为新 baseline
+- 下一步探索 IDEA-genrec-0 (Page-wise NTP)，与 beam_passes 正交可叠加
 
 ---
 
@@ -225,8 +237,8 @@ EXP-024：将 side features 按 item 延迟一步（每个 item 的 3 个 token 
 ## EXP-022: NTP In-Batch Contrastive Loss (IDEA-onemall-0)
 
 **Date**: 2026-04-20
-**Status**: running
-**Results**: [./ntp_checkpoints/exp022-alpha001/](./ntp_checkpoints/exp022-alpha001/)
+**Status**: completed
+**Results**: [./ntp_checkpoints/exp022-*/](./ntp_checkpoints/exp022-*/)
 
 ### Background
 
@@ -254,28 +266,30 @@ EXP-024：将 side features 按 item 延迟一步（每个 item 的 3 个 token 
 
 ### Results
 
-Phase 1 partial (α sweep, τ=0.07, dim=128):
+ALL configs completed:
 
-| Config | α | PPL | R@10 | R@50 | R@100 | R@500 | Wall(s) |
-|--------|---|-----|------|------|-------|-------|---------|
-| Baseline (EXP-016 14d-S) | 0 | **27.05** | 9.9% | **26.1%** | 35.0% | 58.5% | 1144 |
-| exp022-alpha001 | 0.01 | 27.89 | **10.3%** | 25.1% | **36.4%** | **59.2%** | 1278 |
-| exp022-alpha01 | 0.1 | — | — | — | — | — | — |
-| exp022-alpha05 | 0.5 | — | — | — | — | — | — |
+| Config | α | τ | dim | PPL | R@10 | R@50 | R@100 | R@500 |
+|--------|-----|------|-----|-----|------|------|-------|-------|
+| Baseline (EXP-016 14d-S) | 0 | — | — | **27.05** | 9.9% | **26.1%** | 35.0% | **58.5%** |
+| exp022-alpha001 | 0.01 | 0.07 | 128 | 27.89 | 10.3% | 25.1% | 36.4% | 59.2% |
+| exp022-alpha01 | 0.1 | 0.07 | 128 | 29.22 | 9.7% | 24.9% | 35.0% | 57.9% |
+| exp022-alpha05 | 0.5 | 0.07 | 128 | 29.04 | 9.7% | 25.4% | 34.6% | 56.3% |
+| exp022-dim256 | 0.01 | 0.07 | 256 | 29.66 | 10.1% | 26.1% | 35.4% | 58.8% |
+| exp022-temp005 | 0.01 | 0.05 | 128 | 28.16 | 10.1% | 25.2% | 34.8% | 58.2% |
 
 ### Analysis
 
-α=0.01 初步结果：
-- R@100 (+1.4pp) 和 R@500 (+0.7pp) 有提升，R@10 也微升 (+0.4pp)
-- R@50 反降 1pp，指标不完全一致
-- PPL 变差 (+0.84)，尤其 L2 layer PPL 从 4.84 升到 5.26 — contrastive 梯度可能干扰了最后一层 token 预测
-- 训练慢 12%（embedding lookup + contrastive overhead）
-- 待 α=0.1, 0.5 出来看趋势
+**Contrastive loss 全面失败。IDEA-onemall-0 关闭。**
+
+1. **α sweep**: α=0.01 是最好的 (+0.7pp R@500)，α 越大越差。α=0.5 时 R@500 跌至 56.3%（-2.2pp）。Contrastive 梯度与 NTP CE 梯度竞争，强度越大破坏越大。
+2. **dim256**: 投影维度翻倍无帮助（PPL=29.66，R@500=58.8%），反而更差。
+3. **temp005**: 更低温度（更锐利分布）无帮助（PPL=28.16，R@500=58.2%）。
+4. **根因分析**: SID 是离散 codebook token，decoder 在 token 空间做分类。InfoNCE 试图对齐 hidden state 到连续 embedding 空间，但这对离散 token 预测没有直接帮助。PPL 一致变差说明 contrastive gradient 干扰了 NTP 学习。
+5. 所有 config 的 PPL 都比 baseline 差 0.84~2.61，说明这不是 regularization 而是 interference。
 
 ### Next Steps
-- 等待 α=0.1, 0.5 结果确认最优 α
-- 如果 recall 提升确认，进入 Phase 2 (temperature sweep) 和 Phase 3 (dim sweep)
-- 考虑是否 contrastive loss 应 detach backbone 只训 projection head（避免 PPL 退化）
+- 关闭 IDEA-onemall-0，不再追 contrastive 变体
+- 转向 training objective 层面的改进：IDEA-genrec-0 (Page-wise NTP)
 
 ---
 
