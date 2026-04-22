@@ -49,6 +49,105 @@ done
 # Helper functions
 # ==============================================================================
 
+push_to_company_remote() {
+    local BRANCH="$1"
+    local REMOTE="$2"
+    local MIRROR_NAME="$3"
+    local MIRROR_EMAIL="$4"
+
+    if ! git remote | grep -q "^${REMOTE}$"; then
+        echo "  Skipping ${REMOTE} (remote not configured)"
+        return 0
+    fi
+
+    echo "  Mirroring to ${REMOTE} (rewriting author as ${MIRROR_NAME})..."
+    local TEMP_BRANCH="_mirror_${REMOTE}_$$"
+
+    # Step 1: Fetch remote and incorporate GPU machine's commits
+    git fetch "$REMOTE" "$BRANCH" --quiet 2>/dev/null || true
+    local REMOTE_HEAD
+    REMOTE_HEAD="$(git rev-parse "${REMOTE}/${BRANCH}" 2>/dev/null || echo "")"
+
+    if [ -n "$REMOTE_HEAD" ]; then
+        if ! git merge-base --is-ancestor "$REMOTE_HEAD" HEAD 2>/dev/null; then
+            echo "  Incorporating GPU commits from ${REMOTE}..."
+            git rebase --quiet "${REMOTE}/${BRANCH}" 2>/dev/null || {
+                echo "  Warning: rebase onto ${REMOTE} failed, trying merge..."
+                git rebase --abort --quiet 2>/dev/null || true
+                git merge "${REMOTE}/${BRANCH}" --no-edit --quiet 2>/dev/null || {
+                    echo "  Warning: merge failed too, pushing as-is..."
+                    git merge --abort 2>/dev/null || true
+                }
+            }
+        fi
+    fi
+
+    # Step 2: Find merge-base for rewrite range
+    local BASE
+    BASE="$(git merge-base "${REMOTE}/${BRANCH}" HEAD 2>/dev/null || echo "")"
+
+    # Robust cleanup
+    cleanup_mirror() {
+        git rebase --abort --quiet 2>/dev/null || true
+        git checkout -f "$BRANCH" --quiet 2>/dev/null || true
+        git branch -D "$TEMP_BRANCH" --quiet 2>/dev/null || true
+        if ! git symbolic-ref HEAD >/dev/null 2>&1; then
+            git checkout -f master --quiet 2>/dev/null || true
+        fi
+        if [ "$STASHED" = true ]; then
+            if ! git stash pop --quiet 2>/dev/null; then
+                echo "  ERROR: stash pop failed. Your changes are in 'git stash list'."
+            fi
+            STASHED=false
+        fi
+    }
+    trap 'cleanup_mirror; trap - INT TERM; return 1' INT TERM
+
+    # Stash uncommitted changes
+    local STASHED=false
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+        git stash push --quiet -m "push.sh: auto-stash before ${REMOTE} mirror"
+        STASHED=true
+    fi
+
+    git checkout -b "$TEMP_BRANCH" "$BRANCH" --quiet
+
+    # Step 3: Rewrite only non-matching-author commits
+    local REWRITE_EXEC="if [ \"\$(git log -1 --format='%ae')\" != '$MIRROR_EMAIL' ]; then GIT_COMMITTER_NAME='$MIRROR_NAME' GIT_COMMITTER_EMAIL='$MIRROR_EMAIL' git commit --amend --no-edit --quiet --author='$MIRROR_NAME <$MIRROR_EMAIL>'; fi"
+
+    local REBASE_OK=true
+    if [ -n "$BASE" ]; then
+        GIT_SEQUENCE_EDITOR=true git rebase --quiet --onto "$BASE" "$BASE" "$TEMP_BRANCH" \
+            --exec "$REWRITE_EXEC" \
+            2>/dev/null || REBASE_OK=false
+    else
+        GIT_SEQUENCE_EDITOR=true git rebase --quiet --root "$TEMP_BRANCH" \
+            --exec "$REWRITE_EXEC" \
+            2>/dev/null || REBASE_OK=false
+    fi
+
+    if [ "$REBASE_OK" = false ]; then
+        echo "  Warning: rebase failed, aborting..."
+        git rebase --abort --quiet 2>/dev/null || true
+        echo "  Falling back: pushing original commits to ${REMOTE}..."
+        git push "$REMOTE" "$BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: fallback push to ${REMOTE} failed"
+    else
+        git push "$REMOTE" "$TEMP_BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: push to ${REMOTE} failed"
+    fi
+
+    # Cleanup
+    trap - INT TERM
+    cleanup_mirror
+
+    local FINAL_BRANCH
+    FINAL_BRANCH="$(git branch --show-current 2>/dev/null || echo "")"
+    if [ "$FINAL_BRANCH" != "$BRANCH" ]; then
+        echo "  ERROR: expected '$BRANCH' but on '${FINAL_BRANCH:-DETACHED HEAD}'. Recovering..."
+        git checkout -f "$BRANCH" --quiet 2>/dev/null || git checkout -f master --quiet
+    fi
+    echo "  ${REMOTE} mirror complete."
+}
+
 push_main() {
     echo ""
     echo "============================================================"
@@ -69,7 +168,7 @@ push_main() {
     BRANCH="$(git branch --show-current)"
 
     # Safety: if on a stale _mirror_company_ branch, switch back to master
-    if [[ "$BRANCH" == _mirror_company_* ]]; then
+    if [[ "$BRANCH" == _mirror_* ]]; then
         echo "  Warning: stuck on temp branch $BRANCH, switching to master..."
         git checkout master --quiet
         git branch -D "$BRANCH" --quiet 2>/dev/null || true
@@ -97,109 +196,14 @@ push_main() {
         echo "  Skipping personal (remote not configured)"
     fi
 
-    # Push to company (rewrite author for local commits, preserve GPU commits)
-    if ! git remote | grep -q '^company$'; then
-        # Fallback: 没有 personal/company 双 remote 配置时，直接 push origin
-        if git remote | grep -q '^origin$'; then
-            echo "  No personal/public remotes — pushing to origin..."
-            echo "  Pulling from origin (rebase)..."
-            git pull --rebase origin "$BRANCH" 2>&1 || echo "  Warning: pull from origin failed"
-            git push origin "$BRANCH" 2>&1 || echo "  Warning: push to origin failed"
-        else
-            echo "  Skipping company (remote not configured)"
-        fi
-        echo "Main repo push complete."
-        return 0
-    fi
-    echo "  Mirroring to company (rewriting author)..."
-    local COMPANY_NAME="${GIT_AUTHOR_NAME:?Missing GIT_AUTHOR_NAME in config/config.sh}"
-    local COMPANY_EMAIL="${GIT_AUTHOR_EMAIL:?Missing GIT_AUTHOR_EMAIL in config/config.sh}"
-    local TEMP_BRANCH="_mirror_company_$$"
+    # Push to public remotes (rewrite author for local commits, preserve GPU commits)
+    push_to_company_remote "$BRANCH" "company" \
+        "${GIT_AUTHOR_NAME:?Missing GIT_AUTHOR_NAME in config/config.sh}" \
+        "${GIT_AUTHOR_EMAIL:?Missing GIT_AUTHOR_EMAIL in config/config.sh}"
 
-    # Step 1: Fetch company and incorporate GPU machine's commits
-    git fetch company "$BRANCH" --quiet 2>/dev/null || true
-    local COMPANY_HEAD
-    COMPANY_HEAD="$(git rev-parse "company/${BRANCH}" 2>/dev/null || echo "")"
-
-    if [ -n "$COMPANY_HEAD" ]; then
-        # Merge company commits into local (so we don't lose GPU work)
-        if ! git merge-base --is-ancestor "$COMPANY_HEAD" HEAD 2>/dev/null; then
-            echo "  Incorporating GPU commits from company..."
-            git rebase --quiet "company/${BRANCH}" 2>/dev/null || {
-                echo "  Warning: rebase onto company failed, trying merge..."
-                git rebase --abort --quiet 2>/dev/null || true
-                git merge "company/${BRANCH}" --no-edit --quiet 2>/dev/null || {
-                    echo "  Warning: merge failed too, pushing as-is..."
-                    git merge --abort 2>/dev/null || true
-                }
-            }
-        fi
-    fi
-
-    # Step 2: Find merge-base for rewrite range
-    local BASE
-    BASE="$(git merge-base "company/${BRANCH}" HEAD 2>/dev/null || echo "")"
-
-    # Robust cleanup
-    cleanup_mirror() {
-        git rebase --abort --quiet 2>/dev/null || true
-        git checkout -f "$BRANCH" --quiet 2>/dev/null || true
-        git branch -D "$TEMP_BRANCH" --quiet 2>/dev/null || true
-        if ! git symbolic-ref HEAD >/dev/null 2>&1; then
-            git checkout -f master --quiet 2>/dev/null || true
-        fi
-        if [ "$STASHED" = true ]; then
-            if ! git stash pop --quiet 2>/dev/null; then
-                echo "  ERROR: stash pop failed. Your changes are in 'git stash list'."
-            fi
-            STASHED=false
-        fi
-    }
-    trap 'cleanup_mirror; trap - INT TERM; return 1' INT TERM
-
-    # Stash uncommitted changes
-    local STASHED=false
-    if ! git diff --quiet || ! git diff --cached --quiet; then
-        git stash push --quiet -m "push.sh: auto-stash before company mirror"
-        STASHED=true
-    fi
-
-    git checkout -b "$TEMP_BRANCH" "$BRANCH" --quiet
-
-    # Step 3: Rewrite only non-company-author commits (preserve GPU commits' hashes)
-    local REWRITE_EXEC="if [ \"\$(git log -1 --format='%ae')\" != '$COMPANY_EMAIL' ]; then GIT_COMMITTER_NAME='$COMPANY_NAME' GIT_COMMITTER_EMAIL='$COMPANY_EMAIL' git commit --amend --no-edit --quiet --author='$COMPANY_NAME <$COMPANY_EMAIL>'; fi"
-
-    local REBASE_OK=true
-    if [ -n "$BASE" ]; then
-        GIT_SEQUENCE_EDITOR=true git rebase --quiet --onto "$BASE" "$BASE" "$TEMP_BRANCH" \
-            --exec "$REWRITE_EXEC" \
-            2>/dev/null || REBASE_OK=false
-    else
-        GIT_SEQUENCE_EDITOR=true git rebase --quiet --root "$TEMP_BRANCH" \
-            --exec "$REWRITE_EXEC" \
-            2>/dev/null || REBASE_OK=false
-    fi
-
-    if [ "$REBASE_OK" = false ]; then
-        echo "  Warning: rebase failed, aborting..."
-        git rebase --abort --quiet 2>/dev/null || true
-        echo "  Falling back: pushing original commits to company..."
-        git push company "$BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: fallback push to company failed"
-    else
-        git push company "$TEMP_BRANCH:$BRANCH" --force 2>&1 || echo "  Warning: push to company failed"
-    fi
-
-    # Cleanup
-    trap - INT TERM
-    cleanup_mirror
-
-    local FINAL_BRANCH
-    FINAL_BRANCH="$(git branch --show-current 2>/dev/null || echo "")"
-    if [ "$FINAL_BRANCH" != "$BRANCH" ]; then
-        echo "  ERROR: expected '$BRANCH' but on '${FINAL_BRANCH:-DETACHED HEAD}'. Recovering..."
-        git checkout -f "$BRANCH" --quiet 2>/dev/null || git checkout -f master --quiet
-    fi
-    echo "  Company mirror complete."
+    push_to_company_remote "$BRANCH" "origin" \
+        "${COMPANY2_GIT_NAME:?Missing COMPANY2_GIT_NAME in config/config.sh}" \
+        "${COMPANY2_GIT_EMAIL:?Missing COMPANY2_GIT_EMAIL in config/config.sh}"
 
     echo "Main repo push complete."
 }

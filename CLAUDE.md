@@ -51,14 +51,15 @@ cd "${REPO_ROOT}"
 
 ## Git remotes
 
-Two remotes are configured:
+Three remotes are configured:
 
 | Remote | URL | Purpose |
 |--------|-----|---------|
 | `personal` | `git@github.com:yzq986/gr_demo.git` | Personal GitHub, original author identity |
 | `company` | `git@github.com:yzq986/gr_demo.git` | Public Git remote, experiment data lives here |
+| `origin` | `git@github.com:yzq986/gr_demo.git` | Alibaba Cloud GitHub |
 
-- **Push**: `./push.sh` handles both remotes (rewrites author for company). Never push manually.
+- **Push**: `./push.sh` handles all remotes (rewrites author for company/origin). Never push manually.
 - **Pull experiment data**: Experiments run on company GPU machines and results are pushed to `company`. To pull updated experiment data:
   ```bash
   git pull company master --rebase
