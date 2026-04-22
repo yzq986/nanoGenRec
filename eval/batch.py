@@ -8,15 +8,15 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
-from gr_demo.metrics import INTRINSIC_METRICS, BEHAVIOR_METRICS, AVAILABLE_METRICS, ReportGenerator
-from gr_demo.data.loaders import load_results_from_s3, load_model_from_s3
-from gr_demo.eval.wrapper import RKMeansModelWrapper
-from gr_demo.eval.behavior import BehaviorMetricsEvaluator
-from gr_demo.eval.compare import load_model_results, generate_comparison_report
+from metrics import INTRINSIC_METRICS, BEHAVIOR_METRICS, AVAILABLE_METRICS, ReportGenerator
+from data.loaders import load_results_from_s3, load_model_from_s3
+from eval.wrapper import RKMeansModelWrapper
+from eval.behavior import BehaviorMetricsEvaluator
+from eval.compare import load_model_results, generate_comparison_report
 
-from gr_demo.config import S3_RKMEANS_BASE
-from gr_demo.config import DEFAULT_DATE
-from gr_demo.data.loaders import resolve_behavior_paths
+from config import S3_RKMEANS_BASE
+from config import DEFAULT_DATE
+from data.loaders import resolve_behavior_paths
 
 
 # ============================================================
@@ -170,8 +170,8 @@ def resolve_exposure_files(date_start: str = None, date_end: str = None) -> List
     """
     import s3fs
 
-    from gr_demo.config import S3_USER_BEHAVIOR
-    from gr_demo.config import DEFAULT_DATE_START, DEFAULT_DATE_END
+    from config import S3_USER_BEHAVIOR
+    from config import DEFAULT_DATE_START, DEFAULT_DATE_END
     from datetime import datetime, timedelta
 
     s3_exposure_base = S3_USER_BEHAVIOR.rsplit("/", 1)[0] + "/feed_user_exposure"
@@ -203,8 +203,8 @@ def load_exposure_neg_data(date_start: str = None, date_end: str = None) -> Dict
     import pandas as pd
     import s3fs
 
-    from gr_demo.config import S3_USER_BEHAVIOR
-    from gr_demo.config import DEFAULT_DATE_START, DEFAULT_DATE_END
+    from config import S3_USER_BEHAVIOR
+    from config import DEFAULT_DATE_START, DEFAULT_DATE_END
 
     ds = date_start or DEFAULT_DATE_START
     de = date_end or DEFAULT_DATE_END

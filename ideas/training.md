@@ -151,9 +151,9 @@ loss = CE(logits[:, :-1], packed_sequence[:, 1:])
 
 **优先级**: P0
 **来源**: OneMall §3.2 Supervised Objectives
-**状态**: 待讨论 — NTP baseline 已建立 (EXP-013 S-tier)
+**状态**: ❌ 已测试, 负结果 — EXP-022 全 5 config 均不优于 baseline (详见 experiments/log.md EXP-022)
 
-> **NTP 阶段更新 (2026-04-17)**: EXP-013 建立了 S-tier baseline (17.5M active, 256d, 6L, 8E top-2)。当前 baseline 参考: EXP-016 14d-S (PPL=27.05, loss=2.9960, R@500=58.5%)。Contrastive loss 可直接在此 baseline 上实验。
+> **实验结论 (2026-04-22)**: EXP-022 测试了 α∈{0.01,0.1,0.5}、dim∈{128,256}、τ∈{0.05,0.07} 共 5 个 config。最好的 α=0.01 仅 +0.7pp R@500 但 PPL 劣化 +0.84。α 越大越差。根因：SID 是离散 token，InfoNCE 连续空间对齐对离散预测无帮助。**不再追。**
 
 ### 核心思想
 

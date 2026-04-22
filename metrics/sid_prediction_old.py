@@ -1281,7 +1281,7 @@ class SemanticIDPredictionMetric(BaseMetric):
         Uses ParallelNTPModel (bidirectional) + Graph-Constrained Decoding.
         """
         import random
-        from gr_demo.model.opq import build_sid_graph
+        from model.opq import build_sid_graph
 
         if verbose:
             print(f"  [Parallel mode] OPQ m={n_layers}, M={n_clusters}")

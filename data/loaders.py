@@ -12,7 +12,7 @@ from typing import Any, List, Tuple
 import numpy as np
 import torch
 
-from gr_demo.s3_utils import upload_to_s3
+from s3_utils import upload_to_s3
 
 
 # ============================================================
@@ -84,8 +84,8 @@ def load_content_texts(s3_path: str = None) -> dict:
         dict: {content_id_str: text_string}
     """
     if s3_path is None:
-        from gr_demo.config import S3_CONTENT_TEXT_EXPOSED
-        from gr_demo.config import DEFAULT_DATE
+        from config import S3_CONTENT_TEXT_EXPOSED
+        from config import DEFAULT_DATE
         s3_path = f'{S3_CONTENT_TEXT_EXPOSED}/{DEFAULT_DATE}'
 
     content_ids, texts, _, _ = load_text_from_s3(s3_path)
@@ -141,8 +141,8 @@ def resolve_behavior_paths(behavior_path: str, date_start: str = None, date_end:
     - 具体 S3 路径: 原样返回
     """
     if behavior_path == "auto":
-        from gr_demo.config import S3_USER_BEHAVIOR
-        from gr_demo.config import DEFAULT_DATE_START, DEFAULT_DATE_END
+        from config import S3_USER_BEHAVIOR
+        from config import DEFAULT_DATE_START, DEFAULT_DATE_END
         from datetime import datetime, timedelta
         ds = date_start or DEFAULT_DATE_START
         de = date_end or DEFAULT_DATE_END

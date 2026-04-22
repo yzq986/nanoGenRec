@@ -23,7 +23,7 @@ import time
 
 import numpy as np
 
-from gr_demo.ntp.train import build_unified_sequences
+from ntp.train import build_unified_sequences
 
 
 def parse_args():
@@ -241,7 +241,7 @@ def main():
     if args.entp_weight > 0:
         # ENTP mode: load compact positive+neg_iids from PySpark export
         print("\nStep 2: Loading ENTP negative data")
-        from gr_demo.eval.batch import load_exposure_neg_data
+        from eval.batch import load_exposure_neg_data
         exposure_neg_data = load_exposure_neg_data(
             date_start=args.date_start, date_end=args.date_end)
         print(f"  Positives with negatives: {len(exposure_neg_data['uid']):,}")
@@ -276,7 +276,7 @@ def main():
         del content_to_tokens
     else:
         print("\nStep 2: Loading behavior data")
-        from gr_demo.eval.batch import load_all_behavior_data
+        from eval.batch import load_all_behavior_data
         behavior_data = load_all_behavior_data(
             date_start=args.date_start, date_end=args.date_end)
         print(f"  Interactions: {len(behavior_data['uid']):,}")

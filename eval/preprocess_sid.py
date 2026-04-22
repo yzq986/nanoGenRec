@@ -27,10 +27,10 @@ import time
 import numpy as np
 import torch
 
-from gr_demo.config import MODEL_CONFIGS, EFS_EMBEDDING_CACHE
-from gr_demo.data.loaders import load_exposed_iids
-from gr_demo.model.rkmeans_fsq import ResKmeansFSQ, generate_semantic_ids_fsq
-from gr_demo.model.fsq import FSQ_LEVEL_CONFIGS
+from config import MODEL_CONFIGS, EFS_EMBEDDING_CACHE
+from data.loaders import load_exposed_iids
+from model.rkmeans_fsq import ResKmeansFSQ, generate_semantic_ids_fsq
+from model.fsq import FSQ_LEVEL_CONFIGS
 
 
 # ============================================================

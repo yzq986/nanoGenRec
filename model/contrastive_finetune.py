@@ -459,10 +459,10 @@ def train(args):
     # ── Load data (rank 0 builds dataset, then broadcast to all ranks) ──
     if is_main:
         print("Loading data...")
-        from gr_demo.data.loaders import load_content_texts
+        from data.loaders import load_content_texts
         content_id_to_text = load_content_texts()
 
-        from gr_demo.eval.batch import load_all_behavior_data
+        from eval.batch import load_all_behavior_data
         behavior_data = load_all_behavior_data()
 
         behavior_data_str = {

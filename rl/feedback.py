@@ -24,7 +24,7 @@ import time
 import numpy as np
 import pandas as pd
 
-from gr_demo.rl.preference import save_preference_shard
+from rl.preference import save_preference_shard
 
 
 # ============================================================
@@ -397,7 +397,7 @@ def main():
 
     # ── Load behavior data ──
     print(f"\nStep 2: Loading behavior data")
-    from gr_demo.eval.batch import load_all_behavior_data
+    from eval.batch import load_all_behavior_data
     behavior_data = load_all_behavior_data(
         date_start=args.date_start, date_end=args.date_end)
     print(f"  Interactions: {len(behavior_data['uid']):,}")

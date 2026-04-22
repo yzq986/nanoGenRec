@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import torch
 
-from gr_demo.config import (
+from config import (
     S3_CONTENT_TEXT_EXPOSED,
     S3_OLD_EMBEDDINGS,
     S3_RKMEANS_BASE,

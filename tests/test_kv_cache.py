@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(repo_root))
 import torch
 import torch.nn.functional as F
 
-from gr_demo.ntp.model import (
+from ntp.model import (
     NTPModel,
     SIDTrie,
     TransformerLayer,

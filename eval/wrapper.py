@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 import torch
 
-from gr_demo.model.fsq import FSQLayer, fsq_layer_from_state
+from model.fsq import FSQLayer, fsq_layer_from_state
 
 
 class RKMeansModelWrapper:
@@ -134,7 +134,7 @@ class OPQModelWrapper:
             codes: (N, m) pre-computed OPQ codes for eval embeddings
             device: computation device
         """
-        from gr_demo.model.opq import OPQQuantizer
+        from model.opq import OPQQuantizer
 
         self.normalize_residuals = model_data.get('normalize_input', True)
         self.n_subvectors = model_data['n_subvectors']

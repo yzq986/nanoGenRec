@@ -25,7 +25,7 @@ import time
 import numpy as np
 import torch
 
-from gr_demo.ntp.model import SIDTrie, constrained_beam_search
+from ntp.model import SIDTrie, constrained_beam_search
 
 
 def classify_rejected(ground_truth, beam_sids, n_layers):
@@ -538,8 +538,8 @@ def load_preference_shard(path):
 
 def _load_model(ckpt_path, device):
     """Load NTPModel from checkpoint."""
-    from gr_demo.ntp.model import NTPModel
-    from gr_demo.ntp.baseline import NTPProbe
+    from ntp.model import NTPModel
+    from ntp.baseline import NTPProbe
 
     ckpt = torch.load(
         os.path.join(ckpt_path, 'probe.pt'),
@@ -622,12 +622,12 @@ def main():
     model, cfg = _load_model(args.sft_checkpoint, device)
 
     # Build SID trie
-    from gr_demo.ntp.eval import _build_sid_to_items
+    from ntp.eval import _build_sid_to_items
     sid_to_items = _build_sid_to_items(sid_cache_dir)
     sid_trie = SIDTrie(sid_to_items, n_layers)
 
     # Load this rank's shard
-    from gr_demo.ntp.preprocess import load_shard_full
+    from ntp.preprocess import load_shard_full
     shard_path = os.path.join(args.preprocessed_dir, f'train_shard_{local_rank}.npz')
     if not os.path.exists(shard_path):
         # Fallback: single shard

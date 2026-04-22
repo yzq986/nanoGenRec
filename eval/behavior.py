@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
-from gr_demo.metrics import (
+from metrics import (
     INTRINSIC_METRICS,
     BEHAVIOR_METRICS,
     AVAILABLE_METRICS,
@@ -16,12 +16,12 @@ from gr_demo.metrics import (
     ReportGenerator,
     print_metric_result,
 )
-from gr_demo.data.loaders import (
+from data.loaders import (
     load_results_from_s3, load_model_from_s3,
     load_local_results, load_local_model,
 )
-from gr_demo.eval.wrapper import RKMeansModelWrapper
-from gr_demo.eval.evaluator import MetricsEvaluator
+from eval.wrapper import RKMeansModelWrapper
+from eval.evaluator import MetricsEvaluator
 
 
 # ============================================================

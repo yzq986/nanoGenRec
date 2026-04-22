@@ -22,9 +22,9 @@ import torch
 import torch.distributed as dist
 from transformers import AutoModel, AutoTokenizer
 
-from gr_demo.model.embedders import Qwen3TextEmbedder
-from gr_demo.config import S3_CONTENT_TEXT_EXPOSED, EFS_EMBEDDING_CACHE
-from gr_demo.config import DEFAULT_DATE_START, DEFAULT_DATE_END
+from model.embedders import Qwen3TextEmbedder
+from config import S3_CONTENT_TEXT_EXPOSED, EFS_EMBEDDING_CACHE
+from config import DEFAULT_DATE_START, DEFAULT_DATE_END
 
 NUM_SHARDS = 8  # 固定 shard 数，与 8xA100 对齐
 

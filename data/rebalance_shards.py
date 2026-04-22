@@ -14,8 +14,8 @@ import time
 
 import numpy as np
 
-from gr_demo.data.encode_distributed import cid_to_shard, NUM_SHARDS
-from gr_demo.config import EFS_EMBEDDING_CACHE
+from data.encode_distributed import cid_to_shard, NUM_SHARDS
+from config import EFS_EMBEDDING_CACHE
 
 
 def main():

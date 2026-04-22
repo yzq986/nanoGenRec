@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import torch
 
-from gr_demo.config import EFS_IMAGE_CACHE, S3_EMBEDDING_CACHE_BACKUP
+from config import EFS_IMAGE_CACHE, S3_EMBEDDING_CACHE_BACKUP
 
 IMAGE_CACHE_DIR = EFS_IMAGE_CACHE
 

@@ -17,7 +17,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-export PYTHONPATH="$(dirname "${REPO_ROOT}"):${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 cd "${REPO_ROOT}"
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True

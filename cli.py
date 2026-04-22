@@ -40,49 +40,49 @@ def main():
     sys.argv = [sys.argv[0]] + sys.argv[2:]
 
     if command == 'train':
-        from gr_demo.model.train import main as train_main
+        from model.train import main as train_main
         train_main()
     elif command == 'eval':
-        from gr_demo.eval.behavior import main as eval_main
+        from eval.behavior import main as eval_main
         eval_main()
     elif command == 'eval-all':
-        from gr_demo.eval.batch import main as batch_main
+        from eval.batch import main as batch_main
         batch_main()
     elif command == 'compare':
-        from gr_demo.eval.compare import main as compare_main
+        from eval.compare import main as compare_main
         compare_main()
     elif command == 'hyperparam':
-        from gr_demo.eval.hyperparam import main as hyperparam_main
+        from eval.hyperparam import main as hyperparam_main
         hyperparam_main()
     elif command == 'preprocess-sid':
-        from gr_demo.eval.preprocess_sid import main as preprocess_main
+        from eval.preprocess_sid import main as preprocess_main
         preprocess_main()
     elif command == 'preprocess-ntp':
-        from gr_demo.ntp.preprocess import main as preprocess_ntp_main
+        from ntp.preprocess import main as preprocess_ntp_main
         preprocess_ntp_main()
     elif command == 'train-ntp':
-        from gr_demo.ntp.train import main as train_ntp_main
+        from ntp.train import main as train_ntp_main
         train_ntp_main()
     elif command == 'pack':
-        from gr_demo.model.pack import main as pack_main
+        from model.pack import main as pack_main
         pack_main()
     elif command == 'sp-dpo-prepare':
-        from gr_demo.rl.preference import main as spdpo_prepare_main
+        from rl.preference import main as spdpo_prepare_main
         spdpo_prepare_main()
     elif command == 'rf-dpo-prepare':
-        from gr_demo.rl.feedback import main as rfdpo_prepare_main
+        from rl.feedback import main as rfdpo_prepare_main
         rfdpo_prepare_main()
     elif command == 'sp-dpo-train':
-        from gr_demo.rl.trainer import main as spdpo_train_main
+        from rl.trainer import main as spdpo_train_main
         spdpo_train_main()
     elif command == 'eval-ntp':
-        from gr_demo.rl.trainer import eval_main
+        from rl.trainer import eval_main
         eval_main()
     elif command == 'alignment-eval':
-        from gr_demo.rl.trainer import alignment_eval_main
+        from rl.trainer import alignment_eval_main
         alignment_eval_main()
     elif command == 'migrate-shards':
-        from gr_demo.data.migrate_shards import main as migrate_main
+        from data.migrate_shards import main as migrate_main
         migrate_main()
     else:
         print(f"Unknown command: {command}")
