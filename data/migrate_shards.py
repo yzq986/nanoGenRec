@@ -21,7 +21,8 @@ NUM_SHARDS = 8
 
 
 def cid_to_shard(cid, n_shards=NUM_SHARDS) -> int:
-    return hash(str(cid)) % n_shards
+    import hashlib
+    return int(hashlib.sha256(str(cid).encode()).hexdigest(), 16) % n_shards
 
 
 def main():

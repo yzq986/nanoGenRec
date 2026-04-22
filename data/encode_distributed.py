@@ -30,8 +30,13 @@ NUM_SHARDS = 8  # 固定 shard 数，与 8xA100 对齐
 
 
 def cid_to_shard(cid, n_shards=NUM_SHARDS) -> int:
-    """Deterministic shard assignment by content_id hash."""
-    return hash(str(cid)) % n_shards
+    """Deterministic shard assignment by content_id hash.
+
+    Uses hashlib instead of hash() because Python randomizes hash() seeds
+    across processes (PYTHONHASHSEED), which breaks distributed shard routing.
+    """
+    import hashlib
+    return int(hashlib.sha256(str(cid).encode()).hexdigest(), 16) % n_shards
 
 
 # ============================================================
