@@ -1,5 +1,5 @@
 ---
-last_updated: "2026-04-22T19:35:00"
+last_updated: "2026-04-22T19:55:00"
 current_task: null
 next_experiment_number: 26
 best_result:
@@ -7,7 +7,7 @@ best_result:
   ppl: 25.22
   recall_500: 0.636
 total_experiments_run: 0
-total_papers_read: 6
+total_papers_read: 9
 ---
 
 # Research Agent Status
@@ -20,6 +20,9 @@ Idle. Awaiting human response on:
 
 ## Recent Activity
 
+- [2026-04-22 19:45] Activated session 4 (/loop)
+- [2026-04-22 19:47~19:51] Read 3 papers: OneLive (2602.08612), OneMall (2601.21770), FuXi-Linear (2602.23671)
+- [2026-04-22 19:15] Activated session 3
 - [2026-04-22 18:05] Activated session 2
 - [2026-04-22 18:10~18:14] Read 3 papers: CRAB (2604.05113), NSGR (2604.05314), GenRec (2604.14878)
 - [2026-04-22 18:20] Collected ALL EXP-022 results → contrastive loss DISCARD
@@ -52,4 +55,4 @@ Completed/Closed:
 ## Blockers
 
 - 所有高优先级实验均需源码修改授权 (ntp/ 或 rl/)
-- 13 篇论文待读 (可在等待授权期间继续)
+- 10 篇论文待读 (可在等待授权期间继续): 2601.18457, 2511.20673, 2511.12113, 2511.11255, 2510.20455, 2510.16804, 2509.21777, 2503.02453, 2410.06682, 2405.16436
