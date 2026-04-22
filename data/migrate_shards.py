@@ -5,7 +5,7 @@
     python -m gr_demo.data.migrate_shards --model qwen3-0.6b --dry_run
 
 将 {EFS_EMBEDDING_CACHE}/{model}/incremental_cache.npy 按
-hash(str(content_id)) % 8 拆分为 shard_0.npy ~ shard_7.npy，
+sha256(str(content_id)) % 8 拆分为 shard_0.npy ~ shard_7.npy，
 并生成 cached_ids.txt 索引。
 """
 

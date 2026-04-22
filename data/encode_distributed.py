@@ -10,7 +10,7 @@
 
 逐日期从新到旧处理。每个日期内:
   1. 逐文件读 content_id，按 ID 级别判断是否已缓存，跳过已缓存的 cid
-  2. hash(content_id) % world_size 分配到对应 rank
+  2. sha256(content_id) % world_size 分配到对应 rank
   3. 编码后每个 rank 追加到自己的 shard_{rank}.npy
 """
 
