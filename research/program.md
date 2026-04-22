@@ -10,7 +10,8 @@
 
 每次被唤起时，严格按此顺序执行：
 
-1. **同步代码**：`git pull company master --rebase`
+1. **同步代码**：`git pull company "$(git branch --show-current)" --rebase`
+   - 即拉取当前分支对应的远端分支（当前为 `prometheus`）
    - 如果 rebase 冲突 → STOP，写 outbox（type: error），不要尝试自动解决
 2. **读状态**：`research/status.md` — 了解当前进度和上次结果
 3. **读收件箱**：按编号顺序读 `research/inbox/` 中所有文件
