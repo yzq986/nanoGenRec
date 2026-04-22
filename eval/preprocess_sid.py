@@ -199,11 +199,6 @@ def _cleanup_distributed():
         dist.destroy_process_group()
 
 
-def _cid_to_shard(cid, n_shards=NUM_SHARDS) -> int:
-    """Deterministic shard assignment — matches encode_distributed.cid_to_shard."""
-    import hashlib
-    return int(hashlib.sha256(str(cid).encode()).hexdigest(), 16) % n_shards
-
 
 def main_incremental(args):
     """Incremental mode: load existing quantizer, predict SIDs for new items only.
