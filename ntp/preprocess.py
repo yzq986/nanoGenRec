@@ -44,6 +44,8 @@ def parse_args():
                         help='Behavior data start date (YYYY-MM-DD)')
     parser.add_argument('--date_end', type=str, default=None,
                         help='Behavior data end date (YYYY-MM-DD)')
+    parser.add_argument('--behavior_path', type=str, default='auto',
+                        help='Local behavior cache dir or "auto" (S3)')
     parser.add_argument('--entp_weight', type=float, default=0.0,
                         help='If > 0, load exposure data and build neg_l0 for ENTP loss')
     parser.add_argument('--entp_k', type=int, default=5,
@@ -278,7 +280,8 @@ def main():
         print("\nStep 2: Loading behavior data")
         from eval.batch import load_all_behavior_data
         behavior_data = load_all_behavior_data(
-            date_start=args.date_start, date_end=args.date_end)
+            date_start=args.date_start, date_end=args.date_end,
+            behavior_path=args.behavior_path)
         print(f"  Interactions: {len(behavior_data['uid']):,}")
 
     # ── Build unified sequences ──

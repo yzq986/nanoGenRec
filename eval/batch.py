@@ -242,32 +242,46 @@ def load_exposure_neg_data(date_start: str = None, date_end: str = None) -> Dict
     }
 
 
-def load_all_behavior_data(date_start: str = None, date_end: str = None) -> Dict[str, np.ndarray]:
-    """加载全部行为数据。
+def load_all_behavior_data(date_start: str = None, date_end: str = None,
+                           behavior_path: str = "auto") -> Dict[str, np.ndarray]:
+    """加载全部行为数据。支持本地路径和 S3。
 
     Args:
-        date_start: 起始日期 (YYYY-MM-DD)，默认 DEFAULT_DATE_START
-        date_end: 结束日期 (YYYY-MM-DD)，默认 DEFAULT_DATE_END
+        date_start: 起始日期 (YYYY-MM-DD)
+        date_end: 结束日期 (YYYY-MM-DD)
+        behavior_path: 本地目录或 "auto"（走 S3）
     """
+    import os
+    import glob as glob_module
     import pandas as pd
-    import s3fs
 
     print(f"\n{'='*60}")
     print("Loading Behavior Data")
     print(f"{'='*60}")
 
-    fs = s3fs.S3FileSystem()
-    paths = resolve_behavior_paths("auto", date_start=date_start, date_end=date_end)
+    paths = resolve_behavior_paths(behavior_path, date_start=date_start, date_end=date_end)
+    is_local = all(not p.startswith('s3://') for p in paths)
+
     files = []
-    for bp in paths:
-        path_clean = bp.replace('s3://', '')
-        files.extend(fs.glob(f"{path_clean}/*.parquet"))
+    if is_local:
+        for bp in paths:
+            files.extend(sorted(glob_module.glob(os.path.join(bp, '*.parquet'))))
+    else:
+        import s3fs
+        fs = s3fs.S3FileSystem()
+        for bp in paths:
+            path_clean = bp.replace('s3://', '')
+            files.extend(fs.glob(f"{path_clean}/*.parquet"))
+
     print(f"Found {len(files)} files")
 
     dfs = []
     for i, f in enumerate(files):
-        with fs.open(f, 'rb') as file:
-            dfs.append(pd.read_parquet(file))
+        if is_local:
+            dfs.append(pd.read_parquet(f))
+        else:
+            with fs.open(f, 'rb') as fh:
+                dfs.append(pd.read_parquet(fh))
         if (i + 1) % 5 == 0:
             print(f"  Loaded {i + 1}/{len(files)}")
 

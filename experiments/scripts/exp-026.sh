@@ -84,7 +84,8 @@ else
         --output_dir "${NTP_DATA}" \
         --n_shards "${N_GPUS}" \
         --date_start "${DATE_START}" \
-        --date_end "${DATE_END}"
+        --date_end "${DATE_END}" \
+        --behavior_path "${BEHAVIOR_CACHE}"
     if [ ! -f "${NTP_DATA}/meta.json" ]; then
         echo "ERROR: preprocess-ntp did not produce meta.json"
         exit 1
