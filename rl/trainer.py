@@ -1930,35 +1930,60 @@ def grpo_main():
 
     # ── Save checkpoint + metadata (rank 0 only) ──
     if is_main:
-        save_checkpoint(model, args.output_dir, cfg=train_summary)
-        train_meta = {
+        extra = {
             'name': args.name,
             'algo': algo,
             'sft_checkpoint': args.sft_checkpoint,
-            'avg_loss': round(avg_loss, 6),
-            **train_summary,
         }
-        # NTP eval
-        from ntp.eval import run_eval
-        log(is_main, "\n  Running NTP eval...")
-        model.to(device)
-        model.eval()
-        eval_results = run_eval(model, args.preprocessed_dir, device,
-                                sid_cache_dir=sid_cache_dir)
-        train_meta['eval'] = eval_results
-        log(is_main, f"  R@10={eval_results.get('recall_10', 0):.4f}, "
-                     f"R@100={eval_results.get('recall_100', 0):.4f}, "
-                     f"R@500={eval_results.get('recall_500', 0):.4f}")
-
-        train_log_path = os.path.join(args.output_dir, 'train_log.jsonl')
-        with open(train_log_path, 'w') as f:
-            for entry in train_log_data:
-                f.write(json.dumps(entry) + '\n')
-
-        train_meta_path = os.path.join(args.output_dir, 'train_meta.json')
-        with open(train_meta_path, 'w') as f:
-            json.dump(train_meta, f, indent=2)
+        train_summary.update(extra)
+        save_checkpoint(
+            output_dir=args.output_dir,
+            probe=model,
+            n_clusters_per_layer=n_clusters_per_layer,
+            n_layers=n_layers,
+            n_items=prep_meta['n_items'],
+            avg_loss=avg_loss,
+            n_params=n_params,
+            sid_cache_dir=sid_cache_dir,
+            preprocessed_dir=args.preprocessed_dir,
+            model_type=prep_meta.get('model_type', 's-tier'),
+            n_train=prep_meta['n_seqs'],
+            n_eval=prep_meta['n_eval_items'],
+            train_log=train_log_data,
+            train_summary=train_summary,
+        )
         log(is_main, f"  Saved to {args.output_dir}")
+
+    # ── Inline NTP eval ──
+    train_meta_path = os.path.join(args.output_dir, 'train_meta.json')
+    existing_meta = {}
+    if is_main and os.path.exists(train_meta_path):
+        with open(train_meta_path) as f:
+            existing_meta = json.load(f)
+
+    if 'eval' not in existing_meta:
+        log(is_main, "\n  Running inline evaluation...")
+        from ntp.train import _run_inline_eval
+        model.to(device)
+        eval_results = _run_inline_eval(
+            probe=model,
+            sid_cache_dir=sid_cache_dir,
+            preprocessed_dir=args.preprocessed_dir,
+            n_layers=n_layers,
+            n_clusters_per_layer=n_clusters_per_layer,
+            local_rank=local_rank,
+            world_size=world_size,
+            device=device,
+            is_main=is_main,
+        )
+        if is_main and eval_results:
+            existing_meta['eval'] = eval_results
+            with open(train_meta_path, 'w') as f:
+                json.dump(existing_meta, f, indent=2)
+            log(is_main, f"  R@10={eval_results.get('item_recall@10', 0):.4f}, "
+                         f"R@500={eval_results.get('item_recall@500', 0):.4f}")
+    else:
+        log(is_main, "\n  NTP eval already present, skipping.")
 
     if wandb_run is not None:
         wandb_run.finish()
