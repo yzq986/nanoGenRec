@@ -1,15 +1,1 @@
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo '{\"hookSpecificOutput\": {\"hookEventName\": \"Stop\", \"additionalContext\": \"If you just completed a coding task (new feature, experiment, or significant change) and have not yet logged it as an experiment entry, invoke the /experiment skill now to record it in experiments/log.md.\"}}'",
-            "timeout": 5
-          }
-        ]
-      }
-    ]
-  }
-}
+{}
