@@ -1016,10 +1016,11 @@ def train_grpo(
         optimizer.zero_grad()
 
         # NTP loss
-        padded, lengths, split_positions = ntp_batch
-        padded = padded.to(device, non_blocking=True)
-        lengths = lengths.to(device, non_blocking=True)
-        split_positions = split_positions.to(device, non_blocking=True)
+        padded = ntp_batch[0].to(device, non_blocking=True)
+        lengths = ntp_batch[1].to(device, non_blocking=True)
+        split_positions = ntp_batch[2].to(device, non_blocking=True)
+        ntp_time_gaps = ntp_batch[3].to(device, non_blocking=True) if has_features and len(ntp_batch) > 3 else None
+        ntp_action_levels = ntp_batch[4].to(device, non_blocking=True) if has_features and len(ntp_batch) > 4 else None
         T = padded.shape[1]
 
         input_tokens = padded[:, :-1]
@@ -1032,6 +1033,8 @@ def train_grpo(
             input_tokens,
             packed_targets=target_tokens,
             packed_mask=train_mask,
+            time_gaps=ntp_time_gaps[:, :-1] if ntp_time_gaps is not None else None,
+            action_levels=ntp_action_levels[:, :-1] if ntp_action_levels is not None else None,
         )
         ntp_loss.backward()
         del padded, input_tokens, target_tokens, valid_mask, train_mask
