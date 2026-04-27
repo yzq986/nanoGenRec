@@ -136,14 +136,17 @@ def load_old_embeddings_from_s3(s3_path: str, max_partitions: int = 0) -> Tuple[
 
 
 def resolve_behavior_paths(behavior_path: str, date_start: str = None, date_end: str = None) -> list:
-    """将 behavior_path 解析为 S3 路径列表。
-    - "auto": date_start ~ date_end 每日增量路径 (默认用 config 中的 DEFAULT_DATE_START/END)
-    - 具体 S3 路径: 原样返回
+    """将 behavior_path 解析为路径列表（S3 或本地）。
+    - "auto": date_start ~ date_end 每日路径 (S3)
+    - 本地目录: 按 date_start ~ date_end 展开子目录 YYYY-MM-DD，若无日期则返回目录本身
+    - S3 路径: 原样返回
     """
+    import os
+    from datetime import datetime, timedelta
+
     if behavior_path == "auto":
         from config import S3_USER_BEHAVIOR
         from config import DEFAULT_DATE_START, DEFAULT_DATE_END
-        from datetime import datetime, timedelta
         ds = date_start or DEFAULT_DATE_START
         de = date_end or DEFAULT_DATE_END
         start = datetime.strptime(ds, "%Y-%m-%d")
@@ -155,27 +158,57 @@ def resolve_behavior_paths(behavior_path: str, date_start: str = None, date_end:
             d += timedelta(days=1)
         print(f"  Resolved behavior_path='auto' → {len(paths)} days ({ds} ~ {de})")
         return paths
+
+    # 本地目录：按日期展开子目录
+    if os.path.isdir(behavior_path) and not behavior_path.startswith('s3://'):
+        if date_start and date_end:
+            start = datetime.strptime(date_start, "%Y-%m-%d")
+            end = datetime.strptime(date_end, "%Y-%m-%d")
+            paths = []
+            d = start
+            while d <= end:
+                day_dir = os.path.join(behavior_path, d.strftime('%Y-%m-%d'))
+                if os.path.isdir(day_dir):
+                    paths.append(day_dir)
+                d += timedelta(days=1)
+            print(f"  Resolved local behavior_path → {len(paths)} days ({date_start} ~ {date_end})")
+            return paths
+        return [behavior_path]
+
     return [behavior_path]
 
 
 def load_exposed_iids(behavior_path: str, date_start: str = None, date_end: str = None) -> set:
-    """从 behavior parquet 加载去重后的曝光 iid 集合（支持 'auto' 和 S3 路径）"""
+    """从 behavior parquet 加载去重后的曝光 iid 集合（支持本地路径、S3 路径、'auto'）"""
+    import os
+    import glob as glob_module
     import pandas as pd
-    import s3fs
 
     paths = resolve_behavior_paths(behavior_path, date_start=date_start, date_end=date_end)
-    fs = s3fs.S3FileSystem()
+
+    # 判断是否本地路径
+    is_local = all(not p.startswith('s3://') for p in paths)
 
     files = []
-    for bp in paths:
-        path_clean = bp.replace('s3://', '')
-        files.extend(fs.glob(f"{path_clean}/*.parquet"))
+    if is_local:
+        for bp in paths:
+            files.extend(sorted(glob_module.glob(os.path.join(bp, '*.parquet'))))
+    else:
+        import s3fs
+        fs = s3fs.S3FileSystem()
+        for bp in paths:
+            path_clean = bp.replace('s3://', '')
+            files.extend(fs.glob(f"{path_clean}/*.parquet"))
+
     print(f"  Found {len(files)} behavior files")
 
     iid_set = set()
     for i, f in enumerate(files):
-        with fs.open(f, 'rb') as file:
-            df = pd.read_parquet(file, columns=['iid'])
+        if is_local:
+            df = pd.read_parquet(f, columns=['iid'])
+        else:
+            with fs.open(f, 'rb') as fh:
+                df = pd.read_parquet(fh, columns=['iid'])
         iid_set.update(df['iid'].dropna().astype(str).values)
         if (i + 1) % 5 == 0 or i == len(files) - 1:
             print(f"  Loaded {i + 1}/{len(files)} files, unique iids so far: {len(iid_set):,}")
