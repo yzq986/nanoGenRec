@@ -8,7 +8,7 @@ Usage:
     # Single GPU
     python run.py sp-dpo-train \
         --sft_checkpoint experiments/ntp_checkpoints/exp015-scale-04-11M \
-        --preference_dir experiments/sp_dpo_data/exp017/easy \
+        --preference_dir experiments/sp_dpo_data/exp017/easy \x
         --preprocessed_dir experiments/ntp_data/exp013 \
         --output_dir experiments/ntp_checkpoints/exp017-spdpo-easy \
         --dpo_weight 0.1 --dpo_beta 0.1 --lr 1e-4
@@ -1088,10 +1088,14 @@ def train_grpo(
             grpo_str = f", grpo={avg_grpo:.4f}" if n_grpo_steps > 0 else ""
             adv_str = (f", adv={diag.get('advantage_mean', 0):.2f}"
                        f", clip={diag.get('clip_fraction', 0):.0%}" if diag else "")
+            reward_str = ""
+            if reward_metrics:
+                parts = [f"{k.split('/')[-1]}={v:.3f}" for k, v in reward_metrics.items()]
+                reward_str = ", " + ", ".join(parts)
             print(f"    step {step+1}/{n_batches}: "
                   f"ntp={avg_ntp:.4f}{grpo_str}, "
                   f"total={avg_ntp + grpo_weight * avg_grpo:.4f}, "
-                  f"lr={cur_lr:.2e}, gnorm={grad_norm:.2f}{adv_str}, "
+                  f"lr={cur_lr:.2e}, gnorm={grad_norm:.2f}{adv_str}{reward_str}, "
                   f"{toks_per_sec:.0f} tok/s, ETA {eta}")
 
     actual_steps = min(step + 1, n_batches) if 'step' in dir() else 0
