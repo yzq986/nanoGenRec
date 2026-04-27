@@ -1095,12 +1095,19 @@ def train_grpo(
             avg_ntp = total_ntp_loss / (step + 1)
             avg_grpo = total_grpo_loss / (step + 1)
             grpo_str = f", grpo={avg_grpo:.4f}" if n_grpo_steps > 0 else ""
-            adv_str = (f", adv={diag.get('advantage_mean', 0):.2f}"
-                       f", clip={diag.get('clip_fraction', 0):.0%}" if diag else "")
-            reward_str = ""
-            if reward_metrics:
-                parts = [f"{k.split('/')[-1]}={v:.3f}" for k, v in reward_metrics.items()]
-                reward_str = ", " + ", ".join(parts)
+            if n_grpo_steps > 0:
+                avg_adv  = total_advantage_mean / n_grpo_steps
+                avg_clip = total_clip_frac / n_grpo_steps
+                adv_str = f", adv={avg_adv:.2f}, clip={avg_clip:.0%}"
+                if reward_metric_totals:
+                    parts = [f"{k.split('/')[-1]}={reward_metric_totals[k]/n_grpo_steps:.3f}"
+                             for k in reward_metric_totals]
+                    reward_str = ", " + ", ".join(parts)
+                else:
+                    reward_str = ""
+            else:
+                adv_str = ""
+                reward_str = ""
             print(f"    step {step+1}/{n_batches}: "
                   f"ntp={avg_ntp:.4f}{grpo_str}, "
                   f"total={avg_ntp + grpo_weight * avg_grpo:.4f}, "
