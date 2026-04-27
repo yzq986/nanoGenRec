@@ -38,6 +38,7 @@ from ntp.train import (
 from rl.dpo import (
     compute_sid_logprobs_batch, softmax_dpo_loss, _freeze_moe_bias,
 )
+from rl.grpo import grpo_loss, ecpo_loss
 from rl.preference import load_preference_shard
 
 
@@ -701,6 +702,444 @@ def train_dpo(
             'avg_rejected_reward': round(total_rejected_reward / n_diag_steps, 4),
             'avg_reward_margin': round((total_chosen_reward - total_rejected_reward) / n_diag_steps, 4),
             'avg_preference_acc': round(total_preference_acc / n_diag_steps, 4),
+        })
+
+    return policy_model, avg_total, n_params, train_log, train_summary
+
+
+# ============================================================
+# GRPO / ECPO training loop (Phase 3 & 4)
+# ============================================================
+
+def train_grpo(
+    ntp_tokens_list,
+    ntp_split_pos_list,
+    context_pool,           # List[List[int]] — context token sequences (CPU), built by caller
+    n_clusters_per_layer,
+    n_layers,
+    sft_checkpoint,
+    local_rank,
+    world_size,
+    device,
+    is_main,
+    preprocessed_dir,
+    sid_cache_dir,
+    sid_trie,               # SIDTrie from ntp.model — for beam search + FormatReward
+    reward_fn,              # RewardFn or CompositeReward
+    grpo_weight=0.5,
+    lr=1e-4,
+    batch_size=2048,
+    grpo_batch_size=4,      # contexts per GRPO step
+    group_size=512,         # G beam-search candidates per context
+    max_chunk=64,           # max_chunk for compute_sid_logprobs_batch
+    eps=0.2,
+    delta=0.0,              # 0.0 → GRPO, 0.1 → ECPO
+    rl_data_ratio=0.02,     # Bernoulli p of running a GRPO step per NTP step
+    max_steps=None,
+    wandb_run=None,
+):
+    """Joint NTP + GRPO (or ECPO) training loop.
+
+    Mirrors train_dpo() structure: same DDP pattern, memory auto-cap,
+    pre-allocated grad buffer, and return signature.
+
+    Each NTP step, a GRPO step is taken with probability rl_data_ratio
+    (Bernoulli sample). The GRPO step generates group_size candidates per
+    context via constrained_beam_search (using the frozen ref model),
+    scores them with reward_fn, computes log-probs for policy and ref,
+    then calls grpo_loss or ecpo_loss (selected by delta).
+
+    Args:
+        context_pool: list of token sequences to sample GRPO contexts from.
+                      Caller builds this from NTP shard eval items.
+        sid_trie:     SIDTrie — passed to constrained_beam_search and
+                      optionally to FormatReward if included in reward_fn.
+        reward_fn:    any RewardFn-compatible object. For multi-source
+                      rewards use CompositeReward.
+        delta:        0.0 → pure GRPO; >0 → ECPO with early clip.
+
+    Returns:
+        (policy_model, avg_total_loss, n_params, train_log, train_summary)
+    """
+    from ntp.model import constrained_beam_search
+
+    # ── Load models ──
+    log(is_main, f"  Loading policy model from {sft_checkpoint}...")
+    policy_model, cfg = load_model_from_checkpoint(sft_checkpoint, device)
+    model_type = cfg.get('model_type', 's-tier')
+    n_params = sum(p.numel() for p in policy_model.parameters())
+    log(is_main, f"  Policy: {model_type}, {n_params / 1e6:.1f}M params")
+
+    log(is_main, f"  Loading reference model (frozen)...")
+    ref_model, _ = load_model_from_checkpoint(sft_checkpoint, device)
+    ref_model.eval()
+    for p in ref_model.parameters():
+        p.requires_grad = False
+
+    raw_policy = policy_model
+
+    # ── Auto-cap NTP batch_size ──
+    max_seq_len = max(len(t) for t in ntp_tokens_list) if ntp_tokens_list else 512
+    gpu_mem_gb = torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)
+    embed_dim = cfg.get('embed_dim', 256)
+    n_tf_layers = cfg.get('n_transformer_layers', 6)
+    n_heads = cfg.get('n_heads', 8)
+    model_mem_gb = n_params * 4 * 4 / (1024 ** 3)
+    ref_mem_gb = n_params * 4 / (1024 ** 3)
+    avail_gb = gpu_mem_gb * 0.85 - model_mem_gb - ref_mem_gb
+    S2 = max_seq_len * max_seq_len
+    attn_bytes = n_heads * S2 * 9 * n_tf_layers
+    linear_bytes = 6 * max_seq_len * embed_dim * 4 * n_tf_layers
+    ffn_bytes = 2 * max_seq_len * embed_dim * 4 * 4 * n_tf_layers
+    bytes_per_sample = int((attn_bytes + linear_bytes + ffn_bytes) * 1.5)
+    # GRPO beam search (G=512) needs more headroom than DPO
+    grpo_reserve_gb = 4.0
+    avail_gb -= grpo_reserve_gb
+    log(is_main, f"  GRPO active: reserving {grpo_reserve_gb}GB → avail={avail_gb:.1f}GB")
+    mem_safe_bs = max(32, int(avail_gb * 1024 ** 3 / bytes_per_sample))
+    if batch_size > mem_safe_bs:
+        log(is_main, f"  Auto-capping NTP batch_size {batch_size} → {mem_safe_bs} "
+                     f"(seq_len={max_seq_len}, avail={avail_gb:.1f}GB)")
+        batch_size = mem_safe_bs
+
+    # ── NTP DataLoader ──
+    ntp_dataset = UnifiedSequenceDataset(ntp_tokens_list, ntp_split_pos_list)
+    ntp_loader = DataLoader(
+        ntp_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=2,
+        pin_memory=True,
+        drop_last=True,
+        collate_fn=unified_collate_fn,
+    )
+
+    n_batches = len(ntp_loader)
+    if max_steps:
+        n_batches = min(n_batches, max_steps)
+
+    # ── Optimizer ──
+    optimizer = torch.optim.AdamW(policy_model.parameters(), lr=lr, weight_decay=0.01)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_batches)
+
+    algo = 'ECPO' if delta > 0.0 else 'GRPO'
+    log(is_main, f"  Training ({algo}): {n_batches} steps, NTP batch={batch_size}, "
+                 f"GRPO batch={grpo_batch_size}, G={group_size}, "
+                 f"rl_ratio={rl_data_ratio}, λ={grpo_weight}, ε={eps}"
+                 + (f", δ={delta}" if delta > 0.0 else "")
+                 + f", lr={lr}")
+
+    policy_model.train()
+    total_ntp_loss = 0.0
+    total_grpo_loss = 0.0
+    total_tokens = 0
+    train_log = []
+    t0 = time.time()
+
+    # Diagnostic accumulators
+    total_advantage_mean = 0.0
+    total_advantage_std = 0.0
+    total_ratio_mean = 0.0
+    total_clip_frac = 0.0
+    total_reward_mean = 0.0
+    total_reward_std = 0.0
+    total_early_clip_frac = 0.0
+    n_grpo_steps = 0
+    reward_metric_totals: dict = {}
+
+    # ── Pre-allocate flat grad buffer ──
+    if world_size > 1:
+        total_param_count = sum(p.numel() for p in policy_model.parameters())
+        grad_flat_buffer = torch.zeros(total_param_count, device=device)
+        log(is_main, f"  Pre-allocated grad all-reduce buffer: "
+                     f"{total_param_count * 4 / 1024 ** 2:.0f} MB")
+    else:
+        grad_flat_buffer = None
+
+    def _allreduce_grads():
+        if world_size <= 1:
+            return
+        grads = [p.grad for p in policy_model.parameters() if p.grad is not None]
+        if grads:
+            offset = 0
+            for g in grads:
+                numel = g.numel()
+                grad_flat_buffer[offset:offset + numel].copy_(g.reshape(-1))
+                offset += numel
+            dist.all_reduce(grad_flat_buffer[:offset], op=dist.ReduceOp.AVG)
+            offset = 0
+            for g in grads:
+                numel = g.numel()
+                g.copy_(grad_flat_buffer[offset:offset + numel].reshape(g.shape))
+                offset += numel
+
+    # ── Context pool padding helper ──
+    def _pad_contexts(ctx_list):
+        """Pad a list of token lists into a (B, T_max) tensor and return lengths."""
+        lengths = torch.tensor([len(c) for c in ctx_list], dtype=torch.long)
+        T = int(lengths.max().item())
+        padded = torch.zeros(len(ctx_list), T, dtype=torch.long)
+        for i, c in enumerate(ctx_list):
+            padded[i, :len(c)] = torch.tensor(c, dtype=torch.long)
+        return padded.to(device), lengths.to(device)
+
+    # ── GRPO step helper ──
+    def _grpo_step(sampled_contexts, weight=1.0):
+        """Generate candidates, score rewards, compute GRPO/ECPO loss and backward.
+
+        Args:
+            sampled_contexts: list of token-lists (CPU), length == grpo_batch_size
+            weight: loss weight (== grpo_weight)
+
+        Returns:
+            (unscaled_loss_scalar, diag_dict, reward_metrics_dict)
+        """
+        with _freeze_moe_bias(raw_policy):
+            all_sids_list = []
+            group_offsets_list = [0]
+
+            # 1. Online beam search for each context (uses ref model — eval, no grad)
+            for ctx_tokens in sampled_contexts:
+                ctx_t = torch.tensor(ctx_tokens, dtype=torch.long,
+                                     device=device).unsqueeze(0)  # (1, T)
+                with torch.no_grad():
+                    beams, _scores, _ = constrained_beam_search(
+                        ref_model, ctx_t, sid_trie, beam_size=group_size)
+                # beams: (1, actual_beams, n_layers)
+                cands = beams[0]   # (actual_beams, n_layers)
+                all_sids_list.append(cands)
+                group_offsets_list.append(group_offsets_list[-1] + cands.size(0))
+
+            all_sids_t = torch.cat(all_sids_list, dim=0)   # (N_total, n_layers)
+            group_offsets_t = torch.tensor(group_offsets_list,
+                                           dtype=torch.long, device=device)
+
+            # 2. Expand contexts to match candidate count
+            counts = group_offsets_t[1:] - group_offsets_t[:-1]   # (B,)
+            ctx_padded, ctx_lengths = _pad_contexts(sampled_contexts)
+            ctx_exp = torch.repeat_interleave(ctx_padded, counts, dim=0)
+            len_exp = torch.repeat_interleave(ctx_lengths, counts, dim=0)
+
+            # 3. Rewards (detached — no gradient through reward fn)
+            with torch.no_grad():
+                rewards = reward_fn(all_sids_t, ctx_exp, len_exp).float()
+
+            # 4. Ref log-probs (no grad)
+            with torch.no_grad():
+                ref_lp = compute_sid_logprobs_batch(
+                    ref_model, ctx_exp, len_exp, all_sids_t, n_layers,
+                    max_chunk=max_chunk)
+
+            # 5. Policy log-probs (with grad)
+            policy_lp = compute_sid_logprobs_batch(
+                raw_policy, ctx_exp, len_exp, all_sids_t, n_layers,
+                max_chunk=max_chunk)
+
+            # 6. Loss
+            if delta > 0.0:
+                loss_val, diag = ecpo_loss(
+                    policy_lp, ref_lp, rewards, group_offsets_t,
+                    eps=eps, delta=delta, return_diagnostics=True)
+            else:
+                loss_val, diag = grpo_loss(
+                    policy_lp, ref_lp, rewards, group_offsets_t,
+                    eps=eps, return_diagnostics=True)
+
+            (weight * loss_val).backward()
+
+            # 7. Reward component metrics
+            reward_metrics = {}
+            if hasattr(reward_fn, 'metrics'):
+                reward_metrics = reward_fn.metrics()
+
+            del all_sids_t, ctx_padded, ctx_lengths, ctx_exp, len_exp
+            del policy_lp, ref_lp, rewards
+
+        return loss_val, diag, reward_metrics
+
+    # ── Context pool sampling ──
+    import random as _random
+    pool_size = len(context_pool)
+    if pool_size == 0:
+        log(is_main, "  WARNING: context_pool is empty — GRPO disabled.")
+        rl_data_ratio = 0.0
+
+    # ── Main training loop ──
+    for step, ntp_batch in enumerate(ntp_loader):
+        if max_steps and step >= max_steps:
+            break
+
+        optimizer.zero_grad()
+
+        # NTP loss
+        padded, lengths, split_positions = ntp_batch
+        padded = padded.to(device, non_blocking=True)
+        lengths = lengths.to(device, non_blocking=True)
+        split_positions = split_positions.to(device, non_blocking=True)
+        T = padded.shape[1]
+
+        input_tokens = padded[:, :-1]
+        target_tokens = padded[:, 1:]
+        arange = torch.arange(T - 1, device=device).unsqueeze(0)
+        valid_mask = arange < (lengths.unsqueeze(1) - 1)
+        train_mask = valid_mask & (arange < (split_positions.unsqueeze(1) - 1))
+
+        ntp_loss = policy_model(
+            input_tokens,
+            packed_targets=target_tokens,
+            packed_mask=train_mask,
+        )
+        ntp_loss.backward()
+        del padded, input_tokens, target_tokens, valid_mask, train_mask
+
+        # GRPO loss (Bernoulli gating)
+        grpo_loss_val = torch.tensor(0.0, device=device)
+        diag = {}
+        reward_metrics = {}
+        if rl_data_ratio > 0.0 and pool_size > 0 and _random.random() < rl_data_ratio:
+            sampled = [context_pool[_random.randrange(pool_size)]
+                       for _ in range(grpo_batch_size)]
+            grpo_loss_val, diag, reward_metrics = _grpo_step(sampled, weight=grpo_weight)
+
+        _allreduce_grads()
+
+        grad_norm = torch.nn.utils.clip_grad_norm_(policy_model.parameters(), 1.0).item()
+        optimizer.step()
+        scheduler.step()
+
+        step_ntp = ntp_loss.item()
+        step_grpo = grpo_loss_val.item()
+        total_ntp_loss += step_ntp
+        total_grpo_loss += step_grpo
+        step_tokens = int(lengths.sum().item()) * world_size
+        total_tokens += step_tokens
+
+        if diag:
+            total_advantage_mean += diag.get('advantage_mean', 0.0)
+            total_advantage_std  += diag.get('advantage_std', 0.0)
+            total_ratio_mean     += diag.get('policy_ratio_mean', 0.0)
+            total_clip_frac      += diag.get('clip_fraction', 0.0)
+            total_reward_mean    += diag.get('reward_mean', 0.0)
+            total_reward_std     += diag.get('reward_std', 0.0)
+            total_early_clip_frac += diag.get('early_clip_fraction', 0.0)
+            n_grpo_steps += 1
+            for k, v in reward_metrics.items():
+                reward_metric_totals[k] = reward_metric_totals.get(k, 0.0) + v
+
+        if is_main:
+            cur_lr = scheduler.get_last_lr()[0]
+            step_total = step_ntp + grpo_weight * step_grpo
+            log_entry = {
+                'step': step,
+                'ntp_loss': round(step_ntp, 6),
+                'grpo_loss': round(step_grpo, 6),
+                'total_loss': round(step_total, 6),
+                'lr': round(cur_lr, 8),
+                'grad_norm': round(grad_norm, 4),
+                'tokens': total_tokens,
+                'wall_s': round(time.time() - t0, 2),
+            }
+            if diag:
+                log_entry.update({
+                    'advantage_mean':    round(diag.get('advantage_mean', 0.0), 4),
+                    'advantage_std':     round(diag.get('advantage_std', 0.0), 4),
+                    'policy_ratio_mean': round(diag.get('policy_ratio_mean', 0.0), 4),
+                    'clip_fraction':     round(diag.get('clip_fraction', 0.0), 4),
+                    'reward_mean':       round(diag.get('reward_mean', 0.0), 4),
+                    'reward_std':        round(diag.get('reward_std', 0.0), 4),
+                })
+                if delta > 0.0:
+                    log_entry['early_clip_fraction'] = round(
+                        diag.get('early_clip_fraction', 0.0), 4)
+                log_entry.update({k: round(v, 4) for k, v in reward_metrics.items()})
+            train_log.append(log_entry)
+
+            if wandb_run is not None:
+                wb = {
+                    'train/ntp_loss':   step_ntp,
+                    'train/grpo_loss':  step_grpo,
+                    'train/total_loss': step_total,
+                    'train/lr':         cur_lr,
+                    'train/grad_norm':  grad_norm,
+                    'tokens':           total_tokens,
+                }
+                if diag:
+                    wb.update({
+                        'grpo/advantage_mean':    diag.get('advantage_mean', 0.0),
+                        'grpo/advantage_std':     diag.get('advantage_std', 0.0),
+                        'grpo/policy_ratio_mean': diag.get('policy_ratio_mean', 0.0),
+                        'grpo/clip_fraction':     diag.get('clip_fraction', 0.0),
+                        'grpo/reward_mean':       diag.get('reward_mean', 0.0),
+                        'grpo/reward_std':        diag.get('reward_std', 0.0),
+                    })
+                    if delta > 0.0:
+                        wb['grpo/early_clip_fraction'] = diag.get('early_clip_fraction', 0.0)
+                    wb.update(reward_metrics)
+                wandb_run.log(wb, step=step)
+
+        if is_main and (step + 1) % 50 == 0:
+            elapsed = time.time() - t0
+            toks_per_sec = total_tokens / elapsed
+            remaining = (n_batches - step - 1) / ((step + 1) / elapsed)
+            eta = format_eta(remaining)
+            avg_ntp = total_ntp_loss / (step + 1)
+            avg_grpo = total_grpo_loss / (step + 1)
+            grpo_str = f", grpo={avg_grpo:.4f}" if n_grpo_steps > 0 else ""
+            adv_str = (f", adv={diag.get('advantage_mean', 0):.2f}"
+                       f", clip={diag.get('clip_fraction', 0):.0%}" if diag else "")
+            print(f"    step {step+1}/{n_batches}: "
+                  f"ntp={avg_ntp:.4f}{grpo_str}, "
+                  f"total={avg_ntp + grpo_weight * avg_grpo:.4f}, "
+                  f"lr={cur_lr:.2e}, gnorm={grad_norm:.2f}{adv_str}, "
+                  f"{toks_per_sec:.0f} tok/s, ETA {eta}")
+
+    actual_steps = min(step + 1, n_batches) if 'step' in dir() else 0
+    avg_ntp = total_ntp_loss / max(actual_steps, 1)
+    avg_grpo = total_grpo_loss / max(actual_steps, 1)
+    avg_total = avg_ntp + grpo_weight * avg_grpo
+    elapsed = time.time() - t0
+
+    log(is_main, f"  Train done: ntp={avg_ntp:.4f}, grpo={avg_grpo:.4f}, "
+                 f"total={avg_total:.4f}, grpo_steps={n_grpo_steps}, "
+                 f"{total_tokens:,} tokens ({elapsed:.1f}s)")
+
+    policy_model.cpu()
+    ref_model.cpu()
+
+    train_summary = {
+        'n_params': n_params,
+        'avg_ntp_loss':  round(avg_ntp, 6),
+        'avg_grpo_loss': round(avg_grpo, 6),
+        'avg_total_loss': round(avg_total, 6),
+        'grpo_weight': grpo_weight,
+        'eps': eps,
+        'delta': delta,
+        'algo': algo,
+        'group_size': group_size,
+        'rl_data_ratio': rl_data_ratio,
+        'total_tokens': total_tokens,
+        'wall_time_s': round(elapsed, 1),
+        'batch_size': batch_size,
+        'grpo_batch_size': grpo_batch_size,
+        'world_size': world_size,
+        'n_steps': actual_steps,
+        'n_grpo_steps': n_grpo_steps,
+        'context_pool_size': pool_size,
+    }
+    if n_grpo_steps > 0:
+        train_summary.update({
+            'avg_advantage_mean':    round(total_advantage_mean / n_grpo_steps, 4),
+            'avg_advantage_std':     round(total_advantage_std  / n_grpo_steps, 4),
+            'avg_clip_fraction':     round(total_clip_frac      / n_grpo_steps, 4),
+            'avg_reward_mean':       round(total_reward_mean    / n_grpo_steps, 4),
+            'avg_reward_std':        round(total_reward_std     / n_grpo_steps, 4),
+        })
+        if delta > 0.0:
+            train_summary['avg_early_clip_fraction'] = round(
+                total_early_clip_frac / n_grpo_steps, 4)
+        train_summary.update({
+            f'avg_{k}': round(v / n_grpo_steps, 4)
+            for k, v in reward_metric_totals.items()
         })
 
     return policy_model, avg_total, n_params, train_log, train_summary
