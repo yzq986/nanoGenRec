@@ -59,7 +59,7 @@ RF-DPO (Phase 2) 已完成训练。Phase 3/4 引入 GRPO 和 ECPO：
 
 ### Design
 - **Variable**: 算法（GRPO vs ECPO）；reward 组合（BehaviorOnly vs Behavior+Format）
-- **Fixed**: G=512，ε=0.2，grpo_weight=0.5，rl_data_ratio=0.02，grpo_batch_size=4，RF-DPO checkpoint 作为 SFT 起点，SID_CACHE=exp013-4096x3-12d-binary，DATE 2026-03-18~2026-03-31
+- **Fixed**: G=512，ε=0.2，grpo_weight=0.5，rl_data_ratio=0.02，grpo_batch_size=4，SFT 起点自动选择最佳可用 checkpoint（exp020 > exp019 > exp016-B），SID_CACHE=exp013-4096x3-12d-binary，DATE 2026-03-18~2026-03-31
 - **Metric**: R@10, R@100, R@500；grpo/advantage_mean, grpo/clip_fraction, reward/format_legal_rate
 - **Data**: exp023-14d-features（复用），RF-DPO checkpoint（exp020 best 或 exp019）
 

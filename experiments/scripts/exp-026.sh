@@ -8,8 +8,10 @@ set -euo pipefail
 #          BehaviorReward + FormatReward, rl_data_ratio=2%
 # Phase 4: ECPO — GRPO + early clip (delta=0.1) for negative-advantage stability
 #
-# SFT starting point: exp020-hard-lam03 (best RF-DPO hard checkpoint)
-# Requires: git pull company master  (to get probe.pt from GPU machine)
+# SFT starting point (priority order):
+#   1. exp020-hard-lam03  — best RF-DPO hard checkpoint (if available)
+#   2. exp019-joint-hard-lam10 — RF-DPO joint hard (fallback)
+#   3. exp016-B-14d-S     — NTP base (final fallback, always present)
 #
 # Configs:
 #   1. grpo-behavior       GRPO, BehaviorReward only (baseline)
@@ -24,7 +26,6 @@ cd "${REPO_ROOT}"
 # ── Paths ──
 SID_CACHE="experiments/sid_cache/exp013-4096x3-12d-binary"
 NTP_DATA="experiments/ntp_data/exp023-14d-features"
-SFT_CKPT="experiments/ntp_checkpoints/exp020-hard-lam03"
 RF_FEEDBACK_DIR="experiments/rf_dpo_data/hard"   # for BehaviorReward
 CKPT_DIR="experiments/ntp_checkpoints"
 DATE_START="2026-03-18"
@@ -32,6 +33,21 @@ DATE_END="2026-03-31"
 N_GPUS="${N_GPUS:-$(python -c 'import torch; print(max(1, torch.cuda.device_count()))')}"
 START_FROM="${START_FROM:-0}"
 FORCE="${FORCE:-false}"
+
+# ── Auto-select SFT checkpoint (best available RF-DPO → NTP base fallback) ──
+if [ -f "${CKPT_DIR}/exp020-hard-lam03/probe.pt" ]; then
+    SFT_CKPT="${CKPT_DIR}/exp020-hard-lam03"
+    echo "  Using SFT: exp020-hard-lam03 (RF-DPO hard best)"
+elif [ -f "${CKPT_DIR}/exp019-joint-hard-lam10/probe.pt" ]; then
+    SFT_CKPT="${CKPT_DIR}/exp019-joint-hard-lam10"
+    echo "  Using SFT: exp019-joint-hard-lam10 (RF-DPO fallback)"
+elif [ -f "${CKPT_DIR}/exp016-B-14d-S/probe.pt" ]; then
+    SFT_CKPT="${CKPT_DIR}/exp016-B-14d-S"
+    echo "  Using SFT: exp016-B-14d-S (NTP base fallback)"
+else
+    echo "ERROR: No SFT checkpoint found. Run one of: exp016.sh, exp019.sh, exp020.sh first."
+    exit 1
+fi
 
 echo "=========================================="
 echo "EXP-026: GRPO+ECPO + Pluggable Reward"
@@ -45,11 +61,6 @@ echo "  Date range:     ${DATE_START} ~ ${DATE_END}"
 echo ""
 
 # ── Preflight checks ──
-if [ ! -f "${SFT_CKPT}/probe.pt" ]; then
-    echo "ERROR: SFT checkpoint not found at ${SFT_CKPT}/probe.pt"
-    echo "  Run: git pull company master --rebase"
-    exit 1
-fi
 if [ ! -f "${NTP_DATA}/meta.json" ]; then
     echo "ERROR: NTP data not found at ${NTP_DATA}/meta.json"
     echo "  Run exp-023.sh first, or pull from public remote."
