@@ -280,7 +280,8 @@ _VIEW_EXIT_BIT = 4096        # excluded (not a positive signal)
 
 # Production time-decay: TimeDecay(t) = exp(-ln(1.1) × t / 150)
 # where t is age in hours. τ_hours = 150 / ln(1.1) ≈ 1582h ≈ 65.9 days
-_TIME_DECAY_RATE = math.log(1.1) / 150.0  # per-hour decay rate
+_TIME_DECAY_TAU_HOURS = 3.0 * 24.0        # τ = 3 days in hours
+_TIME_DECAY_RATE = 1.0 / _TIME_DECAY_TAU_HOURS  # per-hour decay rate
 
 
 def _bitmap_to_quality(action_bitmap: int) -> float:
@@ -302,10 +303,10 @@ def _bitmap_to_quality(action_bitmap: int) -> float:
 class WeightedBehaviorReward(DiagnosticReward):
     """Continuous item-level reward: quality × freshness.
 
-    Reward = log10(1 + Σ action_weights) × exp(-ln(1.1) × age_hours / 150)
+    Reward = log10(1 + Σ action_weights) × exp(-age_hours / 72)
 
     Quality weights align with production v0420 spec (additive, log-scaled).
-    Freshness uses production time-decay: τ ≈ 66 days, halves every ~458h.
+    Freshness: τ = 3 days (72h), score halves every ~50h.
 
     Compared with BehaviorReward (binary chosen/rejected), this:
       - Covers every SID with any positive interaction (solves 97.5% zero-reward)
@@ -351,7 +352,7 @@ class WeightedBehaviorReward(DiagnosticReward):
         quality = _bitmap_to_quality(action_bitmap)
         if quality <= 0.0:
             return quality * scale  # preserve negative reward sign
-        # Production time-decay: exp(-ln(1.1) × age_hours / 150)
+        # Freshness decay: exp(-age_hours / 72), τ = 3 days
         age_hours = max(0.0, self._eval_ts - last_ts) / 3600.0
         freshness = math.exp(-_TIME_DECAY_RATE * age_hours)
         return quality * freshness * scale
