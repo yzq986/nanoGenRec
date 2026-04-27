@@ -737,6 +737,9 @@ def train_grpo(
     rl_data_ratio=0.02,     # Bernoulli p of running a GRPO step per NTP step
     on_policy_beam=False,   # True → use policy model for beam search (on-policy)
     rank_norm=False,        # True → rank-based advantage in [-1,1] (robust to log-scale rewards)
+    a2po=False,             # True → A2PO: amplify neg-adv penalty for hard negatives
+    a2po_alpha=1.0,         # A2PO gate scale
+    nll_reg=0.0,            # NLL regularization weight: add -nll_reg * log p(best) per group
     max_steps=None,
     wandb_run=None,
 ):
@@ -830,6 +833,8 @@ def train_grpo(
                  f"GRPO batch={grpo_batch_size}, G={group_size}, "
                  f"rl_ratio={rl_data_ratio}, λ={grpo_weight}, ε={eps}"
                  + (f", δ={delta}" if delta > 0.0 else "")
+                 + (f", A2PO α={a2po_alpha}" if a2po else "")
+                 + (f", nll_reg={nll_reg}" if nll_reg > 0.0 else "")
                  + f", lr={lr}, beam={beam_mode}")
 
     policy_model.train()
@@ -952,13 +957,31 @@ def train_grpo(
                 loss_val, diag = ecpo_loss(
                     policy_lp, ref_lp, rewards, group_offsets_t,
                     eps=eps, delta=delta, rank_norm=rank_norm,
+                    a2po=a2po, a2po_alpha=a2po_alpha, sids=all_sids_t,
                     return_diagnostics=True)
             else:
                 loss_val, diag = grpo_loss(
                     policy_lp, ref_lp, rewards, group_offsets_t,
-                    eps=eps, rank_norm=rank_norm, return_diagnostics=True)
+                    eps=eps, rank_norm=rank_norm,
+                    a2po=a2po, a2po_alpha=a2po_alpha, sids=all_sids_t,
+                    return_diagnostics=True)
 
-            (weight * loss_val).backward()
+            # 6b. NLL regularization: -log p_policy for highest-reward candidate
+            # Prevents reward hacking by anchoring the policy near the best candidate.
+            nll_loss_val = torch.tensor(0.0, device=device)
+            if nll_reg > 0.0:
+                offsets_list = group_offsets_t.tolist()
+                best_lps = []
+                for i in range(len(offsets_list) - 1):
+                    s, e = int(offsets_list[i]), int(offsets_list[i + 1])
+                    if e > s:
+                        best_i = int(rewards[s:e].argmax().item())
+                        best_lps.append(policy_lp[s + best_i])
+                if best_lps:
+                    nll_loss_val = -torch.stack(best_lps).mean()
+
+            total_loss = weight * loss_val + nll_reg * nll_loss_val
+            total_loss.backward()
 
             # 7. Reward component metrics
             reward_metrics = {}
@@ -1803,6 +1826,18 @@ def grpo_parse_args():
     parser.add_argument('--rank_norm', action='store_true',
                         help='Use rank-based advantage normalization in [-1,1] instead of z-score. '
                              'Robust to log-scale reward distributions (e.g. WeightedBehaviorReward).')
+    parser.add_argument('--a2po', action='store_true',
+                        help='A2PO: amplify negative-advantage penalty for semantically similar '
+                             '(hard negative) candidates based on SID prefix overlap with best.')
+    parser.add_argument('--a2po_alpha', type=float, default=1.0,
+                        help='A2PO gate scale — multiplier for semantic similarity penalty (default: 1.0).')
+    parser.add_argument('--nll_reg', type=float, default=0.0,
+                        help='NLL regularization weight: add -nll_reg * log p(best) per group '
+                             'to prevent reward hacking (default: 0.0 = disabled).')
+    parser.add_argument('--hepo_scales', type=str, default=None,
+                        help='HEPO hierarchical prefix scales: comma-separated floats, one per '
+                             'prefix depth (e.g. "0.1,0.5" for 3-layer SIDs means L0→×0.1, '
+                             'L0L1→×0.5, full→×1.0). Only applies to WeightedBehaviorReward.')
     parser.add_argument('--name', type=str, default='grpo',
                         help='Experiment name for logging')
     parser.add_argument('--wandb', action='store_true',
@@ -1812,7 +1847,8 @@ def grpo_parse_args():
     return parser.parse_args()
 
 
-def _build_weighted_behavior_reward(behavior_cache_dir, sid_cache_path, eval_date_str, log_fn):
+def _build_weighted_behavior_reward(behavior_cache_dir, sid_cache_path, eval_date_str, log_fn,
+                                    hepo_scales=None):
     """Load behavior parquet cache and build WeightedBehaviorReward.
 
     Reads all YYYY-MM-DD subdirs under behavior_cache_dir, aggregates
@@ -1877,7 +1913,9 @@ def _build_weighted_behavior_reward(behavior_cache_dir, sid_cache_path, eval_dat
     else:
         eval_ts = agg_ts.max()
 
-    return WeightedBehaviorReward(sid_to_info, eval_ts=eval_ts)
+    if hepo_scales:
+        log_fn(f"  HEPO scales: {hepo_scales}")
+    return WeightedBehaviorReward(sid_to_info, eval_ts=eval_ts, hepo_scales=hepo_scales)
 
 
 def grpo_main():
@@ -1940,10 +1978,16 @@ def grpo_main():
     if args.reward_behavior and getattr(args, 'behavior_cache_dir', None):
         # WeightedBehaviorReward: continuous quality × freshness from behavior parquet
         sid_cache_path = os.path.join(sid_cache_dir, 'semantic_ids.npy')
+        hepo_scales_arg = getattr(args, 'hepo_scales', None)
+        hepo_scales_list = (
+            [float(x) for x in hepo_scales_arg.split(',')]
+            if hepo_scales_arg else None
+        )
         weighted_r = _build_weighted_behavior_reward(
             args.behavior_cache_dir, sid_cache_path,
             getattr(args, 'behavior_cache_eval_date', None),
             lambda msg: log(is_main, msg),
+            hepo_scales=hepo_scales_list,
         )
         components.append(('behavior', args.behavior_weight, weighted_r))
 
@@ -2048,6 +2092,9 @@ def grpo_main():
         rl_data_ratio=args.rl_data_ratio,
         on_policy_beam=getattr(args, 'on_policy_beam', False),
         rank_norm=getattr(args, 'rank_norm', False),
+        a2po=getattr(args, 'a2po', False),
+        a2po_alpha=getattr(args, 'a2po_alpha', 1.0),
+        nll_reg=getattr(args, 'nll_reg', 0.0),
         max_steps=max_steps,
         wandb_run=wandb_run,
     )

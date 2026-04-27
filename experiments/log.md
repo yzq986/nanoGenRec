@@ -39,6 +39,46 @@
 
 ---
 
+## EXP-030: A2PO + NLL Regularization + HEPO Prefix Scoring
+
+**Date**: 2026-04-27
+**Status**: planned
+**Results**: `experiments/ntp_checkpoints/exp030-*/`
+
+### Background
+EXP-028/029 使用 WeightedBehaviorReward 解决了稀疏 reward 问题（100% coverage），但 advantage 估计和 loss 计算还有三个可改进点：
+
+1. **Flat prefix fallback**（BehaviorReward/WeightedBehaviorReward）：prefix 级匹配统一用 `prefix_scale^depth` 折扣，没有区分浅层（L0）和深层（L0L1）prefix 的语义信息量差异
+2. **对称惩罚**（GRPO）：所有 negative-advantage candidates 惩罚力度相同，但语义上接近 best candidate（hard negative）应受到更强信号
+3. **相对 reward**：GRPO 只优化 group 内相对排序（advantage），最优 candidate 的绝对概率未被直接推高，容易出现 reward hacking
+
+### Hypothesis
+- **HEPO**：L0 prefix match → ×0.1（cluster 级弱信号），L0L1 → ×0.5（sub-cluster 中等信号），full → ×1.0。使 reward 梯度更精准反映 SID 层级语义
+- **A2PO**：hard negatives（SID prefix 与 best 高度重叠但 reward 低）受到更强惩罚 → policy 在语义相似区分任务上梯度更强
+- **NLL reg**：直接推高 best candidate 的绝对概率，防止 reward hacking，防止 policy 收缩到 degenerate 解
+
+### Design
+- **Variable**: A+B+C 联合 vs A2PO ablation (B only)，对照 EXP-028
+- **Fixed**: ECPO δ=0.1，ε=0.2，G=512，grpo_batch=4，grpo_weight=0.03，ratio=1.0，lr=1e-4
+- **Metric**: R@10, R@500（full eval，n_recall=1000）；advantage_mean, clip_fraction, reward/behavior_mean
+- **Data**: exp023-14d-features，WeightedBehaviorReward (behavior cache)，FormatReward(0.5)
+- **Config A** (all-in): `--a2po --a2po_alpha 1.0 --nll_reg 0.01 --hepo_scales "0.1,0.5"`
+- **Config B** (ablation): `--a2po --a2po_alpha 1.0` only
+
+### Run
+`bash experiments/scripts/exp-030.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-029: ECPO + On-Policy Beam Search
 
 **Date**: 2026-04-27

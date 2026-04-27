@@ -308,10 +308,15 @@ class WeightedBehaviorReward(DiagnosticReward):
     Quality weights align with production v0420 spec (additive, log-scaled).
     Freshness: τ = 1 day (24h) — aligns with 3d distribution cutoff (3d→0.05).
 
-    Compared with BehaviorReward (binary chosen/rejected), this:
-      - Covers every SID with any positive interaction (solves 97.5% zero-reward)
-      - Provides continuous signal proportional to engagement quality
-      - Decays older interactions with production-aligned freshness formula
+    HEPO (Hierarchical Evidence Policy Optimization) prefix scoring:
+    When a full SID is not found, falls back to shorter prefixes with
+    per-depth scale factors. `hepo_scales` controls the scale at each
+    fallback depth:  hepo_scales[0] → L0 only (shallowest),
+                     hepo_scales[-1] → full match minus one layer.
+    Default [0.1, 0.5] for 3-layer SIDs means:
+        L0 match → quality × freshness × 0.1  (weak signal: cluster-level)
+        L0L1 match → quality × freshness × 0.5  (medium signal: sub-cluster)
+        full match → quality × freshness × 1.0
 
     Args:
         sid_to_info: dict mapping sid_tuple → (action_bitmap: int, last_ts: float)
@@ -319,7 +324,9 @@ class WeightedBehaviorReward(DiagnosticReward):
         eval_ts: reference unix timestamp for freshness calculation (training cutoff).
             Defaults to current time if not provided.
         default_reward: reward for SIDs with no behavior data. Default 0.0.
-        prefix_scale: scale factor for prefix-level fallbacks. Default 0.5.
+        prefix_scale: fallback scale factor when hepo_scales is None. Default 0.5.
+        hepo_scales: list of scale factors for prefix depths 1..n-1 (index 0 = shallowest).
+            Length must equal n_layers - 1. If None, falls back to prefix_scale^depth.
     """
 
     def __init__(
@@ -328,13 +335,25 @@ class WeightedBehaviorReward(DiagnosticReward):
         eval_ts: Optional[float] = None,
         default_reward: float = 0.0,
         prefix_scale: float = 0.5,
+        hepo_scales: Optional[List[float]] = None,
     ):
         self._sid_to_info = sid_to_info
         self._eval_ts = eval_ts if eval_ts is not None else __import__('time').time()
         self._default = default_reward
         self._prefix_scale = prefix_scale
+        self._hepo_scales = hepo_scales  # hepo_scales[i] = scale for prefix of length i+1
         self._last_mean: float = 0.0
         self._last_coverage: float = 0.0
+
+    def _scale_for_depth(self, full_len: int, match_len: int) -> float:
+        """Return scale factor for a match at prefix length match_len < full_len."""
+        missing = full_len - match_len
+        if self._hepo_scales is not None:
+            # hepo_scales[0] = scale for match_len=1 (shallowest), etc.
+            idx = match_len - 1  # 0-indexed: match_len=1 → idx=0
+            if 0 <= idx < len(self._hepo_scales):
+                return self._hepo_scales[idx]
+        return self._prefix_scale ** missing
 
     def _score(self, sid_tuple: Tuple[int, ...]) -> float:
         info = self._sid_to_info.get(sid_tuple)
@@ -343,7 +362,7 @@ class WeightedBehaviorReward(DiagnosticReward):
             for length in range(len(sid_tuple) - 1, 0, -1):
                 info = self._sid_to_info.get(sid_tuple[:length])
                 if info is not None:
-                    scale = self._prefix_scale ** (len(sid_tuple) - length)
+                    scale = self._scale_for_depth(len(sid_tuple), length)
                     break
         if info is None:
             return self._default

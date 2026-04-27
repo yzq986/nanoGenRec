@@ -16,11 +16,40 @@ group_offsets format: same as sample_offsets in dpo.py — (B+1,) int tensor,
 group i spans [off[i] : off[i+1]]. All candidates are peers (no "chosen").
 """
 
-from typing import Dict, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+
+
+def _sid_semantic_gate(
+    sids: Tensor,           # (G, n_layers) int — SID tokens for the group
+    best_idx: int,          # index of the highest-reward candidate in the group
+) -> Tensor:
+    """Compute per-candidate semantic gate based on SID prefix overlap with best candidate.
+
+    Gate = shared_prefix_length / n_layers ∈ [0, 1].
+    A candidate that shares all layers with the best item → gate=1 (max penalty).
+    A candidate that shares nothing → gate=0 (standard penalty).
+
+    Used by A2PO to amplify negative-advantage penalties for semantically
+    similar but low-reward candidates (hard negatives).
+    """
+    best = sids[best_idx]           # (n_layers,)
+    n_layers = sids.size(1)
+    gates = torch.zeros(sids.size(0), device=sids.device)
+    for j in range(sids.size(0)):
+        if j == best_idx:
+            continue
+        shared = 0
+        for l in range(n_layers):
+            if sids[j, l] == best[l]:
+                shared += 1
+            else:
+                break  # prefix match only
+        gates[j] = shared / n_layers
+    return gates  # (G,) — no grad needed, pure indexing
 
 
 def _grpo_core(
@@ -31,6 +60,9 @@ def _grpo_core(
     eps: float = 0.2,
     delta: float = 0.0,       # 0.0 = GRPO, >0 = ECPO early clip
     rank_norm: bool = False,  # True → rank-based advantage ∈ [-1,1] (robust to log-scale rewards)
+    a2po: bool = False,       # True → A2PO: amplify neg-adv penalty for semantically similar candidates
+    a2po_alpha: float = 1.0,  # A2PO gate scale: neg_adv *= (1 + alpha * semantic_gate)
+    sids: Optional[Tensor] = None,  # (N, n_layers) required when a2po=True
     return_diagnostics: bool = False,
 ) -> Union[Tensor, Tuple[Tensor, Dict]]:
     # fp32 throughout for numerical stability
@@ -84,6 +116,18 @@ def _grpo_core(
                 continue   # all rewards identical → no learning signal, skip
             adv = (g_reward - r_mean) / r_std   # (G,) — no grad
             adv = adv.clamp(-5.0, 5.0)          # guard against extreme outliers
+
+        # A2PO: amplify negative-advantage penalty for semantically similar candidates.
+        # Candidates close to the best item in SID prefix space but with low reward
+        # are the most informative hard negatives — penalize them more aggressively.
+        if a2po and sids is not None:
+            g_sids = sids[start:end]                     # (G, n_layers)
+            best_idx = int(g_reward.argmax().item())
+            gate = _sid_semantic_gate(g_sids, best_idx)  # (G,) ∈ [0,1]
+            neg_mask = adv < 0
+            if neg_mask.any():
+                adv = adv.clone()
+                adv[neg_mask] = adv[neg_mask] * (1.0 + a2po_alpha * gate[neg_mask])
 
         # Policy ratio rho = pi_θ / pi_ref
         log_rho = g_policy - g_ref.detach()   # grad through g_policy only
@@ -166,6 +210,9 @@ def grpo_loss(
     group_offsets: Tensor,
     eps: float = 0.2,
     rank_norm: bool = False,
+    a2po: bool = False,
+    a2po_alpha: float = 1.0,
+    sids: Optional[Tensor] = None,
     return_diagnostics: bool = False,
 ) -> Union[Tensor, Tuple[Tensor, Dict]]:
     """GRPO loss (no early clip).
@@ -178,6 +225,10 @@ def grpo_loss(
         eps:           PPO clip range (default 0.2).
         rank_norm:     if True, use rank-based advantage ∈ [-1,1] instead of
                        z-score normalization. Robust to log-scale distributions.
+        a2po:          if True, amplify negative-advantage penalty for semantically
+                       similar (hard negative) candidates via SID prefix overlap.
+        a2po_alpha:    gate scale for A2PO (default 1.0).
+        sids:          (N, n_layers) int tensor, required when a2po=True.
         return_diagnostics: if True, return (loss, diag_dict).
 
     Diagnostics keys: advantage_mean, advantage_std, policy_ratio_mean,
@@ -186,6 +237,7 @@ def grpo_loss(
     return _grpo_core(
         policy_lp, ref_lp, rewards, group_offsets,
         eps=eps, delta=0.0, rank_norm=rank_norm,
+        a2po=a2po, a2po_alpha=a2po_alpha, sids=sids,
         return_diagnostics=return_diagnostics,
     )
 
@@ -198,6 +250,9 @@ def ecpo_loss(
     eps: float = 0.2,
     delta: float = 0.1,
     rank_norm: bool = False,
+    a2po: bool = False,
+    a2po_alpha: float = 1.0,
+    sids: Optional[Tensor] = None,
     return_diagnostics: bool = False,
 ) -> Union[Tensor, Tuple[Tensor, Dict]]:
     """ECPO loss — GRPO with early clip for negative-advantage candidates.
@@ -210,6 +265,10 @@ def ecpo_loss(
         eps:           PPO clip range (default 0.2).
         delta:         early clip margin (default 0.1 per ECPO paper).
         rank_norm:     if True, use rank-based advantage ∈ [-1,1].
+        a2po:          if True, amplify negative-advantage penalty for semantically
+                       similar (hard negative) candidates via SID prefix overlap.
+        a2po_alpha:    gate scale for A2PO (default 1.0).
+        sids:          (N, n_layers) int tensor, required when a2po=True.
         return_diagnostics: if True, return (loss, diag_dict).
 
     Additional diagnostics key: early_clip_fraction.
@@ -217,5 +276,6 @@ def ecpo_loss(
     return _grpo_core(
         policy_lp, ref_lp, rewards, group_offsets,
         eps=eps, delta=delta, rank_norm=rank_norm,
+        a2po=a2po, a2po_alpha=a2po_alpha, sids=sids,
         return_diagnostics=return_diagnostics,
     )
