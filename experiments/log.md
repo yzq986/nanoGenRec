@@ -42,7 +42,7 @@
 ## EXP-026: GRPO+ECPO — Group Relative Policy Optimization + Pluggable Reward
 
 **Date**: 2026-04-27
-**Status**: running
+**Status**: completed
 **Results**: `experiments/ntp_checkpoints/exp026-*/`
 
 ### Background
@@ -90,7 +90,7 @@ RF-DPO (Phase 2, exp020) 已完成。Phase 3/4 引入 GRPO 和 ECPO：
 | 400  | — (est)   | **0.22**  |
 | 550  | 0.57      | **0.20**  |
 | 600  | **64.93** | **0.20**  |
-| 650  | **158.20**| **0.20**（running）|
+| 650  | **158.20**| **0.20** |
 
 - GRPO step 600–650 gnorm 从 0.57 → 64.9 → 158.2，随后自然回落（lr cosine decay → 0）
 - ECPO 全程 gnorm 0.19–0.46，未出现任何 spike
@@ -111,7 +111,17 @@ ECPO grpo_loss 低 3 个数量级，说明早 clip 完全吸收了负 advantage 
 - behavior_mean ≈ 0.032–0.035（prefix cascade 生效，L0 覆盖率 ~24%）
 - clip_fraction = 99%（advantage 几乎总在边界，reward 信号极稀疏）
 
-**Inline eval（Config 2，训练结束后）**：TBD（等 Config 3 eval 完成）
+**Inline eval（快速版，beam_size=500，250 samples，不可与全量 baseline 直接比）**：
+
+| Config | PPL | R@10 | R@50 | R@100 | R@500 |
+|--------|-----|------|------|-------|-------|
+| Config 2 (GRPO) | 323 | 0.009 | 0.025 | 0.056 | 0.164 |
+| Config 3 (ECPO) | **270** | **0.011** | **0.028** | **0.064** | **0.189** |
+
+ECPO 在所有指标上全面优于 GRPO（PPL -16%，R@500 +15%）。
+
+**全量 eval（与 baseline 对齐，running）**：`bash experiments/scripts/exp-026-reeval.sh`
+结果 TBD（与 exp020-hard-lam03 baseline R@500≈60% 对比）
 
 ### Analysis
 
@@ -120,21 +130,20 @@ ECPO grpo_loss 低 3 个数量级，说明早 clip 完全吸收了负 advantage 
 OneRec 论文（arxiv 2506.13695v4）ECPO 动机：稀疏 reward 环境下，负 advantage 样本的 π_θ → 0 会导致 rho = π_θ/π_old 急剧缩小，clipping 失效，梯度爆炸。early clip 用 `π'_old = max(π_θ/(1+ε+δ), π_ref)` 替换 denominator，限制 rho 上界。
 
 本次实验完整复现了这个现象：
-- reward 信号极稀疏（format=1.0 but 所有 format 合法 → reward var 低；behavior_mean=0.033 ≈ random baseline）
-- GRPO 在 step 600 遭遇梯度爆炸 gnorm=158（尽管有 clip 和 clamp 防御）
-- ECPO 同等条件下全程稳定，grpo_loss 也低 3 个数量级
+- reward 信号极稀疏（format=1.0 but 所有候选合法 → reward var 低；behavior_mean=0.033，clip=99%）
+- GRPO step 600–650 gnorm 0.57 → 64.9 → 158.2（尽管有 clamp 防御）
+- ECPO 同等条件全程 gnorm 0.19–0.46，grpo_loss 低 3 个数量级
 
-这是 GRPO → ECPO 演进动机的第一手实验证据（非论文搬运）。
+**Recall 结论**（inline eval，相对比较有效）：ECPO > GRPO，PPL 和 R@500 均改善。与 RF-DPO baseline 的绝对对比等全量 eval 完成后补充。
 
 **其他观察**：
-- Config 1（behavior-only，无 preference shards）reward signal=0，GRPO 无学习，已作废
-- format_legal_rate=1.0 说明 constrained beam search 保证 SID 合法，Format Reward 对 beam search 本身冗余（但对 sample-based 场景有意义）
-- clip_fraction=99% 说明大多数步骤 advantage≈0，reward 信号未真正区分好坏候选 → 后续需更强 behavior 信号
+- format_legal_rate=1.0：constrained beam search 已保证 SID 合法，FormatReward 对此场景冗余（对 sampling 场景有意义）
+- clip_fraction=99%：advantage 几乎无区分度，reward 信号极稀疏 → 是制约 RL 提升空间的主因
 
 ### Next Steps
-- 等 Config 3（ECPO）inline eval 完成，对比 R@10/R@500 与 RF-DPO baseline
-- 更丰富 behavior signal：考虑 time-decay 加权，提升 reward variance
-- 若 eval 效果好：ECPO delta sweep (δ=0.05/0.1/0.2) 找最优稳定点
+- 补全量 eval 结果，与 exp020-hard-lam03 (R@500≈60%) 对比
+- 更丰富 behavior signal：time-decay 加权、CTR/转化率分层打分，提升 reward variance
+- ECPO delta sweep (δ=0.05/0.1/0.2) 找最优稳定点
 - 考虑 online policy beam search（替代 ref model）以获取 on-policy candidates
 
 ---
