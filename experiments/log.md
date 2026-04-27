@@ -39,6 +39,40 @@
 
 ---
 
+## EXP-029: ECPO + On-Policy Beam Search
+
+**Date**: 2026-04-27
+**Status**: planned
+**Results**: `experiments/ntp_checkpoints/exp029-*/`
+
+### Background
+EXP-026~028 全部使用 ref model 生成 beam search candidates（off-policy）。随着 policy 训练推进，policy 和 ref 的分布逐渐偏离，off-policy candidates 越来越不能代表 policy 当前的分布，advantage 估计失真，RL 梯度方向变得不可靠。
+
+On-policy 修复：用 **policy model** 生成 candidates，ref model 只用于计算参考 log-probs。这样每步的 candidates 都来自当前 policy 分布，importance ratio ρ = π_θ/π_ref 的 off-policy 偏差最小。
+
+### Hypothesis
+On-policy beam candidates 与 policy 分布对齐 → importance ratio 更接近 1 → clip 率下降 → advantage 信号更有效 → R@500 进一步提升（相比 EXP-028）。
+
+### Design
+- **Variable**: `--on_policy_beam`（True vs False，对照 EXP-028）
+- **Fixed**: 所有其他参数与 EXP-028 完全相同（WeightedBehaviorReward，w003-r100，ECPO δ=0.1，lr=1e-4）
+- **Metric**: R@10, R@500（full eval），clip 率，policy_ratio_mean
+- **Data**: exp023-14d-features，behavior cache，FormatReward(0.5)
+
+### Run
+`bash experiments/scripts/exp-029.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-028: ECPO + WeightedBehaviorReward — Continuous Quality×Freshness Reward
 
 **Date**: 2026-04-27

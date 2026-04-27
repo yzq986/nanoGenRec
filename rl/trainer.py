@@ -735,6 +735,7 @@ def train_grpo(
     eps=0.2,
     delta=0.0,              # 0.0 → GRPO, 0.1 → ECPO
     rl_data_ratio=0.02,     # Bernoulli p of running a GRPO step per NTP step
+    on_policy_beam=False,   # True → use policy model for beam search (on-policy)
     max_steps=None,
     wandb_run=None,
 ):
@@ -823,11 +824,12 @@ def train_grpo(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_batches)
 
     algo = 'ECPO' if delta > 0.0 else 'GRPO'
+    beam_mode = 'on-policy' if on_policy_beam else 'off-policy'
     log(is_main, f"  Training ({algo}): {n_batches} steps, NTP batch={batch_size}, "
                  f"GRPO batch={grpo_batch_size}, G={group_size}, "
                  f"rl_ratio={rl_data_ratio}, λ={grpo_weight}, ε={eps}"
                  + (f", δ={delta}" if delta > 0.0 else "")
-                 + f", lr={lr}")
+                 + f", lr={lr}, beam={beam_mode}")
 
     policy_model.train()
     total_ntp_loss = 0.0
@@ -898,19 +900,26 @@ def train_grpo(
             all_sids_list = []
             group_offsets_list = [0]
 
-            # 1. Online beam search for each context (uses ref model — eval, no grad)
+            # 1. Online beam search for each context
+            # on_policy_beam=True  → policy model generates candidates (on-policy GRPO)
+            # on_policy_beam=False → ref model generates candidates (off-policy, cheaper)
+            beam_model = raw_policy if on_policy_beam else ref_model
+            if on_policy_beam:
+                beam_model.eval()  # temporarily switch policy to eval for beam search
             for ctx_tokens in sampled_contexts:
                 ctx_t = torch.tensor(ctx_tokens, dtype=torch.long,
                                      device=device).unsqueeze(0)  # (1, T)
                 with torch.no_grad():
                     beams, _scores, _ = constrained_beam_search(
-                        ref_model, ctx_t, sid_trie, beam_size=group_size)
+                        beam_model, ctx_t, sid_trie, beam_size=group_size)
                 # beams: (1, actual_beams, n_layers)
                 cands = beams[0]   # (actual_beams, n_layers)
                 if is_main and n_grpo_steps == 0 and len(all_sids_list) == 0:
                     log(is_main, f"  [debug] beam shape={beams.shape} cands={cands.size(0)}")
                 all_sids_list.append(cands)
                 group_offsets_list.append(group_offsets_list[-1] + cands.size(0))
+            if on_policy_beam:
+                beam_model.train()  # restore training mode after all beam searches
 
             all_sids_t = torch.cat(all_sids_list, dim=0)   # (N_total, n_layers)
             group_offsets_t = torch.tensor(group_offsets_list,
@@ -1787,6 +1796,8 @@ def grpo_parse_args():
                              'instead of binary BehaviorReward. Expects subdirs YYYY-MM-DD/.')
     parser.add_argument('--behavior_cache_eval_date', type=str, default=None,
                         help='Reference date for freshness decay (YYYY-MM-DD). Defaults to latest date in cache.')
+    parser.add_argument('--on_policy_beam', action='store_true',
+                        help='Use policy model (not ref model) for beam search — true on-policy GRPO')
     parser.add_argument('--name', type=str, default='grpo',
                         help='Experiment name for logging')
     parser.add_argument('--wandb', action='store_true',
@@ -2030,6 +2041,7 @@ def grpo_main():
         eps=args.eps,
         delta=args.delta,
         rl_data_ratio=args.rl_data_ratio,
+        on_policy_beam=getattr(args, 'on_policy_beam', False),
         max_steps=max_steps,
         wandb_run=wandb_run,
     )
