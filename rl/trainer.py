@@ -1856,9 +1856,17 @@ def grpo_main():
                 for pair in load_preference_shard(sf):
                     key = tuple(pair['chosen'])
                     sid_to_score[key] = 1.0
+                    # prefix entries for cascade fallback (l0, l0l1)
+                    for plen in range(1, len(key)):
+                        sid_to_score.setdefault(key[:plen], 0.5)
                     for r in pair.get('rejected_easy', []):
-                        sid_to_score.setdefault(tuple(r), -1.0)
-        log(is_main, f"  BehaviorReward: {len(sid_to_score):,} SID scores")
+                        r_key = tuple(r)
+                        sid_to_score.setdefault(r_key, -1.0)
+                        for plen in range(1, len(r_key)):
+                            sid_to_score.setdefault(r_key[:plen], -0.5)
+        n_full = sum(1 for k in sid_to_score if len(k) == n_layers)
+        n_prefix = len(sid_to_score) - n_full
+        log(is_main, f"  BehaviorReward: {n_full:,} full SIDs + {n_prefix:,} prefix entries")
         components.append(('behavior', args.behavior_weight,
                            BehaviorReward(sid_to_score)))
 

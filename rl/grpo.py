@@ -65,9 +65,11 @@ def _grpo_core(
         g_ref    = ref_lp[start:end]       # (G,) — no grad
         g_reward = rewards[start:end]      # (G,) — no grad
 
-        # Group-normalized advantage
+        # Group-normalized advantage — skip group if reward has no variance
         r_mean = g_reward.mean()
-        r_std  = g_reward.std().clamp(min=1e-8)
+        r_std  = g_reward.std()
+        if r_std.item() < 1e-6:
+            continue   # all rewards identical → no learning signal, skip
         adv = (g_reward - r_mean) / r_std   # (G,) — no grad
 
         # Policy ratio rho = pi_θ / pi_ref

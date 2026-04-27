@@ -58,23 +58,40 @@ class DiagnosticReward(RewardFn):
 class BehaviorReward(DiagnosticReward):
     """Reward from pre-computed behavior signal scores.
 
-    Maps SID tuples to scalar scores built offline from feedback.py's
-    classify_action() bitmap outputs. Scores are continuous (e.g.
-    clicked=1, purchased=5, neutral=0).
+    Looks up reward with cascading prefix fallback for better coverage:
+      full tuple → (l0, l1) prefix → (l0,) prefix → default
 
     Args:
         sid_to_score: mapping (l0, l1, ...) tuple → float reward.
-        default_reward: reward for SIDs not in the mapping.
+            Also accepts prefix tuples of any length for fallback scoring.
+        default_reward: reward for SIDs not in the mapping at any prefix level.
+        prefix_scale: scale factor for prefix-level scores (< 1 to down-weight
+            uncertain matches). Default 0.5.
     """
 
     def __init__(
         self,
         sid_to_score: Dict[Tuple[int, ...], float],
         default_reward: float = 0.0,
+        prefix_scale: float = 0.5,
     ):
         self._sid_to_score = sid_to_score
         self._default = default_reward
+        self._prefix_scale = prefix_scale
         self._last_mean: float = 0.0
+
+    def _score(self, sid_tuple: Tuple[int, ...]) -> float:
+        # Full match first
+        s = self._sid_to_score.get(sid_tuple)
+        if s is not None:
+            return s
+        # Cascade through shorter prefixes, scaled down
+        for length in range(len(sid_tuple) - 1, 0, -1):
+            prefix = sid_tuple[:length]
+            s = self._sid_to_score.get(prefix)
+            if s is not None:
+                return s * (self._prefix_scale ** (len(sid_tuple) - length))
+        return self._default
 
     def __call__(
         self,
@@ -83,10 +100,8 @@ class BehaviorReward(DiagnosticReward):
         context_lengths: Tensor,
     ) -> Tensor:
         sids_cpu = sids.cpu()
-        scores = [
-            self._sid_to_score.get(tuple(sids_cpu[k].tolist()), self._default)
-            for k in range(sids_cpu.size(0))
-        ]
+        scores = [self._score(tuple(sids_cpu[k].tolist()))
+                  for k in range(sids_cpu.size(0))]
         out = torch.tensor(scores, dtype=torch.float32, device=sids.device)
         self._last_mean = float(out.mean().item())
         return out
