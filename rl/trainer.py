@@ -1812,11 +1812,14 @@ def grpo_main():
     log(is_main, f"  Context pool: {len(context_pool):,} contexts")
 
     # ── Build SIDTrie ──
+    # semantic_ids.npy stores {item_id_str: sid_str}; SIDTrie needs to iterate
+    # over sid strings (values), not item ids (keys).
     from ntp.model import SIDTrie
     sid_cache = np.load(
         os.path.join(sid_cache_dir, 'semantic_ids.npy'), allow_pickle=True
     ).item()
-    sid_trie = SIDTrie(sid_cache, n_layers)
+    sid_str_set = {v: None for v in sid_cache.values()}
+    sid_trie = SIDTrie(sid_str_set, n_layers)
     log(is_main, f"  SIDTrie: {len(sid_cache):,} SIDs, {n_layers} layers")
 
     # ── Build reward_fn ──
