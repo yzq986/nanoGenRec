@@ -78,6 +78,28 @@ Three remotes are configured:
 - **实现优化不能破坏数学语义**：当为了性能/显存把一个公式拆成多步实现时（如 split backward、分块计算），原本由框架隐式保证的数学性质（权重缩放、归一化、梯度累加比例等）会变成需要手动维护的不变量。写完优化后，回到原始公式逐项核对：公式里的每个系数是否都反映在了实际计算路径上，而不仅仅出现在日志和 config 里。
 - **只改 eval 代码不需要重训**：如果改动只影响推理/评测路径（如 beam search 传参修复），而训练数据和模型结构不变，应该直接用已有 checkpoint re-eval（参考 `exp-023-reeval.sh`），不要浪费 GPU 重训一遍相同模型。写实验脚本前先判断：这个 config 的训练数据+flags 是否与已有 checkpoint 完全相同？
 
+## Eval 对齐规则
+
+**`train-ntp` 的 inline eval ≠ 全量 eval，不能与 baseline 直接比较。**
+
+- `train-ntp` 训练结束后自动跑的 inline eval：beam search 仅 250 items/rank（1000 total），是快速健康检查，绝对数字不可信。
+- 与 baseline 对齐必须用：
+  ```bash
+  torchrun --nproc_per_node=N run.py eval-ntp \
+      --checkpoint experiments/ntp_checkpoints/<name> \
+      --n_recall 1000
+  ```
+- **baseline 标准**（exp020-hard-lam03，4×L20X，n_recall=1000）：PPL=16.3，R@10=14.1%，R@500=66.2%
+- 每次新实验 checkpoint 跑完，必须用上述命令补全量 eval，再更新 experiments/log.md 结论。
+- `train_meta.json` 里的 eval keys 是 `item_recall@10` / `item_recall@500`（带 `@`，不是 `_`）。
+
+## GRPO/ECPO 训练踩坑记录（EXP-026）
+
+- **SIDTrie 构建**：`semantic_ids.npy` 存 `{item_id_str: sid_str}`，必须 iterate `.values()` 构建 trie，iterate `.keys()` 只得到 item id 字符串，trie 为空，beam search 返回 0 candidates，GRPO loss 永远 0。
+- **BehaviorReward 覆盖率**：全 SID 精确匹配仅 ~0.16%（1788/1.09M）。必须加 prefix cascade fallback，L0 单层可覆盖 ~24%，有效 reward 信号提升 150x。
+- **reward std≈0 → advantage 爆炸**：稀疏 reward 场景下，一组 candidates reward 全相同 → std≈0 → advantage 无穷大。必须加 `std < 1e-6` group skip + `adv.clamp(-5, 5)` + `log_rho.clamp(-10, 10)`。
+- **step log reward metrics 不打印**：reward metrics 挂在 `_grpo_step` 触发时的 `log_entry`，但 50 步定期打印时 GRPO 不一定触发（2% 概率），导致 reward 数据永远不出现在打印行。正确做法：用累计 `reward_metric_totals / n_grpo_steps` 而非当步瞬时值。
+
 ## Research Agent Mode
 
 当作为自主研究 Agent 运行时（用户指示 "follow research/program.md" 或类似指令）：
