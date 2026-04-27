@@ -161,8 +161,8 @@ TBD
 ## EXP-028: ECPO + WeightedBehaviorReward — Continuous Quality×Freshness Reward
 
 **Date**: 2026-04-27
-**Status**: planned
-**Results**: `experiments/ntp_checkpoints/exp028-*/`
+**Status**: completed
+**Results**: `experiments/ntp_checkpoints/exp028-ecpo-weighted-w003-r100/`
 
 ### Background
 EXP-027 的 reward signal 仍然稀疏（97.5% SID reward=0）：BehaviorReward 只覆盖 RF feedback 里的 chosen/rejected SID，binary 打分（±1），导致大多数 beam candidates advantage≈0，clip=98%，RL 梯度几乎全部来自噪声。
@@ -187,13 +187,25 @@ EXP-027 的 reward signal 仍然稀疏（97.5% SID reward=0）：BehaviorReward 
 `bash experiments/scripts/exp-028.sh`
 
 ### Results
-TBD
+| Config | R@10 | R@500 | PPL | 备注 |
+|--------|------|-------|-----|------|
+| exp028-ecpo-weighted-w003-r100 | 0.7% | 2.0% | 3791 | **严重退化** |
+| exp020-hard-lam03 (baseline) | 14.1% | 66.2% | 16.3 | SFT baseline |
+
+训练过程稳定（gnorm=0.19，无 spike），behavior_coverage=94.1%（prefix cascade fallback），behavior_mean≈0.115，format_legal_rate=100%。
+但 full eval（n_recall=1000）R@500 从 63.6% 跌至 2.0%，严重退化。
 
 ### Analysis
-TBD
+WeightedBehaviorReward 100% 覆盖率的副作用：freshness × quality 连续信号给每个 candidate 都分配了非零 reward，但这些 reward 的绝对量级差异很小（behavior_mean≈0.115，方差低）。group 内 advantage std 仍然接近 0（adv=-0.02, clip=99%），RL 梯度依然无效。
+
+根本问题：clip=99% 表示几乎所有 candidates 的 ratio 都在 [1-ε, 1+ε] clip 范围外（策略更新步 ratio 过大），说明 ECPO 的 clipping 机制本身在这个 reward 设置下失效了。WeightedBehaviorReward 的 reward 差异不足以产生有效 advantage 分布，RL 损失只是噪声 → 累积后导致 NTP 能力退化。
+
+→ EXP-029 引入 on-policy beam search（clip 率问题的直接修复），EXP-030 引入 A2PO + NLL reg（advantage 有效性问题的修复）。
 
 ### Next Steps
-TBD
+EXP-029: on-policy beam 修复 off-policy 偏差问题
+EXP-030: A2PO + NLL + HEPO 修复 advantage 有效性问题
+EXP-031: features SFT (exp025) + 完整 RL stack 新 SOTA
 
 ---
 
