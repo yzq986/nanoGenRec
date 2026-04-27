@@ -39,6 +39,46 @@
 
 ---
 
+## EXP-026: GRPO+ECPO — Group Relative Policy Optimization + Pluggable Reward
+
+**Date**: 2026-04-27
+**Status**: planned
+**Results**: TBD
+
+### Background
+RF-DPO (Phase 2) 已完成训练。Phase 3/4 引入 GRPO 和 ECPO：
+- **GRPO**（OneMall，arxiv 2601.21770）：beam search 生成 G=512 candidates，group-normalized advantage，PPO clipped surrogate loss，ε=0.2，rl_data_ratio=2%
+- **ECPO**（OneRec，arxiv 2506.13695v4）：在 GRPO 基础上加 early clip (δ=0.1) 防止负 advantage 梯度爆炸，加 Format Reward（SID 合法性）
+- **Pluggable Reward**：新增 `rl/reward.py`，支持 BehaviorReward（行为信号）、FormatReward（SID 合法性）、ExternalReward（外部模型接口）、BusinessReward（时效性/作者加权等业务策略），通过 CompositeReward 加权组合
+- 新增 `rl/grpo.py`（grpo_loss/ecpo_loss），新增 `rl/trainer.py::train_grpo()`，训练 metrics 含 `grpo/*` 和 `reward/*` wandb namespace
+
+### Hypothesis
+- GRPO 全组 continuous advantage（而非 DPO 二元对）提供更丰富的梯度信号 → R@500 和 R@10 均优于 RF-DPO
+- ECPO early clip 防止负样本梯度爆炸，训练更稳定，R@10 进一步提升
+- Pluggable reward：行为信号(1.0) + Format Reward(0.5) 基础组合下 SID 合法率 > 95%
+
+### Design
+- **Variable**: 算法（GRPO vs ECPO）；reward 组合（BehaviorOnly vs Behavior+Format）
+- **Fixed**: G=512，ε=0.2，grpo_weight=0.5，rl_data_ratio=0.02，grpo_batch_size=4，RF-DPO checkpoint 作为 SFT 起点，SID_CACHE=exp013-4096x3-12d-binary，DATE 2026-03-18~2026-03-31
+- **Metric**: R@10, R@100, R@500；grpo/advantage_mean, grpo/clip_fraction, reward/format_legal_rate
+- **Data**: exp023-14d-features（复用），RF-DPO checkpoint（exp020 best 或 exp019）
+
+### Run
+`bash experiments/scripts/exp-026.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+- 若 GRPO > RF-DPO：继续 ECPO delta sweep (0.05/0.1/0.2)
+- 若 Format Reward 有效：加入 BusinessReward（时效性）
+- 考虑在线 policy beam search（替代 ref model beam search）
+
+---
+
 ## EXP-025: Beam Search Feature Passing — 正确消除 side feature 训练-推理 gap
 
 **Date**: 2026-04-21

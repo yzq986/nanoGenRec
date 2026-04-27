@@ -1722,5 +1722,244 @@ def alignment_eval_main():
     log(is_main, f"\n  Saved to {meta_path} ['alignment_eval']")
 
 
+def grpo_parse_args():
+    parser = argparse.ArgumentParser(description='GRPO/ECPO Joint NTP Training')
+    parser.add_argument('--sft_checkpoint', type=str, required=True,
+                        help='Path to SFT (or RF-DPO) checkpoint directory')
+    parser.add_argument('--preprocessed_dir', type=str, required=True,
+                        help='Path to preprocessed NTP data shards')
+    parser.add_argument('--output_dir', type=str, required=True,
+                        help='Output checkpoint directory')
+    parser.add_argument('--grpo_weight', type=float, default=0.5,
+                        help='λ weight for GRPO loss in joint loss (default: 0.5)')
+    parser.add_argument('--eps', type=float, default=0.2,
+                        help='PPO clip epsilon (default: 0.2)')
+    parser.add_argument('--delta', type=float, default=0.0,
+                        help='ECPO early clip margin; 0.0 = pure GRPO (default: 0.0)')
+    parser.add_argument('--group_size', type=int, default=512,
+                        help='Beam search candidates per context G (default: 512)')
+    parser.add_argument('--grpo_batch_size', type=int, default=4,
+                        help='Contexts per GRPO step (default: 4)')
+    parser.add_argument('--rl_data_ratio', type=float, default=0.02,
+                        help='Bernoulli probability of GRPO step per NTP step (default: 0.02)')
+    parser.add_argument('--lr', type=float, default=1e-4,
+                        help='Learning rate (default: 1e-4)')
+    parser.add_argument('--batch_size', type=int, default=2048,
+                        help='NTP batch size (auto-capped by memory, default: 2048)')
+    parser.add_argument('--max_steps', type=int, default=None,
+                        help='Max training steps (default: full epoch)')
+    parser.add_argument('--reward_behavior', action='store_true',
+                        help='Include BehaviorReward from RF feedback data')
+    parser.add_argument('--reward_format', action='store_true',
+                        help='Include FormatReward (SID legality check)')
+    parser.add_argument('--reward_format_k', type=int, default=5,
+                        help='FormatReward sample_k for ECPO cost-saving (default: 5, None=all)')
+    parser.add_argument('--behavior_weight', type=float, default=1.0,
+                        help='Weight for BehaviorReward in CompositeReward (default: 1.0)')
+    parser.add_argument('--format_weight', type=float, default=0.5,
+                        help='Weight for FormatReward in CompositeReward (default: 0.5)')
+    parser.add_argument('--feedback_dir', type=str, default=None,
+                        help='Path to RF feedback preference shards (for BehaviorReward)')
+    parser.add_argument('--name', type=str, default='grpo',
+                        help='Experiment name for logging')
+    parser.add_argument('--wandb', action='store_true',
+                        help='Enable wandb logging (rank 0 only)')
+    parser.add_argument('--dry_run', action='store_true',
+                        help='Smoke test: run 2 steps then exit')
+    return parser.parse_args()
+
+
+def grpo_main():
+    """CLI entry point for GRPO/ECPO training (run.py grpo-train)."""
+    args = grpo_parse_args()
+    local_rank, world_size, device, is_main = setup_ddp()
+
+    algo = 'ECPO' if args.delta > 0.0 else 'GRPO'
+    log(is_main, "=" * 60)
+    log(is_main, f"{algo} Training — {args.name}" +
+                 (f" (DDP x{world_size})" if world_size > 1 else ""))
+    log(is_main, "=" * 60)
+
+    # ── Load NTP data meta ──
+    meta_path = os.path.join(args.preprocessed_dir, 'meta.json')
+    with open(meta_path) as f:
+        prep_meta = json.load(f)
+
+    n_layers = prep_meta['n_layers']
+    n_clusters_per_layer = prep_meta['n_clusters_per_layer']
+    sid_cache_dir = prep_meta['sid_cache']
+
+    # ── Load NTP shard ──
+    from ntp.preprocess import load_shard
+    shard_path = os.path.join(args.preprocessed_dir, f'train_shard_{local_rank}.npz')
+    if not os.path.exists(shard_path):
+        shard_path = os.path.join(args.preprocessed_dir, 'train_shard_0.npz')
+    shard_data = load_shard(shard_path)
+    tokens_list = shard_data['tokens_list']
+    split_pos_list = shard_data['split_pos_list']
+    log(is_main, f"  NTP shard: {len(tokens_list):,} seqs (rank {local_rank})")
+
+    # ── Build context pool (eval portion of the shard) ──
+    context_pool = []
+    for tokens, split_pos in zip(tokens_list, split_pos_list):
+        # Use first eval item's context as a pool entry
+        n_sid = n_layers
+        split_item_idx = split_pos // n_sid
+        if split_item_idx >= 1:
+            ctx = tokens[:split_item_idx * n_sid]
+            if len(ctx) >= n_sid:
+                context_pool.append(list(ctx[-510:]))  # truncate to max_ctx
+    log(is_main, f"  Context pool: {len(context_pool):,} contexts")
+
+    # ── Build SIDTrie ──
+    from ntp.model import SIDTrie
+    from ntp.preprocess import load_sid_cache
+    sid_cache = load_sid_cache(sid_cache_dir)
+    sid_trie = SIDTrie(sid_cache, n_layers)
+    log(is_main, f"  SIDTrie: {len(sid_cache):,} SIDs, {n_layers} layers")
+
+    # ── Build reward_fn ──
+    from rl.reward import BehaviorReward, FormatReward, CompositeReward
+    components = []
+
+    if args.reward_behavior and args.feedback_dir:
+        # Build sid_to_score from feedback preference shards
+        sid_to_score = {}
+        pref_meta_path = os.path.join(args.feedback_dir, 'meta.json')
+        if os.path.exists(pref_meta_path):
+            with open(pref_meta_path) as f:
+                pf_meta = json.load(f)
+            n_shards = pf_meta.get('n_shards', 1)
+        else:
+            n_shards = 1
+        for si in range(n_shards):
+            sf = os.path.join(args.feedback_dir, f'preference_shard_{si}.npz')
+            if os.path.exists(sf):
+                for pair in load_preference_shard(sf):
+                    key = tuple(pair['chosen'])
+                    sid_to_score[key] = 1.0
+                    for r in pair.get('rejected_easy', []):
+                        sid_to_score.setdefault(tuple(r), -1.0)
+        log(is_main, f"  BehaviorReward: {len(sid_to_score):,} SID scores")
+        components.append(('behavior', args.behavior_weight,
+                           BehaviorReward(sid_to_score)))
+
+    if args.reward_format:
+        sample_k = args.reward_format_k if args.reward_format_k > 0 else None
+        components.append(('format', args.format_weight,
+                           FormatReward(sid_trie, n_layers, sample_k=sample_k)))
+        log(is_main, f"  FormatReward: sample_k={sample_k}")
+
+    if not components:
+        # Default: BehaviorReward from SID legality only (always safe to run)
+        log(is_main, "  No reward flags set — using FormatReward (SID legality) as default")
+        components.append(('format', 1.0,
+                           FormatReward(sid_trie, n_layers, sample_k=5)))
+
+    reward_fn = CompositeReward(components)
+    log(is_main, f"  Reward components: {[c[0] for c in components]}")
+
+    # ── Check existing checkpoint ──
+    ckpt_path = os.path.join(args.output_dir, 'probe.pt')
+    if os.path.exists(ckpt_path):
+        log(is_main, f"\n  Checkpoint found at {args.output_dir}, skipping training.")
+        cleanup_ddp()
+        return
+
+    # ── Wandb (rank 0 only) ──
+    wandb_run = None
+    if is_main and args.wandb:
+        try:
+            import wandb
+            wandb_run = wandb.init(
+                project='gr-demo',
+                name=args.name,
+                config={
+                    'algo': algo,
+                    'grpo_weight': args.grpo_weight,
+                    'eps': args.eps,
+                    'delta': args.delta,
+                    'group_size': args.group_size,
+                    'rl_data_ratio': args.rl_data_ratio,
+                    'reward_components': [c[0] for c in components],
+                },
+            )
+        except Exception:
+            wandb_run = None
+
+    max_steps = 2 if args.dry_run else args.max_steps
+
+    # ── Train ──
+    os.makedirs(args.output_dir, exist_ok=True)
+    model, avg_loss, n_params, train_log_data, train_summary = train_grpo(
+        ntp_tokens_list=tokens_list,
+        ntp_split_pos_list=split_pos_list,
+        context_pool=context_pool,
+        n_clusters_per_layer=n_clusters_per_layer,
+        n_layers=n_layers,
+        sft_checkpoint=args.sft_checkpoint,
+        local_rank=local_rank,
+        world_size=world_size,
+        device=device,
+        is_main=is_main,
+        preprocessed_dir=args.preprocessed_dir,
+        sid_cache_dir=sid_cache_dir,
+        sid_trie=sid_trie,
+        reward_fn=reward_fn,
+        grpo_weight=args.grpo_weight,
+        lr=args.lr,
+        batch_size=args.batch_size,
+        grpo_batch_size=args.grpo_batch_size,
+        group_size=args.group_size,
+        eps=args.eps,
+        delta=args.delta,
+        rl_data_ratio=args.rl_data_ratio,
+        max_steps=max_steps,
+        wandb_run=wandb_run,
+    )
+
+    if args.dry_run:
+        log(is_main, "  Dry run complete (2 steps). Exiting without saving.")
+        cleanup_ddp()
+        return
+
+    # ── Save checkpoint + metadata (rank 0 only) ──
+    if is_main:
+        save_checkpoint(model, args.output_dir, cfg=train_summary)
+        train_meta = {
+            'name': args.name,
+            'algo': algo,
+            'sft_checkpoint': args.sft_checkpoint,
+            'avg_loss': round(avg_loss, 6),
+            **train_summary,
+        }
+        # NTP eval
+        from ntp.eval import run_eval
+        log(is_main, "\n  Running NTP eval...")
+        model.to(device)
+        model.eval()
+        eval_results = run_eval(model, args.preprocessed_dir, device,
+                                sid_cache_dir=sid_cache_dir)
+        train_meta['eval'] = eval_results
+        log(is_main, f"  R@10={eval_results.get('recall_10', 0):.4f}, "
+                     f"R@100={eval_results.get('recall_100', 0):.4f}, "
+                     f"R@500={eval_results.get('recall_500', 0):.4f}")
+
+        train_log_path = os.path.join(args.output_dir, 'train_log.jsonl')
+        with open(train_log_path, 'w') as f:
+            for entry in train_log_data:
+                f.write(json.dumps(entry) + '\n')
+
+        train_meta_path = os.path.join(args.output_dir, 'train_meta.json')
+        with open(train_meta_path, 'w') as f:
+            json.dump(train_meta, f, indent=2)
+        log(is_main, f"  Saved to {args.output_dir}")
+
+    if wandb_run is not None:
+        wandb_run.finish()
+
+    cleanup_ddp()
+
+
 if __name__ == '__main__':
     main()
