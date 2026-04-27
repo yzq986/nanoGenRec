@@ -127,8 +127,8 @@ TBD
 ## EXP-029: ECPO + On-Policy Beam Search
 
 **Date**: 2026-04-27
-**Status**: planned
-**Results**: `experiments/ntp_checkpoints/exp029-*/`
+**Status**: completed
+**Results**: `experiments/ntp_checkpoints/exp029-ecpo-onpolicy-w003-r100/`
 
 ### Background
 EXP-026~028 全部使用 ref model 生成 beam search candidates（off-policy）。随着 policy 训练推进，policy 和 ref 的分布逐渐偏离，off-policy candidates 越来越不能代表 policy 当前的分布，advantage 估计失真，RL 梯度方向变得不可靠。
@@ -148,13 +148,26 @@ On-policy beam candidates 与 policy 分布对齐 → importance ratio 更接近
 `bash experiments/scripts/exp-029.sh`
 
 ### Results
-TBD
+| Config | R@10 | R@500 | PPL | clip率 | behavior_mean | 备注 |
+|--------|------|-------|-----|--------|---------------|------|
+| exp029-ecpo-onpolicy-w003-r100 | **13.0%** | **67.8%** | 14.1 | 92% | 0.638 | on-policy beam |
+| exp028-ecpo-weighted-w003-r100 | 0.7% | 2.0% | 3791 | 99% | 0.115 | off-policy baseline |
+| exp020-hard-lam03 (SOTA) | 14.1% | 66.2% | 16.3 | — | — | SFT baseline |
+
+全量 eval（n_recall=1000）：item_recall@10=0.130，item_recall@50=0.332，item_recall@100=0.422，item_recall@500=0.678。
+PPL 14.1（比 SFT baseline 16.3 更低），R@500=67.8% **超过当前 SOTA 66.2%**（+1.6pp）。
 
 ### Analysis
-TBD
+On-policy beam search 的核心效果验证：
+- **clip 率从 99% → 92%**：on-policy candidates 与 policy 分布对齐，importance ratio 更接近 1，ECPO 梯度信号有效
+- **behavior_mean 从 0.115 → 0.638**：on-policy candidates 的行为 reward 均值大幅提升，说明 policy 已经学会生成有行为反馈的 SID
+- **R@500 从 2.0% → 67.8%**：彻底逆转 EXP-028 的退化，超越 SFT baseline 1.6pp
+- **PPL 14.1 < SFT baseline 16.3**：RL 训练同时改善了 NTP perplexity，模型语言能力未退化
+
+on-policy 修复了 EXP-028 的根本问题（off-policy ratio 过大 → ECPO clipping 失效）。
 
 ### Next Steps
-TBD
+EXP-030：在 on-policy beam 基础上叠加 A2PO + NLL regularization + HEPO prefix scoring，进一步提升 R@500。
 
 ---
 
