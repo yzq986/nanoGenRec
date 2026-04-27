@@ -30,6 +30,7 @@ def _grpo_core(
     group_offsets: Tensor,    # (B+1,) group boundaries
     eps: float = 0.2,
     delta: float = 0.0,       # 0.0 = GRPO, >0 = ECPO early clip
+    rank_norm: bool = False,  # True → rank-based advantage ∈ [-1,1] (robust to log-scale rewards)
     return_diagnostics: bool = False,
 ) -> Union[Tensor, Tuple[Tensor, Dict]]:
     # fp32 throughout for numerical stability
@@ -65,13 +66,24 @@ def _grpo_core(
         g_ref    = ref_lp[start:end]       # (G,) — no grad
         g_reward = rewards[start:end]      # (G,) — no grad
 
-        # Group-normalized advantage — skip group if reward has no variance
-        r_mean = g_reward.mean()
-        r_std  = g_reward.std()
-        if r_std.item() < 1e-6:
-            continue   # all rewards identical → no learning signal, skip
-        adv = (g_reward - r_mean) / r_std   # (G,) — no grad
-        adv = adv.clamp(-5.0, 5.0)          # guard against extreme outliers
+        # Group-normalized advantage
+        if rank_norm:
+            # Rank-based: adv ∈ [-1, 1], robust to log-scale reward distributions.
+            # rank 0 = worst → -1, rank G-1 = best → +1.
+            # Ties are broken by mean rank (equivalent to averaging tied positions).
+            ranks = g_reward.argsort().argsort().float()   # (G,) — no grad
+            if G > 1:
+                adv = (2.0 * ranks / (G - 1)) - 1.0
+            else:
+                adv = torch.zeros_like(ranks)
+            # rank_norm always has variance unless G=1 — no std check needed
+        else:
+            r_mean = g_reward.mean()
+            r_std  = g_reward.std()
+            if r_std.item() < 1e-6:
+                continue   # all rewards identical → no learning signal, skip
+            adv = (g_reward - r_mean) / r_std   # (G,) — no grad
+            adv = adv.clamp(-5.0, 5.0)          # guard against extreme outliers
 
         # Policy ratio rho = pi_θ / pi_ref
         log_rho = g_policy - g_ref.detach()   # grad through g_policy only
@@ -153,6 +165,7 @@ def grpo_loss(
     rewards: Tensor,
     group_offsets: Tensor,
     eps: float = 0.2,
+    rank_norm: bool = False,
     return_diagnostics: bool = False,
 ) -> Union[Tensor, Tuple[Tensor, Dict]]:
     """GRPO loss (no early clip).
@@ -163,6 +176,8 @@ def grpo_loss(
         rewards:       (N,) detached rewards from reward_fn.
         group_offsets: (B+1,) group boundaries.
         eps:           PPO clip range (default 0.2).
+        rank_norm:     if True, use rank-based advantage ∈ [-1,1] instead of
+                       z-score normalization. Robust to log-scale distributions.
         return_diagnostics: if True, return (loss, diag_dict).
 
     Diagnostics keys: advantage_mean, advantage_std, policy_ratio_mean,
@@ -170,7 +185,7 @@ def grpo_loss(
     """
     return _grpo_core(
         policy_lp, ref_lp, rewards, group_offsets,
-        eps=eps, delta=0.0,
+        eps=eps, delta=0.0, rank_norm=rank_norm,
         return_diagnostics=return_diagnostics,
     )
 
@@ -182,6 +197,7 @@ def ecpo_loss(
     group_offsets: Tensor,
     eps: float = 0.2,
     delta: float = 0.1,
+    rank_norm: bool = False,
     return_diagnostics: bool = False,
 ) -> Union[Tensor, Tuple[Tensor, Dict]]:
     """ECPO loss — GRPO with early clip for negative-advantage candidates.
@@ -193,12 +209,13 @@ def ecpo_loss(
         group_offsets: (B+1,) group boundaries.
         eps:           PPO clip range (default 0.2).
         delta:         early clip margin (default 0.1 per ECPO paper).
+        rank_norm:     if True, use rank-based advantage ∈ [-1,1].
         return_diagnostics: if True, return (loss, diag_dict).
 
     Additional diagnostics key: early_clip_fraction.
     """
     return _grpo_core(
         policy_lp, ref_lp, rewards, group_offsets,
-        eps=eps, delta=delta,
+        eps=eps, delta=delta, rank_norm=rank_norm,
         return_diagnostics=return_diagnostics,
     )

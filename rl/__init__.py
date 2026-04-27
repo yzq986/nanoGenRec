@@ -6,7 +6,7 @@ from rl.grpo import grpo_loss, ecpo_loss
 from rl.reward import (
     RewardFn, DiagnosticReward,
     BehaviorReward, WeightedBehaviorReward, FormatReward,
-    ExternalReward, BusinessReward, CompositeReward,
+    NoveltyReward, ExternalReward, BusinessReward, CompositeReward,
     _bitmap_to_quality,
 )
 
@@ -18,6 +18,6 @@ __all__ = [
     # Reward plugins
     'RewardFn', 'DiagnosticReward',
     'BehaviorReward', 'WeightedBehaviorReward', 'FormatReward',
-    'ExternalReward', 'BusinessReward', 'CompositeReward',
+    'NoveltyReward', 'ExternalReward', 'BusinessReward', 'CompositeReward',
     '_bitmap_to_quality',
 ]

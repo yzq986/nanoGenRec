@@ -736,6 +736,7 @@ def train_grpo(
     delta=0.0,              # 0.0 → GRPO, 0.1 → ECPO
     rl_data_ratio=0.02,     # Bernoulli p of running a GRPO step per NTP step
     on_policy_beam=False,   # True → use policy model for beam search (on-policy)
+    rank_norm=False,        # True → rank-based advantage in [-1,1] (robust to log-scale rewards)
     max_steps=None,
     wandb_run=None,
 ):
@@ -950,11 +951,12 @@ def train_grpo(
             if delta > 0.0:
                 loss_val, diag = ecpo_loss(
                     policy_lp, ref_lp, rewards, group_offsets_t,
-                    eps=eps, delta=delta, return_diagnostics=True)
+                    eps=eps, delta=delta, rank_norm=rank_norm,
+                    return_diagnostics=True)
             else:
                 loss_val, diag = grpo_loss(
                     policy_lp, ref_lp, rewards, group_offsets_t,
-                    eps=eps, return_diagnostics=True)
+                    eps=eps, rank_norm=rank_norm, return_diagnostics=True)
 
             (weight * loss_val).backward()
 
@@ -1798,6 +1800,9 @@ def grpo_parse_args():
                         help='Reference date for freshness decay (YYYY-MM-DD). Defaults to latest date in cache.')
     parser.add_argument('--on_policy_beam', action='store_true',
                         help='Use policy model (not ref model) for beam search — true on-policy GRPO')
+    parser.add_argument('--rank_norm', action='store_true',
+                        help='Use rank-based advantage normalization in [-1,1] instead of z-score. '
+                             'Robust to log-scale reward distributions (e.g. WeightedBehaviorReward).')
     parser.add_argument('--name', type=str, default='grpo',
                         help='Experiment name for logging')
     parser.add_argument('--wandb', action='store_true',
@@ -2042,6 +2047,7 @@ def grpo_main():
         delta=args.delta,
         rl_data_ratio=args.rl_data_ratio,
         on_policy_beam=getattr(args, 'on_policy_beam', False),
+        rank_norm=getattr(args, 'rank_norm', False),
         max_steps=max_steps,
         wandb_run=wandb_run,
     )

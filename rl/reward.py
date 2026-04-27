@@ -375,6 +375,64 @@ class WeightedBehaviorReward(DiagnosticReward):
         return {'mean': self._last_mean, 'coverage': self._last_coverage}
 
 
+# ── Novelty reward ───────────────────────────────────────────────────────────
+
+class NoveltyReward(DiagnosticReward):
+    """Penalize candidates that already appear in the user's context.
+
+    Returns 0.0 for novel items (not seen in context), -penalty for items
+    whose SID appears in the context token sequence.
+
+    Context tokens are raw integers (SID layer tokens). A candidate SID
+    (l0, l1, ..., ln) is considered "seen" if all its layer tokens appear
+    consecutively in the context (i.e., the item was already recommended).
+
+    Args:
+        penalty: score assigned to non-novel (already-seen) items. Default -1.0.
+        n_layers: number of SID layers. Inferred from sids.size(1) if not set.
+    """
+
+    def __init__(self, penalty: float = -1.0):
+        self._penalty = penalty
+        self._last_novel_rate: float = 1.0
+
+    def __call__(
+        self,
+        sids: Tensor,
+        context_tokens: Tensor,
+        context_lengths: Tensor,
+    ) -> Tensor:
+        N = sids.size(0)
+        n_layers = sids.size(1)
+        sids_cpu = sids.cpu().tolist()
+        ctx_cpu = context_tokens.cpu().tolist()
+        lens_cpu = context_lengths.cpu().tolist()
+
+        rewards = []
+        n_novel = 0
+        for i in range(N):
+            sid = sids_cpu[i]
+            length = int(lens_cpu[i])
+            ctx = ctx_cpu[i][:length]
+            # Check if sid tokens appear consecutively anywhere in context
+            seen = False
+            for j in range(len(ctx) - n_layers + 1):
+                if ctx[j:j + n_layers] == sid:
+                    seen = True
+                    break
+            if seen:
+                rewards.append(self._penalty)
+            else:
+                rewards.append(0.0)
+                n_novel += 1
+
+        self._last_novel_rate = n_novel / N if N > 0 else 1.0
+        return torch.tensor(rewards, dtype=torch.float32, device=sids.device)
+
+    def metrics(self) -> Dict[str, float]:
+        return {'novel_rate': self._last_novel_rate}
+
+
 # ── Composite ────────────────────────────────────────────────────────────────
 
 class CompositeReward(DiagnosticReward):
