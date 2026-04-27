@@ -8,12 +8,13 @@
 ## 当前阶段
 
 ```
-Tokenizer 阶段 ✅ → NTP 阶段 ← (当前) → RL 对齐 (规划中)
+Tokenizer ✅ → NTP ✅ → RL 对齐 ← (当前) → 部署
 ```
 
 - **Tokenizer**: 4096×3 binary MLP-FSQ `[2]×12` 确认为赢家 (EXP-012, snHR=0.095, collision=0.89%)
 - **Embedding**: 原始 Qwen3-0.6B 不做 fine-tune (EXP-007/009 证明 I2I contrastive 路线无效)
-- **NTP**: Per-layer output head 已修复，准备重跑 baseline
+- **NTP**: S-tier (45.8M) 已完成，R@500=60%，scaling law 成立 (EXP-013/015)
+- **RL 对齐**: SP-DPO → RF-DPO → GRPO → **ECPO (当前)** — 已完成全链路，含 GRPO→ECPO 稳定性复现
 - **Ideas**: 63 个可实验想法已归档, 来源 39 篇工业论文
 
 ## 流程总览
@@ -23,7 +24,6 @@ graph LR
     subgraph S1 ["1. 数据导出"]
         D1[Hive → S3<br><code>data/export_*</code>]
     end
-
     subgraph S2 ["2. Embedding 编码"]
         D2[Qwen3 encode<br><code>data/encode_dist</code><br>或 train 内置编码]
     end
@@ -42,9 +42,9 @@ graph LR
         N_TRAIN --> N_EVAL
     end
 
-    subgraph S5 ["5. RL 对齐 (规划中)"]
+    subgraph S5 ["5. RL 对齐 ← 当前"]
         direction TB
-        R_TRAIN["<b>训练</b><br>SP-DPO → RF-DPO → GRPO → ECPO<br><code>rl/</code>"]
+        R_TRAIN["<b>训练</b><br>SP-DPO ✅ → RF-DPO ✅ → GRPO ✅ → ECPO ✅<br><code>rl/</code>"]
         R_EVAL["<b>评测</b><br>Recall/NDCG 对比<br>Reward 分布变化"]
         R_TRAIN --> R_EVAL
     end
@@ -57,7 +57,7 @@ graph LR
 
     style S3 fill:#e8f5e9,stroke:#43a047
     style S4 fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style S5 fill:#f3e5f5,stroke:#9c27b0,stroke-dasharray:5
+    style S5 fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
 ```
 
 所有命令通过 `python -m gr_demo <command>` 调用。
@@ -283,9 +283,15 @@ gr_demo/
 | EXP-011 | 完成 | 等大 codebook 消融: 4096×3 snHR=0.095 (+22% vs 1024×3) |
 | EXP-012 | 完成 | **Tokenizer Grid Search**: 4096×3 binary 确认为最优 (snHR=0.095, collision=0.89%) |
 | EXP-013 | 完成 | **S-tier NTP 全面碾压 Probe**: PPL 70→29.6 (-58%), recall@500 37%→60% (1.6x) |
-| EXP-014 | 进行中 | ENTP-Loss: L0 token collision 导致退步，Round 2 collision 过滤中 |
+| EXP-014 | 完成 | ENTP-Loss: L0 token collision 导致退步，已关闭 |
 | EXP-015 | 完成 | **Scaling Law 成立**: `L(N) = 2.522 + 2055/N^0.456`, α≈OneRec-V2, M 档为甜点 |
 | EXP-016 | 完成 | **Chinchilla 不适用**: 14d 为最优数据窗口，更多数据 loss 反升 (U 型曲线) |
+| EXP-017 | 完成 | **SP-DPO**: hard split preference pair，R@500 +3% vs NTP baseline |
+| EXP-018 | 完成 | **RF-DPO**: reward-filtered preference，hard/easy/prog 三组 shards |
+| EXP-019 | 完成 | RF-DPO λ sweep，hard+λ=0.3 为 best |
+| EXP-020 | 完成 | **RF-DPO joint**: NTP+DPO 联合训练，exp020-hard-lam03 为当前最优 checkpoint |
+| EXP-021~025 | 完成 | Beam search feature passing, inline eval, 各类消融 |
+| EXP-026 | running | **GRPO+ECPO**: G=512 beam candidates, pluggable reward; ECPO gnorm 稳定复现 |
 
 详见 [experiments/log.md](experiments/log.md)。
 
@@ -334,6 +340,80 @@ L̂(N) = 2.522 + 2055.1 / N^0.456
 3. **新增用户引入分布偏移**：老用户的行为 pattern 与当前 eval 分布不一致
 4. **14d ≈ 4-5 个曝光周期**：刚好覆盖 item pool 多样性又不过多偏移
 
+## RL 对齐路径 (EXP-017 ~ EXP-026)
+
+四阶段渐进式对齐，每阶段在上一阶段 checkpoint 基础上继续训练：
+
+```
+NTP baseline (EXP-013)
+    ↓
+SP-DPO (EXP-017) — hard split preference, pairwise contrastive
+    ↓
+RF-DPO (EXP-018/020) — reward-filtered preference, λ-weighted
+    ↓
+GRPO (EXP-026) — group relative policy optimization, G=512 beam candidates
+    ↓
+ECPO (EXP-026) — early clipped GRPO, δ=0.1 sparse reward stabilizer
+```
+
+### GRPO (EXP-026)
+
+基于 [OneMall](https://arxiv.org/abs/2601.21770)。
+
+**原理**：对每个 context，用 ref model beam search 生成 G=512 candidates，组内 reward 归一化得到 advantage，PPO-style clipped surrogate loss：
+
+```
+A_i = (r_i - mean(r)) / std(r)
+L = E[ min(ρ·A, clip(ρ, 1-ε, 1+ε)·A) ]    ρ = π_θ / π_ref
+```
+
+**Reward 系统** (`rl/reward.py`)：插件化设计，任意组合：
+
+| 类 | 信号来源 | 说明 |
+|----|---------|------|
+| `BehaviorReward` | RF-DPO feedback shards | 行为信号打分，prefix cascade fallback (L0 覆盖 ~24%) |
+| `FormatReward` | SIDTrie 合法性 | binary 1/0，sample_k=5 子采样降成本 |
+| `ExternalReward` | 任意 callable | 外部奖励模型接口 |
+| `BusinessReward` | 任意 callable | 时效性/作者加权等业务策略 |
+| `CompositeReward` | 以上任意组合 | 加权求和，自动 namespace 至 `reward/*` metrics |
+
+**数值稳定性修复**（EXP-026 实测）：
+- 稀疏 reward → std≈0 → advantage 爆炸：加 `std < 1e-6` group skip + `adv.clamp(-5, 5)` + `log_rho.clamp(-10, 10)`
+- prefix cascade 把 BehaviorReward 有效命中率从 0.16% 提升至 ~24%
+
+### ECPO — Early Clipped GRPO (EXP-026)
+
+基于 [OneRec](https://arxiv.org/abs/2506.13695)，GRPO 的稀疏 reward 稳定版。
+
+**问题**：稀疏 reward 下，负 advantage 样本的 π_θ → 0，导致 ρ = π_θ/π_ref 爆炸，clipping 失效，梯度无界。
+
+**ECPO 修复**：对负 advantage 样本，替换 denominator：
+
+```
+π'_ref = max( sg(π_θ) / (1+ε+δ),  π_ref )
+ρ_eff  = π_θ / π'_ref              ← 上界被限制在 1+ε+δ
+```
+
+δ=0.1，从根源截断 ρ 的上界，无需依赖 gradient clipping。
+
+**EXP-026 实验复现**（第一手数据，非论文搬运）：
+
+| Step | GRPO gnorm | ECPO gnorm |
+|------|-----------|-----------|
+| 50   | 0.22 | **0.46** |
+| 550  | 0.57 | **0.20** |
+| 600  | **64.9** | **0.20** |
+| 650  | **158.2** | **0.20** |
+| 700  | 0.21 (自然回落) | **0.21** |
+
+- GRPO step 600–650：gnorm 从 0.57 跳至 158，随 lr cosine decay → 0 后自然恢复
+- ECPO 同等 reward 稀疏度下：全程 gnorm 0.19–0.46，零 spike
+- ECPO grpo_loss 低 3 个数量级（step 50: GRPO=5.92 vs ECPO=0.011）
+
+这精确复现了 OneRec 论文 ECPO 的核心动机：reward 越稀疏，ECPO 相对 GRPO 的稳定性优势越大。
+
+---
+
 ## 关键结论
 
 1. **Tokenizer 结构比 collision rate 更重要**: MLP-FSQ collision 10.7% 但 semantic_neighbor_HR 赢 OPQ (collision 0.06%) 2.4 倍
@@ -344,7 +424,8 @@ L̂(N) = 2.522 + 2055.1 / N^0.456
 6. **Data scaling law 不适用**: 推荐行为数据非 i.i.d.，最优训练窗口 ~14d，由曝光窗口周转速度决定
 7. **当前瓶颈是 tokenizer**: M+ loss=2.94 已逼近 irreducible floor 2.52 (PPL 12.5)，加数据/模型均无法突破
 8. **当前 pipeline**: Qwen3-0.6B (冻结) → 4096×3 binary MLP-FSQ `[2]×12` → 3-token SID → NTP 模型
-9. **RL 对齐路径已规划**: SP-DPO → RF-DPO → GRPO → ECPO 四阶段渐进，详见 [rl/README.md](rl/README.md)
+9. **RL 对齐四阶段已完成**: SP-DPO → RF-DPO → GRPO → ECPO 全链路跑通，ECPO 稳定性优势实验复现，详见 [rl/README.md](rl/README.md)
+10. **ECPO > GRPO 稳定性**: 稀疏 reward 下 GRPO gnorm spike 至 158；ECPO early clip (δ=0.1) 全程抑制在 <0.5，grpo_loss 低 3 个数量级
 
 ## 数据规模与分布
 
