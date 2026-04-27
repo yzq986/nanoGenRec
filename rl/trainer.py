@@ -1781,6 +1781,12 @@ def grpo_parse_args():
                         help='Weight for FormatReward in CompositeReward (default: 0.5)')
     parser.add_argument('--feedback_dir', type=str, default=None,
                         help='Path to RF feedback preference shards (for BehaviorReward)')
+    parser.add_argument('--behavior_cache_dir', type=str, default=None,
+                        help='Path to behavior parquet cache (e.g. /mnt/workspace/gr-demo-behavior-cache). '
+                             'When set, uses WeightedBehaviorReward (action_bitmap × freshness) '
+                             'instead of binary BehaviorReward. Expects subdirs YYYY-MM-DD/.')
+    parser.add_argument('--behavior_cache_eval_date', type=str, default=None,
+                        help='Reference date for freshness decay (YYYY-MM-DD). Defaults to latest date in cache.')
     parser.add_argument('--name', type=str, default='grpo',
                         help='Experiment name for logging')
     parser.add_argument('--wandb', action='store_true',
@@ -1788,6 +1794,74 @@ def grpo_parse_args():
     parser.add_argument('--dry_run', action='store_true',
                         help='Smoke test: run 2 steps then exit')
     return parser.parse_args()
+
+
+def _build_weighted_behavior_reward(behavior_cache_dir, sid_cache_path, eval_date_str, log_fn):
+    """Load behavior parquet cache and build WeightedBehaviorReward.
+
+    Reads all YYYY-MM-DD subdirs under behavior_cache_dir, aggregates
+    action_bitmap (bitwise OR) and last_ts (max) per item, then maps
+    item_id → SID tuple via the SID cache.
+
+    Returns WeightedBehaviorReward with 100% SID coverage (all items in
+    SID cache have behavior data).
+    """
+    import glob
+    import pandas as pd
+    import numpy as np
+    import time
+    from rl.reward import WeightedBehaviorReward
+
+    t0 = time.time()
+    day_dirs = sorted(glob.glob(os.path.join(behavior_cache_dir, '????-??-??')))
+    if not day_dirs:
+        raise FileNotFoundError(f"No YYYY-MM-DD subdirs found in {behavior_cache_dir}")
+
+    log_fn(f"  Loading behavior cache: {len(day_dirs)} days from {day_dirs[0][-10:]} to {day_dirs[-1][-10:]}")
+    frames = [pd.read_parquet(d, columns=['iid', 'action_bitmap', 'last_ts']) for d in day_dirs]
+    all_df = pd.concat(frames, ignore_index=True)
+    log_fn(f"  Loaded {len(all_df):,} rows ({time.time()-t0:.1f}s)")
+
+    # Fast numpy aggregation: bitwise OR of action_bitmap, max of last_ts per item
+    iids = all_df['iid'].values
+    bitmaps = all_df['action_bitmap'].values.astype(np.int32)
+    ts = all_df['last_ts'].values.astype(np.float64)
+    del all_df
+
+    sort_idx = np.argsort(iids, kind='stable')
+    iids_s = iids[sort_idx]; bitmaps_s = bitmaps[sort_idx]; ts_s = ts[sort_idx]
+    boundaries = np.where(np.concatenate(([True], iids_s[1:] != iids_s[:-1], [True])))[0]
+    n_items = len(boundaries) - 1
+    unique_iids = iids_s[boundaries[:-1]]
+    agg_bitmaps = np.zeros(n_items, dtype=np.int32)
+    agg_ts = np.zeros(n_items, dtype=np.float64)
+    for i in range(n_items):
+        sl = slice(boundaries[i], boundaries[i+1])
+        agg_bitmaps[i] = np.bitwise_or.reduce(bitmaps_s[sl])
+        agg_ts[i] = ts_s[sl].max()
+    iid_to_info = dict(zip(unique_iids, zip(agg_bitmaps.tolist(), agg_ts.tolist())))
+    log_fn(f"  Aggregated {n_items:,} unique items ({time.time()-t0:.1f}s)")
+
+    # Map iid → SID tuple via semantic_ids.npy
+    sid_cache = np.load(sid_cache_path, allow_pickle=True).item()
+    sid_to_info = {}
+    for iid_str, sid_str in sid_cache.items():
+        info = iid_to_info.get(iid_str)
+        if info is not None:
+            sid_tuple = tuple(int(x) for x in sid_str.split('_'))
+            sid_to_info[sid_tuple] = (int(info[0]), float(info[1]))
+    coverage = len(sid_to_info) / len(sid_cache) if sid_cache else 0.0
+    log_fn(f"  WeightedBehaviorReward: {len(sid_to_info):,}/{len(sid_cache):,} SIDs "
+           f"({coverage*100:.1f}% coverage, {time.time()-t0:.1f}s total)")
+
+    # Determine eval_ts from eval_date or latest day in cache
+    if eval_date_str:
+        from datetime import datetime
+        eval_ts = datetime.strptime(eval_date_str, '%Y-%m-%d').timestamp()
+    else:
+        eval_ts = agg_ts.max()
+
+    return WeightedBehaviorReward(sid_to_info, eval_ts=eval_ts)
 
 
 def grpo_main():
@@ -1847,8 +1921,18 @@ def grpo_main():
     from rl.reward import BehaviorReward, FormatReward, CompositeReward
     components = []
 
-    if args.reward_behavior and args.feedback_dir:
-        # Build sid_to_score from feedback preference shards
+    if args.reward_behavior and getattr(args, 'behavior_cache_dir', None):
+        # WeightedBehaviorReward: continuous quality × freshness from behavior parquet
+        sid_cache_path = os.path.join(sid_cache_dir, 'semantic_ids.npy')
+        weighted_r = _build_weighted_behavior_reward(
+            args.behavior_cache_dir, sid_cache_path,
+            getattr(args, 'behavior_cache_eval_date', None),
+            lambda msg: log(is_main, msg),
+        )
+        components.append(('behavior', args.behavior_weight, weighted_r))
+
+    elif args.reward_behavior and args.feedback_dir:
+        # BehaviorReward: binary chosen=1/rejected=-1 from RF feedback shards
         sid_to_score = {}
         pref_meta_path = os.path.join(args.feedback_dir, 'meta.json')
         if os.path.exists(pref_meta_path):
@@ -1863,7 +1947,6 @@ def grpo_main():
                 for pair in load_preference_shard(sf):
                     key = tuple(pair['chosen'])
                     sid_to_score[key] = 1.0
-                    # prefix entries for cascade fallback (l0, l0l1)
                     for plen in range(1, len(key)):
                         sid_to_score.setdefault(key[:plen], 0.5)
                     for r in pair.get('rejected_easy', []):

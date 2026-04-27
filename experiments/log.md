@@ -39,6 +39,45 @@
 
 ---
 
+## EXP-028: ECPO + WeightedBehaviorReward — Continuous Quality×Freshness Reward
+
+**Date**: 2026-04-27
+**Status**: planned
+**Results**: `experiments/ntp_checkpoints/exp028-*/`
+
+### Background
+EXP-027 的 reward signal 仍然稀疏（97.5% SID reward=0）：BehaviorReward 只覆盖 RF feedback 里的 chosen/rejected SID，binary 打分（±1），导致大多数 beam candidates advantage≈0，clip=98%，RL 梯度几乎全部来自噪声。
+
+现在本地有完整的 behavior parquet cache（`/mnt/workspace/gr-demo-behavior-cache/`），14天完整数据，SID cache 里 100% item 都有行为记录。
+
+新方案：`WeightedBehaviorReward`
+- **质量分**：action_bitmap 按 v0420 生产权重加权，`log10(1 + Σw)`：place_order=4000, follow=4000, comment=2000, share=3, like=1, click=0.1
+- **新鲜度**：`exp(-age_hours / 24)`，τ=1天，与线上3d截止策略对齐（3d后得分≈5%）
+- **覆盖率**：100%（每个 beam candidate 都有非零 reward），彻底解决稀疏问题
+
+### Hypothesis
+100% reward coverage → within-group 方差显著提升 → advantage std 从 ≈0 变为有效值 → clip 率从 98% 下降 → RL 梯度真正起作用。预期 R@500 在 EXP-027 最佳 config 基础上进一步提升。
+
+### Design
+- **Variable**: WeightedBehaviorReward vs BehaviorReward（对照 EXP-027 最佳 config）
+- **Fixed**: ECPO δ=0.1，ε=0.2，G=512，grpo_batch=4，grpo_weight=0.03，ratio=1.0，lr=1e-4
+- **Metric**: R@10, R@500（全量 eval，n_recall=1000）；reward/behavior_coverage, reward/behavior_mean
+- **Data**: exp023-14d-features，BehaviorReward cache=gr-demo-behavior-cache，FormatReward(0.5)
+
+### Run
+`bash experiments/scripts/exp-028.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-027: ECPO grpo_weight Sweep — Align with RF-DPO Training Structure
 
 **Date**: 2026-04-27
