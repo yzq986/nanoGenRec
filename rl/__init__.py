@@ -5,8 +5,9 @@ from rl.dpo import compute_sid_logprobs, softmax_dpo_loss
 from rl.grpo import grpo_loss, ecpo_loss
 from rl.reward import (
     RewardFn, DiagnosticReward,
-    BehaviorReward, FormatReward, ExternalReward, BusinessReward,
-    CompositeReward,
+    BehaviorReward, WeightedBehaviorReward, FormatReward,
+    ExternalReward, BusinessReward, CompositeReward,
+    _bitmap_to_quality,
 )
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     'grpo_loss', 'ecpo_loss',
     # Reward plugins
     'RewardFn', 'DiagnosticReward',
-    'BehaviorReward', 'FormatReward', 'ExternalReward', 'BusinessReward',
-    'CompositeReward',
+    'BehaviorReward', 'WeightedBehaviorReward', 'FormatReward',
+    'ExternalReward', 'BusinessReward', 'CompositeReward',
+    '_bitmap_to_quality',
 ]

@@ -15,6 +15,7 @@ Usage example::
 
 from __future__ import annotations
 
+import math
 import random
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -241,6 +242,121 @@ class BusinessReward(DiagnosticReward):
 
     def metrics(self) -> Dict[str, float]:
         return {'mean': self._last_mean}
+
+
+# ── Action bitmap quality weights (aligned with export_behavior.py bit defs) ─
+_ACTION_QUALITY: List[Tuple[int, float]] = [
+    # (bitmask,  quality_score)  — evaluated in descending priority order
+    (262144,  3.0),   # place_order
+    (131072,  2.0),   # trade_click
+    (524288,  1.2),   # live_duration (strong engagement signal)
+    (8,       1.2),   # follow (feed)
+    (256,     1.2),   # detail_follow
+    (2,       1.0),   # like (feed)
+    (512,     1.0),   # detail_like
+    (1048576, 0.9),   # comment (from comment table)
+    (2048,    0.9),   # detail_comment
+    (4,       0.8),   # share (feed)
+    (1024,    0.8),   # detail_share
+    (8192,    0.6),   # detail_coin_click
+    (16,      0.5),   # coin_click (feed)
+    (65536,   0.3),   # video_detail_view
+    (32,      0.2),   # comment_click (feed)
+    (1,       0.2),   # click (feed)
+]
+_NEGATIVE_BIT = -2147483648  # negative_feedback / dislike / report
+_VIEW_EXIT_BIT = 4096        # excluded (not a positive signal)
+
+
+def _bitmap_to_quality(action_bitmap: int) -> float:
+    """Map action_bitmap → continuous quality score in [0, 3].
+
+    Takes the highest-priority matching action weight. Returns -2.0 for
+    negative feedback, 0.0 if only view_exit (no positive action).
+    """
+    if action_bitmap & _NEGATIVE_BIT:
+        return -2.0
+    bm = action_bitmap & ~_VIEW_EXIT_BIT
+    if bm <= 0:
+        return 0.0
+    for mask, score in _ACTION_QUALITY:
+        if bm & mask:
+            return score
+    return 0.0
+
+
+class WeightedBehaviorReward(DiagnosticReward):
+    """Continuous item-level reward: quality × freshness.
+
+    Reward = quality_score(action_bitmap) × exp(-days_since_interaction / freshness_tau)
+
+    Compared with BehaviorReward (binary chosen/rejected), this:
+      - Covers every SID with any positive interaction (solves 97.5% zero-reward)
+      - Provides continuous signal proportional to engagement quality
+      - Decays older interactions exponentially (freshness)
+
+    Args:
+        sid_to_info: dict mapping sid_tuple → (action_bitmap: int, last_ts: float)
+            where last_ts is unix timestamp of the most recent interaction.
+        eval_ts: reference unix timestamp for freshness calculation (training cutoff).
+            Defaults to current time if not provided.
+        freshness_tau: half-life denominator in days. Default 7.0 (score halves every week).
+        default_reward: reward for SIDs with no behavior data. Default 0.0.
+        prefix_scale: scale factor for prefix-level fallbacks. Default 0.5.
+    """
+
+    def __init__(
+        self,
+        sid_to_info: Dict[Tuple[int, ...], Tuple[int, float]],
+        eval_ts: Optional[float] = None,
+        freshness_tau: float = 7.0,
+        default_reward: float = 0.0,
+        prefix_scale: float = 0.5,
+    ):
+        self._sid_to_info = sid_to_info
+        self._eval_ts = eval_ts if eval_ts is not None else __import__('time').time()
+        self._freshness_tau = freshness_tau * 86400.0  # days → seconds
+        self._default = default_reward
+        self._prefix_scale = prefix_scale
+        self._last_mean: float = 0.0
+        self._last_coverage: float = 0.0
+
+    def _score(self, sid_tuple: Tuple[int, ...]) -> float:
+        info = self._sid_to_info.get(sid_tuple)
+        scale = 1.0
+        if info is None:
+            for length in range(len(sid_tuple) - 1, 0, -1):
+                info = self._sid_to_info.get(sid_tuple[:length])
+                if info is not None:
+                    scale = self._prefix_scale ** (len(sid_tuple) - length)
+                    break
+        if info is None:
+            return self._default
+
+        action_bitmap, last_ts = info
+        quality = _bitmap_to_quality(action_bitmap)
+        if quality <= 0.0:
+            return quality * scale  # preserve negative reward sign
+        days_age = max(0.0, self._eval_ts - last_ts) / self._freshness_tau
+        freshness = math.exp(-days_age)
+        return quality * freshness * scale
+
+    def __call__(
+        self,
+        sids: Tensor,
+        context_tokens: Tensor,
+        context_lengths: Tensor,
+    ) -> Tensor:
+        sids_cpu = sids.cpu()
+        N = sids_cpu.size(0)
+        scores = [self._score(tuple(sids_cpu[k].tolist())) for k in range(N)]
+        out = torch.tensor(scores, dtype=torch.float32, device=sids.device)
+        self._last_mean = float(out.mean().item())
+        self._last_coverage = sum(1 for s in scores if s != 0.0) / N if N > 0 else 0.0
+        return out
+
+    def metrics(self) -> Dict[str, float]:
+        return {'mean': self._last_mean, 'coverage': self._last_coverage}
 
 
 # ── Composite ────────────────────────────────────────────────────────────────
