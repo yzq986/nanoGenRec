@@ -1,0 +1,77 @@
+{
+  "n_train": 1709380,
+  "n_eval": 49456,
+  "n_clusters_per_layer": [
+    4096,
+    4096,
+    4096
+  ],
+  "n_layers": 3,
+  "n_items": 10,
+  "n_params": 45781504,
+  "train_loss": 5.57683,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "preprocessed_dir": "experiments/ntp_data/exp023-14d-features",
+  "timestamp": "2026-04-27 18:19:43",
+  "train": {
+    "n_params": 45781504,
+    "avg_ntp_loss": 5.57683,
+    "avg_grpo_loss": 0.0,
+    "avg_total_loss": 5.57683,
+    "grpo_weight": 0.5,
+    "eps": 0.2,
+    "delta": 0.0,
+    "algo": "GRPO",
+    "group_size": 512,
+    "rl_data_ratio": 0.02,
+    "total_tokens": 136895808,
+    "wall_time_s": 1254.0,
+    "batch_size": 522,
+    "grpo_batch_size": 4,
+    "world_size": 4,
+    "n_steps": 818,
+    "n_grpo_steps": 15,
+    "context_pool_size": 427272,
+    "avg_advantage_mean": 0.0,
+    "avg_advantage_std": 0.0,
+    "avg_clip_fraction": 0.9905,
+    "avg_reward_mean": 0.0,
+    "avg_reward_std": 0.0,
+    "avg_reward/behavior_mean": 0.0,
+    "avg_reward/total_mean": 0.0,
+    "name": "exp026-grpo-behavior",
+    "sft_checkpoint": "experiments/ntp_checkpoints/exp020-hard-lam03"
+  },
+  "eval": {
+    "ppl": 211.8163,
+    "layer_ppl": [
+      1048.9273,
+      179.5494,
+      50.9369
+    ],
+    "avg_loss": 5.35572,
+    "depth_hit@10": [
+      0.061,
+      0.0327,
+      0.0317
+    ],
+    "depth_hit@10_indep": [
+      0.0608,
+      0.3817,
+      0.5632
+    ],
+    "depth_acc_beam": [
+      0.005,
+      0.001,
+      0.001
+    ],
+    "target_sid_found_rate": 0.193,
+    "n_eval_positions": 148078,
+    "n_eval_items": 49166,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.012,
+    "item_recall@50": 0.035,
+    "item_recall@100": 0.072,
+    "item_recall@500": 0.193
+  }
+}
