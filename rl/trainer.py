@@ -1813,8 +1813,9 @@ def grpo_main():
 
     # ── Build SIDTrie ──
     from ntp.model import SIDTrie
-    from ntp.preprocess import load_sid_cache
-    sid_cache = load_sid_cache(sid_cache_dir)
+    sid_cache = np.load(
+        os.path.join(sid_cache_dir, 'semantic_ids.npy'), allow_pickle=True
+    ).item()
     sid_trie = SIDTrie(sid_cache, n_layers)
     log(is_main, f"  SIDTrie: {len(sid_cache):,} SIDs, {n_layers} layers")
 
