@@ -8,7 +8,7 @@ Usage:
     # Single GPU
     python run.py sp-dpo-train \
         --sft_checkpoint experiments/ntp_checkpoints/exp015-scale-04-11M \
-        --preference_dir experiments/sp_dpo_data/exp017/easy \x
+        --preference_dir experiments/sp_dpo_data/exp017/easy \
         --preprocessed_dir experiments/ntp_data/exp013 \
         --output_dir experiments/ntp_checkpoints/exp017-spdpo-easy \
         --dpo_weight 0.1 --dpo_beta 0.1 --lr 1e-4
