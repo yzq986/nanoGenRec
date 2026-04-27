@@ -740,6 +740,8 @@ def train_grpo(
     a2po=False,             # True → A2PO: amplify neg-adv penalty for hard negatives
     a2po_alpha=1.0,         # A2PO gate scale
     nll_reg=0.0,            # NLL regularization weight: add -nll_reg * log p(best) per group
+    time_gaps_list=None,    # side features: list of int lists (same len as tokens)
+    action_levels_list=None,
     max_steps=None,
     wandb_run=None,
 ):
@@ -808,7 +810,11 @@ def train_grpo(
         batch_size = mem_safe_bs
 
     # ── NTP DataLoader ──
-    ntp_dataset = UnifiedSequenceDataset(ntp_tokens_list, ntp_split_pos_list)
+    ntp_dataset = UnifiedSequenceDataset(
+        ntp_tokens_list, ntp_split_pos_list,
+        time_gaps_list=time_gaps_list,
+        action_levels_list=action_levels_list,
+    )
     ntp_loader = DataLoader(
         ntp_dataset,
         batch_size=batch_size,
@@ -829,12 +835,14 @@ def train_grpo(
 
     algo = 'ECPO' if delta > 0.0 else 'GRPO'
     beam_mode = 'on-policy' if on_policy_beam else 'off-policy'
+    has_features = time_gaps_list is not None or action_levels_list is not None
     log(is_main, f"  Training ({algo}): {n_batches} steps, NTP batch={batch_size}, "
                  f"GRPO batch={grpo_batch_size}, G={group_size}, "
                  f"rl_ratio={rl_data_ratio}, λ={grpo_weight}, ε={eps}"
                  + (f", δ={delta}" if delta > 0.0 else "")
                  + (f", A2PO α={a2po_alpha}" if a2po else "")
                  + (f", nll_reg={nll_reg}" if nll_reg > 0.0 else "")
+                 + (f", side_features=True" if has_features else "")
                  + f", lr={lr}, beam={beam_mode}")
 
     policy_model.train()
@@ -1946,7 +1954,12 @@ def grpo_main():
     shard_data = load_shard(shard_path)
     tokens_list = shard_data['tokens_list']
     split_pos_list = shard_data['split_pos_list']
-    log(is_main, f"  NTP shard: {len(tokens_list):,} seqs (rank {local_rank})")
+    time_gaps_list = shard_data.get('time_gaps_list')
+    action_levels_list = shard_data.get('action_levels_list')
+    if time_gaps_list is not None:
+        log(is_main, f"  NTP shard: {len(tokens_list):,} seqs, side features: time_gap + action_level (rank {local_rank})")
+    else:
+        log(is_main, f"  NTP shard: {len(tokens_list):,} seqs (rank {local_rank})")
 
     # ── Build context pool (eval portion of the shard) ──
     context_pool = []
@@ -2095,6 +2108,8 @@ def grpo_main():
         a2po=getattr(args, 'a2po', False),
         a2po_alpha=getattr(args, 'a2po_alpha', 1.0),
         nll_reg=getattr(args, 'nll_reg', 0.0),
+        time_gaps_list=time_gaps_list,
+        action_levels_list=action_levels_list,
         max_steps=max_steps,
         wandb_run=wandb_run,
     )

@@ -39,6 +39,51 @@
 
 ---
 
+## EXP-031: New SOTA — Features SFT + Full RL Stack
+
+**Date**: 2026-04-27
+**Status**: planned
+**Results**: `experiments/ntp_checkpoints/exp031-*/`
+
+### Background
+当前 SOTA 是 `exp020-hard-lam03`（R@500=66.2%，无 side features，纯 SFT 起点）。
+`exp025-beam-passes` 是 features 模型（R@500=63.6%，有 time_gap+action_level+segment_emb），
+虽然 SFT 层面比 exp020 低 2.6pp，但 features 让模型在 beam search 时能区分候选的时效性和交互强度，
+有望在 RL 阶段获得更强 reward 信号，最终超越 66.2%。
+
+EXP-028/029/030 都从 exp020（无 features）出发，无法充分利用已有的 features 训练结果。
+EXP-031 从 exp025 出发，首次把 features 模型接入 RL pipeline，同时叠加所有已验证改进。
+
+顺带修复：GRPO trainer 之前未传 time_gaps_list/action_levels_list 给 UnifiedSequenceDataset，
+导致 features 模型在 NTP 训练步中缺少 side features。EXP-031 同步修复该 bug。
+
+### Hypothesis
+features 模型（time_gap + action_level）在 beam search 时能生成更多样化的候选（时效性分布更广），
+WeightedBehaviorReward 的 freshness × quality 信号对 features 候选更具区分度 →
+RL gradient 更有效 → R@500 从 63.6% 提升超过 exp020 的 66.2%，设立新 SOTA。
+
+### Design
+- **Variable**: features SFT 起点（exp025-beam-passes）+ 完整 RL stack
+- **Fixed**: ECPO δ=0.1，ε=0.2，G=512，grpo_batch=4，grpo_weight=0.03，ratio=1.0，lr=1e-4
+- **Metric**: R@10, R@500（full eval，n_recall=1000），与 exp020 baseline 对比
+- **Data**: exp023-14d-features（包含 time_gap + action_level），WeightedBehaviorReward
+- **Config A** (full stack): ECPO + on-policy beam + rank_norm + A2PO(α=1.0) + NLL(0.01) + HEPO(0.1,0.5)
+- **Config B** (ablation - no features contribution): 同 A，但 sft_checkpoint=exp020（确认 features 是否有增益）
+
+### Run
+`bash experiments/scripts/exp-031.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-030: A2PO + NLL Regularization + HEPO Prefix Scoring
 
 **Date**: 2026-04-27
