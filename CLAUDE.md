@@ -120,3 +120,23 @@ Three remotes are configured:
    ./push.sh
    ```
 8. 所有通信格式见 `research/schema.md`
+
+## 实验排队与 Cron 监控
+
+**不要用脚本 chain（A 末尾调用 B）来排队实验**，因为前序实验可能已经在后台跑了。
+
+正确做法：用 **CronCreate** 设置每分钟监控任务，在 cron prompt 里写清楚：
+1. 检测完成信号（grep "EXP-NNN complete" log）
+2. 收集结果（读 train_meta.json，更新 experiments/log.md）
+3. 启动下一个实验（nohup bash exp-NNN.sh > /tmp/expNNN.log 2>&1 &）
+4. 告知用户结果
+5. CronDelete 自身
+
+示例：
+```
+如果看到 "EXP-028 complete!"：
+1. 收集结果并更新 log.md
+2. nohup bash experiments/scripts/exp-029.sh > /tmp/exp029.log 2>&1 &
+3. 告知用户
+4. CronDelete 本 job
+```
