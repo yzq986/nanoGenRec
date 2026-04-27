@@ -1038,6 +1038,7 @@ def train_grpo(
                 'grad_norm': round(grad_norm, 4),
                 'tokens': total_tokens,
                 'wall_s': round(time.time() - t0, 2),
+                'n_grpo_steps': n_grpo_steps,
             }
             if diag:
                 log_entry.update({
