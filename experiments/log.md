@@ -1,4 +1,4 @@
-# Experiment Log
+
 
 按时间倒序记录。每次实验链接到 `experiments/` 下的结果目录。
 
@@ -36,6 +36,48 @@
 ### Next Steps
 (下一步计划)
 -->
+
+---
+
+## EXP-027: ECPO grpo_weight Sweep — Align with RF-DPO Training Structure
+
+**Date**: 2026-04-27
+**Status**: running
+**Results**: `experiments/ntp_checkpoints/exp027-*/`
+
+### Background
+EXP-026 结论：`grpo_weight=0.5` 导致 R@500 从 63% 跌至 19%，RL 训练严重损害 NTP 能力。
+
+根本原因分析：
+- RF-DPO 用 `λ=0.03`，**每步必触发**，DPO 梯度是 NTP 梯度的 3%，持续温和正则
+- EXP-026 GRPO 用 `weight=0.5`，**2% 稀疏触发**，但触发步的 GRPO loss 量级 ~5，`0.5×5=2.5` vs NTP loss ~7，GRPO 梯度占比 ~22%，远超 RF-DPO 的 3%
+- 这就是 gnorm spike 到 158 的直接原因，也是 NTP 被压垮的根因
+
+### Hypothesis
+- Config A（weight=0.03, ratio=1.0）：完全对齐 RF-DPO 结构，每步必触发，GRPO 贡献稳定在 3%。预期 R@500 接近 baseline（63%）
+- Config B（weight=0.03, ratio=0.5）：介于 A/C，每步 50% 触发，预期 R@500 略低于 A
+- Config C（weight=0.03, ratio=0.02）：稀疏触发但低 weight，触发步 GRPO 占比 ~1%，预期 NTP 损害最小但 RL 信号也最弱
+
+全部用 ECPO（δ=0.1，EXP-026 已证明比 GRPO 稳定），lr=1e-4（对齐 RF-DPO）
+
+### Design
+- **Variable**: grpo_weight（固定 0.03）× rl_data_ratio（1.0 / 0.5 / 0.02）
+- **Fixed**: ECPO δ=0.1，ε=0.2，G=512，grpo_batch=4，818 steps，lr=1e-4，SFT=exp020-hard-lam03
+- **Metric**: R@10, R@500（全量 eval，n_recall=1000，与 exp016-B-14d-S baseline 63.4% 对齐）
+- **Data**: exp023-14d-features，exp018/hard feedback，BehaviorReward(1.0)+FormatReward(0.5)
+
+### Run
+`bash experiments/scripts/exp-027.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+- 若 Config A 接近 baseline：在此基础上做 weight sweep（0.01/0.03/0.05）找 sweet spot
+- 若全部退步：考虑更强 reward signal（提升 behavior coverage）或增大 group_size
 
 ---
 
