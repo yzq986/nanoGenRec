@@ -244,63 +244,79 @@ class BusinessReward(DiagnosticReward):
         return {'mean': self._last_mean}
 
 
-# ── Action bitmap quality weights (aligned with export_behavior.py bit defs) ─
-_ACTION_QUALITY: List[Tuple[int, float]] = [
-    # (bitmask,  quality_score)  — evaluated in descending priority order
-    (262144,  3.0),   # place_order
-    (131072,  2.0),   # trade_click
-    (524288,  1.2),   # live_duration (strong engagement signal)
-    (8,       1.2),   # follow (feed)
-    (256,     1.2),   # detail_follow
-    (2,       1.0),   # like (feed)
-    (512,     1.0),   # detail_like
-    (1048576, 0.9),   # comment (from comment table)
-    (2048,    0.9),   # detail_comment
-    (4,       0.8),   # share (feed)
-    (1024,    0.8),   # detail_share
-    (8192,    0.6),   # detail_coin_click
-    (16,      0.5),   # coin_click (feed)
-    (65536,   0.3),   # video_detail_view
-    (32,      0.2),   # comment_click (feed)
-    (1,       0.2),   # click (feed)
+# ── Action bitmap quality weights (v0420 production spec) ─────────────────────
+#
+# Based on the production scoring sheet (0420版本):
+#   score ∝ log10(1 + Σ w_i × action_i) × quality × freshness
+#
+# We map action_bitmap bits to additive weights, then take log10(1 + sum).
+# Bits from export_behavior.py; weights from production spec columns.
+#
+# Skipped (need real-time model inference):
+#   点击率预估 (w=15), 关注率预估 (w=1000) — require CTR/follow-rate model
+#   效率类 (comments/likes/trades per hour) — require real-time aggregation
+#
+_ACTION_ADDITIVE_WEIGHTS: List[Tuple[int, float]] = [
+    # (bitmask,  additive_weight)  — all matching bits are summed
+    (262144,  4000.0),  # place_order        → 交易 (highest)
+    (131072,  1.0),     # trade_click        → 交易相关点击
+    (524288,  5.0),     # live_duration      → 近24h收藏 proxy (live engagement)
+    (8,       4000.0),  # follow (feed)      → 关注
+    (256,     4000.0),  # detail_follow      → 关注
+    (2,       1.0),     # like (feed)        → 点赞
+    (512,     1.0),     # detail_like        → 点赞
+    (1048576, 2000.0),  # comment            → 评论
+    (2048,    2000.0),  # detail_comment     → 评论
+    (4,       3.0),     # share (feed)       → 分享
+    (1024,    3.0),     # detail_share       → 分享
+    (16,      0.1),     # coin_click (feed)  → 消费类点击
+    (8192,    0.1),     # detail_coin_click  → 消费类点击
+    (65536,   0.1),     # video_detail_view  → 消费类
+    (32,      0.1),     # comment_click      → 消费类
+    (1,       0.1),     # click (feed)       → 消费类点击
 ]
 _NEGATIVE_BIT = -2147483648  # negative_feedback / dislike / report
 _VIEW_EXIT_BIT = 4096        # excluded (not a positive signal)
 
+# Production time-decay: TimeDecay(t) = exp(-ln(1.1) × t / 150)
+# where t is age in hours. τ_hours = 150 / ln(1.1) ≈ 1582h ≈ 65.9 days
+_TIME_DECAY_RATE = math.log(1.1) / 150.0  # per-hour decay rate
+
 
 def _bitmap_to_quality(action_bitmap: int) -> float:
-    """Map action_bitmap → continuous quality score in [0, 3].
+    """Map action_bitmap → log10(1 + weighted_sum) score.
 
-    Takes the highest-priority matching action weight. Returns -2.0 for
-    negative feedback, 0.0 if only view_exit (no positive action).
+    Aligns with production v0420 spec: score is log-scaled additive
+    combination of all matched action weights. Returns negative score
+    for negative_feedback, 0.0 if only view_exit or no positive action.
     """
     if action_bitmap & _NEGATIVE_BIT:
-        return -2.0
+        return -1.0
     bm = action_bitmap & ~_VIEW_EXIT_BIT
     if bm <= 0:
         return 0.0
-    for mask, score in _ACTION_QUALITY:
-        if bm & mask:
-            return score
-    return 0.0
+    total = sum(w for mask, w in _ACTION_ADDITIVE_WEIGHTS if bm & mask)
+    return math.log10(1.0 + total)
 
 
 class WeightedBehaviorReward(DiagnosticReward):
     """Continuous item-level reward: quality × freshness.
 
-    Reward = quality_score(action_bitmap) × exp(-days_since_interaction / freshness_tau)
+    Reward = log10(1 + Σ action_weights) × exp(-ln(1.1) × age_hours / 150)
+
+    Quality weights align with production v0420 spec (additive, log-scaled).
+    Freshness uses production time-decay: τ ≈ 66 days, halves every ~458h.
 
     Compared with BehaviorReward (binary chosen/rejected), this:
       - Covers every SID with any positive interaction (solves 97.5% zero-reward)
       - Provides continuous signal proportional to engagement quality
-      - Decays older interactions exponentially (freshness)
+      - Decays older interactions with production-aligned freshness formula
 
     Args:
         sid_to_info: dict mapping sid_tuple → (action_bitmap: int, last_ts: float)
             where last_ts is unix timestamp of the most recent interaction.
         eval_ts: reference unix timestamp for freshness calculation (training cutoff).
             Defaults to current time if not provided.
-        freshness_tau: half-life denominator in days. Default 7.0 (score halves every week).
         default_reward: reward for SIDs with no behavior data. Default 0.0.
         prefix_scale: scale factor for prefix-level fallbacks. Default 0.5.
     """
@@ -309,13 +325,11 @@ class WeightedBehaviorReward(DiagnosticReward):
         self,
         sid_to_info: Dict[Tuple[int, ...], Tuple[int, float]],
         eval_ts: Optional[float] = None,
-        freshness_tau: float = 7.0,
         default_reward: float = 0.0,
         prefix_scale: float = 0.5,
     ):
         self._sid_to_info = sid_to_info
         self._eval_ts = eval_ts if eval_ts is not None else __import__('time').time()
-        self._freshness_tau = freshness_tau * 86400.0  # days → seconds
         self._default = default_reward
         self._prefix_scale = prefix_scale
         self._last_mean: float = 0.0
@@ -337,8 +351,9 @@ class WeightedBehaviorReward(DiagnosticReward):
         quality = _bitmap_to_quality(action_bitmap)
         if quality <= 0.0:
             return quality * scale  # preserve negative reward sign
-        days_age = max(0.0, self._eval_ts - last_ts) / self._freshness_tau
-        freshness = math.exp(-days_age)
+        # Production time-decay: exp(-ln(1.1) × age_hours / 150)
+        age_hours = max(0.0, self._eval_ts - last_ts) / 3600.0
+        freshness = math.exp(-_TIME_DECAY_RATE * age_hours)
         return quality * freshness * scale
 
     def __call__(
