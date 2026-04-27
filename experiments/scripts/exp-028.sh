@@ -135,3 +135,8 @@ git commit -m "EXP-028 complete: ECPO WeightedBehaviorReward results" || echo "N
 
 echo ""
 echo "EXP-028 complete!"
+
+# ── Auto-chain: EXP-029 ───────────────────────────────────────
+echo ""
+echo ">>> Chaining into EXP-029..."
+bash "$(dirname "$0")/exp-029.sh"
