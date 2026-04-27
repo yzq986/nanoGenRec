@@ -998,7 +998,10 @@ def train_grpo(
         grpo_loss_val = torch.tensor(0.0, device=device)
         diag = {}
         reward_metrics = {}
-        if rl_data_ratio > 0.0 and pool_size > 0 and _random.random() < rl_data_ratio:
+        _rv = _random.random()
+        if is_main and (step + 1) % 50 == 0:
+            log(is_main, f"  [debug] step={step+1} rv={_rv:.4f} ratio={rl_data_ratio}")
+        if rl_data_ratio > 0.0 and pool_size > 0 and _rv < rl_data_ratio:
             sampled = [context_pool[_random.randrange(pool_size)]
                        for _ in range(grpo_batch_size)]
             if is_main:
