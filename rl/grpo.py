@@ -71,9 +71,11 @@ def _grpo_core(
         if r_std.item() < 1e-6:
             continue   # all rewards identical → no learning signal, skip
         adv = (g_reward - r_mean) / r_std   # (G,) — no grad
+        adv = adv.clamp(-5.0, 5.0)          # guard against extreme outliers
 
         # Policy ratio rho = pi_θ / pi_ref
         log_rho = g_policy - g_ref.detach()   # grad through g_policy only
+        log_rho = log_rho.clamp(-10.0, 10.0)  # prevent rho from exploding
         rho = log_rho.exp()
 
         # ECPO early clip: for negative-advantage candidates, tighten the
