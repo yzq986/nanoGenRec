@@ -907,6 +907,8 @@ def train_grpo(
                         ref_model, ctx_t, sid_trie, beam_size=group_size)
                 # beams: (1, actual_beams, n_layers)
                 cands = beams[0]   # (actual_beams, n_layers)
+                if is_main and n_grpo_steps == 0 and len(all_sids_list) == 0:
+                    log(is_main, f"  [debug] beam shape={beams.shape} cands={cands.size(0)}")
                 all_sids_list.append(cands)
                 group_offsets_list.append(group_offsets_list[-1] + cands.size(0))
 
@@ -999,7 +1001,11 @@ def train_grpo(
         if rl_data_ratio > 0.0 and pool_size > 0 and _random.random() < rl_data_ratio:
             sampled = [context_pool[_random.randrange(pool_size)]
                        for _ in range(grpo_batch_size)]
+            if is_main:
+                log(is_main, f"  [debug] GRPO triggered at step {step+1}")
             grpo_loss_val, diag, reward_metrics = _grpo_step(sampled, weight=grpo_weight)
+            if is_main:
+                log(is_main, f"  [debug] GRPO done: loss={grpo_loss_val.item():.4f}, diag={bool(diag)}, n_cands={sum(group_offsets_list[1:]) if 'group_offsets_list' in dir() else 'N/A'}")
 
         _allreduce_grads()
 
