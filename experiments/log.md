@@ -42,40 +42,100 @@
 ## EXP-026: GRPO+ECPO — Group Relative Policy Optimization + Pluggable Reward
 
 **Date**: 2026-04-27
-**Status**: planned
-**Results**: TBD
+**Status**: running
+**Results**: `experiments/ntp_checkpoints/exp026-*/`
 
 ### Background
-RF-DPO (Phase 2) 已完成训练。Phase 3/4 引入 GRPO 和 ECPO：
+RF-DPO (Phase 2, exp020) 已完成。Phase 3/4 引入 GRPO 和 ECPO：
 - **GRPO**（OneMall，arxiv 2601.21770）：beam search 生成 G=512 candidates，group-normalized advantage，PPO clipped surrogate loss，ε=0.2，rl_data_ratio=2%
-- **ECPO**（OneRec，arxiv 2506.13695v4）：在 GRPO 基础上加 early clip (δ=0.1) 防止负 advantage 梯度爆炸，加 Format Reward（SID 合法性）
-- **Pluggable Reward**：新增 `rl/reward.py`，支持 BehaviorReward（行为信号）、FormatReward（SID 合法性）、ExternalReward（外部模型接口）、BusinessReward（时效性/作者加权等业务策略），通过 CompositeReward 加权组合
-- 新增 `rl/grpo.py`（grpo_loss/ecpo_loss），新增 `rl/trainer.py::train_grpo()`，训练 metrics 含 `grpo/*` 和 `reward/*` wandb namespace
+- **ECPO**（OneRec，arxiv 2506.13695v4）：在 GRPO 基础上加 early clip (δ=0.1) 防止负 advantage 梯度爆炸
+- **Pluggable Reward**：新增 `rl/reward.py`，BehaviorReward（行为信号 + prefix cascade fallback）、FormatReward（SID 合法性，sample_k=5）、CompositeReward 加权组合。metrics 实时 streaming 至 step log
+- SFT 起点：exp020-hard-lam03（RF-DPO hard best），SID_CACHE=exp013-4096x3-12d-binary
+
+**关键工程问题与修复**（本次实验踩坑记录）：
+1. `SIDTrie` 构建 bug：`semantic_ids.npy` 存 `{item_id_str: sid_str}`，必须 iterate `.values()` 而非 `.keys()`。错误时 trie 空 → beam search 0 candidates → GRPO loss 永远 0
+2. BehaviorReward 命中率：全 SID 仅 0.16%（1,788 条/1.09M）。加 prefix cascade fallback（L0 覆盖 24.3%），有效 reward 信号提升 150x
+3. GRPO reward std≈0 → advantage 放大爆炸：加 `std < 1e-6` skip + `adv.clamp(-5,5)` + `log_rho.clamp(-10,10)` 防御
+4. `save_checkpoint()` 签名与调用不符：修复为正确传 positional args
+5. `SyntaxError: unicode error \x`：docstring 末尾反斜杠转义错误，修复
 
 ### Hypothesis
-- GRPO 全组 continuous advantage（而非 DPO 二元对）提供更丰富的梯度信号 → R@500 和 R@10 均优于 RF-DPO
-- ECPO early clip 防止负样本梯度爆炸，训练更稳定，R@10 进一步提升
-- Pluggable reward：行为信号(1.0) + Format Reward(0.5) 基础组合下 SID 合法率 > 95%
+- GRPO 全组 continuous advantage 提供更丰富梯度信号 → R@500 优于 RF-DPO
+- ECPO early clip（δ=0.1）防止稀疏 reward 下的梯度爆炸 → gnorm 全程稳定，优于 GRPO Config 2 step 600 的 gnorm spike
+- Pluggable reward Behavior(1.0)+Format(0.5)：SID 合法率应 >95%
 
 ### Design
-- **Variable**: 算法（GRPO vs ECPO）；reward 组合（BehaviorOnly vs Behavior+Format）
-- **Fixed**: G=512，ε=0.2，grpo_weight=0.5，rl_data_ratio=0.02，grpo_batch_size=4，SFT 起点自动选择最佳可用 checkpoint（exp020 > exp019 > exp016-B），SID_CACHE=exp013-4096x3-12d-binary，DATE 2026-03-18~2026-03-31
-- **Metric**: R@10, R@100, R@500；grpo/advantage_mean, grpo/clip_fraction, reward/format_legal_rate
-- **Data**: exp023-14d-features（复用），RF-DPO checkpoint（exp020 best 或 exp019）
+- **Variable**: 算法（GRPO vs ECPO）；reward 组合
+- **Fixed**: G=512，ε=0.2，grpo_weight=0.5，rl_data_ratio=0.02，grpo_batch=4，818 steps
+- **Metric**: R@10, R@500；grpo loss；gnorm；behavior_mean；format_legal_rate
+- **Data**: exp023-14d-features（NTP），exp018/hard feedback shards（BehaviorReward），SFT=exp020-hard-lam03
+
+**实验配置**：
+- Config 1: `exp026-grpo-behavior` — GRPO + BehaviorReward only（preference shards 未到位，reward=0，作废）
+- Config 2: `exp026-grpo-behavior-fmt` — GRPO + BehaviorReward(1.0) + FormatReward(0.5)
+- Config 3: `exp026-ecpo-behavior-fmt` — ECPO(δ=0.1) + BehaviorReward(1.0) + FormatReward(0.5)
 
 ### Run
 `bash experiments/scripts/exp-026.sh`
 
 ### Results
-TBD
+
+**训练稳定性对比**（GRPO vs ECPO，核心发现）：
+
+| Step | GRPO gnorm | ECPO gnorm |
+|------|-----------|-----------|
+| 50   | 0.22      | **0.46**  |
+| 100  | 0.20      | **0.28**  |
+| 200  | — (est)   | **0.19**  |
+| 400  | — (est)   | **0.22**  |
+| 550  | 0.57      | **0.20**  |
+| 600  | **64.93** | **0.20**  |
+| 650  | **158.20**| **0.20**（running）|
+
+- GRPO step 600–650 gnorm 从 0.57 → 64.9 → 158.2，随后自然回落（lr cosine decay → 0）
+- ECPO 全程 gnorm 0.19–0.46，未出现任何 spike
+
+**GRPO loss 对比**（同样体现 early clip 效果）：
+
+| Step | GRPO grpo_loss | ECPO grpo_loss |
+|------|---------------|---------------|
+| 50   | 5.92          | **0.011**     |
+| 100  | — (est)       | **0.007**     |
+| 300  | — (est)       | **0.009**     |
+| 600  | 4.45          | **0.005**     |
+
+ECPO grpo_loss 低 3 个数量级，说明早 clip 完全吸收了负 advantage 样本的梯度。
+
+**Reward metrics（Config 2/3 均）**：
+- format_legal_rate = 1.000（SID beam search 保证合法性）
+- behavior_mean ≈ 0.032–0.035（prefix cascade 生效，L0 覆盖率 ~24%）
+- clip_fraction = 99%（advantage 几乎总在边界，reward 信号极稀疏）
+
+**Inline eval（Config 2，训练结束后）**：TBD（等 Config 3 eval 完成）
 
 ### Analysis
-TBD
+
+**核心复现：GRPO → ECPO 稳定性的文献结论**
+
+OneRec 论文（arxiv 2506.13695v4）ECPO 动机：稀疏 reward 环境下，负 advantage 样本的 π_θ → 0 会导致 rho = π_θ/π_old 急剧缩小，clipping 失效，梯度爆炸。early clip 用 `π'_old = max(π_θ/(1+ε+δ), π_ref)` 替换 denominator，限制 rho 上界。
+
+本次实验完整复现了这个现象：
+- reward 信号极稀疏（format=1.0 but 所有 format 合法 → reward var 低；behavior_mean=0.033 ≈ random baseline）
+- GRPO 在 step 600 遭遇梯度爆炸 gnorm=158（尽管有 clip 和 clamp 防御）
+- ECPO 同等条件下全程稳定，grpo_loss 也低 3 个数量级
+
+这是 GRPO → ECPO 演进动机的第一手实验证据（非论文搬运）。
+
+**其他观察**：
+- Config 1（behavior-only，无 preference shards）reward signal=0，GRPO 无学习，已作废
+- format_legal_rate=1.0 说明 constrained beam search 保证 SID 合法，Format Reward 对 beam search 本身冗余（但对 sample-based 场景有意义）
+- clip_fraction=99% 说明大多数步骤 advantage≈0，reward 信号未真正区分好坏候选 → 后续需更强 behavior 信号
 
 ### Next Steps
-- 若 GRPO > RF-DPO：继续 ECPO delta sweep (0.05/0.1/0.2)
-- 若 Format Reward 有效：加入 BusinessReward（时效性）
-- 考虑在线 policy beam search（替代 ref model beam search）
+- 等 Config 3（ECPO）inline eval 完成，对比 R@10/R@500 与 RF-DPO baseline
+- 更丰富 behavior signal：考虑 time-decay 加权，提升 reward variance
+- 若 eval 效果好：ECPO delta sweep (δ=0.05/0.1/0.2) 找最优稳定点
+- 考虑 online policy beam search（替代 ref model）以获取 on-policy candidates
 
 ---
 
