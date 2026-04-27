@@ -45,35 +45,35 @@
     "sft_checkpoint": "experiments/ntp_checkpoints/exp020-hard-lam03"
   },
   "eval": {
-    "ppl": 323.1657,
+    "ppl": 325.0711,
     "layer_ppl": [
-      1153.487,
-      289.341,
-      101.8845
+      1176.3706,
+      288.8784,
+      101.8499
     ],
-    "avg_loss": 5.778165,
+    "avg_loss": 5.784044,
     "depth_hit@10": [
-      0.0578,
-      0.0273,
-      0.0247
+      0.0585,
+      0.0279,
+      0.026
     ],
     "depth_hit@10_indep": [
-      0.0576,
-      0.2879,
-      0.4706
+      0.0583,
+      0.2866,
+      0.4697
     ],
     "depth_acc_beam": [
       0.003,
       0.001,
       0.001
     ],
-    "target_sid_found_rate": 0.164,
+    "target_sid_found_rate": 0.161,
     "n_eval_positions": 148078,
     "n_eval_items": 49166,
     "n_recall_samples": 1000,
-    "item_recall@10": 0.009,
-    "item_recall@50": 0.025,
+    "item_recall@10": 0.008,
+    "item_recall@50": 0.026,
     "item_recall@100": 0.056,
-    "item_recall@500": 0.164
+    "item_recall@500": 0.161
   }
 }
