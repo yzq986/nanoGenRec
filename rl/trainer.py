@@ -890,21 +890,46 @@ def train_grpo(
                 offset += numel
 
     # ── Context pool padding helper ──
-    def _pad_contexts(ctx_list):
-        """Pad a list of token lists into a (B, T_max) tensor and return lengths."""
-        lengths = torch.tensor([len(c) for c in ctx_list], dtype=torch.long)
+    def _pad_contexts(ctx_entries):
+        """Pad a list of (tokens, time_gaps, action_levels) tuples.
+
+        Returns:
+            padded:  (B, T_max) token tensor
+            lengths: (B,) actual lengths
+            tg_pad:  (B, T_max) or None
+            al_pad:  (B, T_max) or None
+        """
+        token_lists = [e[0] for e in ctx_entries]
+        tg_lists    = [e[1] for e in ctx_entries]
+        al_lists    = [e[2] for e in ctx_entries]
+        lengths = torch.tensor([len(t) for t in token_lists], dtype=torch.long)
         T = int(lengths.max().item())
-        padded = torch.zeros(len(ctx_list), T, dtype=torch.long)
-        for i, c in enumerate(ctx_list):
-            padded[i, :len(c)] = torch.tensor(c, dtype=torch.long)
-        return padded.to(device), lengths.to(device)
+        B = len(ctx_entries)
+        padded = torch.zeros(B, T, dtype=torch.long)
+        for i, t in enumerate(token_lists):
+            padded[i, :len(t)] = torch.tensor(t, dtype=torch.long)
+        has_tg = tg_lists[0] is not None
+        has_al = al_lists[0] is not None
+        tg_pad = None
+        al_pad = None
+        if has_tg:
+            tg_pad = torch.zeros(B, T, dtype=torch.long)
+            for i, tg in enumerate(tg_lists):
+                tg_pad[i, :len(tg)] = torch.tensor(tg, dtype=torch.long)
+        if has_al:
+            al_pad = torch.zeros(B, T, dtype=torch.long)
+            for i, al in enumerate(al_lists):
+                al_pad[i, :len(al)] = torch.tensor(al, dtype=torch.long)
+        return (padded.to(device), lengths.to(device),
+                tg_pad.to(device) if tg_pad is not None else None,
+                al_pad.to(device) if al_pad is not None else None)
 
     # ── GRPO step helper ──
     def _grpo_step(sampled_contexts, weight=1.0):
         """Generate candidates, score rewards, compute GRPO/ECPO loss and backward.
 
         Args:
-            sampled_contexts: list of token-lists (CPU), length == grpo_batch_size
+            sampled_contexts: list of (tokens, time_gaps, action_levels) tuples (CPU)
             weight: loss weight (== grpo_weight)
 
         Returns:
@@ -920,12 +945,20 @@ def train_grpo(
             beam_model = raw_policy if on_policy_beam else ref_model
             if on_policy_beam:
                 beam_model.eval()  # temporarily switch policy to eval for beam search
-            for ctx_tokens in sampled_contexts:
+            for ctx_tokens, ctx_tg, ctx_al in sampled_contexts:
                 ctx_t = torch.tensor(ctx_tokens, dtype=torch.long,
                                      device=device).unsqueeze(0)  # (1, T)
+                tg_t = (torch.tensor(ctx_tg, dtype=torch.long, device=device).unsqueeze(0)
+                        if ctx_tg is not None else None)
+                al_t = (torch.tensor(ctx_al, dtype=torch.long, device=device).unsqueeze(0)
+                        if ctx_al is not None else None)
+                # carry-forward: gen_action_level = last context item's action_level
+                gen_al = int(ctx_al[-1]) if ctx_al is not None else 0
                 with torch.no_grad():
                     beams, _scores, _ = constrained_beam_search(
-                        beam_model, ctx_t, sid_trie, beam_size=group_size)
+                        beam_model, ctx_t, sid_trie, beam_size=group_size,
+                        ctx_time_gaps=tg_t, ctx_action_levels=al_t,
+                        gen_time_gap=0, gen_action_level=gen_al)
                 # beams: (1, actual_beams, n_layers)
                 cands = beams[0]   # (actual_beams, n_layers)
                 if is_main and n_grpo_steps == 0 and len(all_sids_list) == 0:
@@ -941,9 +974,18 @@ def train_grpo(
 
             # 2. Expand contexts to match candidate count
             counts = group_offsets_t[1:] - group_offsets_t[:-1]   # (B,)
-            ctx_padded, ctx_lengths = _pad_contexts(sampled_contexts)
+            ctx_padded, ctx_lengths, tg_padded, al_padded = _pad_contexts(sampled_contexts)
             ctx_exp = torch.repeat_interleave(ctx_padded, counts, dim=0)
             len_exp = torch.repeat_interleave(ctx_lengths, counts, dim=0)
+            tg_exp  = torch.repeat_interleave(tg_padded, counts, dim=0) if tg_padded is not None else None
+            al_exp  = torch.repeat_interleave(al_padded, counts, dim=0) if al_padded is not None else None
+            # carry-forward gen_action_level per context (last token in context)
+            gen_al_per_ctx = None
+            if al_padded is not None:
+                last_al = torch.stack([
+                    al_padded[i, ctx_lengths[i] - 1] for i in range(len(sampled_contexts))
+                ])  # (B,)
+                gen_al_per_ctx = torch.repeat_interleave(last_al, counts, dim=0)  # (N,)
 
             # 3. Rewards (detached — no gradient through reward fn)
             with torch.no_grad():
@@ -953,12 +995,20 @@ def train_grpo(
             with torch.no_grad():
                 ref_lp = compute_sid_logprobs_batch(
                     ref_model, ctx_exp, len_exp, all_sids_t, n_layers,
-                    max_chunk=max_chunk)
+                    max_chunk=max_chunk,
+                    ctx_time_gaps=tg_exp, ctx_action_levels=al_exp,
+                    gen_time_gap=0, gen_action_level=0)
 
             # 5. Policy log-probs (with grad)
+            # gen_action_level per-sample carry-forward: passed as scalar=0 when no features
+            # (compute_sid_logprobs_batch accepts scalar gen_action_level only; for per-sample
+            # carry-forward we fall back to 0 since the SID positions use a single gen_al
+            # broadcast; the main signal is in ctx_action_levels which vary per token)
             policy_lp = compute_sid_logprobs_batch(
                 raw_policy, ctx_exp, len_exp, all_sids_t, n_layers,
-                max_chunk=max_chunk)
+                max_chunk=max_chunk,
+                ctx_time_gaps=tg_exp, ctx_action_levels=al_exp,
+                gen_time_gap=0, gen_action_level=0)
 
             # 6. Loss
             if delta > 0.0:
@@ -997,6 +1047,7 @@ def train_grpo(
                 reward_metrics = reward_fn.metrics()
 
             del all_sids_t, ctx_padded, ctx_lengths, ctx_exp, len_exp
+            del tg_padded, al_padded, tg_exp, al_exp, gen_al_per_ctx
             del policy_lp, ref_lp, rewards
 
         return loss_val, diag, reward_metrics
@@ -1965,15 +2016,26 @@ def grpo_main():
         log(is_main, f"  NTP shard: {len(tokens_list):,} seqs (rank {local_rank})")
 
     # ── Build context pool (eval portion of the shard) ──
+    # Each entry: (tokens_list, time_gaps_list_or_None, action_levels_list_or_None)
     context_pool = []
-    for tokens, split_pos in zip(tokens_list, split_pos_list):
-        # Use first eval item's context as a pool entry
+    for i, (tokens, split_pos) in enumerate(zip(tokens_list, split_pos_list)):
         n_sid = n_layers
         split_item_idx = split_pos // n_sid
         if split_item_idx >= 1:
-            ctx = tokens[:split_item_idx * n_sid]
+            ctx_len = split_item_idx * n_sid
+            ctx = tokens[:ctx_len]
             if len(ctx) >= n_sid:
-                context_pool.append(list(ctx[-510:]))  # truncate to max_ctx
+                start = max(0, len(ctx) - 510)
+                ctx_tokens = list(ctx[start:])
+                ctx_tg = None
+                ctx_al = None
+                if time_gaps_list is not None:
+                    tg_seq = time_gaps_list[i][:ctx_len]
+                    ctx_tg = list(tg_seq[start:])
+                if action_levels_list is not None:
+                    al_seq = action_levels_list[i][:ctx_len]
+                    ctx_al = list(al_seq[start:])
+                context_pool.append((ctx_tokens, ctx_tg, ctx_al))
     log(is_main, f"  Context pool: {len(context_pool):,} contexts")
 
     # ── Build SIDTrie ──

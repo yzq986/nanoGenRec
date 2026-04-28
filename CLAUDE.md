@@ -93,6 +93,54 @@ Three remotes are configured:
 - 每次新实验 checkpoint 跑完，必须用上述命令补全量 eval，再更新 experiments/log.md 结论。
 - `train_meta.json` 里的 eval keys 是 `item_recall@10` / `item_recall@500`（带 `@`，不是 `_`）。
 
+## Side Features 注入架构
+
+模型支持两类 side features：`time_gap`（时间间隔 bucket）和 `action_level`（行为级别）。
+**所有路径（训练和推理）必须通过同一个入口注入特征**，否则会产生 train-infer 不一致。
+
+### 唯一入口：`model.embed_with_features`
+
+```python
+# ntp/model.py
+def embed_with_features(self, tokens, positions, time_gaps=None, action_levels=None):
+    """Single source of truth for input embedding + side-feature injection."""
+    x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
+    if time_gaps is not None and hasattr(self, 'time_gap_emb'):
+        x = x + self.time_gap_emb(time_gaps)
+    if action_levels is not None and hasattr(self, 'action_emb'):
+        x = x + self.action_emb(action_levels)
+    return x
+```
+
+**所有调用方必须使用此方法，禁止手动拼 `_embed_tokens + time_gap_emb`**：
+
+| 路径 | 文件 | 调用方式 |
+|------|------|---------|
+| NTP 训练 | `ntp/model.py:_forward_packed` | `model.embed_with_features(tokens, positions, tg, al)` |
+| KV-cached 推理 | `ntp/model.py:forward_cached` | `model.embed_with_features(tokens, positions, tg, al)` (cold start) |
+| DPO/GRPO log-prob 计算 | `rl/dpo.py:compute_sid_logprobs` | `model.embed_with_features(full_input, positions, tg, al)` |
+| Beam search | `ntp/model.py:constrained_beam_search` | 调用 `forward_cached`，透传 `ctx_time_gaps/ctx_action_levels` |
+
+### 新增 Side Feature 的标准步骤
+
+1. 在 `NTPModel.__init__` 里加 `nn.Embedding`（条件创建，不破坏无特征模型）
+2. 在 `embed_with_features` 里加一行 `if xxx is not None and hasattr(self, 'xxx_emb')`
+3. 在 `_forward_packed` 的调用处补参数（NTP 训练路径）
+4. 在 `forward_cached` 的调用处补参数（推理路径）
+5. 在 `compute_sid_logprobs` 的调用处补参数（DPO/GRPO 路径）
+6. 在 `rl/trainer.py` 的 `context_pool` 存储结构里加字段，在 `_grpo_step` 里传递
+
+**不需要改 `_embed_tokens`、`_transformer_forward`、或任何下游 loss 函数。**
+
+### Context Pool 结构
+
+```python
+# rl/trainer.py — context_pool entry
+(ctx_tokens: List[int], ctx_time_gaps: List[int]|None, ctx_action_levels: List[int]|None)
+```
+
+`_grpo_step` 对每个 context 做 carry-forward：`gen_action_level = ctx_al[-1]`（最后一个 context token 的 action_level），`gen_time_gap = 0`（目标 item 时间间隔未知时默认 0）。
+
 ## GRPO/ECPO 训练踩坑记录（EXP-026）
 
 - **SIDTrie 构建**：`semantic_ids.npy` 存 `{item_id_str: sid_str}`，必须 iterate `.values()` 构建 trie，iterate `.keys()` 只得到 item id 字符串，trie 为空，beam search 返回 0 candidates，GRPO loss 永远 0。

@@ -81,10 +81,14 @@ def _freeze_moe_bias(model):
 
 def compute_sid_logprobs(
     model,
-    context_tokens: Tensor,   # (B, T_ctx) right-padded
-    context_lengths: Tensor,  # (B,) actual context lengths
-    sid_tokens: Tensor,       # (B, n_layers)
+    context_tokens: Tensor,        # (B, T_ctx) right-padded
+    context_lengths: Tensor,       # (B,) actual context lengths
+    sid_tokens: Tensor,            # (B, n_layers)
     n_layers: int,
+    ctx_time_gaps: Tensor = None,  # (B, T_ctx) optional side features
+    ctx_action_levels: Tensor = None,
+    gen_time_gap: int = 0,         # scalar for generated SID tokens
+    gen_action_level: int = 0,
 ) -> Tensor:
     """Compute log P(sid | context) for each sample in a single forward pass.
 
@@ -92,37 +96,40 @@ def compute_sid_logprobs(
     runs one Transformer forward, and gathers log-probs at the correct
     positions using per-sample indexing.
 
+    Uses model.embed_with_features as the single source of truth for
+    embedding + side-feature injection, so any new side feature added to
+    embed_with_features is automatically active here.
+
     Returns:
         (B,) total log-probability per sample.
     """
     B = context_tokens.size(0)
     device = context_tokens.device
 
-    # Build input: [ctx..., sid_L0, ..., sid_{L-2}]
-    # We drop the last SID token because we only need to predict it, not
-    # condition on it. The context already determines position T-1's
-    # prediction of L0.
     sid_input = sid_tokens[:, :-1]  # (B, n_layers - 1)
     full_input = torch.cat([context_tokens, sid_input], dim=1)  # (B, T_ctx + L - 1)
     T = full_input.size(1)
+    T_ctx = context_tokens.size(1)
 
-    # Forward pass
+    # Build per-token side features: context features + gen scalar repeated for SID positions
+    tg = al = None
+    if ctx_time_gaps is not None:
+        gen_tg = torch.full((B, T - T_ctx), gen_time_gap, dtype=torch.long, device=device)
+        tg = torch.cat([ctx_time_gaps, gen_tg], dim=1)
+    if ctx_action_levels is not None:
+        gen_al = torch.full((B, T - T_ctx), gen_action_level, dtype=torch.long, device=device)
+        al = torch.cat([ctx_action_levels, gen_al], dim=1)
+
     positions = torch.arange(T, device=device).unsqueeze(0)
-    x = model._embed_tokens(full_input) + model._get_pos_emb(positions)
+    x = model.embed_with_features(full_input, positions, tg, al)
     hidden = model._transformer_forward(x)  # (B, T, D)
 
-    # Extract log-probs at the 3 prediction positions.
-    # For sample b, the positions are:
-    #   L0: context_lengths[b] - 1  (last context token predicts L0)
-    #   L1: context_lengths[b]      (sid_L0 predicts L1)
-    #   L2: context_lengths[b] + 1  (sid_L1 predicts L2)
     batch_idx = torch.arange(B, device=device)
     total_logprob = torch.zeros(B, device=device, dtype=hidden.dtype)
-
     for li in range(n_layers):
-        pos = context_lengths - 1 + li  # (B,) per-sample position
-        h = hidden[batch_idx, pos]  # (B, D)
-        logits = model.output_projs[li](h)  # (B, C_li)
+        pos = context_lengths - 1 + li  # (B,)
+        h = hidden[batch_idx, pos]      # (B, D)
+        logits = model.output_projs[li](h)
         lp = F.log_softmax(logits, dim=-1)
         total_logprob = total_logprob + lp.gather(1, sid_tokens[:, li:li + 1]).squeeze(1)
 
@@ -135,18 +142,30 @@ def _compute_chunk_logprobs(
     len_chunk: Tensor,
     sids_chunk: Tensor,
     n_layers: int,
+    tg_chunk: Tensor = None,
+    al_chunk: Tensor = None,
+    gen_time_gap: int = 0,
+    gen_action_level: int = 0,
 ) -> Tensor:
     """Thin wrapper for checkpointing — must be a plain function, not lambda."""
-    return compute_sid_logprobs(model, ctx_chunk, len_chunk, sids_chunk, n_layers)
+    return compute_sid_logprobs(
+        model, ctx_chunk, len_chunk, sids_chunk, n_layers,
+        ctx_time_gaps=tg_chunk, ctx_action_levels=al_chunk,
+        gen_time_gap=gen_time_gap, gen_action_level=gen_action_level,
+    )
 
 
 def compute_sid_logprobs_batch(
     model,
-    context_tokens: Tensor,   # (N, T_ctx) right-padded, pre-expanded
-    context_lengths: Tensor,  # (N,) actual context lengths
-    sid_tokens: Tensor,       # (N, n_layers) flat candidates
+    context_tokens: Tensor,        # (N, T_ctx) right-padded, pre-expanded
+    context_lengths: Tensor,       # (N,) actual context lengths
+    sid_tokens: Tensor,            # (N, n_layers) flat candidates
     n_layers: int,
     max_chunk: int = 64,
+    ctx_time_gaps: Tensor = None,  # (N, T_ctx) optional, pre-expanded
+    ctx_action_levels: Tensor = None,
+    gen_time_gap: int = 0,
+    gen_action_level: int = 0,
 ) -> Tensor:
     """Compute log-probs for N flat SID candidates (packed, no padding).
 
@@ -172,14 +191,20 @@ def compute_sid_logprobs_batch(
     """
     N = sid_tokens.size(0)
     use_ckpt = torch.is_grad_enabled() and (N > max_chunk)
+    has_features = ctx_time_gaps is not None or ctx_action_levels is not None
 
     if N <= max_chunk:
         return compute_sid_logprobs(
-            model, context_tokens, context_lengths, sid_tokens, n_layers)
+            model, context_tokens, context_lengths, sid_tokens, n_layers,
+            ctx_time_gaps=ctx_time_gaps, ctx_action_levels=ctx_action_levels,
+            gen_time_gap=gen_time_gap, gen_action_level=gen_action_level,
+        )
 
     chunks = []
     for start in range(0, N, max_chunk):
         end = min(start + max_chunk, N)
+        tg_chunk = ctx_time_gaps[start:end] if has_features and ctx_time_gaps is not None else None
+        al_chunk = ctx_action_levels[start:end] if has_features and ctx_action_levels is not None else None
         if use_ckpt:
             chunk_lp = torch_checkpoint(
                 _compute_chunk_logprobs,
@@ -188,6 +213,10 @@ def compute_sid_logprobs_batch(
                 context_lengths[start:end],
                 sid_tokens[start:end],
                 n_layers,
+                tg_chunk,
+                al_chunk,
+                gen_time_gap,
+                gen_action_level,
                 use_reentrant=False,
             )
         else:
@@ -197,6 +226,10 @@ def compute_sid_logprobs_batch(
                 context_lengths[start:end],
                 sid_tokens[start:end],
                 n_layers,
+                ctx_time_gaps=tg_chunk,
+                ctx_action_levels=al_chunk,
+                gen_time_gap=gen_time_gap,
+                gen_action_level=gen_action_level,
             )
         chunks.append(chunk_lp)
     return torch.cat(chunks, dim=0)

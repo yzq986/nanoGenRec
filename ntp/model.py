@@ -660,6 +660,27 @@ class NTPModel(nn.Module):
         else:
             return self.pos_emb(positions)
 
+    def embed_with_features(
+        self,
+        tokens: torch.Tensor,        # (B, T)
+        positions: torch.Tensor,     # (B, T) or (1, T)
+        time_gaps: torch.Tensor = None,    # (B, T) optional
+        action_levels: torch.Tensor = None,  # (B, T) optional
+    ) -> torch.Tensor:
+        """Single source of truth for input embedding + side features injection.
+
+        All training (forward) and inference (forward_cached, compute_sid_logprobs)
+        paths must call this instead of combining _embed_tokens + _get_pos_emb +
+        feature embeddings manually.  Adding a new side feature means editing
+        exactly this one function.
+        """
+        x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
+        if time_gaps is not None and hasattr(self, 'time_gap_emb'):
+            x = x + self.time_gap_emb(time_gaps)
+        if action_levels is not None and hasattr(self, 'action_emb'):
+            x = x + self.action_emb(action_levels)
+        return x
+
     def _transformer_forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run through all transformer layers + final norm."""
         for layer in self.layers:
@@ -724,19 +745,19 @@ class NTPModel(nn.Module):
             T = tokens.size(1)
             device = tokens.device
             positions = torch.arange(T, device=device).unsqueeze(0)
-            x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
-            if ctx_time_gaps is not None and hasattr(self, 'time_gap_emb'):
+            # Pad ctx features to full sequence length (zeros for generated positions)
+            tg = al = None
+            if ctx_time_gaps is not None:
                 T_ctx = ctx_time_gaps.size(1)
                 pad = torch.zeros(ctx_time_gaps.size(0), T - T_ctx,
                                   dtype=torch.long, device=device)
                 tg = torch.cat([ctx_time_gaps, pad], dim=1)
-                x = x + self.time_gap_emb(tg)
-            if ctx_action_levels is not None and hasattr(self, 'action_emb'):
+            if ctx_action_levels is not None:
                 T_ctx = ctx_action_levels.size(1)
                 pad = torch.zeros(ctx_action_levels.size(0), T - T_ctx,
                                   dtype=torch.long, device=device)
                 al = torch.cat([ctx_action_levels, pad], dim=1)
-                x = x + self.action_emb(al)
+            x = self.embed_with_features(tokens, positions, tg, al)
             out, kv_caches = self._transformer_forward_cached(x)
         else:
             # Incremental — only new tokens
@@ -876,11 +897,7 @@ class NTPModel(nn.Module):
         L = self.n_sid_layers
 
         positions = torch.arange(S, device=device).unsqueeze(0)
-        x = self._embed_tokens(input_tokens) + self._get_pos_emb(positions)
-        if time_gaps is not None and hasattr(self, 'time_gap_emb'):
-            x = x + self.time_gap_emb(time_gaps)
-        if action_levels is not None and hasattr(self, 'action_emb'):
-            x = x + self.action_emb(action_levels)
+        x = self.embed_with_features(input_tokens, positions, time_gaps, action_levels)
         hidden = self._transformer_forward(x)  # (B, S, D)
 
         # Flatten for efficient per-layer gather
