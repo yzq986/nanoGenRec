@@ -180,20 +180,26 @@ def embed_with_features(self, tokens, positions, time_gaps=None, action_levels=N
 
 ## 实验排队与 Cron 监控
 
+**标准流程（每次启动实验都必须执行）：**
+
+1. `nohup bash experiments/scripts/exp-NNN.sh > /tmp/expNNN.log 2>&1 &` 启动实验
+2. 立即用 **CronCreate**（`*/3 * * * *`）设置监控任务
+
 **不要用脚本 chain（A 末尾调用 B）来排队实验**，因为前序实验可能已经在后台跑了。
 
-正确做法：用 **CronCreate** 设置每分钟监控任务，在 cron prompt 里写清楚：
-1. 检测完成信号（grep "EXP-NNN complete" log）
-2. 收集结果（读 train_meta.json，更新 experiments/log.md）
-3. 启动下一个实验（nohup bash exp-NNN.sh > /tmp/expNNN.log 2>&1 &）
-4. 告知用户结果
-5. CronDelete 自身
+Cron prompt 标准模板（每次照此写）：
+```
+检查 EXP-NNN 训练进度：
+1. tail -20 /tmp/expNNN.log 查看最新日志
+2. 检查是否出现 "EXP-NNN complete!" 或错误
+3. 如果完成：读取 train_meta.json，更新 experiments/log.md 的 Results/Analysis，
+   git commit + ./push.sh，启动下一个实验（若有排队），CronDelete 本 job，告知用户
+4. 如果出错：告知用户错误内容，CronDelete 本 job
+5. 如果还在训练：报告当前进度（第几步/总步数，ETA，关键指标）并继续等待
+```
 
-示例：
+**有后续实验排队时**，在 cron prompt 第 3 步里加：
 ```
-如果看到 "EXP-028 complete!"：
-1. 收集结果并更新 log.md
-2. nohup bash experiments/scripts/exp-029.sh > /tmp/exp029.log 2>&1 &
-3. 告知用户
-4. CronDelete 本 job
+nohup bash experiments/scripts/exp-MMM.sh > /tmp/expMMM.log 2>&1 &
 ```
+这样上一个结束后自动启动下一个，无需人工干预。
