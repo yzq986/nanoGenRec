@@ -188,8 +188,8 @@ EXP-039 ECPO
 ## EXP-037: SP-DPO on exp036-full-features (Features 路线第二步)
 
 **Date**: 2026-04-28
-**Status**: running
-**Results**: experiments/ntp_checkpoints/exp037-easy/ (Easy done, Medium in progress)
+**Status**: completed
+**Results**: experiments/ntp_checkpoints/exp037-easy/ + experiments/ntp_checkpoints/exp037-medium/
 
 ### Background
 
@@ -233,15 +233,23 @@ exp036-B (NTP+feat) → EXP-037 SP-DPO → EXP-038 RF-DPO → EXP-039 ECPO
 
 ### Results
 
-Easy stage (2026-04-28):
-- R@10=10.4%, R@500=57.1%, PPL=24.60 (比 SFT 略降，符合预期)
-- Medium stage running (prefix-locked beam generate 中)
+| 阶段 | R@10 | R@50 | R@100 | R@500 | PPL | wall |
+|------|------|------|-------|-------|-----|------|
+| exp036-B (SFT) | 10.9% | — | — | 59.0% | 27.3 | — |
+| Easy | 10.4% | — | — | 57.1% | 24.60 | — |
+| Medium | **11.2%** | 26.6% | 38.2% | **62.1%** | **23.0** | 1246s |
+
+Medium alignment eval: chosen_reward=1.003, rejected_reward=-4.990, reward_margin=5.994, preference_acc=36.0%
 
 ### Analysis
-TBD (Medium 完成后补全)
+
+Medium 阶段 R@500 从 Easy 57.1% 回升至 62.1%，超过 exp036-B SFT (59.0%)，与 exp017 规律一致（Medium 总是比 Easy 好）。R@10 从 Easy 10.4% 微升至 11.2%，与 SFT 基本持平。PPL 降至 23.0（比 SFT 27.3 更好），说明 SP-DPO medium 对 NTP loss 无明显负面影响。
+
+reward_margin=5.99 显著大于 Easy 阶段，preference_acc=36%（注：低于 50% 不代表坏，这是相对"chosen 是目标 item"的绝对标准，beam search 生成的 chosen 本身就是伪标签）。
 
 ### Next Steps
-- Medium checkpoint → EXP-038 RF-DPO（ref=exp037-medium，Joint NTP+DPO λ=0.03，复用 exp018 真实反馈数据）
+- exp037-medium → EXP-038 RF-DPO（ref=exp037-medium，Joint NTP+DPO λ=0.03，复用 exp018 真实反馈数据）
+- 目标：复现 exp020 完整 features 对齐链路，看 RF-DPO 能否突破 R@500=66.2% SOTA
 
 ---
 
