@@ -108,8 +108,7 @@ else
         --model s-tier \
         --use_segment_emb \
         --use_time_gap \
-        --use_action_level \
-        --max_seq_len 512
+        --use_action_level
     T1=$(date +%s)
     TRAIN_MIN_B=$(( (T1 - T0) / 60 ))
     echo "  [${NAME_B}] Training complete  (${TRAIN_MIN_B}min)"
