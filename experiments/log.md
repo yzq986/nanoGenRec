@@ -114,16 +114,18 @@ EXP-028/029 使用 WeightedBehaviorReward 解决了稀疏 reward 问题（100% c
 `bash experiments/scripts/exp-030.sh`
 
 ### Results
-| Config | R@10 | R@500 | PPL | behavior_mean | 备注 |
-|--------|------|-------|-----|---------------|------|
-| exp030-a2po-nll-hepo-w003-r100 (Config A) | 12.5% | 67.0% | 14.54 | ~0.580 | A2PO+NLL+HEPO (all-in) |
-| exp030-a2po-only-w003-r100 (Config B) | **13.3%** | **67.7%** | **14.14** | ~0.561 | A2PO only (ablation) |
-| exp029-ecpo-onpolicy-w003-r100 | 13.0% | 67.8% | 14.1 | 0.638 | on-policy baseline |
-| exp020-hard-lam03 (SFT SOTA) | 14.1% | 66.2% | 16.3 | — | SFT baseline |
+| Config | R@10 | R@500 | PPL | behavior_mean | 训练耗时 | 备注 |
+|--------|------|-------|-----|---------------|---------|------|
+| exp030-a2po-nll-hepo-w003-r100 (Config A) | 12.5% | 67.0% | 14.54 | ~0.580 | 81min | A2PO+NLL+HEPO (all-in) |
+| exp030-a2po-only-w003-r100 (Config B) | **13.3%** | **67.7%** | **14.14** | ~0.561 | 81min | A2PO only (ablation) |
+| exp029-ecpo-onpolicy-w003-r100 | 13.0% | 67.8% | 14.1 | 0.638 | 80min | on-policy baseline |
+| exp020-hard-lam03 (SFT SOTA) | 14.1% | 66.2% | 16.3 | — | — | SFT baseline |
 
 全量 eval（n_recall=1000）：
 - **Config A**: item_recall@10=0.125，item_recall@50=0.324，item_recall@100=0.425，item_recall@500=0.670
 - **Config B**: item_recall@10=0.133，item_recall@50=0.327，item_recall@100=0.418，item_recall@500=0.677
+
+**耗时参考**（4×A100 40GB，409 steps，G=512）：训练 ~81min/config，全量 eval ~25min/config，合计 ~105min/config。
 
 ### Analysis
 - **Config B (A2PO only) vs EXP-029**：R@500 67.7% vs 67.8%，基本持平（-0.1pp），未见显著提升
@@ -162,14 +164,16 @@ On-policy beam candidates 与 policy 分布对齐 → importance ratio 更接近
 `bash experiments/scripts/exp-029.sh`
 
 ### Results
-| Config | R@10 | R@500 | PPL | clip率 | behavior_mean | 备注 |
-|--------|------|-------|-----|--------|---------------|------|
-| exp029-ecpo-onpolicy-w003-r100 | **13.0%** | **67.8%** | 14.1 | 92% | 0.638 | on-policy beam |
-| exp028-ecpo-weighted-w003-r100 | 0.7% | 2.0% | 3791 | 99% | 0.115 | off-policy baseline |
-| exp020-hard-lam03 (SOTA) | 14.1% | 66.2% | 16.3 | — | — | SFT baseline |
+| Config | R@10 | R@500 | PPL | clip率 | behavior_mean | 训练耗时 | 备注 |
+|--------|------|-------|-----|--------|---------------|---------|------|
+| exp029-ecpo-onpolicy-w003-r100 | **13.0%** | **67.8%** | 14.1 | 92% | 0.638 | 80min | on-policy beam |
+| exp028-ecpo-weighted-w003-r100 | 0.7% | 2.0% | 3791 | 99% | 0.115 | 155min | off-policy baseline |
+| exp020-hard-lam03 (SOTA) | 14.1% | 66.2% | 16.3 | — | — | — | SFT baseline |
 
 全量 eval（n_recall=1000）：item_recall@10=0.130，item_recall@50=0.332，item_recall@100=0.422，item_recall@500=0.678。
 PPL 14.1（比 SFT baseline 16.3 更低），R@500=67.8% **超过当前 SOTA 66.2%**（+1.6pp）。
+
+**耗时参考**（4×A100 40GB）：exp029 训练 80min（409 steps），exp028 训练 155min（818 steps，因 rl_data_ratio=1.0 且 steps 翻倍）。全量 eval ~25min。
 
 ### Analysis
 On-policy beam search 的核心效果验证：
@@ -214,13 +218,15 @@ EXP-027 的 reward signal 仍然稀疏（97.5% SID reward=0）：BehaviorReward 
 `bash experiments/scripts/exp-028.sh`
 
 ### Results
-| Config | R@10 | R@500 | PPL | 备注 |
-|--------|------|-------|-----|------|
-| exp028-ecpo-weighted-w003-r100 | 0.7% | 2.0% | 3791 | **严重退化** |
-| exp020-hard-lam03 (baseline) | 14.1% | 66.2% | 16.3 | SFT baseline |
+| Config | R@10 | R@500 | PPL | 训练耗时 | 备注 |
+|--------|------|-------|-----|---------|------|
+| exp028-ecpo-weighted-w003-r100 | 0.7% | 2.0% | 3791 | 155min | **严重退化** |
+| exp020-hard-lam03 (baseline) | 14.1% | 66.2% | 16.3 | — | SFT baseline |
 
 训练过程稳定（gnorm=0.19，无 spike），behavior_coverage=94.1%（prefix cascade fallback），behavior_mean≈0.115，format_legal_rate=100%。
 但 full eval（n_recall=1000）R@500 从 63.6% 跌至 2.0%，严重退化。
+
+**耗时参考**（4×A100 40GB）：818 steps，训练 155min，全量 eval ~25min。
 
 ### Analysis
 WeightedBehaviorReward 100% 覆盖率的副作用：freshness × quality 连续信号给每个 candidate 都分配了非零 reward，但这些 reward 的绝对量级差异很小（behavior_mean≈0.115，方差低）。group 内 advantage std 仍然接近 0（adv=-0.02, clip=99%），RL 梯度依然无效。
@@ -359,15 +365,18 @@ ECPO grpo_loss 低 3 个数量级，说明早 clip 完全吸收了负 advantage 
 
 **Inline eval（快速版，beam_size=500，250 samples，不可与全量 baseline 直接比）**：
 
-| Config | PPL | R@10 | R@50 | R@100 | R@500 |
-|--------|-----|------|------|-------|-------|
-| Config 2 (GRPO) | 323 | 0.009 | 0.025 | 0.056 | 0.164 |
-| Config 3 (ECPO) | **270** | **0.011** | **0.028** | **0.064** | **0.189** |
+| Config | PPL | R@10 | R@50 | R@100 | R@500 | 训练耗时 |
+|--------|-----|------|------|-------|-------|---------|
+| Config 1 (GRPO, behavior only) | — | — | — | — | — | 21min |
+| Config 2 (GRPO+fmt) | 323 | 0.009 | 0.025 | 0.056 | 0.164 | 21min |
+| Config 3 (ECPO+fmt) | **270** | **0.011** | **0.028** | **0.064** | **0.189** | 22min |
 
 ECPO 在所有指标上全面优于 GRPO（PPL -16%，R@500 +15%）。
 
 **全量 eval（与 baseline 对齐，running）**：`bash experiments/scripts/exp-026-reeval.sh`
 结果 TBD（与 exp020-hard-lam03 baseline R@500≈60% 对比）
+
+**耗时参考**（4×A100 40GB）：818 steps，每个 config 训练 ~21min（数据集较小，49K items vs 后续 26K）。
 
 ### Analysis
 

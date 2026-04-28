@@ -94,6 +94,7 @@ else
     echo ">>> Config A: ${NAME_A}"
     echo "    exp025 (features) + ECPO + on-policy beam + rank_norm + A2PO + NLL + HEPO"
 
+    T0_A=$(date +%s)
     torchrun --nproc_per_node="${N_GPUS}" run.py grpo-train \
         --sft_checkpoint "${SFT_FEATURES}" \
         --preprocessed_dir "${NTP_DATA}" \
@@ -114,15 +115,20 @@ else
         --a2po --a2po_alpha 1.0 \
         --nll_reg 0.01 \
         --hepo_scales "0.1,0.5"
-
-    echo "  [${NAME_A}] Training complete"
+    T1_A=$(date +%s)
+    TRAIN_MIN_A=$(( (T1_A - T0_A) / 60 ))
+    echo "  [${NAME_A}] Training complete  (${TRAIN_MIN_A}min)"
 
     echo "  [${NAME_A}] Running full eval (n_recall=1000)..."
+    T2_A=$(date +%s)
     torchrun --nproc_per_node="${N_GPUS}" run.py eval-ntp \
         --checkpoint "${OUTPUT_A}" \
         --n_recall 1000
-
-    echo "  [${NAME_A}] Eval complete"
+    T3_A=$(date +%s)
+    EVAL_MIN_A=$(( (T3_A - T2_A) / 60 ))
+    TOTAL_MIN_A=$(( (T3_A - T0_A) / 60 ))
+    echo "  [${NAME_A}] Eval complete  (${EVAL_MIN_A}min)"
+    echo "  [${NAME_A}] Total: train=${TRAIN_MIN_A}min  eval=${EVAL_MIN_A}min  total=${TOTAL_MIN_A}min"
     echo ""
 
     (
@@ -144,6 +150,7 @@ else
     echo "    exp020 (no features) + ECPO + on-policy beam + rank_norm + A2PO + NLL + HEPO"
     echo "    (ablation: same RL stack as A but no features — quantifies features contribution)"
 
+    T0_B=$(date +%s)
     torchrun --nproc_per_node="${N_GPUS}" run.py grpo-train \
         --sft_checkpoint "${SFT_BASELINE}" \
         --preprocessed_dir "${NTP_DATA}" \
@@ -164,15 +171,20 @@ else
         --a2po --a2po_alpha 1.0 \
         --nll_reg 0.01 \
         --hepo_scales "0.1,0.5"
-
-    echo "  [${NAME_B}] Training complete"
+    T1_B=$(date +%s)
+    TRAIN_MIN_B=$(( (T1_B - T0_B) / 60 ))
+    echo "  [${NAME_B}] Training complete  (${TRAIN_MIN_B}min)"
 
     echo "  [${NAME_B}] Running full eval (n_recall=1000)..."
+    T2_B=$(date +%s)
     torchrun --nproc_per_node="${N_GPUS}" run.py eval-ntp \
         --checkpoint "${OUTPUT_B}" \
         --n_recall 1000
-
-    echo "  [${NAME_B}] Eval complete"
+    T3_B=$(date +%s)
+    EVAL_MIN_B=$(( (T3_B - T2_B) / 60 ))
+    TOTAL_MIN_B=$(( (T3_B - T0_B) / 60 ))
+    echo "  [${NAME_B}] Eval complete  (${EVAL_MIN_B}min)"
+    echo "  [${NAME_B}] Total: train=${TRAIN_MIN_B}min  eval=${EVAL_MIN_B}min  total=${TOTAL_MIN_B}min"
     echo ""
 
     (
@@ -200,6 +212,20 @@ done
 echo ""
 echo "  Baseline (exp025-beam-passes): R@10=0.104  R@500=0.636"
 echo "  Target SOTA (exp020-hard-lam03): R@10=0.141  R@500=0.662"
+
+echo ""
+echo ">>> Timing summary:"
+python3 -c "
+import json, os
+for name in ['${NAME_A}', '${NAME_B}']:
+    path = 'experiments/ntp_checkpoints/' + name + '/train_meta.json'
+    if os.path.exists(path):
+        m = json.load(open(path))
+        w = m.get('train', {}).get('wall_time_s', 0)
+        print(f'  {name}: train={int(w)//60}min{int(w)%60}s')
+    else:
+        print(f'  {name}: not found')
+" 2>/dev/null || true
 
 git add experiments/
 git commit -m "EXP-031 complete: features SFT + full RL stack results" || echo "Nothing to commit"
