@@ -259,8 +259,14 @@ def load_date_data(date_path, rank, world_size, cached_ids, load_images: bool = 
         if text_col is None:
             raise ValueError(f"No text column found. Available: {list(df.columns)}")
 
-        has_images = load_images and 'images' in df.columns
-        images_iter = df['images'].values if has_images else [None] * len(df)
+        # image column: 'images' (array) 或 'image' (单 URL string) 或没有
+        image_col = None
+        if load_images:
+            for col in ['images', 'image', 'image_url', 'image_urls']:
+                if col in df.columns:
+                    image_col = col
+                    break
+        images_iter = df[image_col].values if image_col else [None] * len(df)
 
         for cid, text, imgs in zip(df['content_id'].values,
                                    df[text_col].fillna('').values,
@@ -272,11 +278,16 @@ def load_date_data(date_path, rank, world_size, cached_ids, load_images: bool = 
                 my_content_ids.append(cid)
                 my_texts.append(text)
                 if load_images:
-                    # numpy array / list / None → 统一为 list[str]
+                    # 统一为 list[str]: None/空 → []; string → [string]; array → list
                     if imgs is None:
                         my_images.append([])
+                    elif isinstance(imgs, str):
+                        my_images.append([imgs] if imgs else [])
                     else:
-                        my_images.append([u for u in list(imgs) if u])
+                        try:
+                            my_images.append([u for u in list(imgs) if u])
+                        except TypeError:
+                            my_images.append([])
 
     n_new = len(my_content_ids)
     if rank == 0:
