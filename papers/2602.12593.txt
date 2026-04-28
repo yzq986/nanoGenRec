@@ -1,0 +1,931 @@
+RQ-GMM: Residual Quantized Gaussian Mixture Model for
+Multimodal Semantic Discretization in CTR Prediction
+Ziye Tong∗
+Tencent
+Beijing, China
+ziyetong@tencent.com
+Jiahao Liu∗
+Fudan University
+Shanghai, China
+jiahaoliu23@m.fudan.edu.cn
+Weimin Zhang†
+Tencent
+Beijing, China
+weiminzhang@tencent.com
+Hongji Ruan
+Beijing Jiaotong University
+Beijing, China
+23125251@bjtu.edu.cn
+Derick Tang†
+Tencent
+Beijing, China
+dericck@tencent.com
+Zhanpeng Zeng
+Tencent
+Guangzhou, China
+marcuszeng@tencent.com
+Qinsong Zeng
+Tencent
+Guangzhou, China
+qinzzeng@tencent.com
+Peng Zhang
+Fudan University
+Shanghai, China
+zhangpeng_@fudan.edu.cn
+Tun Lu
+Fudan University
+Shanghai, China
+lutun@fudan.edu.cn
+Ning Gu
+Fudan University
+Shanghai, China
+ninggu@fudan.edu.cn
+Abstract
+Multimodal content is crucial for click-through rate (CTR) predic-
+tion. However, directly incorporating continuous embeddings from
+pre-trained models into CTR models yields suboptimal results due
+to misaligned optimization objectives and convergence speed in-
+consistency during joint training. Discretizing embeddings into
+semantic IDs before feeding them into CTR models offers a more ef-
+fective solution, yet existing methods suffer from limited codebook
+utilization, reconstruction accuracy, and semantic discriminabil-
+ity. We propose RQ-GMM (Residual Quantized Gaussian Mixture
+Model), which introduces probabilistic modeling to better capture
+the statistical structure of multimodal embedding spaces. Through
+Gaussian Mixture Models combined with residual quantization, RQ-
+GMM achieves superior codebook utilization and reconstruction
+accuracy. Experiments on public datasets and online A/B tests on
+a large-scale short-video platform serving hundreds of millions of
+users demonstrate substantial improvements: RQ-GMM yields a
+1.502% gain in Advertiser Value over strong baselines. The method
+has been fully deployed, serving daily recommendations for hun-
+dreds of millions of users.
+∗Equal contribution.
+†Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2026 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+CCS Concepts
+• Information systems →Retrieval models and ranking; •
+Computing methodologies →Machine learning.
+Keywords
+click-through rate prediction, multimodal recommendation, resid-
+ual quantization, Gaussian mixture models
+ACM Reference Format:
+Ziye Tong, Jiahao Liu, Weimin Zhang, Hongji Ruan, Derick Tang, Zhanpeng
+Zeng, Qinsong Zeng, Peng Zhang, Tun Lu, and Ning Gu. 2026. RQ-GMM:
+Residual Quantized Gaussian Mixture Model for Multimodal Semantic Dis-
+cretization in CTR Prediction. In Proceedings of Make sure to enter the correct
+conference title from your rights confirmation email (Conference acronym ’XX).
+ACM, New York, NY, USA, 6 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Click-through rate (CTR) prediction is central to modern recom-
+mender systems [6, 12, 18], directly impacting user experience and
+platform revenue [9, 11, 16]. As internet content ecosystems ex-
+pand rapidly, multimodal information (e.g., images, text, audio)
+has become essential for characterizing items [10, 13, 14]. In short-
+video and live-streaming platforms where massive new content
+emerges daily, multimodal content provides rich semantic-level
+representations that significantly enhance recommendation per-
+formance [15, 17]. Two paradigms exist for leveraging multimodal
+information in CTR prediction. The first constructs item indices
+arXiv:2602.12593v1  [cs.IR]  13 Feb 2026
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Ziye Tong, Jiahao Liu et al.
+directly from multimodal features for semantic matching in re-
+trieval [2, 7, 24, 31]. However, this approach introduces high en-
+gineering complexity and limited gains when extended to rank-
+ing—the primary CTR prediction stage. The second paradigm in-
+corporates multimodal features as additional inputs across the rec-
+ommendation pipeline [4, 25, 29], integrating more naturally with
+existing architectures and demonstrating superior practical feasi-
+bility.
+Despite this, directly feeding pre-trained modal embeddings into
+CTR models yields suboptimal results for two fundamental rea-
+sons. First, pre-trained models (e.g., CLIP [23], BERT [3]) optimize
+for universal semantic representations rather than user preference
+modeling, producing embeddings with substantial noise irrelevant
+to recommendations. Second, joint training suffers from a training
+dynamics mismatch: sparse categorical features (e.g., user/item IDs)
+exhibit the “one-epoch phenomenon” [33] with rapid convergence
+due to high-frequency exposure, while extracting preference signals
+from multimodal embeddings requires longer cycles and careful de-
+noising. This convergence disparity degrades overall performance.
+A more effective solution is two-stage optimization [19, 26]: dis-
+cretizing continuous embeddings into semantic IDs, then feeding
+these as categorical features into CTR models. This decouples mul-
+timodal semantic extraction from preference modeling. In stage
+one, discretization performs unsupervised compression and denois-
+ing via clustering, mapping high-dimensional vectors to a discrete
+codebook. In stage two, the CTR model learns interactions between
+semantic IDs and other categorical features, alleviating the dy-
+namics mismatch. Moreover, semantic IDs serve as coarse-grained
+anchors: when jointly provided with continuous embeddings, they
+supply stable cluster-level signals that guide fine-grained learning
+in a coarse-to-fine paradigm.
+However, existing discretization methods face critical limita-
+tions that motivate our work. VQ-VAE [27], which combines vari-
+ational autoencoders with vector quantization, frequently suffers
+from codebook collapse where many codebook vectors remain un-
+derutilized, limiting expressiveness in high-dimensional semantic
+spaces. RQ-VAE [30] introduces multi-level residual quantization to
+partially alleviate utilization issues, but requires careful balancing
+across levels and its hard assignment via Euclidean distance neglects
+distributional properties, yielding suboptimal reconstruction espe-
+cially for boundary samples. RQ-KMeans takes a non-parametric
+approach by directly applying K-means [20] to residuals, which is
+computationally efficient but assumes spherical clusters with equal
+variances—an assumption that fails for complex multimodal distri-
+butions. Its hard assignment disrupts semantic continuity for bound-
+ary samples and cannot model uncertainty, hampering fine-grained
+semantic capture. We propose RQ-GMM (Residual Quantized Gauss-
+ian Mixture Model), introducing probabilistic modeling to better
+capture the multimodal embedding space’s statistical structure. By
+modeling a Gaussian distribution per codebook vector, RQ-GMM
+achieves high utilization and superior reconstruction accuracy. Its
+soft assignment mechanism handles boundary samples more rea-
+sonably than hard clustering, while residual quantization ensures
+fine-grained semantic modeling.
+Comprehensive experiments on public datasets demonstrate RQ-
+GMM’s superiority in reconstruction error, codebook utilization,
+and CTR performance. Critically, online A/B tests on a short-video
+platform serving hundreds of millions of daily users show RQ-GMM
+improves Advertiser Value by 1.502% over RQ-VAE—a substantial
+gain in large-scale systems. RQ-GMM has been fully deployed,
+serving daily recommendations for hundreds of millions of users.
+The paper proceeds as follows: Section 2 presents preliminaries;
+Section 3 details RQ-GMM; Section 4 analyzes experimental results;
+Section 5 concludes with future directions.
+2
+Preliminaries
+2.1
+VQ-VAE
+Vector Quantized Variational AutoEncoder (VQ-VAE) [27] discretizes
+continuous representations via encoder-decoder architecture. Given
+x ∈R𝐷, the encoder produces z𝑒= 𝐸(x) ∈R𝑑, which is quantized
+by nearest codebook lookup:
+z𝑞= 𝑞(z𝑒) = arg min
+c𝑘∈C ∥z𝑒−c𝑘∥2
+2
+(1)
+where C = {c1, . . . , c𝐾} ⊂R𝑑is the codebook. The decoder recon-
+structs ˆx = 𝐷(z𝑞). Training optimizes:
+LVQ-VAE = ∥x −ˆx∥2
+2 + ∥sg[z𝑒] −z𝑞∥2
+2 + 𝛽∥z𝑒−sg[z𝑞]∥2
+2
+(2)
+with reconstruction, codebook, and commitment losses respectively,
+where sg[·] denotes stop-gradient.
+2.2
+RQ-VAE
+Residual Quantized VAE (RQ-VAE) [30] employs multi-level cas-
+caded residual quantization. Given z𝑒= 𝐸(x), it performs 𝐿levels:
+z(𝑙)
+𝑞
+= 𝑞(𝑙) (r(𝑙−1)),
+r(𝑙) = r(𝑙−1) −z(𝑙)
+𝑞
+(3)
+where r(0) = z𝑒and each level uses codebook C(𝑙) = {c(𝑙)
+1 , . . . , c(𝑙)
+𝐾}.
+The final representation is z𝑞= Í𝐿
+𝑙=1 z(𝑙)
+𝑞, with reconstruction ˆx =
+𝐷(z𝑞). Training minimizes:
+LRQ-VAE = ∥x−ˆx∥2
+2+
+𝐿
+∑︁
+𝑙=1
+
+∥sg[r(𝑙−1)] −z(𝑙)
+𝑞∥2
+2 + 𝛽∥r(𝑙−1) −sg[z(𝑙)
+𝑞]∥2
+2
+
+(4)
+2.3
+RQ-KMeans
+Residual Quantized K-Means (RQ-KMeans) [2] implements non-
+parametric residual quantization directly on x ∈R𝐷without encoder-
+decoder. With r(0) = x, K-means clustering [20] is applied at each
+level:
+z(𝑙)
+𝑞
+= arg
+min
+c(𝑙)
+𝑘∈C(𝑙) ∥r(𝑙−1) −c(𝑙)
+𝑘∥2
+2
+(5)
+Codebook updates follow standard K-means:
+c(𝑙)
+𝑘
+=
+1
+|N (𝑙)
+𝑘
+|
+∑︁
+r(𝑙−1) ∈N(𝑙)
+𝑘
+r(𝑙−1)
+(6)
+where N (𝑙)
+𝑘
+is the set of samples assigned to cluster 𝑘at level 𝑙.
+
+
+RQ-GMM: Residual Quantized Gaussian Mixture Model for Multimodal Semantic Discretization in CTR Prediction Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+3
+Methods
+3.1
+RQ-GMM
+We propose Residual Quantized Gaussian Mixture Model (RQ-
+GMM), replacing hard clustering with GMM to better capture the
+statistical structure of multimodal embedding spaces via probabilis-
+tic modeling.
+3.1.1
+Gaussian Mixture Quantization. Given x ∈R𝐷, we initialize
+r(0) = x. At level 𝑙, we model r(𝑙−1) as a mixture of 𝐾Gaussians:
+𝑝(r(𝑙−1)) =
+𝐾
+∑︁
+𝑘=1
+𝜋(𝑙)
+𝑘N (r(𝑙−1) | 𝝁(𝑙)
+𝑘, 𝚺(𝑙)
+𝑘)
+(7)
+where 𝜋(𝑙)
+𝑘
+is the mixing coefficient with Í𝐾
+𝑘=1 𝜋(𝑙)
+𝑘
+= 1, 𝝁(𝑙)
+𝑘
+∈R𝐷
+is the mean, and 𝚺(𝑙)
+𝑘
+∈R𝐷×𝐷is the covariance. We adopt diagonal
+covariance: 𝚺(𝑙)
+𝑘
+= diag(𝜎(𝑙)2
+𝑘,1 , . . . , 𝜎(𝑙)2
+𝑘,𝐷) for efficiency.
+3.1.2
+Soft Assignment and Quantization. GMM performs soft as-
+signment via posterior probabilities:
+𝛾(𝑙)
+𝑘
+= 𝑝(𝑘| r(𝑙−1)) =
+𝜋(𝑙)
+𝑘N (r(𝑙−1) | 𝝁(𝑙)
+𝑘, 𝚺(𝑙)
+𝑘)
+Í𝐾
+𝑗=1 𝜋(𝑙)
+𝑗N (r(𝑙−1) | 𝝁(𝑙)
+𝑗, 𝚺(𝑙)
+𝑗)
+(8)
+During inference, we select the component with highest poste-
+rior:
+𝑘∗= arg
+max
+𝑘∈{1,...,𝐾}𝛾(𝑙)
+𝑘,
+z(𝑙)
+𝑞
+= 𝝁(𝑙)
+𝑘∗
+(9)
+The residual updates as r(𝑙) = r(𝑙−1) −z(𝑙)
+𝑞. After 𝐿levels, the
+final representation is z𝑞= Í𝐿
+𝑙=1 z(𝑙)
+𝑞.
+3.1.3
+Parameter Learning. Parameters are learned via EM algo-
+rithm [1] on {x𝑖}𝑁
+𝑖=1 with r(0)
+𝑖
+= x𝑖, optimizing each level sequen-
+tially. While the E-step uses soft posteriors, residual propagation
+uses hard assignment (r(𝑙)
+𝑖
+= r(𝑙−1)
+𝑖
+−𝝁(𝑙)
+𝑘∗
+𝑖where 𝑘∗
+𝑖= arg max𝑘𝛾(𝑙)
+𝑖,𝑘)
+for consistency with inference.
+E-step: Compute posteriors:
+𝛾(𝑙)
+𝑖,𝑘=
+𝜋(𝑙)
+𝑘N (r(𝑙−1)
+𝑖
+| 𝝁(𝑙)
+𝑘, 𝚺(𝑙)
+𝑘)
+Í𝐾
+𝑗=1 𝜋(𝑙)
+𝑗N (r(𝑙−1)
+𝑖
+| 𝝁(𝑙)
+𝑗, 𝚺(𝑙)
+𝑗)
+(10)
+M-step: Update parameters:
+𝜋(𝑙)
+𝑘
+= 1
+𝑁
+𝑁
+∑︁
+𝑖=1
+𝛾(𝑙)
+𝑖,𝑘,
+𝝁(𝑙)
+𝑘
+=
+Í𝑁
+𝑖=1 𝛾(𝑙)
+𝑖,𝑘r(𝑙−1)
+𝑖
+Í𝑁
+𝑖=1 𝛾(𝑙)
+𝑖,𝑘
+𝜎(𝑙)2
+𝑘,𝑗
+=
+Í𝑁
+𝑖=1 𝛾(𝑙)
+𝑖,𝑘(𝑟(𝑙−1)
+𝑖,𝑗
+−𝜇(𝑙)
+𝑘,𝑗)2
+Í𝑁
+𝑖=1 𝛾(𝑙)
+𝑖,𝑘
+(11)
+Reconstruction quality is measured as RMSE =
+√︃
+1
+𝑁
+Í𝑁
+𝑖=1 ∥x𝑖−z𝑞,𝑖∥2
+2
+where z𝑞,𝑖= Í𝐿
+𝑙=1 z(𝑙)
+𝑞,𝑖. Since RQ-GMM operates directly on original
+embeddings without encoder-decoder, EM is the sole optimization
+procedure.
+3.1.4
+Semantic ID Generation. After 𝐿levels, each sample obtains
+a discrete code sequence:
+ID(x) = [𝑘∗
+1,𝑘∗
+2, . . . ,𝑘∗
+𝐿]
+(12)
+where 𝑘∗
+𝑙∈{1, . . . , 𝐾} indexes the selected Gaussian at level 𝑙. This
+serves as the multimodal semantic ID for CTR models.
+Advantages. Compared with hard clustering: (1) covariance
+matrices characterize cluster shape and uncertainty, adapting to
+complex distributions; (2) soft assignment yields smoother bound-
+ary quantization, reducing discontinuities; (3) mixing coefficients
+𝜋(𝑙)
+𝑘
+automatically reflect data density, avoiding forced uniform
+assignment; (4) probabilistic modeling enables finer semantic dis-
+crimination.
+3.2
+Complexity Analysis
+Training. For 𝑁samples, one EM iteration at one level costs
+𝑂(𝑁𝐾𝐷). With𝑇iterations and 𝐿levels, total complexity is𝑂(𝑇𝐿𝑁𝐾𝐷).
+Inference. Per sample, computing posteriors across 𝐿levels
+with 𝐾components requires 𝑂(𝐿𝐾𝐷), comparable to RQ-KMeans.
+Diagonal covariance limits overhead.
+Space. Each level stores 𝐾means (𝐾𝐷), 𝐾diagonal covariances
+(𝐾𝐷), and 𝐾mixing coefficients (𝐾), totaling 𝑂(𝐿𝐾𝐷), same order
+as RQ-KMeans.
+Compared with RQ-VAE, RQ-GMM avoids encoder-decoder net-
+works and complex gradient propagation, yielding more stable
+training. Though RQ-GMM has additional covariance computation
+per iteration versus RQ-KMeans, it converges faster with fewer
+iterations, resulting in comparable training time.
+3.3
+Downstream CTR Application
+Semantic IDs from RQ-GMM integrate seamlessly into standard
+CTR models (e.g., DeepFM [5], DCN [28], DIN [34]). For item 𝑖with
+embedding x𝑖∈R𝐷, RQ-GMM generates ID𝑖= [𝑘∗
+1, . . . ,𝑘∗
+𝐿]. The
+original embedding is transformed via MLP: emodal = MLP(x𝑖) ∈
+R𝑑𝑒. Features are constructed as:
+f𝑖= [user_id, item_id, context, 𝑘∗
+1, . . . , 𝑘∗
+𝐿, emodal]
+(13)
+This coarse-to-fine design provides stable categorical anchors
+(semantic IDs) that guide learning from continuous embeddings, ad-
+dressing the training dynamics mismatch discussed earlier. Each ID
+𝑘∗
+𝑙is embedded as e𝑙= W𝑙[𝑘∗
+𝑙] ∈R𝑑𝑒with learnable W𝑙∈R𝐾×𝑑𝑒.
+Multi-level embeddings are fused: esemantic = Concat(e1, . . . , e𝐿) or
+esemantic = Í𝐿
+𝑙=1 e𝑙.
+The CTR model predicts ˆ𝑦= CTR_Model([euser, eitem, econtext, esemantic, emodal])
+and optimizes binary cross-entropy:
+LCTR = −1
+𝑁
+𝑁
+∑︁
+𝑖=1
+[𝑦𝑖log ˆ𝑦𝑖+ (1 −𝑦𝑖) log(1 −ˆ𝑦𝑖)]
+(14)
+In deployment, RQ-GMM inference runs offline in batch mode;
+semantic IDs are stored in feature stores for online lookup, ensuring
+low latency without modifying serving infrastructure.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Ziye Tong, Jiahao Liu et al.
+Table 1: CTR prediction performance on the FNN backbone.
+“w/o Emb” and “w/ Emb” denote without and with the original
+modal embedding, respectively.
+Modal Emb
+Discretization
+Appliances
+Beauty
+Automotive
+AUC
+LogLoss
+AUC
+LogLoss
+AUC
+LogLoss
+w/o Emb
+None
+0.643
+0.507
+0.594
+0.542
+0.613
+0.531
+VQ-VAE
+0.651
+0.503
+0.599
+0.536
+0.620
+0.524
+RQ-VAE
+0.657
+0.498
+0.607
+0.531
+0.627
+0.518
+RQ-KMeans
+0.665
+0.492
+0.613
+0.524
+0.632
+0.513
+RQ-GMM
+0.674
+0.488
+0.619
+0.520
+0.638
+0.509
+w/ Emb
+None
+0.648
+0.504
+0.597
+0.536
+0.617
+0.528
+VQ-VAE
+0.654
+0.498
+0.604
+0.530
+0.623
+0.522
+RQ-VAE
+0.659
+0.493
+0.612
+0.524
+0.629
+0.517
+RQ-KMeans
+0.667
+0.487
+0.621
+0.519
+0.635
+0.512
+RQ-GMM
+0.678
+0.481
+0.628
+0.513
+0.644
+0.506
+4
+Experiments
+4.1
+Settings
+4.1.1
+Datasets and Metrics. We use three Amazon-Review [21] cat-
+egories: Appliances, Beauty, and Automotive. Ratings 1–3 map to 0,
+ratings 4–5 to 1. Data is chronologically split 8:1:1 for train/validation/test.
+For the first-stage discretization task, we measure RMSE between
+reconstructed and original embeddings and codebook utilization
+(proportion of vectors used). For the second-stage CTR prediction
+task, we use AUC and LogLoss.
+4.1.2
+Baselines and Backbones. We compare along two dimensions:
+(a) discretization method—None, VQ-VAE, RQ-VAE, RQ-KMeans,
+RQ-GMM; (b) original modal embedding—without/with (MLP-transformed).
+“None + with embedding” directly concatenates raw BERT embed-
+dings; “None + without embedding” uses only traditional features.
+We use FNN [32] and IPNN [22] as CTR backbones.
+4.1.3
+Implementation Details. All models use Adam optimizer [8]
+with batch size 1,024. Learning rate and L2 regularization are tuned
+in {10−6, 10−5, 10−4, 10−3}.
+First-stage discretization. We use BERT [3] to generate 768-
+dimensional embeddings. For VQ-VAE and RQ-VAE, the encoder
+and decoder have hidden layers of [256, 128] with a latent dimension
+of 64. The VQ-VAE uses a codebook of size 256, while the RQ-
+VAE adopts a two-level structure with 128 codes per level. RQ-
+KMeans and RQ-GMM operate directly on the 768-dimensional
+embeddings and follow the same two-level structure (128 per level).
+The maximum number of iterations is set to 30, with a convergence
+threshold of 10−6.
+Second-stage CTR prediction. The embedding dimension is
+set to 16, and the CTR prediction MLP has hidden layers of (128,
+32, 8). All experiments are repeated 5 times with different random
+seeds, and statistical significance is assessed using paired t-tests.
+4.2
+Offline Results
+4.2.1
+CTR Prediction Performance. Tables 1 and 2 present CTR
+prediction performance on FNN and IPNN backbones across three
+datasets. We observe five key findings: (1) Multimodal effective-
+ness: Any form of multimodal information significantly outper-
+forms no-multimodal baselines. For instance, even direct embed-
+ding concatenation yields notable AUC improvement and LogLoss
+Table 2: CTR prediction performance on the IPNN backbone.
+“w/o Emb” and “w/ Emb” denote without and with the original
+modal embedding, respectively.
+Modal Emb
+Discretization
+Appliances
+Beauty
+Automotive
+AUC
+LogLoss
+AUC
+LogLoss
+AUC
+LogLoss
+w/o Emb
+None
+0.650
+0.498
+0.604
+0.533
+0.622
+0.522
+VQ-VAE
+0.658
+0.493
+0.611
+0.526
+0.628
+0.515
+RQ-VAE
+0.667
+0.490
+0.616
+0.524
+0.634
+0.509
+RQ-KMeans
+0.675
+0.483
+0.620
+0.513
+0.642
+0.503
+RQ-GMM
+0.680
+0.479
+0.630
+0.511
+0.646
+0.499
+w/ Emb
+None
+0.659
+0.495
+0.606
+0.527
+0.627
+0.517
+VQ-VAE
+0.665
+0.490
+0.613
+0.520
+0.634
+0.512
+RQ-VAE
+0.673
+0.482
+0.624
+0.517
+0.640
+0.503
+RQ-KMeans
+0.680
+0.481
+0.628
+0.511
+0.647
+0.496
+RQ-GMM
+0.688
+0.472
+0.634
+0.505
+0.654
+0.494
+Table 3: Discretization quality comparison across datasets.
+Level-wise utilization rates are shown as Level 1 / Level 2.
+Method
+Appliances
+Beauty
+Automotive
+RMSE
+Util.(%)
+RMSE
+Util.(%)
+RMSE
+Util.(%)
+VQ-VAE
+0.614
+33.7
+0.621
+23.5
+0.587
+41.9
+RQ-VAE
+0.173
+73.9 / 71.8
+0.292
+50.9 / 51.2
+0.205
+67.8 / 68.2
+RQ-KMeans
+0.121
+86.7 / 87.1
+0.132
+77.3 / 78.9
+0.119
+83.4 / 83.1
+RQ-GMM
+0.117
+89.5 / 89.3
+0.127
+80.3 / 81.2
+0.107
+86.7 / 87.5
+reduction, validating that multimodal content captures user prefer-
+ences beyond collaborative signals. (2) Discretization necessity:
+Semantic IDs consistently improve performance both standalone
+and when combined with continuous embeddings, validating that
+discretization provides stable categorical signals naturally aligned
+with CTR models. (3) Coarse-to-fine benefit: The “with embed-
+ding” variant consistently outperforms “without embedding” across
+all methods and datasets. This confirms that combining discrete
+semantic IDs (providing structural anchors) with continuous em-
+beddings (preserving fine-grained nuances) helps CTR models over-
+come training dynamics mismatch. (4) RQ-GMM superiority:
+RQ-GMM achieves best performance in all settings, delivering sta-
+tistically significant improvements in both AUC and LogLoss over
+RQ-VAE and RQ-KMeans across all evaluated datasets (all 𝑝< 0.05).
+This demonstrates that higher-quality semantic IDs from proba-
+bilistic modeling translate directly to better CTR performance. (5)
+Cross-model consistency: Results generalize across FNN and
+IPNN backbones, indicating fundamental advantages rather than
+model-specific artifacts.
+4.2.2
+Discretization Quality. Table 3 presents discretization quality
+metrics across three datasets. RQ-GMM consistently outperforms
+all baselines across all metrics. In terms of reconstruction accu-
+racy, RQ-GMM achieves substantial RMSE reduction compared
+to both RQ-VAE and RQ-KMeans on average, demonstrating that
+probabilistic modeling better preserves semantic information dur-
+ing discretization. Codebook utilization reveals striking differences.
+RQ-GMM achieves near-complete utilization across all datasets,
+substantially outperforming both RQ-VAE and RQ-KMeans. This
+indicates that RQ-GMM effectively avoids codebook collapse, maxi-
+mizing the expressive capacity of the discrete codebook space.
+
+
+RQ-GMM: Residual Quantized Gaussian Mixture Model for Multimodal Semantic Discretization in CTR Prediction Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Figure 1: RMSE convergence curves of RQ-GMM and RQ-
+KMeans over EM/K-means iterations on a proprietary indus-
+trial dataset.
+Figure 1 illustrates convergence behavior on a proprietary in-
+dustrial dataset. RQ-GMM converges faster, achieves lower final
+RMSE, and exhibits smoother curves with less fluctuation. This
+reflects that the EM algorithm’s soft assignment provides more
+stable optimization dynamics than hard K-means assignment.
+4.3
+Online Results
+We conduct a 7-day A/B test on a large-scale short-video platform
+with hundreds of millions of daily active users, evaluating Adver-
+tiser Value (AV)—the core business metric. RQ-GMM achieves a
+3.600% improvement over direct embedding concatenation, 1.502%
+over RQ-VAE, and 0.613% over RQ-KMeans (all 𝑝< 0.05). These
+gains translate into substantial commercial value at scale. Based on
+these results, RQ-GMM has been fully deployed in the production
+system, serving daily recommendations platform-wide.
+5
+Conclusions
+We propose RQ-GMM, combining Gaussian Mixture Models with
+residual quantization for efficient multimodal semantic discretiza-
+tion. Through probabilistic modeling and soft assignment, RQ-
+GMM better captures distributional characteristics than hard clus-
+tering methods, generating more discriminative semantic IDs. Of-
+fline and online experiments demonstrate significant improvements
+in reconstruction accuracy, codebook utilization, and CTR per-
+formance. RQ-GMM has been deployed at scale on a short-video
+platform serving hundreds of millions of daily users, providing a
+practical industrial solution for multimodal recommender systems.
+Future work includes adaptive codebook size selection across levels
+and unified probabilistic modeling of multiple modalities.
+Acknowledgments
+References
+[1] Arthur P Dempster, Nan M Laird, and Donald B Rubin. 1977. Maximum likelihood
+from incomplete data via the EM algorithm. Journal of the royal statistical society:
+series B (methodological) 39, 1 (1977), 1–22.
+[2] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[3] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. Bert:
+Pre-training of deep bidirectional transformers for language understanding. In
+Proceedings of the 2019 conference of the North American chapter of the association
+for computational linguistics: human language technologies, volume 1 (long and
+short papers). 4171–4186.
+[4] Shengkang Gu, Jiahao Liu, Dongsheng Li, Guangping Zhang, Mingzhe Han,
+Hansu Gu, Peng Zhang, Ning Gu, Li Shang, and Tun Lu. 2025. LLM-Based User
+Simulation for Low-Knowledge Shilling Attacks on Recommender Systems. arXiv
+preprint arXiv:2505.13528 (2025).
+[5] Huifeng Guo, Ruiming Tang, Yunming Ye, Zhenguo Li, and Xiuqiang He. 2017.
+DeepFM: a factorization-machine based neural network for CTR prediction. arXiv
+preprint arXiv:1703.04247 (2017).
+[6] Mingzhe Han, Dongsheng Li, Jiafeng Xia, Jiahao Liu, Hansu Gu, Peng Zhang, Ning
+Gu, and Tun Lu. 2025. FedCIA: Federated collaborative information aggregation
+for privacy-preserving recommendation. In Proceedings of the 48th International
+ACM SIGIR Conference on Research and Development in Information Retrieval.
+1687–1696.
+[7] Mingzhe Han, Jiahao Liu, Dongsheng Li, Hansu Gu, Peng Zhang, Ning Gu,
+and Tun Lu. 2026. Feature-Indexed Federated Recommendation with Residual-
+Quantized Codebooks. arXiv preprint arXiv:2601.18570 (2026).
+[8] Diederik P Kingma. 2014. Adam: A method for stochastic optimization. arXiv
+preprint arXiv:1412.6980 (2014).
+[9] Jiahao Liu, Shengkang Gu, Dongsheng Li, Guangping Zhang, Mingzhe Han,
+Hansu Gu, Peng Zhang, Tun Lu, Li Shang, and Ning Gu. 2025. AgentCF++:
+Memory-enhanced LLM-based Agents for Popularity-aware Cross-domain Rec-
+ommendations. In Proceedings of the 48th International ACM SIGIR Conference on
+Research and Development in Information Retrieval. 2566–2571.
+[10] Jiahao Liu, Dongsheng Li, Hansu Gu, Tun Lu, Jiongran Wu, Peng Zhang, Li Shang,
+and Ning Gu. 2023. Recommendation unlearning via matrix correction. arXiv
+preprint arXiv:2307.15960 (2023).
+[11] Jiahao Liu, Dongsheng Li, Hansu Gu, Tun Lu, Peng Zhang, and Ning Gu. 2022.
+Parameter-free dynamic graph embedding for link prediction. Advances in Neural
+Information Processing Systems 35 (2022), 27623–27635.
+[12] Jiahao Liu, Dongsheng Li, Hansu Gu, Tun Lu, Peng Zhang, Li Shang, and Ning
+Gu. 2023. Personalized graph signal processing for collaborative filtering. In
+Proceedings of the ACM Web Conference 2023. 1264–1272.
+[13] Jiahao Liu, Dongsheng Li, Hansu Gu, Tun Lu, Peng Zhang, Li Shang, and Ning
+Gu. 2023. Triple structural information modelling for accurate, explainable and
+interactive recommendation. In Proceedings of the 46th International ACM SIGIR
+Conference on Research and Development in Information Retrieval. 1086–1095.
+[14] Jiahao Liu, Dongsheng Li, Hansu Gu, Peng Zhang, Tun Lu, Li Shang, and Ning
+Gu. 2025. Unbiased Collaborative Filtering with Fair Sampling. In Proceedings
+of the 48th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 2555–2559.
+[15] Jiahao Liu, Hongji Ruan, Weimin Zhang, Ziye Tong, Derick Tang, Zhanpeng Zeng,
+Qinsong Zeng, Peng Zhang, Tun Lu, and Ning Gu. 2026. Distribution-Aware
+End-to-End Embedding for Streaming Numerical Features in Click-Through Rate
+Prediction. arXiv preprint arXiv:2602.03223 (2026).
+[16] Jiahao Liu, Yiyang Shao, Peng Zhang, Dongsheng Li, Hansu Gu, Chao Chen,
+Longzhi Du, Tun Lu, and Ning Gu. 2025. Filtering Discomforting Recommenda-
+tions with Large Language Models. In Proceedings of the ACM on Web Conference
+2025. 3639–3650.
+[17] Jiahao Liu, Xueshuo Yan, Dongsheng Li, Guangping Zhang, Hansu Gu, Peng
+Zhang, Tun Lu, Li Shang, and Ning Gu. 2025. Improving LLM-powered Recom-
+mendations with Personalized Information. In Proceedings of the 48th International
+ACM SIGIR Conference on Research and Development in Information Retrieval.
+2560–2565.
+[18] Sijia Liu, Jiahao Liu, Hansu Gu, Dongsheng Li, Tun Lu, Peng Zhang, and Ning Gu.
+2023. Autoseqrec: Autoencoder for efficient sequential recommendation. In Pro-
+ceedings of the 32nd ACM international conference on information and knowledge
+management. 1493–1502.
+[19] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, et al. 2025. Qarm: Quantitative
+alignment multi-modal recommendation at kuaishou. In Proceedings of the 34th
+ACM International Conference on Information and Knowledge Management. 5915–
+5922.
+[20] James B McQueen. 1967. Some methods of classification and analysis of multi-
+variate observations. In Proc. of 5th Berkeley Symposium on Math. Stat. and Prob.
+281–297.
+[21] Jianmo Ni, Jiacheng Li, and Julian McAuley. 2019. Justifying recommendations
+using distantly-labeled reviews and fine-grained aspects. In Proceedings of the
+2019 conference on empirical methods in natural language processing and the 9th
+international joint conference on natural language processing (EMNLP-IJCNLP).
+188–197.
+[22] Yanru Qu, Han Cai, Kan Ren, Weinan Zhang, Yong Yu, Ying Wen, and Jun Wang.
+2016. Product-based neural networks for user response prediction. In 2016 IEEE
+16th international conference on data mining (ICDM). IEEE, 1149–1154.
+[23] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh,
+Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark,
+et al. 2021. Learning transferable visual models from natural language supervision.
+In International conference on machine learning. PmLR, 8748–8763.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Ziye Tong, Jiahao Liu et al.
+[24] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[25] Xiang-Rong Sheng, Feifan Yang, Litong Gong, Biao Wang, Zhangming Chan,
+Yujing Zhang, Yueyao Cheng, Yong-Nan Zhu, Tiezheng Ge, Han Zhu, et al.
+2024. Enhancing Taobao Display Advertising with Multimodal Representations:
+Challenges, Approaches and Insights. In Proceedings of the 33rd ACM International
+Conference on Information and Knowledge Management. 4858–4865.
+[26] Anima Singh, Trung Vu, Nikhil Mehta, Raghunandan Keshavan, Maheswaran
+Sathiamoorthy, Yilin Zheng, Lichan Hong, Lukasz Heldt, Li Wei, Devansh Tandon,
+et al. 2024. Better generalization with semantic ids: A case study in ranking for
+recommendations. In Proceedings of the 18th ACM Conference on Recommender
+Systems. 1039–1044.
+[27] Aaron Van Den Oord, Oriol Vinyals, et al. 2017. Neural discrete representation
+learning. Advances in neural information processing systems 30 (2017).
+[28] Ruoxi Wang, Bin Fu, Gang Fu, and Mingliang Wang. 2017. Deep & cross network
+for ad click predictions. In Proceedings of the ADKDD’17. 1–7.
+[29] Jiongran Wu, Jiahao Liu, Dongsheng Li, Guangping Zhang, Mingzhe Han, Hansu
+Gu, Peng Zhang, Li Shang, Tun Lu, and Ning Gu. 2025. Bidirectional Knowledge
+Distillation for Enhancing Sequential Recommendation with Large Language
+Models. arXiv preprint arXiv:2505.18120 (2025).
+[30] Neil Zeghidour, Alejandro Luebs, Ahmed Omran, Jan Skoglund, and Marco
+Tagliasacchi. 2021. Soundstream: An end-to-end neural audio codec. IEEE/ACM
+Transactions on Audio, Speech, and Language Processing 30 (2021), 495–507.
+[31] Guangping Zhang, Peng Zhang, Jiahao Liu, Zhuoheng Li, Dongsheng Li, Hansu
+Gu, Tun Lu, and Ning Gu. 2025. EvalAgent: Towards Evaluating News Rec-
+ommender Systems with LLM-based Agents. In Proceedings of the 34th ACM
+International Conference on Information and Knowledge Management. 4086–4095.
+[32] Weinan Zhang, Tianming Du, and Jun Wang. 2016. Deep Learning over Multi-
+field Categorical Data: –A Case Study on User Response Prediction. In European
+conference on information retrieval. Springer, 45–57.
+[33] Zhao-Yu Zhang, Xiang-Rong Sheng, Yujing Zhang, Biye Jiang, Shuguang Han,
+Hongbo Deng, and Bo Zheng. 2022. Towards understanding the overfitting
+phenomenon of deep click-through rate models. In Proceedings of the 31st ACM
+international conference on information & knowledge management. 2671–2680.
+[34] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD international conference
+on knowledge discovery & data mining. 1059–1068.

@@ -8,7 +8,7 @@
 
 | 文件 | 维度 | Ideas 数 | P0 |
 |------|------|---------|-----|
-| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision/Capacity/VRQ/MMQ/GeoSID/DualCodebook/Rebalance/AdaptiveCollision/DualFlowOrthRQ) | 16 | ~~sid-0~~ ❌ |
+| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision/Capacity/VRQ/MMQ/GeoSID/DualCodebook/Rebalance/AdaptiveCollision/DualFlowOrthRQ/GMMQuant) | 17 | ~~sid-0~~ ❌ |
 | [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性/Caption) | 6 | — |
 | [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale/CascadedSparseDense/SummaryAttn/VISTA-UIH) | 26 | — |
 | [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum/LAC/OneLive-BOS/CF-SoftLabel) | 20 | ~~onemall-0~~ ❌ (EXP-022 负结果) |
@@ -17,7 +17,7 @@
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | ~~oneloc-4~~ 部分完成 |
 | [ntp-features.md](ntp-features.md) | NTP 特征注入 (TimeGap/ActionType/SegmentEmb/Category/UserProfile/ContTime) | 6 | ~~feat-0/1/2~~ ✅ (EXP-036 全部验证) |
 
-**总计: 97 ideas (0 P0 活跃 / ~57 P1 / 30 P2 / 11 已完成或关闭)**
+**总计: 98 ideas (0 P0 活跃 / ~57 P1 / 31 P2 / 11 已完成或关闭)**
 
 **已完成/关闭**: sid-0 ❌, sid-1(emb) ❌(EXP-007/009), onemall-0 ❌(EXP-022), onemall-4 ✅, onemall-5 ✅, forge-0 ✅, oneloc-4 部分✅, oneloc-2 已被align3-0覆盖, feat-0/1/2 ✅(EXP-036), rpo-0 ✅(理论验证), spot-0 ✅(理论验证), uni-0 ❌(无搜索场景), mtgr-0 ✅(train_packed), lac-0 ✅(EXP-025/036), onerec-3 暂缓P2, static-0 ❌(SIDTrie已实现)
 
@@ -47,6 +47,7 @@ graph LR
         R3V0("r3vae-0 Reference Vector SID"):::p1
         UNIREC1("unirec-1 Capacity-Constrained SID"):::p2
         DOS0("dos-0 Dual-Flow Orth RQ"):::p2
+        RQGMM0("rqgmm-0 GMM Residual Quant"):::p2
         P2_TOK("sid-3, oneloc-3 &nbsp;(2 P2)"):::p2
     end
 
@@ -120,6 +121,7 @@ graph LR
     SID1 --> QS0
     QS0 --> ADASID0
     SID1 --> DOS0
+    SID2 --> RQGMM0
 
     OM0 --> OM2
     OM0 --> AL0
@@ -224,6 +226,7 @@ graph LR
 | `dos` | DOS (Meituan, arxiv 2602.04460, WWW 2026) | Dual-Flow Orthogonal RQ — 上下文感知 SID 量化 |
 | `crab` | CRAB (Walmart, arxiv 2604.05113, Apr 2026) | Codebook Rebalancing 去偏 |
 | `nezha` | NEZHA (Alibaba + CityU HK, arxiv 2511.18793, WWW 2026) | Self-Drafting Speculative Decoding — hash-set 验证 |
+| `rqgmm` | RQ-GMM (Tencent + Fudan, arxiv 2602.12593) | GMM 残差量化 — 概率建模提升码本利用率 |
 | `vista` | VISTA (Meta, arxiv 2510.22049, ICLR 2026) | Two-Stage UIH Summarization + QLA O(N) attention |
 
 ## 核心设计原则
@@ -419,4 +422,5 @@ Text → [Qwen3-0.6B] → 1024D → [MLP-FSQ h=64] → 3-token SID → [NTP S-ti
 | IDEA-crab-0 | Tokenizer | Codebook Rebalancing 去偏 (Walmart) |
 | IDEA-adasid-0 | Tokenizer | 自适应碰撞调控 (Kuaishou GMV +0.98%) |
 | IDEA-dos-0 | Tokenizer | Dual-Flow Orthogonal RQ — 上下文感知 SID (Meituan revenue +1.15%) |
+| IDEA-rqgmm-0 | Tokenizer | GMM Residual Quantization — 概率建模 (Tencent AV +1.502%) |
 | IDEA-cobra-0 | Architecture | Cascaded Sparse-Dense 生成 (Baidu 200M+ DAU) |

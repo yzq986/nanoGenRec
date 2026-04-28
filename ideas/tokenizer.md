@@ -55,7 +55,8 @@ RKMeans 3×1024 (EXP-001 baseline, collision=1.75%)
 ├── IDEA-r3vae-0: Reference Vector SID → P2 (NTP 后)
 ├── IDEA-geogr-0: 地理感知 SID (Co-visited Contrastive) → P2 (需泛化)
 ├── IDEA-onevision-0: VRQ 视觉对齐 RQ + 动态剪枝 → P2 (需视觉模态)
-└── IDEA-mmq-0: 共享-专有多模态混合量化 → P2 (需多模态数据)
+├── IDEA-mmq-0: 共享-专有多模态混合量化 → P2 (需多模态数据)
+└── IDEA-rqgmm-0: GMM + 残差量化 (概率建模 → 更高码本利用率) → P2 (NTP 后)
 ```
 
 ---
@@ -849,3 +850,76 @@ DOS 针对 SID 学习的两个基本问题: (1) **Codebook-Generation Gap** — 
 2. 论文只有 4 页 (industry track)，技术细节有限 — 特别是 L_Mutual 的计算方式和正交约束的训练稳定性
 3. 共享码本要求同时有 user sequence 和 target item — 离线 batch tokenization 时没有 "target item"，需要改为采样正例
 4. 当前 tokenizer 已确认 (MLP-FSQ h=64)，改量化方案需要重训全链路 — 成本高，需要先验证 Phase 1
+
+---
+
+## IDEA-rqgmm-0: Gaussian Mixture Residual Quantization (RQ-GMM)
+
+**优先级**: P2
+**来源**: RQ-GMM (Tencent + Fudan University, arxiv 2602.12593)
+**状态**: 待讨论 — NTP 后期，当 tokenizer 质量成为瓶颈时再评估
+
+### 核心思想
+
+用 **Gaussian Mixture Model** 替代 K-Means 做残差量化，引入概率建模以更好捕捉 embedding 空间的统计结构。
+
+1. **Gaussian Mixture Quantization**: 在每个 RQ level，用 K 个高斯分布建模残差分布:
+   - `p(r) = Σ π_k * N(r | μ_k, Σ_k)`，对角协方差 `Σ_k = diag(σ²_k,1, ..., σ²_k,D)`
+   - 每个 codebook vector = 高斯均值 μ_k，额外存储 per-dimension 方差 σ²_k
+2. **Soft Assignment (训练) + Hard Assignment (推理)**:
+   - E-step: 计算后验 `γ_k = p(k|r)` (soft assignment, 用于 M-step 参数更新)
+   - M-step: 更新 μ, σ², π (标准 EM)
+   - 推理时: `k* = argmax_k γ_k`, `z_q = μ_{k*}` (等效于最近邻，但距离度量考虑协方差)
+   - 残差传播用 hard assignment 保持与推理一致
+3. **No Encoder-Decoder**: 直接在原始 embedding 空间操作 (与 RQ-KMeans 相同)，无需 VQ-VAE 的 encoder/decoder 网络
+
+### 关键实验数据
+
+**离线 (Amazon Review, BERT 768D embeddings, 2-level RQ, 128 codes/level)**:
+
+| 方法 | RMSE | 码本利用率 (L1/L2) | AUC (FNN w/ Emb) |
+|------|------|-------------------|------------------|
+| VQ-VAE | 0.614 | 33.7% | 0.654 |
+| RQ-VAE | 0.173 | 73.9%/71.8% | 0.659 |
+| RQ-KMeans | 0.121 | 86.7%/87.1% | 0.667 |
+| **RQ-GMM** | **0.117** | **89.5%/89.3%** | **0.678** |
+
+- GMM vs KMeans: RMSE -3.3%, 码本利用率 +2.8pp, AUC +0.011
+- GMM 收敛更快 + 更平滑 (Figure 1)
+
+**在线 A/B (Tencent 短视频平台, 7 天, 数亿 DAU)**:
+
+| 对比 | Advertiser Value 提升 |
+|------|---------------------|
+| vs 直接 embedding | **+3.600%** |
+| vs RQ-VAE | **+1.502%** |
+| vs RQ-KMeans | **+0.613%** |
+
+### 与当前项目的关联
+
+- 我们当前用 **RKMeans (2 层 K-Means) + MLP-FSQ** — RQ-GMM 可以替代 RKMeans 的前两层
+- **核心价值**: 码本利用率从 86.7% → 89.5% — 解决 codebook collapse 问题
+- **对 boundary samples 更优**: soft assignment 让分布边界上的 item 获得更合理的 SID，减少语义断裂
+- **计算成本相当**: 与 RKMeans 同阶 O(TLNKD)，但收敛更快 (fewer iterations)
+- **与 IDEA-dos-0 互补**: DOS 引入 user context 改变量化目标，RQ-GMM 改善量化算法本身
+- **与 IDEA-crab-0 互补**: CRAB 通过 rebalancing 解决 codebook 不平衡，RQ-GMM 通过 mixing coefficients π_k 自动反映数据密度
+
+### 实验设计草案
+
+**Phase 1 — Drop-in 替换 RKMeans**:
+1. 用 scikit-learn 的 `GaussianMixture` 替换 `model/rkmeans.py` 的 K-Means
+2. 同样 2 层 × 1024 clusters → 比较 RMSE, 码本利用率, semantic_neighbor_HR
+3. 保持 MLP-FSQ 第三层不变 → 只改前两层量化方法
+
+**Phase 2 — 全 GMM-RQ (如果 Phase 1 有收益)**:
+1. 实现自定义 RQ-GMM (因为 scikit-learn 不支持 residual quantization)
+2. 3 层 RQ-GMM × 1024 clusters (不需要 FSQ 第三层)
+3. 与 MLP-FSQ 端到端对比: SID 质量 + NTP Recall
+
+### 关键问题
+
+1. **MLP-FSQ 的 MLP head 已经做了非线性投影**，RQ-GMM 在原始空间操作 — 需要在 MLP 之后的空间做 GMM 还是之前？
+2. 论文的 embedding 是 768D (BERT)，我们是 1024D (Qwen3-0.6B) — 高维对角 GMM 是否足够？
+3. **概率建模的额外好处**: GMM 的 per-cluster 方差信息可以用于 confidence estimation — 高方差 cluster 的 SID 不确定性高，可以传递给 NTP 做 uncertainty-aware training
+4. 当前 tokenizer 已确认 (MLP-FSQ h=64)，且 EXP-015 显示 irreducible loss 已接近 → tokenizer 改进的绝对收益可能有限
+5. **优先级低于 RL 对齐** (EXP-037/038/039) — 等 RL 链路稳定后，tokenizer 改进作为下一轮突破口
