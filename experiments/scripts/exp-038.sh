@@ -89,8 +89,7 @@ if [ "${SKIP_SMOKE}" == false ]; then
         --lr 1e-4 \
         --max_steps 1 \
         --difficulty hard \
-        --name exp038-smoke \
-        --dry_run
+        --name exp038-smoke
     echo "  Smoke test PASSED"
     rm -rf "${SMOKE_OUT}"
     echo ""
