@@ -359,7 +359,8 @@ flowchart TD
     M23["📦 exp023-segment\nsegment_emb only\nR@500=61.2%"]
     M25["📦 exp025-beam-passes\nBeam Feature Passing\nR@500=63.6%"]
     M029["📦 exp029-ecpo-onpolicy\nECPO + On-Policy Beam\nR@500=67.8% ✅ RL SOTA"]
-    M031B["📦 exp031-baseline\nECPO full stack\nR@500=67.7%"]    M036A["📦 exp036-no-features\nClean NTP, no feat\nR@500=?? 🔄"]
+    M031B["📦 exp031-baseline\nECPO full stack\nR@500=67.7%"]
+    M036A["📦 exp036-no-features\nClean NTP, no feat\nR@500=?? 🔄"]
     M036B["📦 exp036-full-features\nClean NTP + all feat\nR@500=?? 🔄"]
 
     %% ── 实验节点 ──────────────────────────────────────────────
