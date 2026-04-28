@@ -71,7 +71,7 @@ if [ "${SKIP_SMOKE}" == false ]; then
         --eps 0.2 --delta 0.1 \
         --grpo_weight 0.03 \
         --group_size 16 \
-        --grpo_batch_size 2 \
+        --grpo_batch_size 4 \
         --rl_data_ratio 1.0 \
         --lr 1e-4 \
         --reward_behavior --behavior_weight 1.0 \
@@ -104,7 +104,7 @@ else
         --eps 0.2 --delta 0.1 \
         --grpo_weight 0.03 \
         --group_size 512 \
-        --grpo_batch_size 4 \
+        --grpo_batch_size 8 \
         --rl_data_ratio 1.0 \
         --lr 1e-4 \
         --reward_behavior --behavior_weight 1.0 \
