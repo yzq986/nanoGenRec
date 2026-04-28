@@ -271,29 +271,143 @@ gr_demo/
 └── push.sh               # 一键推送脚本
 ```
 
-## 实验进展
+## 实验全景图
 
-| 实验 | 状态 | 结论 |
+> 详细记录见 [experiments/log.md](experiments/log.md)。
+
+### 阶段一：Tokenizer (EXP-001 ~ 012)
+
+| 实验 | 关键结论 | 胜者 |
+|------|---------|------|
+| EXP-001~006 | RKMeans 基线，超参搜索 (K, niter, nredo) | — |
+| EXP-007 | I2I contrastive fine-tune **无效**；LoRA/全量 HR@50 均卡在 ~0.02 | 关闭 embedding fine-tune 路线 |
+| EXP-008 | **MLP-FSQ h=64 胜出**；snHR=0.078，赢 OPQ 2.4× | MLP-FSQ |
+| EXP-009 | QFormer tokenizer 未突破天花板；关闭 embedding 路线 | — |
+| EXP-010 | NTP Probe 基线：单一 4027-dim vocab 跨 3 层，只跑 1 epoch → 极差 | — |
+| EXP-011 | 等大 codebook 消融：4096×3 snHR=0.095 (+22% vs 1024×3) | 4096×3 |
+| EXP-012 | **Tokenizer Grid Search**：4096×3 binary [2]×12 确认最优 | **snHR=0.095, collision=0.89%** |
+
+**✅ Tokenizer 结论**：Qwen3-0.6B (冻结) + 4096×3 binary MLP-FSQ [2]×12 → 3-token SID。
+
+---
+
+### 阶段二：NTP 基础训练 (EXP-013 ~ 016)
+
+| 实验 | 配置 | PPL | R@500 | 关键结论 |
+|------|------|-----|-------|---------|
+| EXP-013 | S-tier vs Probe | 29.6 → 70 | 60% / 37% | **S-tier 全面碾压**，PPL -58%，R@500 +1.6× |
+| EXP-014 | ENTP-Loss 消融 | — | — | L0 token collision 导致退步，**关闭** |
+| EXP-015 | Scaling Law sweep (1.7M~101M active) | 见下 | 见下 | **`L(N)=2.522+2055/N^0.456`**，M 档甜点 |
+| EXP-016 | Data window sweep (7d/14d/31d/62d/90d) | 27.05 | 58.5% | **14d 最优**，Chinchilla 不适用 |
+
+**✅ NTP 基础结论**：S-tier (17.5M active) + 14d 数据窗口 为最优配置。
+
+---
+
+### 阶段三：RL 对齐 Phase 1 — SP-DPO (EXP-017)
+
+| 实验 | 方法 | PPL | R@10 | R@500 | 备注 |
+|------|------|-----|------|-------|------|
+| NTP baseline (EXP-016) | — | 27.05 | 9.9% | 58.5% | 数据起点 |
+| EXP-017 | SP-DPO hard split | ~14.5 | 15.4% | 68.3% | +9.8pp vs baseline |
+
+**SP-DPO 结论**：hard split preference pairs → R@500 68.3%，显著超越 NTP baseline。exp017-hard-medium 成为后续 ref model。
+
+---
+
+### 阶段四：RL 对齐 Phase 2 — RF-DPO (EXP-018 ~ 020)
+
+| 实验 | 方法 | PPL | R@500 | 关键发现 |
+|------|------|-----|-------|---------|
+| EXP-018 | Pure DPO (easy/hard/prog) | 50K+ | 28.9% | **Catastrophic forgetting**，pure DPO 不可用 |
+| EXP-019 | Joint NTP+DPO λ sweep | 14.4~57.7 | 66.4% | λ sweet spot: 0.01~0.03；防遗忘有效 |
+| **EXP-020** | **Joint NTP+DPO, hard, λ=0.03** | **16.3** | **66.2%** | **✅ SFT SOTA baseline** |
+
+**RF-DPO 结论**：
+- Pure DPO = catastrophic forgetting（EXP-018 教训）
+- Joint NTP+DPO + step-matched 防遗忘有效
+- λ=0.03 sweet spot：PPL 16.3，R@500 66.2%
+- **exp020-hard-lam03 成为后续所有 RL 实验的 SFT baseline**
+
+---
+
+### 阶段五：Side Features (EXP-021 ~ 025)
+
+| 实验 | 方法 | PPL | R@500 | 关键发现 |
+|------|------|-----|-------|---------|
+| EXP-021 | Qwen3-4B vs 0.6B embedding | TBD | TBD | 待运行 |
+| EXP-022 | In-Batch Contrastive (InfoNCE) | 27.89~29.66 | 56.3~59.2% | **全面失败**，干扰 NTP；关闭 |
+| EXP-023 | Side Features: time_gap/action/segment | 25.16~28.78 | 55~61.2% | segment+有效；time_gap/action 存在**信息泄漏** |
+| EXP-024 | Feature Shift（尝试修复泄漏）| ~26 | 52.9~59.8% | **失败**，shift 解决训练侧但 beam search 仍无特征 |
+| **EXP-025** | **Beam Search Feature Passing** | **25.22** | **63.6%** | **✅ Features 新 SOTA**（+2.4pp vs segment baseline） |
+
+**Features 结论**：
+- 正确方案：不 shift 训练数据，修复 beam search incremental path 传入正确 features
+- beam_passes: time_gap=真值 + action=carry-forward → R@500=63.6%
+- **exp025-beam-passes 成为 features 路线的 SFT 起点**
+
+---
+
+### 阶段六：RL 对齐 Phase 3/4 — GRPO + ECPO (EXP-026 ~ 033)
+
+#### RL 完整演进路径
+
+```
+EXP-026: GRPO/ECPO 原型 + Pluggable Reward（踩坑记录）
+    ↓  reward 太稀疏 (clip=99%)
+EXP-027: grpo_weight 对齐 RF-DPO (w=0.03, ratio=1.0)
+    ↓  BehaviorReward 覆盖率仍低
+EXP-028: WeightedBehaviorReward (100% coverage)
+    ↓  clip=99%，off-policy ratio 过大 → R@500 崩至 2%
+EXP-029: On-Policy Beam Search ← 关键修复
+    ↓  R@500=67.8%，超越 SFT SOTA
+EXP-030: A2PO + NLL Reg + HEPO Prefix Scoring
+    ↓  边际效益低（67.0~67.7%），持平 EXP-029
+EXP-031: Features SFT (exp025) + Full RL Stack
+    ↓  Config B (exp020 起点) = 67.7%；Config A (exp025 起点) = 61.8% ❌
+EXP-033: Features Bug 修复验证
+    →  clip 率不变 (96.2%)，真因是 ref/policy KL 不对齐
+```
+
+#### 详细结果表
+
+| 实验 | 方法要点 | PPL | R@10 | R@500 | clip率 | 关键发现 |
+|------|---------|-----|------|-------|-------|---------|
+| EXP-026 | GRPO vs ECPO 对比，G=512 | — | — | ~19%* | 99% | **ECPO gnorm 稳定复现**（GRPO spike 158，ECPO 全程<0.5）|
+| EXP-027 | grpo_weight=0.03, ratio=1.0 | — | — | — | 99% | 中途中断；BehaviorReward 覆盖率仅 2.5% |
+| EXP-028 | WeightedBehaviorReward (quality×freshness) | 3791 | 0.7% | 2.0% | 99% | **严重退化**；off-policy ratio 爆炸 |
+| **EXP-029** | **On-Policy Beam Search** | **14.1** | **13.0%** | **67.8%** | 92% | **✅ 首次超越 SFT SOTA**（+1.6pp）|
+| EXP-030 | A2PO + NLL Reg + HEPO | 14.1~14.5 | 12.5~13.3% | 67.0~67.7% | — | 边际效益低；NLL reg 略有负效果 |
+| EXP-031 | Features SFT 起点 (Config A/B) | 14.6/24.2 | 12.5/11.1% | **67.7%**/61.8% | 92%/96% | Config B 持平；Config A clip 率异常 |
+| EXP-033 | Features bug 修复验证 | 24.62 | 10.3% | 61.0% | 96.2% | 假设证伪；真因：ref≠policy 起点 |
+
+> *EXP-026 recall 为 inline eval（beam=500, 250 samples），不可与全量 baseline 直接比较。
+
+#### GRPO/ECPO 工程踩坑记录
+
+| 问题 | 根因 | 修复 |
 |------|------|------|
-| EXP-001 ~ 006 | 完成 | RKMeans 基线 + 超参搜索 |
-| EXP-007 | 完成 | I2I contrastive fine-tune 无效 (全量/LoRA, HR@50 卡在 ~0.02) |
-| EXP-008 | 完成 | **MLP-FSQ h=64 胜出** (semantic_neighbor_HR=0.078, 赢 OPQ 2.4x) |
-| EXP-009 | 完成 | QFormer tokenizer 未突破 0.02 天花板, 关闭 embedding fine-tune 路线 |
-| EXP-010 | 完成 | NTP Baseline 效果极差 — 根因: 单一 4027-dim vocab 跨 3 层 + 仅 1 epoch |
-| EXP-011 | 完成 | 等大 codebook 消融: 4096×3 snHR=0.095 (+22% vs 1024×3) |
-| EXP-012 | 完成 | **Tokenizer Grid Search**: 4096×3 binary 确认为最优 (snHR=0.095, collision=0.89%) |
-| EXP-013 | 完成 | **S-tier NTP 全面碾压 Probe**: PPL 70→29.6 (-58%), recall@500 37%→60% (1.6x) |
-| EXP-014 | 完成 | ENTP-Loss: L0 token collision 导致退步，已关闭 |
-| EXP-015 | 完成 | **Scaling Law 成立**: `L(N) = 2.522 + 2055/N^0.456`, α≈OneRec-V2, M 档为甜点 |
-| EXP-016 | 完成 | **Chinchilla 不适用**: 14d 为最优数据窗口，更多数据 loss 反升 (U 型曲线) |
-| EXP-017 | 完成 | **SP-DPO**: hard split preference pair，R@500 +3% vs NTP baseline |
-| EXP-018 | 完成 | **RF-DPO**: reward-filtered preference，hard/easy/prog 三组 shards |
-| EXP-019 | 完成 | RF-DPO λ sweep，hard+λ=0.3 为 best |
-| EXP-020 | 完成 | **RF-DPO joint**: NTP+DPO 联合训练，exp020-hard-lam03 为当前最优 checkpoint |
-| EXP-021~025 | 完成 | Beam search feature passing, inline eval, 各类消融 |
-| EXP-026 | running | **GRPO+ECPO**: G=512 beam candidates, pluggable reward; ECPO gnorm 稳定复现 |
+| SIDTrie 为空，GRPO loss 永远 0 | `semantic_ids.npy` 是 `{item_id: sid}`，iterate `.keys()` 只得 item id | 改为 iterate `.values()` |
+| reward std≈0 → advantage 爆炸 | 稀疏 reward，整组 reward 相同 | `std<1e-6` group skip + `adv.clamp(-5,5)` + `log_rho.clamp(-10,10)` |
+| BehaviorReward 命中率 0.16% | 全 SID 精确匹配 | 加 prefix cascade fallback → L0 覆盖 24% |
+| off-policy clip=99%，R@500 崩至 2% | ref model beam search → candidates 与 policy 分布偏离 | On-policy beam search (EXP-029) |
+| Features 起点 clip 率 96% vs baseline 92% | policy(exp025)≠ref(exp020)，初始 KL 大 | 待 EXP-034：用 exp025 作为 ref model |
 
-详见 [experiments/log.md](experiments/log.md)。
+#### 当前最优结果对比
+
+| Checkpoint | 路线 | PPL | R@10 | R@500 | 状态 |
+|-----------|------|-----|------|-------|------|
+| exp020-hard-lam03 | NTP+RF-DPO | 16.3 | 14.1% | 66.2% | SFT SOTA |
+| **exp029-ecpo-onpolicy** | NTP+RF-DPO+ECPO | **14.1** | 13.0% | **67.8%** | **✅ 当前 SOTA** |
+| exp031-baseline | NTP+RF-DPO+ECPO+full stack | 14.6 | 12.5% | 67.7% | 与 exp029 持平 |
+
+**待做**：
+- **EXP-032**（planned）：G×batch sweep，G=512/128/32 × batch=4/16/64，验证 context diversity 假设
+- **EXP-034**（planned）：exp025 作为 ref model，验证 ref/policy KL 对齐假设
+
+---
+
+**总结一句话**：`NTP(14d, S-tier) → RF-DPO(λ=0.03) → ECPO(on-policy, G=512)` 路线已验证，R@500 从 baseline 58.5% 提升至 **67.8%**（+9.3pp）。
 
 ## NTP Scaling Law (EXP-015)
 
