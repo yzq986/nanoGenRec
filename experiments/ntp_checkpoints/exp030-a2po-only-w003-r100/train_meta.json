@@ -1,0 +1,81 @@
+{
+  "n_train": 1709380,
+  "n_eval": 49456,
+  "n_clusters_per_layer": [
+    4096,
+    4096,
+    4096
+  ],
+  "n_layers": 3,
+  "n_items": 10,
+  "n_params": 45781504,
+  "train_loss": 2.760438,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "preprocessed_dir": "experiments/ntp_data/exp023-14d-features",
+  "timestamp": "2026-04-28 08:08:32",
+  "train": {
+    "n_params": 45781504,
+    "avg_ntp_loss": 2.753636,
+    "avg_grpo_loss": 0.226737,
+    "avg_total_loss": 2.760438,
+    "grpo_weight": 0.03,
+    "eps": 0.2,
+    "delta": 0.1,
+    "algo": "ECPO",
+    "group_size": 512,
+    "rl_data_ratio": 1.0,
+    "total_tokens": 66283512,
+    "wall_time_s": 4842.1,
+    "batch_size": 522,
+    "grpo_batch_size": 4,
+    "world_size": 4,
+    "n_steps": 409,
+    "n_grpo_steps": 409,
+    "context_pool_size": 213642,
+    "avg_advantage_mean": -0.0005,
+    "avg_advantage_std": 0.9997,
+    "avg_clip_fraction": 0.9288,
+    "avg_reward_mean": 0.5778,
+    "avg_reward_std": 1.6299,
+    "avg_early_clip_fraction": 0.0671,
+    "avg_reward/behavior_mean": 0.5766,
+    "avg_reward/behavior_coverage": 0.9898,
+    "avg_reward/format_mean": 0.0024,
+    "avg_reward/format_legal_rate": 1.0,
+    "avg_reward/total_mean": 0.5778,
+    "name": "exp030-a2po-only-w003-r100",
+    "sft_checkpoint": "experiments/ntp_checkpoints/exp020-hard-lam03"
+  },
+  "eval": {
+    "ppl": 14.1446,
+    "layer_ppl": [
+      274.0269,
+      6.1316,
+      1.7176
+    ],
+    "avg_loss": 2.649331,
+    "depth_hit@10": [
+      0.2279,
+      0.2064,
+      0.2053
+    ],
+    "depth_hit@10_indep": [
+      0.2269,
+      0.8903,
+      0.9552
+    ],
+    "depth_acc_beam": [
+      0.034,
+      0.023,
+      0.023
+    ],
+    "target_sid_found_rate": 0.677,
+    "n_eval_positions": 79702,
+    "n_eval_items": 26450,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.133,
+    "item_recall@50": 0.327,
+    "item_recall@100": 0.418,
+    "item_recall@500": 0.677
+  }
+}
