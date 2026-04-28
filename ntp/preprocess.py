@@ -54,6 +54,8 @@ def parse_args():
                         help='Shift time_gap/action_level by one item to avoid target leakage')
     parser.add_argument('--action_l2_only', action='store_true', default=False,
                         help='Zero out action_level at L0/L1 positions, keep only at L2')
+    parser.add_argument('--min_action_level', type=int, default=1,
+                        help='RSFT: min quality level to keep (1=all, 2=strong+trade, 3=trade only)')
     return parser.parse_args()
 
 
@@ -293,7 +295,8 @@ def main():
             n_eval_target=args.n_eval_target,
             exposure_neg_data=exposure_neg_data, entp_k=args.entp_k,
             shift_features=args.shift_features,
-            action_l2_only=args.action_l2_only)
+            action_l2_only=args.action_l2_only,
+            min_action_level=args.min_action_level)
 
     del sid_dict, behavior_data, exposure_neg_data  # free memory
 
@@ -330,6 +333,7 @@ def main():
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'has_neg_l0': has_neg,
         'entp_k': args.entp_k if has_neg else 0,
+        'min_action_level': args.min_action_level,
         'seq_stats': seq_stats,
     }
     meta_path = os.path.join(args.output_dir, 'meta.json')

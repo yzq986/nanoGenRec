@@ -39,11 +39,157 @@
 
 ---
 
-## EXP-037: SP-DPO on exp036-full-features (Features 路线第二步)
+## EXP-041: ENTP-Loss — Exposure-Aware Hard Negatives for L0 (with Features)
+
+**Date**: 2026-04-28
+**Status**: planned
+**IDEA**: IDEA-dualgr-0
+**Results**: TBD
+
+### Background
+
+EXP-036 SFT 路线 R@500=59.0%（比 exp020 SOTA 66.2% 差 7pp）。L0 层仍是瓶颈（PPL=362.9）。DualGR 的 ENTP-Loss 通过曝光未点击 item 给 L0 额外监督，在当时 EXP-014 中数据端已验证（130M 正样本, 31% 有负样本），但 NTP 集成未完成。本实验在 features 管线（time_gap + action_level + segment_emb）基础上补齐 ENTP 集成。
+
+### Hypothesis
+
+ENTP α=0.1 使 L0 PPL 下降 >10%（从 ~362 降至 ~320），R@500 提升 +2~4pp。最优 α 在 0.05~0.1 之间（过大引入噪声）。
+
+### Design
+
+- **Variable**: ENTP weight α ∈ {0(baseline), 0.05, 0.1, 0.2}
+- **Fixed**: S-tier 6L MoE, 4096×3 binary SID, K=5 negatives, time_gap+action_level+segment_emb, 1 epoch
+- **Metric**: L0/L1/L2 PPL, R@{10,500}
+- **Data**: 14d behavior (2026-03-18~03-31) + exposure neg (same period, S3)
+
+### Run
+`bash experiments/scripts/exp-041.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
+## EXP-040: RSFT — Reject Sampling Fine-Tuning (Training Data Quality Filter)
+
+**Date**: 2026-04-28
+**Status**: planned
+**IDEA**: IDEA-onerec-1
+**Results**: TBD
+
+### Background
+
+当前 NTP 训练 (`action_bitmap > 0`) 包含大量"点了但没有强行为"的弱正样本（click-only）。OneRec 的 RSFT 方案：过滤低质量交互，只在高质量数据（like/fav/share/purchase）上训练，相当于自然的 curriculum learning。
+
+实现已通过代码添加 `--min_action_level` 参数（`ntp/preprocess.py` + `ntp/train.py`），使用 `_action_bitmap_to_level` 映射：level 1=click, 2=strong(like/fav/share), 3=trade(purchase)。
+
+### Hypothesis
+
+`min_action_level=2`（strong+trade）过滤约 70-80% 的弱点击行为，保留更纯净的高质量信号，R@500 提升 +1~3pp，PPL 可能略有上升（因数据量减少）。Level=3 过于激进（数据稀疏），可能不如 level=2。
+
+### Design
+
+- **Variable**: min_action_level ∈ {1(baseline), 2(strong+trade), 3(trade only)}
+- **Fixed**: S-tier 6L MoE, time_gap+action_level+segment_emb, 4096×3 binary SID, 1 epoch
+- **Metric**: R@{10,500}, PPL, training data size
+- **Data**: 14d behavior (2026-03-18~03-31), same SID cache
+
+### Run
+`bash experiments/scripts/exp-040.sh`
+
+### Results
+- Config A (baseline, min_level=1): 参考 EXP-036: R@10=10.8%, R@500=59.0%, PPL=24.0
+- Config B (RSFT-2): TBD
+- Config C (RSFT-3): TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
+## EXP-039: ECPO on exp038-hard-lam03 (Features RL 链路终点)
 
 **Date**: 2026-04-28
 **Status**: planned
 **Results**: TBD
+
+### Background
+
+RL 对齐链路最终步：exp036 SFT → EXP-037 SP-DPO → EXP-038 RF-DPO → 本实验 ECPO。验证 features 路线加完整 RL 链路是否能超越 exp020 SOTA (R@500=66.2%)。
+
+### Hypothesis
+
+ECPO (δ=0.1) 在 features 模型上与 exp029 同等幅度提升 +2~4pp，最终 R@500 > 62%，有望接近或超过 exp020 SOTA。
+
+### Design
+
+- **Variable**: ECPO δ=0.1 (vs 0 = pure GRPO)
+- **Fixed**: ref=exp038-hard-lam03, G=512, BehaviorReward+FormatReward, on-policy beam, grpo_weight=0.03, lr=1e-4
+- **Metric**: R@{10,500}, PPL, advantage_mean, clip_fraction, reward_mean
+- **Data**: context pool from exp023-14d-features, behavior cache 2026-03-31
+
+### Run
+`bash experiments/scripts/exp-039.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
+## EXP-038: RF-DPO on exp037-medium (Features 路线第三步)
+
+**Date**: 2026-04-28
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+RL 对齐链路：exp036 SFT → EXP-037 SP-DPO → 本实验 RF-DPO → EXP-039 ECPO。使用 exp037-medium 作为 ref，复用 EXP-018 真实反馈数据 (2026-03-18~03-31)，Joint NTP+DPO λ=0.03（exp020 最优配置）。
+
+### Hypothesis
+
+R@500 从 exp037-medium (~57%) 跳升至 ~62%（exp018→020 对无特征模型有 +7pp 提升，features 模型预期类似或略小）。
+
+### Design
+
+- **Variable**: (本实验无对照，单 config)
+- **Fixed**: ref=exp037-medium, λ=0.03, β=0.1, difficulty=hard, lr=1e-4, Joint NTP+DPO
+- **Metric**: R@{10,500}, PPL
+- **Data**: RF-DPO pairs from exp018 real feedback (2026-03-18~03-31)
+
+### Run
+`bash experiments/scripts/exp-038.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+EXP-039 ECPO
+
+---
+
+## EXP-037: SP-DPO on exp036-full-features (Features 路线第二步)
+
+**Date**: 2026-04-28
+**Status**: running
+**Results**: experiments/ntp_checkpoints/exp037-easy/ (Easy done, Medium in progress)
 
 ### Background
 
@@ -86,13 +232,16 @@ exp036-B (NTP+feat) → EXP-037 SP-DPO → EXP-038 RF-DPO → EXP-039 ECPO
 `bash experiments/scripts/exp-037.sh`
 
 ### Results
-TBD
+
+Easy stage (2026-04-28):
+- R@10=10.4%, R@500=57.1%, PPL=24.60 (比 SFT 略降，符合预期)
+- Medium stage running (prefix-locked beam generate 中)
 
 ### Analysis
-TBD
+TBD (Medium 完成后补全)
 
 ### Next Steps
-- SP-DPO fixed-medium checkpoint → EXP-038 RF-DPO（ref=SP-DPO，Joint NTP+DPO λ=0.03，复用 exp018 真实反馈数据）
+- Medium checkpoint → EXP-038 RF-DPO（ref=exp037-medium，Joint NTP+DPO λ=0.03，复用 exp018 真实反馈数据）
 
 ---
 

@@ -116,7 +116,7 @@ def _action_bitmap_to_level(bm):
     return 1
 
 
-def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
+def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print, min_action_level=1):
     """Vectorized user interaction grouping using numpy. Returns sorted per-user item lists.
 
     Returns:
@@ -152,6 +152,17 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
     ts_f = ts_f[iid_mask]
     actions_f = actions_f[iid_mask]
 
+    # RSFT: filter by minimum action quality level (min_action_level >= 2 keeps only strong/trade)
+    if min_action_level > 1:
+        level_mask = np.array([_action_bitmap_to_level(int(bm)) >= min_action_level
+                               for bm in actions_f])
+        orig_indices = orig_indices[level_mask]
+        uids_f = uids_f[level_mask]
+        iids_f = iids_f[level_mask]
+        ts_f = ts_f[level_mask]
+        actions_f = actions_f[level_mask]
+        verbose_fn(f"  RSFT (min_action_level={min_action_level}): {len(uids_f):,} interactions kept")
+
     verbose_fn(f"  Valid interactions: {len(uids_f):,}")
 
     # Sort by (uid, ts) using numpy lexsort (secondary key first)
@@ -175,7 +186,8 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
 def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_len=512,
                             n_eval_target=50000, verbose_fn=print,
                             exposure_neg_data=None, entp_k=5,
-                            shift_features=False, action_l2_only=False):
+                            shift_features=False, action_l2_only=False,
+                            min_action_level=1):
     """Build unified per-user sequences with split_pos for train/eval masking.
 
     Each user → one complete SID token sequence. split_pos marks the boundary
@@ -217,7 +229,8 @@ def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_le
         return _build_sequences_from_behavior(
             behavior_data, content_to_tokens, n_layers, n_clusters_per_layer,
             max_seq_len, n_eval_target, verbose_fn,
-            shift_features=shift_features, action_l2_only=action_l2_only)
+            shift_features=shift_features, action_l2_only=action_l2_only,
+            min_action_level=min_action_level)
 
 
 def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
@@ -410,10 +423,12 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
                                    n_layers, n_clusters_per_layer,
                                    max_seq_len, n_eval_target, verbose_fn,
                                    shift_features=False,
-                                   action_l2_only=False):
+                                   action_l2_only=False,
+                                   min_action_level=1):
     """Build sequences from behavior data only (no ENTP negatives)."""
     uids_s, iids_s, ts_s, actions_s, starts, ends, _ = \
-        _build_user_items(behavior_data, content_to_tokens, verbose_fn)
+        _build_user_items(behavior_data, content_to_tokens, verbose_fn,
+                          min_action_level=min_action_level)
 
     # Find split_ts
     sorted_ts = np.sort(ts_s)
