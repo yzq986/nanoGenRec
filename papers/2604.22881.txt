@@ -1,0 +1,1680 @@
+MTServe: Efficient Serving for Generative Recommendation
+Models with Hierarchical Caches
+Xin Wang†
+Chi Ma§
+Shaobin Chen†
+Pu Wang§
+Menglei Zhou§
+Junyi Qiu¶
+Qiaorui Chen¶
+Jiayu Sun¶
+Shijie Liu¶
+Zehuan Wang¶
+Lei Yu§
+Chuan Liu§
+Fei Jiang§
+Wei Lin§
+Hao Wang†
+Jiawei Jiang†
+Xiao Yan†
+†School of Computer Science, Wuhan University
+§Meituan
+¶Nvidia
+Abstract
+Generative recommendation (GR) offers superior modeling capabil-
+ities but suffers from prohibitive inference costs due to the repeated
+encoding of long user histories. While cross-request Key-Value (KV)
+cache reuse presents a significant optimization opportunity, the
+massive scale of individual user states creates a storage explosion
+that far exceeds physical GPU limits. We propose MTServe, a hier-
+archical cache management system that virtualizes GPU memory
+by leveraging host RAM as a scalable backup store. To bridge the
+I/O gap between tiers, MTServe introduces a suite of system-level
+optimizations, including a hybrid storage layout, an asynchronous
+data transfer pipeline, and a locality-driven replacement policy. On
+both public and production datasets, MTServe delivers up to 3.1×
+speedup while maintaining near-perfect hit ratios (> 98.5%).
+Keywords
+Generative Recommendation; Model Inference; KV Cache
+1
+Introduction
+For years, recommendation systems have been dominated by tra-
+ditional deep learning models, such as Wide & Deep [3] and Deep
+Interest Networks [38], which primarily focus on discriminative
+ranking through point-wise scoring. However, inspired by the trans-
+formative success of Large Language Models (LLMs) in capturing
+complex patterns, the industry is rapidly pivoting toward the para-
+digm of generative recommendation (GR) [2, 6, 10, 11, 30, 34]. By
+framing user–item interaction modeling as a sequence transduction
+problem, GR models leverage Transformer-based architectures to
+unlock high-order dependencies within extensive interaction histo-
+ries that were previously under-explored. While major industrial
+players are aggressively pursuing this paradigm to achieve unprece-
+dented personalization, a rapidly evolving landscape we summarize
+in Appendix E, the transition has encountered a formidable ob-
+stacle: the prohibitive computational cost of processing long-term
+histories at scale. Consequently, satisfying the strict latency require-
+ments of online services often demands an unsustainable amount
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+Figure 1: Comparison of total tokens processed across three
+consecutive requests from the same user: Recompute (4,031
+tokens) vs. Reuse (529 tokens).
+of hardware resources, making serving infrastructure optimization
+a critical priority for large-scale deployment.
+Cache Reuse and Challenges. The inference workload in GR is
+characterized by processing a user’s interaction sequence, which
+typically comprises an extensive historical prefix followed by a rela-
+tively small segment of new interactions. As illustrated in Figure 1,
+the incremental portion appended during each visit is often a tiny
+fraction of the total sequence length. However, standard inference
+engines often treat each request as an isolated event, leading to
+massive and unnecessary computational redundancy. To mitigate
+this, user-side Key–Value (KV) caching persists the intermediate
+activations—specifically the Key and Value tensors—of a specific
+user’s historical prefix across multiple independent visits. By re-
+trieving these user-level persistent states, the system can bypass
+the expensive re-encoding of the invariant history and focus ex-
+clusively on the incremental updates. As shown in Figure 1, for
+the three consecutive requests (𝑅1, 𝑅2, 𝑅3) from the same user, the
+recompute paradigm (w.o. reuse) is forced to repeatedly encode
+the entire cumulative prefix, totaling 4,031 tokens. In contrast, by
+leveraging user-side cache reuse, the computational workload is
+significantly reduced to merely 529 tokens.
+Despite the potential computation reduction of KV cache reuse,
+persisting KV caches in GR at an industrial scale faces formidable
+challenges that render existing LLM-centric solutions inadequate.
+①Individual Persistence and Storage Explosion. The primary
+hurdle stems from the sheer scale of the user base coupled with
+long interaction histories. Unlike LLM serving where multiple users
+often share a common prefix (e.g., system prompts) that can be man-
+aged via radix trees [36], GR requires individualized persistence for
+each unique user sequence. This leads to a prohibitive storage con-
+sumption: for a representative HSTU model [34], serving just 1,000
+users with 10,000-token histories would require over 160 GB of KV
+cache—already exceeding the total HBM capacity of two NVIDIA
+arXiv:2604.22881v1  [cs.LG]  24 Apr 2026
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+A100 (80GB) GPUs. With millions of active users, the memory de-
+mand far overwhelms any physical device limits.
+②Long-term Persistence vs. Session-based Caching. Standard
+LLM caching [14] is session-oriented and volatile, where KV states
+are discarded once a dialogue concludes. In contrast, GR requires
+long-term durability across intermittent visits. Reactive policies (of-
+floading only when memory is full) are insufficient here: they risk
+data loss if slots are reclaimed before being backed up, or cause se-
+vere latency spikes during forced synchronization. This necessitates
+a proactive management to asynchronously persist KV states to
+host memory before they become candidates for GPU reclamation.
+③High I/O-to-Computation Ratio and Frequent State Swap-
+ping. The architectural and workload differences create a severe
+I/O bottleneck. While LLMs are compute-heavy and benefit from
+keeping KV states resident during long decoding sessions, recom-
+mendation models are relatively shallow and process independent,
+short-lived requests. This leads to frequent cache churn, where al-
+most every request triggers a mandatory restoration of a unique
+user state from host memory. Consequently, GR exhibits a much
+higher I/O-to-computation ratio, where the time to move data across
+the PCIe bus can easily exceed the model’s execution time. Without
+careful orchestration, this constant state swapping will inevitably
+stall the inference pipeline, thereby negating the throughput bene-
+fits of caching and significantly increasing online inference latency.
+Our Solution MTServe. To address these challenges, we propose
+MTServe, a hierarchical KV cache management system designed
+for serving generative recommendation in MeiTuan. Developed in
+collaboration with NVIDIA to leverage high-performance hardware
+primitives, MTServe breaks the GPU memory wall by organizing
+the cache into a two-tier hierarchy. Instead of constraining user
+states solely to the capacity-limited GPU VRAM, MTServe utilizes
+the vast host memory as a scalable backup store while dynamically
+retaining frequently accessed states on the GPU. This architecture
+effectively virtualizes the device memory, providing the model
+with much larger cache capacity while significantly conserving
+expensive GPU resources.
+To implement this tiered architecture efficiently, MTServe in-
+corporates three key designs. First, we introduce a dual-granularity
+storage abstraction (Page-Chunk) to reconcile the conflict between
+computational flexibility and transmission efficiency. By coupling
+fine-grained GPU paging with coarse-grained CPU chunking, MT-
+Serve reduces GPU memory fragmentation while successfully
+saturating PCIe bandwidth. Second, to mitigate the high I/O-to-
+computation ratio, we design a latency-hiding transfer pipeline
+that leverages double-buffered Direct Memory Access (DMA) and
+custom-optimized scatter/gather kernels. Through fine-grained
+layer-wise synchronization, MTServe effectively overlaps the manda-
+tory I/O of state restoration with the model’s forward pass, masking
+the transfer latency behind the computation. Finally, we employ
+a locality-driven management strategy that exploits the temporal
+bursts of user requests. By adopting an LRU-based policy and de-
+coupling data persistence from physical slot reclamation, MTServe
+enables zero-copy metadata eviction, ensuring that the critical in-
+ference path remains non-blocking even under heavy cache churn.
+Embedding Layer
+L × HSTU Layer
+Scoring Head
+", $, %, &=MLP(+)
+-=. /0! 1
+2=3456(4⨀8)
++′=:;<(2)
+!!
+Item Score
+#"
+##
+#$
+#%
+#&
+#'
+…
+$$
+$%
+$&
+$(
+…
+Interaction Sequence
+Candidates
+%):+
+%+,):+,-
+!.
+Figure 2: The architecture of HSTU model for generative
+recommendation [34].
+We implement MTServe using PyTorch and evaluate it on both
+the public KuaiRand-1K dataset and a production MT dataset. Com-
+pared to the recompute paradigm, MTServe achieves significant
+latency speedups of 3.04× and 3.1× at a batch size of 8, respectively.
+These improvements in latency directly translate into enhanced
+system throughput and a substantial reduction in computational
+resource consumption. Furthermore, our system maintains a near-
+perfect total hit ratio (>98%) even when the active working set
+significantly exceeds physical GPU memory capacity. These results
+validate MTServe’s effectiveness and scalability for industrial-scale
+generative recommendation.
+In summary, our main contributions are as follows:
+• We identify the significant opportunity for user-side KV cache
+reuse in generative recommendation and characterize the core
+challenges—including individual storage explosion, long-term
+durability requirements, and high I/O-to-computation ratios—that
+render existing LLM-centric caching solutions inadequate.
+• We propose MTServe, a hierarchical serving system that breaks
+the GPU memory wall by organizing the cache into a two-tier
+(GPU-CPU) hierarchy. This architecture effectively virtualizes
+device memory, providing the model with much larger cache
+capacity while significantly conserving expensive GPU resources.
+• We introduce a suite of cohesive technical designs to ensure
+efficient execution, featuring a dual-granularity storage abstrac-
+tion (Page-Chunk) to balance I/O efficiency, an asynchronous
+latency-hiding pipeline to effectively overlap data movement with
+computation, and a locality-driven management policy to enable
+non-blocking, zero-copy metadata-driven cache maintenance.
+2
+Preliminaries
+Generative Recommendation Model (GRM). Generative recom-
+mendation models treat the ranking task as a sequence transduction
+problem. Given a user interaction sequence H𝑢comprising 𝑃histor-
+ical tokens and a candidate set C = {𝑐1,𝑐2, . . . ,𝑐𝑁}, the model aims
+to estimate the relevance score𝛾𝑖for each candidate conditioned on
+the historical context. As illustrated in Figure 2, the input sequence
+x is constructed by concatenating the interaction sequence and
+candidates:
+x = [x1:𝑃; x𝑃+1:𝑃+𝑁]
+(1)
+
+
+MTServe: Efficient Serving for Generative Recommendation Models with Hierarchical Caches
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+CPU
+!2
+!1
+Hierarchical Cache Store
+Paged Store
+!3
+ !1
+!2
+!4
+GR
+Model
+Onload Buffer
+……
+……
+!3
+!1
+Chunk
+Page
+Request
+Historical
+New
+User Sequence
+❸
+Item
+score
+Cache Manager
+Metadata prep.
+Page alloc.
+GPU
+Ranking Result
+1
+3
+4
+5
+6
+7
+Transfer Path
+Pinned buffer 1
+Pinned buffer 2
+……
+CPU Tier
+GPU Tier
+2
+Chunked Store
+Figure 3: The overall architecture and seven-step inference workflow of MTServe.
+where x1:𝑃= H𝑢and x𝑃+1:𝑃+𝑁= C, resulting in a total sequence
+length of 𝑇= 𝑃+ 𝑁.
+The architecture consists of 𝐿stacked blocks. An initial embed-
+ding layer projects each token 𝑥𝑡into a 𝑑-dimensional vector e(0)
+𝑡
+.
+Each block Ψ(𝑙) (1 ≤𝑙≤𝐿) performs a non-linear transformation.
+Following the state-of-the-art HSTU architecture [34], each HSTU
+block functions similarly to a standard Transformer block, centered
+around an attention-based computation. The internal computation
+of layer 𝑙is formulated as:
+u(𝑙), q(𝑙), k(𝑙), v(𝑙) = Split(𝜙1(Linear(e(𝑙−1)
+1:𝑇
+)))
+(2)
+o(𝑙) = 𝜙2(Attention(q(𝑙), k(𝑙), v(𝑙)))
+(3)
+e(𝑙)
+1:𝑇= MLP(Norm(o(𝑙) ⊙u(𝑙)))
+(4)
+where 𝜙1 and 𝜙2 denote the SiLU activation functions. The hidden
+representations undergo 𝐿such transformations to produce the
+final contextualized embeddings:
+e(𝐿)
+1:𝑇= Ψ(𝐿) ◦· · · ◦Ψ(1) (e(0)
+1:𝑇)
+(5)
+Focusing on the terminal position 𝑇, the representation e(𝐿)
+𝑇
+is
+fed into a scoring head to obtain the ranking logits y = W𝑜𝑢𝑡e(𝐿)
+𝑇.
+For any candidate 𝑐𝑖associated with its unique identifier token
+𝜔𝑖∈V, its relevance is directly determined by the corresponding
+logit value 𝑦[𝜔𝑖]. The final ranking result is produced by sorting
+the candidates {𝑐1, . . . ,𝑐𝑁} in descending order of their logit values.
+Serving GRMs with KV Cache. To serve GRMs efficiently, we
+decompose the user history into a cached historical prefix H𝑝𝑟𝑒
+(length 𝑃𝑝𝑟𝑒) and incremental tokens ΔH (length Δ𝑃) that arrived
+since the last visit, such that 𝑃= 𝑃𝑝𝑟𝑒+ Δ𝑃.
+When a user request arrives, the system retrieves the previously
+computed Key-Value tensors (K(𝑙)
+𝑝𝑟𝑒, V(𝑙)
+𝑝𝑟𝑒) for H𝑝𝑟𝑒from the cache
+store. The incremental input xΔ = [ΔH; C] is first projected into
+the initial embedding space e(0)
+Δ . For each subsequent layer 𝑙, the
+model only needs to compute the projections for the hidden repre-
+sentations e(𝑙−1)
+Δ
+derived from these new segments:
+u(𝑙)
+Δ , q(𝑙)
+Δ , k(𝑙)
+Δ , v(𝑙)
+Δ = Split(𝜙1(Linear(e(𝑙−1)
+Δ
+)))
+(6)
+The complete context for the attention-like mechanism at layer 𝑙
+is then assembled by concatenating the retrieved cache with the
+newly generated states:
+K(𝑙)
+𝑡𝑜𝑡𝑎𝑙= [K(𝑙)
+𝑝𝑟𝑒; k(𝑙)
+Δ ],
+V(𝑙)
+𝑡𝑜𝑡𝑎𝑙= [V(𝑙)
+𝑝𝑟𝑒; v(𝑙)
+Δ ]
+(7)
+This user-side caching effectively decouples the inference latency
+from the total history length and reduces the effective attention
+complexity from 𝑂(𝑇2) to 𝑂((𝑇−𝑃𝑝𝑟𝑒) · 𝑇) per inference step.
+Finally, the updated KV states for the newly processed tokens are
+stored back to the cache to facilitate future reuse.
+However, realizing this reuse in GR presents unique challenges.
+First, the combination of a massive user base and long interaction
+histories creates an immense storage demand. Unlike LLM serving
+where common prefixes can be optimized via radix trees [36], GR
+requires individual persistence for millions of unique user sequences.
+This lack of sharing opportunities leads to a storage explosion that
+far outstrips physical GPU memory capacity. Second, the cross-
+request nature of recommendation demands long-term durability
+across intermittent visits, rendering standard session-based, volatile
+caching insufficient. Finally, the high I/O-to-computation ratio of
+relatively shallow GR models, coupled with frequent state swapping
+for short-lived requests, creates a severe I/O bottleneck that can
+easily stall the inference pipeline.
+3
+MTServe Overview
+We design MTServe to tackle the GPU memory bottleneck in gen-
+erative recommendation, which stems from the dual challenges of
+a massive user base and long interaction histories. Functioning as
+a plug-and-play cache management module, MTServe integrates
+seamlessly with attention-based generative models to enable ef-
+ficient user-side KV cache reuse. Figure 3 illustrates the overall
+architecture and the seven-step inference workflow.
+3.1
+System Components
+MTServe comprises four primary components that collaborate to
+execute high-throughput inference by efficiently managing and
+utilizing the hierarchical KV cache.
+• Generative Recommendation (GR) Model. The core infer-
+ence engine (e.g., HSTU [34]). It interacts with the logical cache
+interface provided by the KV cache manager, remaining agnostic
+to the underlying physical storage and tiering logic.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+• KVCacheManager. The central controller residing on the host.
+It handles metadata management, including sequence length
+tracking, LRU replacement, and page table maintenance. The
+page table acts as a logical-to-physical mapping structure where
+each entry tracks the physical location of a fixed-length segment
+(e.g., a 32-token page) of a user’s KV cache, serving as the atomic
+unit for GPU memory management.
+• Hierarchical Cache Store. A dual-tier storage backend (as
+shown in the center of Figure 3). It consists of the CPU Tier
+(Chunked Store) as a scalable backup store and the GPU Tier
+(Paged Store) as the primary cache for low-latency access. Both
+tiers are managed via a paging/chunking mechanism to eliminate
+internal fragmentation.
+• Data Transfer Path. A dedicated pipeline for moving KV blocks
+between tiers. It utilizes Pinned Memory Buffers on the CPU
+to enable high-speed DMA and Onload/Offload Buffers on the
+GPU for data staging. This path supports asynchronous, double-
+buffered transfers to overlap I/O with computation.
+3.2
+Inference Workflow
+The lifecycle of an inference request in MTServe follows a stream-
+lined seven-step workflow, as depicted by the circled numbers in
+Figure 3. In our serving scenario, each incoming request encapsu-
+lates a unique user identifier, a sequence of incremental interaction
+tokens newly arrived since the user’s last visit, and a set of candidate
+items to be ranked.
+➊Metadata Preparation. Upon receiving a batch of requests,
+the KVCacheManager prepares execution metadata by retrieving
+cached sequence lengths, resolving page mappings, and allocat-
+ing new GPU pages. If device memory is exhausted, the LRU
+policy identifies victim pages for zero-copy eviction.
+➋Data Onload. For requests requiring historical data from the
+host (Cache Miss), the system asynchronously transfers relevant
+KV blocks from the CPU Tier into a pinned memory buffer, then
+via DMA to the GPU’s Onload Buffer.
+➌Cache Scattering. Once the data resides in the Onload Buffer,
+the system executes an intra-GPU redistribution. A dedicated
+scatter kernel redistributes the contiguous data from the Onload
+Buffer into pre-allocated discrete pages within the GPU Tier.
+➍Model Inference. With the cache populated, the GR Model
+executes the forward pass. It utilizes the page table metadatato
+retrieve historical KV pairs from the Device Cache Store and
+combine them with current inputs for self-attention.
+➎Cache Update. The new KV states generated during the infer-
+ence step are appended directly to the allocated pages in the
+Device Cache Store, updating the user’s history in real time.
+➏Cache Offload. A background process manages the write-back
+of new KV states. When a user’s accumulated new tokens reach
+a host chunk size, the corresponding GPU pages are gathered
+into a transiently allocated Offload Buffer. This buffer is then
+asynchronously transferred to the CPU Tier, ensuring the CPU
+backend maintains a persistent record of the user history.
+➐Ranking Result. Finally, the hidden representations are passed
+to the scoring head to calculate relevance scores and produce the
+final ranking.
+4
+Key Designs
+This section details the system optimizations of MTServe, focus-
+ing on the synergy between its hierarchical storage abstraction,
+asynchronous data pipeline, and non-blocking cache management
+policy. Together, these designs maximize hardware utilization and
+ensure low-latency serving even under extreme memory pressure.
+4.1
+Paged Hierarchical Storage
+Hybrid Storage Granularity. Traditional contiguous memory al-
+location [19] incurs severe fragmentation when handling variable-
+length user histories in recommendation systems. Specifically, static
+pre-allocation leads to massive internal fragmentation as reserved
+slots for long-tail users remain underutilized, while dynamic resiz-
+ing causes external fragmentation that is computationally expensive
+to compact during high-QPS serving. Inspired by virtual memory
+systems and PagedAttention [14], MTServe implements a dual-
+granularity storage strategy (Page-Chunk) tailored to the distinct
+hardware characteristics of the GPU and CPU tiers, as illustrated
+in the center of Figure 3.
+• GPU Tier (Fine-grained Paging): On the GPU, where capac-
+ity is the primary bottleneck, we adopt a fine-grained page
+management strategy (e.g., 32 tokens per page). This granular-
+ity reduces internal fragmentation, allowing the cache to ex-
+pand dynamically with the growing sequence length. The GPU-
+resident Paged Store is defined as a pre-allocated tensor of shape
+[𝐿, 𝑁pages, 2,𝑆page, 𝐻, 𝐷], where 𝐿denotes layers, 𝑁pages total ca-
+pacity, 𝑆page page size, and 𝐻, 𝐷the attention head dimensions.
+By treating GPU memory as a pool of discrete pages, any free
+slot can be allocated to any user, effectively eliminating external
+fragmentation and improving HBM utilization.
+• CPU Tier (Coarse-grained Chunking): Conversely, on the
+Host RAM, where capacity is abundant but bandwidth is con-
+strained by the PCIe interface, we manage data in coarser Chunks
+(e.g., 1024 tokens). Since PCIe throughput is highly sensitive to
+transaction overhead, transferring a single large chunk is signifi-
+cantly more efficient than moving multiple small, discontinuous
+pages. This design amortizes the startup cost of DMA transac-
+tions, ensuring that the I/O subsystem can saturate the physical
+link during bulk data movement.
+Hierarchical Indexing Mechanism. To bridge these storage
+granularities, MTServe maintains a robust indexing architecture
+that acts as a logical-to-physical mapping structure. Each user is
+mapped to a list of non-contiguous Logical Page IDs on the GPU
+and Logical Chunk IDs on the CPU, allowing the sequence to appear
+contiguous to the attention mechanism while being physically scat-
+tered. A global page table translates these logical IDs into physical
+addresses—resolving to tensor indices for the GPU Tier and mem-
+ory pointers for the CPU Tier—serving as the atomic unit for all
+memory operations. This mapping logic is replicated across layers
+to ensure layer-wise independence, enabling the cascading execu-
+tion pattern described in Section 4.4 where different layers can
+simultaneously perform data loading, computation, and offloading.
+Functional Memory Regions. As illustrated within the cyan
+box in Figure 3, the GPU memory is logically partitioned into two
+functional regions.
+
+
+MTServe: Efficient Serving for Generative Recommendation Models with Hierarchical Caches
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+• Device Cache Store (Primary Cache): Represented as the
+Paged Store in Figure 3, this is the main storage area in the GPU
+Tier holding persistent KV data for active users. It utilizes the
+discrete paged layout and is dynamically managed by the KV-
+CacheManager to ensure that the most frequently accessed user
+states remain on-device for low-latency retrieval.
+• Onload Buffer: A pre-allocated contiguous region serving a dual
+purpose. Primarily, it acts as an active inference area where the
+model can directly access fresh data (e.g., newly loaded history
+from Host Cache Store) without waiting for scattering. Secondly,
+it serves as a staging ground for data layout transformation, from
+which contiguous data blocks are eventually scattered into the
+discrete pages of the Device Cache Store.
+4.2
+Efficient Data Movement
+Efficiently moving KV blocks between host and device is critical
+for maintaining high system throughput, especially given the high
+I/O-to-computation ratio of recommendation models. We optimize
+this process by employing dedicated scatter/gather kernels for GPU
+memory layout transformation, reinforced by a double-buffered
+pipeline designed to saturate the physical PCIe bus bandwidth.
+Pipelined Onload via Double Buffering. As illustrated in Fig-
+ure 3, the onload process (Step ②) is internally structured into a
+two-stage pipeline. While represented as a single logical step in
+the workflow, it comprises two distinct physical sub-stages: (1)
+Host-side Memory Preparation, where KV blocks are gathered from
+the chunked host store into a pinned memory buffer; and (2) PCIe
+Transfer via DMA to the GPU’s Onload Buffer. This is followed
+by the separate Cache Scattering operation (Step ③), which redis-
+tributes the contiguous data from the Onload Buffer into discrete
+pages within the Device Cache Store.
+To orchestrate this internal pipeline efficiently, MTServe em-
+ploys a fine-grained double-buffering strategy using a pair of pinned
+memory buffers (Pinned Buffer 1 & 2 in Figure 3). Crucially, we
+align the size of each pinned buffer with the host storage Chunk
+granularity. This alignment simplifies the host-side preparation
+into a high-speed sequential block copy, avoiding the heavy CPU
+overhead of gathering fragmented pages from the storage pool.
+Consequently, the system operates in a ping-pong fashion: while
+the CPU is sequentially populating Buffer 1 with the next required
+KV chunk (sub-stage 1), the DMA engine simultaneously trans-
+fers the previously prepared Buffer 2 to the GPU (sub-stage 2). By
+overlapping host-side orchestration with hardware I/O, MTServe
+ensures that the DMA engine remains saturated and the transfer
+latency is largely hidden. Finally, a custom-optimized scatter kernel
+(Step ③) distributes the contiguous data from the Onload Buffer
+into discrete physical pages within the GPU Tier.
+Transient Offload Pipeline. To ensure long-term durability and
+enable non-blocking cache reclamation, MTServe employs a proac-
+tive offloading strategy rather than a reactive one. As shown in Step
+⑥of Figure 3, the offload process operates as a background task
+to persist new KV states to the CPU Tier before they are targeted
+for eviction. By maintaining a consistent and up-to-date backup
+on the host, the system can reclaim GPU pages via simple meta-
+data updates, avoiding the latency spikes associated with forced
+0.00
+0.25
+0.50
+0.75
+1.00
+1.25
+1.50
+1.75
+Request Interval (seconds, ×106)
+101
+103
+105
+Frequency (log scale)
+Figure 4: Distribution of arrival intervals between consecu-
+tive requests from the same user. The heavy-tailed distribu-
+tion indicates that most users return within a short period,
+exhibiting strong temporal locality.
+synchronization during memory pressure. The pipeline is triggered
+when a user’s accumulated new tokens reach the pre-defined host
+chunk size, initiating the following sequence: (1) A gather kernel
+collects dispersed pages from the GPU Tier into a transiently al-
+located GPU Offload Buffer; (2) The data is transferred via DMA
+to one of the host Pinned Buffers; and (3) A multi-threaded CPU
+worker pool copies the data from the Pinned Buffer to the final
+Chunked Host Cache. Similar to the onload path, the use of dual
+Pinned Buffers allows the DMA transfer and the CPU-side copy to
+execute in parallel. This multi-threaded orchestration is crucial to
+match the high throughput of the DMA stream, ensuring that the
+proactive persistence remains strictly non-blocking and does not
+become a bottleneck for the primary inference stream.
+Offload Capacity Control. To prevent GPU memory exhaustion
+from transient buffer accumulation, MTServe enforces a strict
+quota on the total volume of pending offload tasks. The system
+tracks the aggregate tokens currently queued in GPU transient
+buffers; if a new offload task would cause this total to exceed the
+pre-configured limit, the task is rejected via an admission control
+mechanism. This acts as a critical backpressure valve, ensuring that
+background maintenance tasks do not destabilize the primary infer-
+ence service by consuming excessive VRAM, thereby guaranteeing
+system reliability even under extreme heavy traffic bursts.
+4.3
+Cache Management
+Effective cache management hinges on exploiting the temporal
+patterns inherent in user traffic. As shown in Figure 4, the arrival
+intervals of consecutive requests from the same user exhibit a heavy-
+tailed distribution, where the majority of requests occur within a
+short temporal window. This strong temporal locality motivates
+the adoption of a Least-Recently-Used (LRU) policy, which priori-
+tizes retaining recently active users in the limited GPU memory to
+maximize the cache hit ratio.
+Allocation and Eviction Policy. To implement the LRU policy
+efficiently at scale, MTServe maintains a global doubly-linked list
+augmented with an auxiliary hash map to ensure 𝑂(1) access and
+update complexity. This constant-time performance is vital for
+maintaining low latency as the number of managed user sessions
+grows into the millions. Page allocation is tightly coupled with
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+this policy: when the system requires pages for a new request or
+incremental token generation, it first attempts to draw from the free
+pool. If the pool is exhausted, the system reclaims pages from the tail
+of the LRU list, targeting the least recently active users. Crucially,
+this reclamation is designed as a zero-copy metadata operation. Since
+the Host Cache Store (CPU Tier) serves as the ultimate backup store
+and data persistence is handled asynchronously by the background
+offload process, victim pages on the GPU can be simply marked
+as free in the page table without triggering any blocking device-
+to-host transfer. This design ensures that cache maintenance tasks
+impose negligible latency overhead on the critical inference path.
+User Locking Protocol. To ensure memory safety and data con-
+sistency during concurrent operations, we enforce a strict User
+Locking protocol. Users currently undergoing background offload
+(Step ⑥in Figure 3), where their pages are being read by the DMA
+engine, are marked in a locked registry. The LRU policy explicitly
+skips these locked users during victim selection to prevent race
+conditions where physical pages might be prematurely reclaimed
+or overwritten while still being accessed by the transfer pipeline.
+This coordination guarantees that the memory hierarchy remains
+consistent even under high-concurrency workloads.
+4.4
+Asynchronous Pipelining
+We orchestrate the aforementioned components using a multi-
+stream execution model to maximize hardware utilization. The
+detailed end-to-end inference workflow and the corresponding
+pseudocode Algorithm 1 are provided in Appendix A.
+Four-Stream Concurrency. MTServe utilizes four indepen-
+dent, non-blocking CUDA streams to overlap disparate workloads,
+effectively functioning as a producer-consumer system: (1) Compute
+Stream for core model execution, including the Transformer-based
+forward pass (Step 8); (2) Onload Stream for host-to-device DMA
+transfers to retrieve historical KV chunks (initiated in Step 2); (3)
+Scatter Stream for intra-GPU data redistribution from the onload
+buffer to the paged store (initiated in Step 7); and (4) Offload Stream
+for background persistence by transferring new KV states back to
+the host (initiated in Step 9). Dependencies between these streams
+are managed via fine-grained CUDA events to ensure correct exe-
+cution order without global stalls. This multi-stream design allows
+the system to preprocess metadata and prepare embeddings (Steps
+3–6) in parallel with the heavy KV data movement occurring in the
+Onload Stream.
+Fine-Grained Layer-wise Synchronization. A critical opti-
+mization in our design is the implicit layer-wise synchronization
+(Step 8.3). Instead of a coarse-grained barrier that waits for the
+entire batch’s data to be loaded, we implement a staggered exe-
+cution mechanism using KVOnloadHandle. Before executing the
+attention mechanism for Layer 𝑙, the Compute Stream waits specif-
+ically for the completion event of Layer 𝑙’s scatter operation. This
+allows the computation of shallower layers to proceed immediately
+once their specific data is ready, even if the transfer for deeper lay-
+ers is still in progress. By deeply overlapping the memory-bound
+data movement with the compute-bound attention mechanism, MT-
+Serve significantly reduces the end-to-end inference latency and
+mitigates the impact of the high I/O-to-computation ratio.
+5
+Experimental Evaluation
+In this section, we conduct a comprehensive evaluation of MTServe
+to validate its effectiveness in generative recommendation scenar-
+ios. Specifically, we aim to answer the following three research
+questions:
+• RQ1 (Latency Reduction): How effectively does MTServe re-
+duce end-to-end inference latency compared to standard base-
+lines, and how does its performance scale as the batch size in-
+creases?
+• RQ2 (Cache Efficiency): How effectively does the hierarchi-
+cal caching strategy maintain a high token hit ratio under con-
+strained GPU memory budgets, and how does this translate to
+computational savings?
+• RQ3 (System Overhead): Is the overhead introduced by com-
+plex metadata management and tiered data movement negligible
+compared to the massive computational gains?
+5.1
+Experimental Settings
+Model Architecture. We employ the Hierarchical Sequential Trans-
+duction Unit (HSTU) [34] as our backbone model. HSTU is a state-
+of-the-art generative recommendation architecture designed to cap-
+ture long-term user interests with high efficiency. While our evalua-
+tion focuses on HSTU, the proposed MTServe system is generic and
+compatible with other attention-based generative recommenders
+such as SASRec [12] and BERT4Rec [25]. The specific model con-
+figuration used in our experiments consists of 8 Transformer-based
+layers, 4 attention heads, and a hidden dimension of 128 per head,
+totaling a model size and complexity for large-scale deployment.
+Cache Configuration. By default, MTServe is configured with
+a page size of 32 tokens, a primary cache of 40,960 pages, and an
+offload chunk size of 1024 tokens.
+Baselines. To rigorously evaluate the performance benefits, we
+compare MTServe against two representative serving paradigms.
+• RE (Recompute): This paradigm, exemplified by standard imple-
+mentations of HSTU [34] and OneRec [6], re-encodes the entire
+user interaction history for every inference request. It serves as
+the performance lower bound, representing systems without any
+cross-request KV caching optimization.
+• GPU-Only Cache: A standard industry practice that stores KV
+states exclusively in high-bandwidth GPU memory, like BAT [26],
+and OneTrans [35]. Due to the limited VRAM capacity, it employs
+a strict LRU eviction policy. Once the GPU memory is full, the
+least recently used user sessions are evicted and permanently
+lost, forcing an expensive re-computation upon their next arrival.
+Evaluation Metrics. We evaluate the system using Average La-
+tency (ms) and Token Hit Ratio (%), where the latter represents
+the percentage of historical tokens retrieved from the hierarchical
+cache relative to the total sequence length.
+Datasets and Preprocessing. We utilize two datasets to evaluate
+MTServe under different scenarios. (1) KuaiRand-1K1: A public
+sequential recommendation benchmark from the video-sharing
+1KuaiRand Dataset: https://kuairand.com/
+
+
+MTServe: Efficient Serving for Generative Recommendation Models with Hierarchical Caches
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 1: End-to-end latency (ms), speedup, and hit ratio comparison across batch sizes (BS) of 1, 4, and 8. MTServe consistently
+outperforms baselines on both the public KuaiRand-1K and the production MT dataset.
+Dataset
+Metric
+BS=1
+BS=4
+BS=8
+Method
+Recomp.
+GPU-Only
+MTServe
+Recomp.
+GPU-Only
+MTServe
+Recomp.
+GPU-Only
+MTServe
+KuaiRand-1K
+Latency (ms)
+21.2
+17.4
+14.4
+72.8
+42.1
+33.5
+143.6
+72.9
+47.3
+Speedup (vs. RE)
+1.00×
+1.22×
+1.47×
+1.00×
+1.73×
+2.17×
+1.00×
+1.97×
+3.04×
+GPU Hit Ratio
+-
+63.52%
+63.52%
+-
+63.92%
+63.92%
+-
+64.36%
+64.36%
+Total Hit Ratio
+-
+63.52%
+94.66%
+-
+63.92%
+98.57%
+-
+64.36%
+98.59%
+MT
+Latency (ms)
+14.1
+12.8
+11.7
+43.6
+28.9
+17.3
+82.4
+48.6
+26.6
+Speedup (vs. RE)
+1.00×
+1.10×
+1.21×
+1.00×
+1.51×
+2.52×
+1.00×
+1.70×
+3.10×
+GPU Hit Ratio
+-
+60.26%
+60.26%
+-
+60.69%
+60.69%
+-
+61.73%
+61.73%
+Total Hit Ratio
+-
+60.26%
+96.73%
+-
+60.69%
+97.44%
+-
+61.73%
+98.71%
+Table 2: Latency decomposition (ms) of the inference pipeline on KuaiRand-1K. The step labels correspond to the stages defined
+in Algorithm 1. MTServe significantly reduces the execution time of core inference (Step 8).
+Batch Size
+BS=1
+BS=4
+BS=8
+Method
+Recomp.
+GPU-Only
+MTServe
+Recomp.
+GPU-Only
+MTServe
+Recomp.
+GPU-Only
+MTServe
+Step 1-2. Prepare Metadata
+-
+0.1
+0.1
+-
+0.1
+0.1
+-
+0.1
+0.1
+Step 3. Strip Tokens
+-
+0.4
+0.5
+-
+0.4
+0.6
+-
+0.5
+0.6
+Step 4. Embedding
+2.2
+1.2
+1.5
+5.0
+1.3
+1.5
+9.7
+1.5
+1.5
+Step 5. Data Layout
+1.9
+1.6
+2.0
+3.4
+2.4
+2.9
+5.7
+3.6
+3.6
+Step 6. Await Metadata
+-
+0.01
+0.1
+-
+0.1
+0.1
+-
+0.1
+0.1
+Step 7. Update Metadata
+-
+0.05
+0.2
+-
+0.05
+0.4
+-
+0.05
+0.7
+Step 8. HSTU Inference
+16.7
+13.5
+9.4
+63.9
+37.1
+27.1
+127.4
+66.3
+39.8
+Step 9. Offload KV
+-
+-
+0.03
+-
+-
+0.03
+-
+-
+0.03
+Step 10. Postprocess
+0.5
+0.5
+0.5
+0.6
+0.6
+0.6
+0.8
+0.7
+0.7
+platform Kuaishou. To simulate a realistic streaming workload, we
+organize user behaviors by timestamp and segment them into indi-
+vidual requests (e.g., 60-second intervals), mimicking the temporal
+arrival patterns of online services. (2) MT Dataset: A production
+dataset featuring approximately 3,000 users with exceptionally long
+interaction histories. We specifically filter for long-sequence inter-
+actions to assess the system’s robustness under sustained memory
+pressure and its ability to maximize history reuse. Detailed statistics
+for both datasets are provided in Appendix B.
+Hardware and Implementation. All experiments are conducted
+on a high-performance server node equipped with an NVIDIA
+A100 GPU (80GB HBM2). The host side features 184 CPU cores
+and 928 GB of DDR4 RAM, serving as the backup store for our
+hierarchical cache. MTServe is implemented using PyTorch, with
+critical performance components such as scatter/gather kernels
+and metadata management implemented as custom CUDA and C++
+extensions to minimize software-side overhead.
+5.2
+Overall Performance (RQ1 & RQ2)
+We evaluate the end-to-end performance and latency decomposition
+of MTServe across different workloads, including a smaller model
+variant (detailed in Appendix D.1).
+RQ1: Latency Reduction. As shown in Table 1, MTServe con-
+sistently achieves the lowest latency across all batch sizes and
+datasets, demonstrating superior scalability compared to both RE
+and GPU-Only baselines. On KuaiRand-1K, MTServe provides a
+1.47× speedup at BS=1, which scales to 3.04× at BS=8 (47.3 ms vs.
+143.6 ms). The performance gain is even more pronounced on the
+production MT dataset, where MTServe achieves a 3.10× speedup
+at BS=8 (26.6 ms vs. 82.4 ms). The higher recompute latency on
+KuaiRand-1K (143.6 ms vs. 82.4 ms) is due to its much longer se-
+quences (Table 4). The 20,000-token sequences in KuaiRand-1K
+create a significant bottleneck that slows down the entire batch.
+The primary source of this gain is further revealed in the latency
+decomposition (Table 2). The computational cost in Step 8 (HSTU
+Inference) is drastically reduced; at BS=8, MTServe completes the
+core inference in 39.8 ms, while the RE baseline requires 127.4
+ms due to the exhaustive re-encoding of the entire user history.
+This trend confirms that MTServe successfully decouples inference
+latency from the total history length, transforming the generative
+recommendation task from a compute-intensive encoding problem
+into an efficient, retrieval-based process.
+RQ2: Cache Efficiency and Hit Ratio. The performance advan-
+tage of MTServe is rooted in its ability to maintain a near-perfect
+hit ratio by breaking the GPU memory wall. While the GPU-Only
+baseline is capped at a GPU hit ratio of ≈60%–64% due to VRAM
+limits (Table 1), MTServe utilizes host RAM as a backup store to
+achieve a total hit ratio of 94.6%–98.7%.
+Specifically, on the MT dataset, the host tier successfully sup-
+plements the 61.73% GPU hit ratio to reach a 98.71% total hit
+ratio at BS=8. This high hit ratio remains stable across batch sizes,
+demonstrating that our LRU-based policy and hierarchical stor-
+age successfully capture the temporal locality of user traffic. By
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+Table 3: Impact of Chunk Size on inference latency (ms).
+Chunk Size
+512
+1024
+2048
+4096
+Wait Time (I/O)
+34.64
+23.11
+22.22
+19.09
+Comp Time (Kernel)
+12.66
+13.35
+14.79
+17.74
+End2end Latency
+57.6
+47.3
+49.2
+49.9
+shifting the workload from redundant re-computation to efficient
+KV retrieval, MTServe significantly reduces the execution time
+of the attention mechanism, achieving a 1.67× speedup in Step
+8 compared to the GPU-Only baseline at BS=8 (39.8 ms vs. 66.3
+ms). These results validate MTServe’s readiness for industrial-scale
+deployment, where the active working set of user states frequently
+exceeds physical device limits.
+5.3
+System Overhead Analysis (RQ3)
+We examine the fine-grained execution costs of each pipeline stage
+to assess the system overhead introduced by MTServe. As shown
+in the latency decomposition in Table 2, the system maintains high
+efficiency by keeping control-plane operations minimal.
+• Metadata and Control Overhead: The combined CPU over-
+head for metadata preparation, page table resolution, and syn-
+chronization (Steps 1, 2, 6, and 7) remains remarkably low, totaling
+less than 1 ms even at BS=8. This confirms that our chunk-based
+indexing and zero-copy eviction policy introduce negligible com-
+putational burden.
+• Asynchronous Offload Efficiency: The initiation of the back-
+ground offload process (Step 9) consumes only 0.03 ms. As
+designed in Section 4.2, the actual KV transfer is handled by
+background threads, ensuring that the persistence of user states
+imposes zero blocking latency on the critical inference path.
+• I/O vs. Computation Trade-off: MTServe trades expensive
+re-computation (127.4 ms) for significantly cheaper KV restora-
+tion (39.8 ms). This 39.8 ms represents the effective critical path
+where incremental computation overlaps with I/O. The net sav-
+ing of 87.6 ms proves that the I/O penalty of moving data is
+far outweighed by the computational savings of attention reuse,
+confirming that our pipeline successfully masks the majority of
+transfer overhead.
+5.4
+Sensitivity and Micro-Benchmarks
+Impact of Offload Chunk Size. We examine the impact of Offload
+Chunk Size on the trade-off between data movement and computa-
+tion. To quantify this, we instrument the core HSTU inference loop
+(Step 8) to separately measure the synchronization overhead (Wait
+Time) and the kernel execution time (Comp Time).
+As shown in Table 3, increasing the chunk size from 512 to 4096
+tokens significantly reduces the Wait Time (34.64 ms →17.09 ms).
+This reduction is driven by two factors: first, a coarser granularity
+amortizes fixed PCIe transaction overhead; second, larger chunks
+reduce the total data volume transferred by allowing longer "tail"
+segments to remain on the GPU without being persisted to the host.
+However, this I/O saving comes at the cost of increased Comp Time
+(12.66 ms →17.74 ms), a phenomenon governed by the persistence
+20480
+30720
+40960
+51200
+61440
+Number of Blocks in Primary Cache
+0
+20
+40
+60
+80
+Latency (ms)
+56.2
+84.7
+32.8
+58.9
+23.1
+47.3
+18.2
+41.3
+14.5
+37.0
+Wait Time (I/O)
+Other Latency
+GPU Hit Ratio
+0
+20
+40
+60
+80
+100
+GPU Hit Ratio (%)
+Figure 5: Impact of GPU Cache Store capacity on on latency
+components and cache hit ratio.
+threshold. Since MTServe only backs up KV states to the CPU tier
+once they accumulate into a full chunk, any un-offloaded tail tokens
+are lost if the user is evicted from the GPU. Consequently, these
+missing segments must be re-encoded from scratch during the next
+visit to reconstruct the sequence context, thereby increasing the
+computational burden. We select 1024 as the default configuration,
+as it captures the steepest drop in Wait Time while minimizing the
+extra computational burden associated with larger chunks.
+Impact of GPU Cache Capacity. We evaluate system robustness
+by adjusting the Primary Cache capacity from 20,480 to 61,440
+blocks. As shown in Figure 5, increasing the capacity significantly
+improves the GPU Hit Ratio, leading to a sharp decline in I/O wait
+time. However, this performance gain comes at the cost of a higher
+memory footprint; as detailed in Table 6, the VRAM consumption
+scales from 10 GB to 30 GB across these settings. Notably, even at the
+most constrained setting (20,480 blocks, 10 GB VRAM), MTServe
+still achieves an end-to-end latency of 84.7 ms, representing a
+1.69× speedup over the RE baseline (143.6 ms).
+Memory Footprint Analysis We profile the peak GPU memory
+usage during inference to identify the primary resource consumers.
+Our analysis reveals that the KV Cache is the dominant component,
+occupying over 59% of the total 41.67 GB footprint. A detailed
+breakdown of the memory components is provided in Appendix C.
+6
+Conclusion and Future Directions
+This paper presented MTServe, a hierarchical KV cache system that
+overcomes the GPU memory wall for reusing the KV caches in serv-
+ing generative recommendation models. MTServe achieves high
+efficiency with extensive system optimizations including paged
+hierarchical storage, efficient data movement, and asynchronous
+pipelining. Experiment results show that MTServe can speed up
+model inference by up to a 3.1×.
+Moving forward, we will explore three interesting directions:
+(i) applying compression techniques to the KV caches to improve
+the effective storage capacity and reduce data movement costs; (ii)
+deepening the storage hierarchy to include local NVMe SSDs to
+enlarge cache size and store cold users; (iii) enabling cross-machine
+transfer of the KV caches for scheduling and load balance.
+
+
+MTServe: Efficient Serving for Generative Recommendation Models with Hierarchical Caches
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+References
+[1] Jiangxia Cao, Shuo Yang, Zijun Wang, and Qinghai Tan. 2025. OnePiece: The Great
+Route to Generative Recommendation–A Case Study from Tencent Algorithm
+Competition. arXiv preprint arXiv:2512.07424 (2025).
+[2] Junyi Chen, Lu Chi, Bingyue Peng, and Zehuan Yuan. 2024. Hllm: Enhancing
+sequential recommendations via hierarchical large language models for item and
+user modeling. arXiv preprint arXiv:2409.12740 (2024).
+[3] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra,
+Hrishi Aradhye, Glen Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, et al.
+2016. Wide & deep learning for recommender systems. In Proceedings of the 1st
+workshop on deep learning for recommender systems. 7–10.
+[4] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep neural networks
+for youtube recommendations. In Proceedings of the 10th ACM conference on
+recommender systems. 191–198.
+[5] Sunhao Dai, Jiakai Tang, Jiahua Wu, Kun Wang, Yuxuan Zhu, Bingjun Chen,
+Bangyang Hong, Yu Zhao, Cong Fu, Kangle Wu, et al. 2025. Onepiece: Bringing
+context engineering and reasoning to industrial cascade ranking system. arXiv
+preprint arXiv:2509.18091 (2025).
+[6] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[7] Yijie Ding, Jiacheng Li, Julian McAuley, and Yupeng Hou. 2024.
+Inductive
+generative recommendation via retrieval-based speculation.
+arXiv preprint
+arXiv:2410.02939 (2024).
+[8] Yue Dong, Han Li, Shen Li, Nikhil Patel, Xing Liu, Xiaodong Wang, and Chuanhao
+Zhuge. 2025. Scaling Generative Recommendations with Context Parallelism
+on Hierarchical Sequential Transducers. In Proceedings of the Nineteenth ACM
+Conference on Recommender Systems. 1058–1061.
+[9] Huifeng Guo, TANG Ruiming, Yunming Ye, Zhenguo Li, and Xiuqiang He. 2017.
+DeepFM: A Factorization-Machine based Neural Network for CTR Prediction. In
+Proceedings of the Twenty-Sixth International Joint Conference on Artificial Intelli-
+gence. International Joint Conferences on Artificial Intelligence Organization.
+[10] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, et al. 2025. Mtgr: Industrial-
+scale generative recommendation framework in meituan. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+5731–5738.
+[11] Yanhua Huang, Yuqi Chen, Xiong Cao, Rui Yang, Mingliang Qi, Yinghao Zhu,
+Qingchang Han, Yaowei Liu, Zhaoyu Liu, Xuefeng Yao, et al. 2025. Towards
+Large-scale Generative Ranking. arXiv preprint arXiv:2505.04180 (2025).
+[12] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[13] Tongyoung Kim, Soojin Yoon, Seongku Kang, Jinyoung Yeo, and Dongha Lee.
+2024. SC-Rec: Enhancing generative retrieval with self-consistent reranking for
+sequential recommendation. arXiv preprint arXiv:2408.08686 (2024).
+[14] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng,
+Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient
+memory management for large language model serving with pagedattention. In
+Proceedings of the 29th symposium on operating systems principles. 611–626.
+[15] Yaoyiran Li, Xiang Zhai, Moustafa Alzantot, Keyi Yu, Ivan Vulić, Anna Korhonen,
+and Mohamed Hammad. 2024. Calrec: Contrastive alignment of generative llms
+for sequential recommendation. In Proceedings of the 18th ACM Conference on
+Recommender Systems. 422–432.
+[16] Fake Lin, Binbin Hu, Zhi Zheng, Xi Zhu, Ziqi Liu, Zhiqiang Zhang, Jun Zhou, and
+Tong Xu. 2026. Token-level Collaborative Alignment for LLM-based Generative
+Recommendation. arXiv preprint arXiv:2601.18457 (2026).
+[17] Enze Liu, Bowen Zheng, Cheng Ling, Lantao Hu, Han Li, and Wayne Xin Zhao.
+2025. Generative recommender with end-to-end learnable item tokenization.
+In Proceedings of the 48th International ACM SIGIR Conference on Research and
+Development in Information Retrieval. 729–739.
+[18] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, et al. 2025. Qarm: Quantitative
+alignment multi-modal recommendation at kuaishou. In Proceedings of the 34th
+ACM International Conference on Information and Knowledge Management. 5915–
+5922.
+[19] NVIDIA.
+2023.
+FasterTransformer.
+https://github.com/NVIDIA/
+FasterTransformer.
+[20] Fabian Paischer, Liu Yang, Linfeng Liu, Shuai Shao, Kaveh Hassani, Jiacheng Li,
+Ricky Chen, Zhang Gabriel Li, Xiaoli Gao, Wei Shao, et al. 2024. Preference dis-
+cerning with LLM-Enhanced generative retrieval. arXiv preprint arXiv:2412.08604
+(2024).
+[21] Gustavo Penha, Ali Vardasbi, Enrico Palumbo, Marco De Nadai, and Hugues
+Bouchard. 2024. Bridging Search and Recommendation in Generative Retrieval:
+Does One Task Help the Other?. In Proceedings of the 18th ACM Conference on
+Recommender Systems. 340–349.
+[22] Bryan Perozzi, Rami Al-Rfou, and Steven Skiena. 2014. Deepwalk: Online learning
+of social representations. In Proceedings of the 20th ACM SIGKDD international
+conference on Knowledge discovery and data mining. 701–710.
+[23] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[24] Minglai Shao, Hua Huang, Qiyao Peng, and Hongtao Liu. 2024. ULMRec: User-
+centric large language model for sequential recommendation. arXiv preprint
+arXiv:2412.05543 (2024).
+[25] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential recommendation with bidirectional encoder rep-
+resentations from transformer. In Proceedings of the 28th ACM international
+conference on information and knowledge management. 1441–1450.
+[26] Jie Sun, Shaohang Wang, Zimo Zhang, Zhengyu Liu, Yunlong Xu, Peng Sun, Bo
+Zhao, Bingsheng He, Fei Wu, and Zeke Wang. 2026. Bat: Efficient Generative
+Recommender Serving with Bipartite Attention. In Proceedings of the 31st In-
+ternational Conference on Architectural Support for Programming Languages and
+Operating Systems (ASPLOS).
+[27] Chunqi Wang, Bingchao Wu, Zheng Chen, Lei Shen, Bing Wang, and Xiaoyi Zeng.
+2025. Scaling transformers for discriminative recommendation via generative
+pretraining. In Proceedings of the 31st ACM SIGKDD Conference on Knowledge
+Discovery and Data Mining V. 2. 2893–2903.
+[28] Jizhe Wang, Pipei Huang, Huan Zhao, Zhibo Zhang, Binqiang Zhao, and Dik Lun
+Lee. 2018. Billion-scale commodity embedding for e-commerce recommendation
+in alibaba. In Proceedings of the 24th ACM SIGKDD international conference on
+knowledge discovery & data mining. 839–848.
+[29] Ruoxi Wang, Bin Fu, Gang Fu, and Mingliang Wang. 2017. Deep & cross network
+for ad click predictions. In Proceedings of the ADKDD’17. 1–7.
+[30] Yuxiang Wang, Xiao Yan, Chi Ma, Mincong Huang, Xiaoguang Li, Lei Yu, Chuan
+Liu, Ruidong Han, He Jiang, Bin Yin, Shangyu Chen, Fei Jiang, Xiang Li, Wei
+Lin, Haowei Han, Bo Du, and Jiawei Jiang. 2025. MTGenRec: An Efficient Dis-
+tributed Training System for Generative Recommendation Models in Meituan.
+arXiv:2505.12663 [cs.DC] https://arxiv.org/abs/2505.12663
+[31] Songpei Xu, Shijia Wang, Da Guo, Xianwen Guo, Qiang Xiao, Bin Huang, Guanlin
+Wu, and Chuanjiang Luo. 2025. Climber: Toward Efficient Scaling Laws for Large
+Recommendation Models. In Proceedings of the 34th ACM International Conference
+on Information and Knowledge Management. 6193–6200.
+[32] Liu Yang, Fabian Paischer, Kaveh Hassani, Jiacheng Li, Shuai Shao, Zhang Gabriel
+Li, Yun He, Xue Feng, Nima Noorshams, Sem Park, et al. 2024. Unifying gen-
+erative and dense retrieval for sequential recommendation.
+arXiv preprint
+arXiv:2411.18814 (2024).
+[33] Jun Yin, Zhengxin Zeng, Mingzheng Li, Hao Yan, Chaozhuo Li, Weihao Han,
+Jianjin Zhang, Ruochen Liu, Allen Sun, Denvy Deng, et al. 2024. Unleash LLMs
+potential for recommendation by coordinating twin-tower dynamic semantic
+token generator. arXiv preprint arXiv:2409.09253 (2024).
+[34] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Jiayuan He, et al. 2024. Actions speak louder than
+words: trillion-parameter sequential transducers for generative recommendations.
+In Proceedings of the 41st International Conference on Machine Learning. 58484–
+58509.
+[35] Zhaoqi Zhang, Haolei Pei, Jun Guo, Tianyu Wang, Yufei Feng, Hui Sun, Shaowei
+Liu, and Aixin Sun. 2025. OneTrans: Unified Feature Interaction and Sequence
+Modeling with One Transformer in Industrial Recommender. arXiv preprint
+arXiv:2510.26104 (2025).
+[36] Lianmin Zheng, Liangsheng Yin, Zhiqiang Xie, Chuyue Livia Sun, Jeff Huang,
+Cody Hao Yu, Shiyi Cao, Christos Kozyrakis, Ion Stoica, Joseph E Gonzalez,
+et al. 2024. Sglang: Efficient execution of structured language model programs.
+Advances in neural information processing systems 37 (2024), 62557–62583.
+[37] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, et al. 2025. Onerec-v2 technical
+report. arXiv preprint arXiv:2508.20900 (2025).
+[38] Guorui Zhou, Na Mou, Ying Fan, Qi Pi, Weijie Bian, Chang Zhou, Xiaoqiang
+Zhu, and Kun Gai. 2019. Deep interest evolution network for click-through rate
+prediction. In Proceedings of the AAAI conference on artificial intelligence, Vol. 33.
+5941–5948.
+[39] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD international conference
+on knowledge discovery & data mining. 1059–1068.
+[40] Yaochen Zhu, Harald Steck, Dawen Liang, Yinhan He, Nathan Kallus, and Jundong
+Li. 2025. Llm-based conversational recommendation agents with collaborative
+verbalized experience. Proceedings of the Proc. of EMNLP Findings (2025), 2207–
+2220.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+A
+Pseudocode
+Algorithm 1 illustrates the inference pipeline of the generative rec-
+ommendation model integrated with our hierarchical KV cache
+manager. Specifically, the pipeline initiates metadata preparation
+and KV onloading in the background (Lines 1–2) while concurrently
+processing input embeddings (Lines 3–5). Metadata tasks, such as
+page allocation and LRU-driven eviction, are offloaded to the CPU
+to avoid stalling the main inference thread. Synchronization is per-
+formed implicitly within the transformer layers (Line 8.3) to ensure
+data availability before attention computation, allowing the trans-
+fer of deeper KV states to overlap with the computation of initial
+layers. Finally, the system performs a non-blocking asynchronous
+offload of the updated cache (Line 9), ensuring state persistence
+without extending the request latency.
+B
+Dataset Statistics
+Table 4: Statistics of the Evaluation Datasets.
+Dataset
+#Users
+#Reqs.
+Min
+Max
+Avg
+Kuai
+Rand-1k
+1,000
+1,181,699
+1
+20,000
+6,375
+MT
+2,884
+1,972,438
+4,000
+6,000
+5,189
+This section provides the key statistics for the evaluation datasets.
+Table 4 summarizes the user count, total requests, and the distribu-
+tion of sequence lengths.
+Algorithm 1 Overall HSTU Inference Pipeline using Asynchronous Paged KV Cache Management.
+Require: 𝐼𝑛𝑝𝑢𝑡𝐵𝑎𝑡𝑐ℎ: a batch of user and feature IDs;
+𝐴𝑠𝑦𝑛𝑐𝐾𝑉𝐶𝑎𝑐ℎ𝑒𝑀𝑎𝑛𝑎𝑔𝑒𝑟: a manager for offloading/onloading KVs, page allocation, and LRU eviction.
+Ensure: 𝑂𝑢𝑡𝑝𝑢𝑡𝐿𝑜𝑔𝑖𝑡𝑠: final ranking scores for all users in the batch.
+1: 1. Fetch Cache Lengths: Retrieve users’ total historical sequence length.
+2:
+𝑇𝑜𝑡𝑎𝑙𝐻𝑖𝑠𝑡𝐿𝑒𝑛𝑔𝑡ℎ𝑒𝑠←AsyncKVCacheManager.get_total_cache_length(𝐼𝑛𝑝𝑢𝑡𝐵𝑎𝑡𝑐ℎ.𝑢𝑠𝑒𝑟𝑠)
+3: 2. Asynchronously Prepare Metadata and Onload KVs: Initiate background page allocation, LRU ranking, and asynchronous transfer
+of historical KVs from host to GPU onload buffer.
+4:
+𝑀𝑒𝑡𝑎𝑑𝑎𝑡𝑎𝐹𝑢𝑡,𝑂𝑛𝑙𝑜𝑎𝑑𝐹𝑢𝑡←AsyncKVCacheManager.SubmitPrepareMetadataAndOnloadAsync(TotalHistLengthes, batch_size)
+5: 3. Preprocess Input Tokens: Strip cached history tokens from inputs.
+6:
+𝑆𝑡𝑟𝑖𝑝𝑝𝑒𝑑𝐵𝑎𝑡𝑐ℎ←AsyncKVCacheManager.strip_cached_tokens(𝐼𝑛𝑝𝑢𝑡𝐵𝑎𝑡𝑐ℎ)
+7: 4. Compute Embeddings: Generate embeddings for non-cached inputs.
+8:
+𝐸𝑚𝑏𝑒𝑑𝑑𝑖𝑛𝑔𝑠←EmbeddingCollection(𝑆𝑡𝑟𝑖𝑝𝑝𝑒𝑑𝐵𝑎𝑡𝑐ℎ.𝑓𝑒𝑎𝑡𝑢𝑟𝑒𝑠)
+9: 5. Transform Data Layout: Convert embeddings into JaggedArray for HSTU input.
+10:
+𝐽𝑎𝑔𝑔𝑒𝑑𝐷𝑎𝑡𝑎←HSTUBlock.preprocessor(𝐸𝑚𝑏𝑒𝑑𝑑𝑖𝑛𝑔𝑠,𝑆𝑡𝑟𝑖𝑝𝑝𝑒𝑑𝐵𝑎𝑡𝑐ℎ)
+11: 6. Await Metadata (Blocking): Wait until metadata preparation (page allocation, LRU) is fully complete. (Note: Onload operation
+proceeds asynchronously in the background.)
+12:
+𝐾𝑉𝐶𝑎𝑐ℎ𝑒𝑀𝑒𝑡𝑎𝑑𝑎𝑡𝑎←AsyncKVCacheManager.AwaitMetadata(𝑀𝑒𝑡𝑎𝑑𝑎𝑡𝑎𝐹𝑢𝑡)
+13: 7. Update Metadata and Commit: Update metadata to include lengths of the newly arrived batch sequence and commit the onloaded
+data from the buffer into the main paged cache.
+14:
+𝐾𝑉𝐶𝑎𝑐ℎ𝑒𝑀𝑒𝑡𝑎𝑑𝑎𝑡𝑎.𝑡𝑜𝑡𝑎𝑙_ℎ𝑖𝑠𝑡𝑜𝑟𝑦_𝑜𝑓𝑓𝑠𝑒𝑡𝑠+= 𝐽𝑎𝑔𝑔𝑒𝑑𝐷𝑎𝑡𝑎.𝑛𝑢𝑚_𝑜𝑓𝑓𝑠𝑒𝑡𝑠
+15:
+𝐾𝑉𝐶𝑎𝑐ℎ𝑒𝑀𝑒𝑡𝑎𝑑𝑎𝑡𝑎.𝑡𝑜𝑡𝑎𝑙_ℎ𝑖𝑠𝑡𝑜𝑟𝑦_𝑙𝑒𝑛𝑔𝑡ℎ𝑠+= 𝐽𝑎𝑔𝑔𝑒𝑑𝐷𝑎𝑡𝑎.𝑛𝑢𝑚_𝑐𝑎𝑛𝑑𝑖𝑑𝑎𝑡𝑒𝑠
+16:
+AsyncKVCacheManager.CommitOnloadBufferToCache(𝐼𝑛𝑝𝑢𝑡𝐵𝑎𝑡𝑐ℎ.𝑢𝑠𝑒𝑟𝑠)
+17: 8. HSTU Core Computation Loop: Execute Attention computation for each Transformer layer 𝑙.
+18: for each layer 𝑙in HSTU model do
+19:
+8.1. Compute and Reshape QKV: 𝑄, 𝐾,𝑉←ComputeQKV(𝐽𝑎𝑔𝑔𝑒𝑑𝐷𝑎𝑡𝑎.𝑣𝑎𝑙𝑢𝑒𝑠)
+20:
+8.2. Append New KVs to Paged Cache: Store 𝐾,𝑉for the current input into the Paged KV Cache.
+21:
+𝑎𝑝𝑝𝑒𝑛𝑑_𝑘𝑣𝑐𝑎𝑐ℎ𝑒(K, V, 𝐾𝑉𝐶𝑎𝑐ℎ𝑒𝑀𝑒𝑡𝑎𝑑𝑎𝑡𝑎.position, 𝐾𝑉𝐶𝑎𝑐ℎ𝑒𝑀𝑒𝑡𝑎𝑑𝑎𝑡𝑎.offsets,
+22:
+𝐾𝑉𝐶𝑎𝑐ℎ𝑒𝑀𝑒𝑡𝑎𝑑𝑎𝑡𝑎.indices/indptr/last_page_lens)
+23:
+8.3. Implicit Sync for Historical KVs (Critical): Implicitly wait for the historical KV data specific to layer 𝑙to be fully loaded
+from the onload buffer into the paged cache. This synchronization is managed by the layer’s KVOnloadHandle.
+24:
+8.4. Compute Attention Scores: 𝑂𝑢𝑡𝑝𝑢𝑡𝑉𝑎𝑙𝑢𝑒𝑠←HSTUAttention(𝑄, 𝐾,𝑉)
+25:
+8.5. Fuse and Feed-Forward: 𝐽𝑎𝑔𝑔𝑒𝑑𝐷𝑎𝑡𝑎.𝑣𝑎𝑙𝑢𝑒𝑠←PostAttentionProcess(𝑂𝑢𝑡𝑝𝑢𝑡𝑉𝑎𝑙𝑢𝑒𝑠)
+26: end for
+27: 9. Asynchronously Offload KVs: Background save the updated KV cache to host memory.
+28:
+AsyncKVCacheManager.SubmitOffloadAsync(𝐾𝑉𝐶𝑎𝑐ℎ𝑒𝑀𝑒𝑡𝑎𝑑𝑎𝑡𝑎)
+29: 10. Final Outputs: Finalize outputs and compute final ranking logits.
+30:
+𝐻𝑆𝑇𝑈𝑂𝑢𝑡←HSTUBlock.postprocessor(𝐽𝑎𝑔𝑔𝑒𝑑𝐷𝑎𝑡𝑎.𝑣𝑎𝑙𝑢𝑒𝑠)
+31:
+𝐹𝑖𝑛𝑎𝑙𝐿𝑜𝑔𝑖𝑡𝑠←MLP(𝐻𝑆𝑇𝑈𝑂𝑢𝑡)
+32: return 𝑂𝑢𝑡𝑝𝑢𝑡𝐿𝑜𝑔𝑖𝑡𝑠: (𝐹𝑖𝑛𝑎𝑙𝐿𝑜𝑔𝑖𝑡𝑠)
+
+
+MTServe: Efficient Serving for Generative Recommendation Models with Hierarchical Caches
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 5: Detailed latency (ms) and hit ratio for a 4-layer HSTU Model (𝐿= 4) on KuaiRand-1K.
+Batch Size
+BS=1
+BS=4
+BS=8
+Method
+Recomp.
+GPU-Only
+MTServe
+Recomp.
+GPU-Only
+MTServe
+Recomp.
+GPU-Only
+MTServe
+Step 1-2. Prepare Metadata
+–
+0.1
+0.1
+–
+0.1
+0.1
+–
+0.1
+0.1
+Step 3. Strip Tokens
+–
+0.4
+0.5
+–
+0.4
+0.5
+–
+0.5
+0.6
+Step 4. Embedding
+2.2
+1.2
+1.2
+1.5
+1.3
+1.3
+1.9
+1.5
+1.3
+Step 5. Data Layout
+1.9
+1.6
+1.6
+3.4
+2.4
+2.5
+5.7
+3.6
+3.3
+Step 6. Await Metadata
+–
+0.1
+0.1
+–
+0.1
+0.1
+–
+0.1
+0.1
+Step 7. Update Metadata
+–
+0.05
+0.1
+–
+0.05
+0.2
+–
+0.05
+0.4
+Step 8. HSTU Inference
+16.7
+6.9
+5.1
+31.9
+18.7
+11.3
+64.1
+33.4
+20.4
+Step 9. Offload KV
+–
+–
+0.02
+–
+–
+0.03
+–
+–
+0.03
+Step 10. Postprocess
+0.5
+0.5
+0.5
+0.6
+0.5
+0.6
+0.7
+0.6
+0.7
+Total Latency (ms)
+21.2
+10.8
+9.2
+37.4
+23.7
+16.7
+72.4
+39.9
+27.0
+Speedup vs. Recomp.
+1.00×
+1.96×
+2.30×
+1.00×
+1.58×
+2.24×
+1.00×
+1.81×
+2.68×
+Speedup vs. GPU-Only
+–
+1.00×
+1.17×
+–
+1.00×
+1.42×
+–
+1.00×
+1.48×
+Total Hit Ratio
+–
+63.52%
+98.56%
+–
+63.92%
+98.57%
+–
+64.34%
+98.59%
+KuaiRand-1k. This dataset exhibits a high variance in sequence
+lengths (ranging from 1 to 20,000 tokens), representing a natural
+distribution of user behaviors. It is used to evaluate the system’s
+adaptability across different workloads.
+MT Dataset. The MT dataset is a production trace from Meituan.
+As shown in Table 4, we specifically filtered this dataset to focus
+on users with long-history interactions (4,000–6,000 tokens). By
+eliminating short-sequence noise, the MT dataset provides a sta-
+ble environment to assess the performance of MTServe under
+sustained memory pressure.
+C
+Detailed Memory Footprint Analysis
+This section details the GPU memory allocation for MTServe dur-
+ing active inference (𝐵= 8, 𝐿𝑚𝑎𝑥= 40, 008) using bfloat16 preci-
+sion. The total peak footprint of 41.67 GiB (42,671 MiB), primarily
+driven by the persistent KV cache and the pre-allocated inference
+workbenches.
+C.1
+Persistent KV Cache Storage (∼24.89 GiB)
+This component represents the historical user state retained for
+cross-request reuse. It is pre-allocated as a unified cache_table
+tensor with the shape [𝐿, (𝑁𝑝+ 𝑁𝑜), 2,𝑆𝑝𝑎𝑔𝑒, 𝐻, 𝐷], where 𝐿= 8,
+𝑆𝑝𝑎𝑔𝑒= 32, 𝐻= 4, and 𝐷= 128. The allocation comprises two
+functional regions:
+• Primary Cache (𝑁𝑝): A fixed pool of 40,960 pages reserved for
+active users.
+• Onload Buffer (𝑁𝑜): The staging area capacity is determined by
+the maximum tokens per batch to ensure all incoming data can
+be accommodated: 𝑁𝑜= ⌈(𝐵× 𝐿𝑚𝑎𝑥)/𝑆𝑝𝑎𝑔𝑒⌉= ⌈320, 064/32⌉≈
+10, 008 pages.
+The total allocation for these 50,968 pages (𝑁𝑝+ 𝑁𝑜) occupies ap-
+proximately 25,484 MiB (8 × 50, 968 × 2 × 32 × 4 × 128 × 2 bytes).
+C.2
+Inference Workbench (∼14.65 GiB)
+To eliminate dynamic memory management overhead, each of the
+8 Transformer layers pre-allocates a dedicated "workbench" for
+Table 6: End-to-end latency across different GPU Primary
+Cache capacities (BS=8). Reference Recompute latency: 143.6
+ms.
+Primary Cache
+(#Blocks)
+VRAM
+(approx.)
+Total Latency
+(ms)
+20,480
+10 GB
+84.7
+30,720
+15 GB
+58.9
+40,960
+20 GB
+47.3
+51,200
+25 GB
+41.3
+61,440
+30 GB
+37.0
+intermediate activations. The size is governed by the peak token
+capacity 𝑇𝑚𝑎𝑥= 𝐵× 𝐿𝑚𝑎𝑥= 320, 064. Each layer reserves approxi-
+mately 1,875 MiB, broken down as follows:
+• UVQK Projection Buffer (1,250 MiB): Stores the intermediate
+𝑈,𝑉,𝑄, 𝐾projections. With a hidden dimension of 128 per head
+and 4 heads, this requires 𝑇𝑚𝑎𝑥× (128 × 4 × 4) × 2 ≈1, 250 MiB.
+• Output Buffer (625 MiB): Stores the activation outputs of the
+attention and FFN blocks, requiring 𝑇𝑚𝑎𝑥× 1024 × 2 ≈625 MiB.
+Across all 8 layers, this workbench occupies a total of 15,000 MiB.
+C.3
+Summary
+The remaining memory (∼2,187 MiB) is occupied by static model
+weights and miscellaneous system buffers. This analysis confirms
+that the KV cache and the layer-wise workbench are the dominant
+memory consumers. By virtualizing the KV cache via host RAM, MT-
+Serve effectively caps the persistent state’s GPU footprint, ensuring
+that sufficient memory remains available required by long-sequence
+generative models.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+D
+Extended Experimental Results
+D.1
+Performance on Smaller Model Workload
+To evaluate the adaptability of MTServe across different model
+scales, we conduct additional experiments on a smaller HSTU vari-
+ant with 4 layers (𝐿= 4). This setup reduces computational intensity,
+allowing us to observe system efficiency when the computation-to-
+I/O ratio is lower.
+Table 5 presents the detailed latency breakdown and hit ratios.
+Similar to the observations in the 8-layer model, MTServe (MT-
+Serve) maintains a significant performance lead over both GPU-
+Only and Recompute baselines. At BS=8, MTServe achieves a total
+latency of 27.0 ms, representing a 2.68× speedup over recomputa-
+tion. The consistency of the Total Hit Ratio (∼98.6%) across model
+scales further validates that our tiered storage effectively virtualizes
+GPU memory regardless of the specific model depth.
+D.2
+Sensitivity Analysis of GPU Cache Capacity
+Table 6 provides a concise comparison of the system’s performance
+under various GPU cache capacities. We observe a clear trade-off:
+while increasing the VRAM footprint to 30 GB minimizes latency
+to 37.0 ms, the system remains highly effective even at a 10 GB
+limit, highlighting the flexibility of our hierarchical storage design.
+E
+Related Work
+Generative Recommendation Models (GRMs). The paradigm of
+recommendation systems has significantly evolved in recent years.
+While deep learning-based methods [3, 4, 9, 22, 28, 29, 38, 39] dom-
+inated for nearly a decade, they often face limitations in scalability
+and expressive power. The rise of large language models has ignited
+a shift towards generative recommendation [17, 23, 34]. This novel
+paradigm re-frames recommendation as a sequence transduction
+problem, leveraging the models’ profound semantic understanding
+and open-ended generation capability to directly produce recom-
+mendations, explanations, or personalized content, thereby aiming
+for more expressive, unified, and user-centric systems.
+Systems for GRMs. Recently, there has been a continuous emer-
+gence of generative recommendation systems in the industry, cover-
+ing both training and inference optimizations [1, 5–8, 10, 11, 13, 15,
+16, 18, 20, 21, 24, 27, 30–33, 37, 40]. For instance, OneRec [6] focuses
+on single-stage generative recommendation by adopting an MoE
+architecture and an Iterative Preference Alignment strategy. MT-
+GenRec [30] leverages dynamic embedding tables, automated table
+merging, and two-stage ID deduplication to enhance the scalability
+of industrial models. Unlike these previous systems, MTServe iden-
+tifies the unique optimization potential in the user-side KV cache
+and employs hierarchical storage and asynchronous pipelining to
+effectively improve inference performance.
+Received 20 February 2007; revised 12 March 2009; accepted 5 June 2009
