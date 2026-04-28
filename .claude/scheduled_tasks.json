@@ -1,3 +1,14 @@
 {
-  "tasks": []
+  "tasks": [
+    {
+      "id": "c4dc706e",
+      "cron": "*/10 * * * *",
+      "prompt": "实验队列守护进程 — 读取 experiments/queue_state.json 和 experiments/queue.txt 管理实验链。\n每次触发：\n1. 读 queue_state.json，检查当前实验 log 是否出现 done_string\n2. 如果 status=pending_gpu：检查 log 文件是否存在且有内容（说明 GPU 侧已启动），如有则改 status 为 running 并继续监控\n3. 未完成：报告进度（grep \"step \\|EXP-\" LOG | tail -3），继续等待\n4. 出错（log 有 Traceback/Error/exitcode : 1）：告知用户，state 改为 error，停止\n5. 完成：\n   a. 执行 post_hook（如有 EVAL_MID_CHECKPOINTS：串行 eval ep1/ep2，找最优 checkpoint）\n   b. 读 train_meta.json，更新 experiments/log.md 对应 EXP 的 Results/Analysis\n   c. git add experiments/ && git commit -m \"EXP-XXX complete: ...\" && ./push.sh\n   d. 读 queue.txt，找下一个未完成的实验，nohup 启动，更新 queue_state.json\n   e. 如队列已空：state 改为 done，告知用户，保持 cron 存活（等新追加）",
+      "createdAt": 1777386069127,
+      "recurring": true,
+      "createdBySessionId": "b98b6f86-0c89-464c-9b86-10e5f0e2cb8f",
+      "createdByPid": 4076,
+      "createdByProcStart": "39234"
+    }
+  ]
 }
