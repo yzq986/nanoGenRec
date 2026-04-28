@@ -101,8 +101,7 @@ print(f'  n_seqs={m[\"n_seqs\"]:,}  min_action_level={m.get(\"min_action_level\"
             --name "${NAME}" \
             --use_time_gap \
             --use_action_level \
-            --use_segment_emb \
-            --wandb
+            --use_segment_emb
     fi
     T1=$(date +%s)
     TRAIN_MIN=$(( (T1 - T0) / 60 ))

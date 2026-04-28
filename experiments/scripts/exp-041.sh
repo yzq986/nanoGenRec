@@ -131,8 +131,7 @@ train_entp() {
             --use_time_gap \
             --use_action_level \
             --use_segment_emb \
-            --entp_weight "${ALPHA}" \
-            --wandb
+            --entp_weight "${ALPHA}"
     fi
     T1=$(date +%s)
     TRAIN_MIN=$(( (T1 - T0) / 60 ))

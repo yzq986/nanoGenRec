@@ -3,8 +3,8 @@
   "log": "/tmp/exp041.log",
   "done_string": "EXP-041 complete!",
   "status": "running",
-  "started_at": "2026-04-29 01:57",
-  "pid": 78982,
+  "started_at": "2026-04-29 02:45",
+  "pid": 90281,
   "prev": {
     "exp": "exp-039b.sh",
     "status": "completed",
