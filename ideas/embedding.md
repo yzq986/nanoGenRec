@@ -220,9 +220,9 @@ L_anchor = 1 - cos(embed_finetuned, embed_original)
 
 ## IDEA-onerec-3: QFormer Tokenizer (冻结底座 + Cross-Attention 压缩)
 
-**优先级**: P0
+**优先级**: ~~P0~~ → P2 暂缓
 **来源**: OneRec (arxiv 2506.13695v4) §Tokenizer + BLIP-2 QFormer
-**状态**: 待实现 — EXP-007 验证了直接 fine-tune 无效后的核心方案
+**状态**: 暂缓 — EXP-007 验证了直接 fine-tune 无效；QFormer 是理论上的正确方向，但当前 NTP 已靠 MLP-FSQ + RL 对齐取得进展，embedding 改进路线 ROI 不明确。优先完成 RL 链路 (EXP-037→039) 后再评估
 
 ### 核心思想
 
@@ -334,7 +334,7 @@ Output = CrossAttn(Q, K, V)    (M × D)
 
 | 优先级 | ID | 实验 | 原因 |
 |--------|-----|------|------|
-| **P0** | **IDEA-onerec-3** | **QFormer Tokenizer** | **EXP-007 验证直接 fine-tune 无效; OneRec 核心架构, 解决梯度稀释+信息瓶颈** |
+| ~~P0~~ P2 暂缓 | ~~IDEA-onerec-3~~ | ~~QFormer Tokenizer~~ | 暂缓 — NTP+RL 路线已取得进展，embedding 改线 ROI 不明确，RL 链路完成后再评估 |
 | P1 | IDEA-onerec-0 | Caption Loss (联合训练) | 已实现 `--cap_loss_weight`, 与 QFormer 配合使用 |
 | P1 | IDEA-onemall-3 | Tokenizer 属性增强 Contrastive | OneMall +1.5% HR，可在 QFormer 基础上叠加 |
 | P1 | IDEA-oneloc-3 | Side-info 融合量化输入 | QFormer 输入端可融合 side-info |
