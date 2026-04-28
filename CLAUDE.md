@@ -100,6 +100,14 @@ Three remotes are configured:
 - **reward std≈0 → advantage 爆炸**：稀疏 reward 场景下，一组 candidates reward 全相同 → std≈0 → advantage 无穷大。必须加 `std < 1e-6` group skip + `adv.clamp(-5, 5)` + `log_rho.clamp(-10, 10)`。
 - **step log reward metrics 不打印**：reward metrics 挂在 `_grpo_step` 触发时的 `log_entry`，但 50 步定期打印时 GRPO 不一定触发（2% 概率），导致 reward 数据永远不出现在打印行。正确做法：用累计 `reward_metric_totals / n_grpo_steps` 而非当步瞬时值。
 
+## VL / Embedder 踩坑记录
+
+- **`torch_dtype` 必须显式传**：`Qwen3TextEmbedder` 里默认了 `torch_dtype=torch.float16`，`Qwen3VLEmbedder` 里漏传 → HF fallback 到 **fp32**。2B 模型 fp32 权重 ~10GB + fp32 activations，8192 seq batch=8 就能吃满 40GB OOM。**写 embedder 包装时永远显式传 `torch_dtype` (fp16/bf16)**，不要依赖 HF 默认。
+- **`output_hidden_states=True` 是显存放大器**：`Qwen3VLForEmbedding.forward` 里开了这个 flag 只为取 `hidden_states[-1]`，但 HF 会 materialize 所有 30+ 层的 hidden states（每层 `batch × seq × hidden × dtype_bytes`）。2B 模型 seq=8192 fp32 下这一项就是 20-30GB。如果只要最后一层，直接从 `outputs.last_hidden_state` 或 inner encoder 的默认输出拿，不要开全量 hidden_states。
+- **OOM 诊断必须打印 `text_len + mem alloc/reserved/total`**：光看 "OOM at size=1" 定位不到是 (a) 显存一开始就被占满（dtype/权重问题）还是 (b) 某条超长样本。`memory_allocated == memory_reserved == 总量 97%` 是 dtype 问题的标志信号（不是碎片）。
+- **OOM skip 路径里要 `del sub_inputs + gc.collect() + empty_cache() + synchronize()`**：只调 `empty_cache()` 释放不掉 Python 还持有引用的 GPU tensor，下一条几乎必然再 OOM。
+- **VL 场景别复用 text LFU cache**：text 缓存 key 是文本，VL 场景下相同文本 + 不同图片 → embedding 不同，复用会出错。必须 `if not is_vl and ...` 分叉。
+
 ## Research Agent Mode
 
 当作为自主研究 Agent 运行时（用户指示 "follow research/program.md" 或类似指令）：
