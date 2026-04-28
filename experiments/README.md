@@ -39,3 +39,21 @@ python run.py eval-all --models qwen3-0.6b --only-sid
 
 See [log.md](./log.md) for the structured experiment log following the scientific method:
 Background → Hypothesis → Design → Results → Analysis → Next Steps
+
+### Timing Convention
+
+All Results tables include a `训练耗时` column (training wall time) sourced from `train_meta.json`
+`train.wall_time_s`. This excludes full eval time (~25min per run on 8×A100 with n_recall=1000).
+
+Quick reference for planning new experiments:
+
+| Experiment Type | Typical Train Time |
+|----------------|-------------------|
+| SFT S-tier (17.5M, 1 epoch, 14d data) | ~21min |
+| RF-DPO Hard (807 steps) | ~62min |
+| GRPO/ECPO (G=512, rl_ratio=1.0) | ~80min |
+| Scaling M+ (101M, 1 epoch, 14d) | ~207min |
+
+New experiment scripts must instrument each phase with `$(date +%s)` timestamps and print
+`train=${TRAIN_MIN}min eval=${EVAL_MIN}min total=${TOTAL_MIN}min` at the end. See
+`.claude/skills/experiment/SKILL.md` for the required template.

@@ -43,6 +43,32 @@ Record a new experiment entry in `experiments/log.md` using the project's struct
    - If the experiment has multiple configs (e.g. baseline + variants), include all of them
    - **Smoke test (Phase 0)**: 脚本**必须**在正式实验前加一个 smoke test 阶段，用 ~1% 数据 + 极少步数跑通完整 pipeline（数据加载 → 模型 forward/backward → 保存）。验证通过后再启动大实验。训练脚本应支持 `--dry_run` 参数实现此功能。`set -e` 确保 smoke test 失败时整个脚本停止。
    - **ETA 显示**: 训练脚本**必须**在日志中显示 ETA（预计剩余时间）。每次打印 loss 时同时显示 ETA，epoch 结束时显示总剩余时间。格式: `ETA 2h35m` 或 `ETA 12m30s`。
+   - **每阶段计时**: 脚本**必须**记录每个阶段（训练、eval）的耗时，方便后续实验估算时间预算。每个 config 的训练/eval 前后用 `$(date +%s)` 记录时间戳，训练结束时打印 `(${TRAIN_MIN}min)` 格式的耗时，eval 结束后打印 total。示例：
+     ```bash
+     T0=$(date +%s)
+     torchrun ... run.py grpo-train ...
+     T1=$(date +%s)
+     TRAIN_MIN=$(( (T1 - T0) / 60 ))
+     echo "  Training complete  (${TRAIN_MIN}min)"
+     T2=$(date +%s)
+     torchrun ... run.py eval-ntp ...
+     T3=$(date +%s)
+     EVAL_MIN=$(( (T3 - T2) / 60 ))
+     TOTAL_MIN=$(( (T3 - T0) / 60 ))
+     echo "  Total: train=${TRAIN_MIN}min  eval=${EVAL_MIN}min  total=${TOTAL_MIN}min"
+     ```
+     脚本末尾还应从 `train_meta.json` 读取 `wall_time_s` 打印汇总：
+     ```bash
+     python3 -c "
+     import json, os
+     for name in ['exp-NNN-config-a', 'exp-NNN-config-b']:
+         path = 'experiments/ntp_checkpoints/' + name + '/train_meta.json'
+         if os.path.exists(path):
+             m = json.load(open(path))
+             w = m.get('train', {}).get('wall_time_s', 0)
+             print(f'  {name}: train={int(w)//60}min{int(w)%60}s')
+     " 2>/dev/null || true
+     ```
    - **GPU 利用策略**: 实验环境是 **8 x A100 (40GB)**。根据实验类型选择不同的并行策略：
      - **DDP 训练类实验**（如对比学习微调、NTP 训练）：每个 config 占满全部 8 卡 `torchrun --nproc_per_node=8`，多个 config 串行执行。原因：DDP 8 卡比 4 卡吞吐翻倍 + 对比学习 negatives 翻倍，串行反而总 wall time 更短。
      - **非 DDP 独立实验**（如超参搜索、量化评测）：用 `CUDA_VISIBLE_DEVICES` 将不同 config 分配到不同 GPU 并行跑（`&` 后台 + `wait`）。
