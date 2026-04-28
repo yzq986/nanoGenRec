@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import itertools
 import json
 import os
 import time
@@ -190,12 +191,17 @@ def train_dpo(
     max_steps=None,
     pure_dpo=False,
     dpo_epochs=1,
+    ntp_epochs=1,
+    mid_checkpoint_dir=None,
+    n_items=0,
     wandb_run=None,
 ):
     """Joint NTP + DPO training, or pure DPO (when pure_dpo=True).
 
     Joint mode: NTP (large batches) and DPO (small batches) each step.
         total_loss = ntp_loss + dpo_weight * dpo_loss
+    ntp_epochs > 1 loops the NTP loader multiple times so that the total NTP
+        step count matches the DPO 3-epoch cycle (ratio-matching design).
     Pure DPO mode: only DPO loss, steps driven by DPO pair epochs.
     """
     # ── Load policy model (from SFT checkpoint) ──
@@ -359,7 +365,7 @@ def train_dpo(
             n_batches = min(n_batches, max_steps)
         log(is_main, f"  Pure DPO mode: {n_dpo_batches} batches/epoch × {dpo_epochs} epochs = {n_batches} steps")
     else:
-        n_batches = len(ntp_loader)
+        n_batches = len(ntp_loader) * ntp_epochs
         if max_steps:
             n_batches = min(n_batches, max_steps)
 
@@ -372,8 +378,8 @@ def train_dpo(
                      f"DPO batch={dpo_batch_size}, n_rej={dpo_n_rejected}, "
                      f"β={dpo_beta}, lr={lr}")
     else:
-        log(is_main, f"  Training: {n_batches} steps, NTP batch={batch_size}, "
-                     f"DPO batch={dpo_batch_size}, n_rej={dpo_n_rejected}, "
+        log(is_main, f"  Training: {n_batches} steps (NTP {len(ntp_loader)} steps/epoch × {ntp_epochs} epochs), "
+                     f"NTP batch={batch_size}, DPO batch={dpo_batch_size}, n_rej={dpo_n_rejected}, "
                      f"λ={dpo_weight}, β={dpo_beta}, lr={lr}")
 
     # ── Training loop ──
@@ -551,9 +557,10 @@ def train_dpo(
                       f"gnorm={grad_norm:.2f}{margin_str}, ETA {eta}")
 
     else:
-        # Joint NTP + DPO: iterate over NTP loader, sample DPO each step
-        for step, ntp_batch in enumerate(ntp_loader):
-            if max_steps and step >= max_steps:
+        # Joint NTP + DPO: iterate over NTP loader (possibly multiple epochs), sample DPO each step
+        ntp_iter = itertools.chain.from_iterable(itertools.repeat(ntp_loader, ntp_epochs))
+        for step, ntp_batch in enumerate(ntp_iter):
+            if step >= n_batches:
                 break
 
             optimizer.zero_grad()
@@ -662,6 +669,42 @@ def train_dpo(
                       f"gnorm={grad_norm:.2f}{margin_str}, "
                       f"{toks_per_sec:.0f} tok/s, ETA {eta}")
 
+            # Save mid-epoch checkpoints at each NTP epoch boundary (for multi-epoch runs)
+            ntp_epoch_len = len(ntp_loader)
+            if (is_main and mid_checkpoint_dir and ntp_epochs > 1
+                    and (step + 1) % ntp_epoch_len == 0
+                    and (step + 1) < n_batches):
+                epoch_num = (step + 1) // ntp_epoch_len
+                ep_dir = f"{mid_checkpoint_dir}-ep{epoch_num}"
+                avg_ntp_mid = total_ntp_loss / (step + 1)
+                avg_dpo_mid = total_dpo_loss / (step + 1)
+                mid_summary = {
+                    'n_params': n_params,
+                    'avg_ntp_loss': round(avg_ntp_mid, 6),
+                    'avg_dpo_loss': round(avg_dpo_mid, 6),
+                    'avg_total_loss': round(avg_ntp_mid + dpo_weight * avg_dpo_mid, 6),
+                    'dpo_weight': dpo_weight,
+                    'dpo_beta': dpo_beta,
+                    'ntp_epochs': ntp_epochs,
+                    'mid_epoch': epoch_num,
+                    'n_steps': step + 1,
+                }
+                log(is_main, f"  [mid-checkpoint] Saving epoch {epoch_num} checkpoint to {ep_dir}")
+                save_checkpoint(
+                    output_dir=ep_dir,
+                    probe=raw_policy,
+                    n_clusters_per_layer=n_clusters_per_layer,
+                    n_layers=n_layers,
+                    n_items=n_items,
+                    avg_loss=avg_ntp_mid + dpo_weight * avg_dpo_mid,
+                    n_params=n_params,
+                    sid_cache_dir=sid_cache_dir,
+                    preprocessed_dir=preprocessed_dir,
+                    model_type=model_type,
+                    n_train=len(ntp_tokens_list),
+                    train_summary=mid_summary,
+                )
+
     actual_steps = min(step + 1, n_batches) if 'step' in dir() else 0
     avg_ntp = total_ntp_loss / max(actual_steps, 1)
     avg_dpo = total_dpo_loss / max(actual_steps, 1)
@@ -688,6 +731,7 @@ def train_dpo(
         'difficulty': difficulty,
         'pure_dpo': pure_dpo,
         'dpo_epochs': dpo_epochs if pure_dpo else 0,
+        'ntp_epochs': ntp_epochs if not pure_dpo else 0,
         'total_tokens': total_tokens,
         'wall_time_s': round(elapsed, 1),
         'batch_size': batch_size,
@@ -1309,6 +1353,9 @@ def parse_args():
                         help='Max training steps (default: full epoch)')
     parser.add_argument('--dpo_epochs', type=int, default=1,
                         help='Number of epochs over DPO pairs (pure_dpo mode, default: 1)')
+    parser.add_argument('--ntp_epochs', type=int, default=1,
+                        help='Number of epochs over NTP data in Joint mode (default: 1). '
+                             'Use >1 to cycle NTP for ratio-matching with DPO data volume.')
     parser.add_argument('--pure_dpo', action='store_true',
                         help='Pure DPO mode: no NTP loss, steps driven by DPO pairs')
     parser.add_argument('--difficulty', type=str, default='all',
@@ -1390,6 +1437,7 @@ def main():
                     'max_steps': args.max_steps,
                     'pure_dpo': args.pure_dpo,
                     'dpo_epochs': args.dpo_epochs,
+                    'ntp_epochs': args.ntp_epochs,
                     'n_preference_pairs': len(all_pairs),
                 },
             )
@@ -1455,6 +1503,9 @@ def main():
             max_steps=args.max_steps,
             pure_dpo=args.pure_dpo,
             dpo_epochs=args.dpo_epochs,
+            ntp_epochs=args.ntp_epochs,
+            mid_checkpoint_dir=args.output_dir if args.ntp_epochs > 1 else None,
+            n_items=prep_meta['n_items'],
             wandb_run=wandb_run,
         )
 
