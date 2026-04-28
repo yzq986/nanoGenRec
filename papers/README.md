@@ -20,4 +20,6 @@
 | 2503.02453 | COBRA: Cascaded Sparse-Dense Representations for Generative Recommendations | Yuhao Yang et al. (Baidu) | 2025-03-04 | [pdf](2503.02453.pdf) | [txt](2503.02453.txt) | IDEA-cobra-0 |
 | 2601.18457 | TCA4Rec: Token-level Collaborative Alignment for LLM-based Generative Recommendation | Fake Lin et al. (USTC + Ant Group) | 2026-01-26 | [pdf](2601.18457.pdf) | [txt](2601.18457.txt) | IDEA-tca-0 |
 | 2604.05113 | CRAB: Codebook Rebalancing for Bias Mitigation in Generative Recommendation | Zezhong Fan et al. (Walmart) | 2026-04-06 | [pdf](2604.05113.pdf) | [txt](2604.05113.txt) | IDEA-crab-0 |
+| 2604.23522 | Beyond Static Collision Handling: Adaptive Semantic ID Learning for Multimodal Recommendation at Industrial Scale | Yongsen Pan et al. (Kuaishou + UESTC) | 2026-04-26 | [pdf](2604.23522.pdf) | [txt](2604.23522.txt) | IDEA-adasid-0 |
+| 2603.17540 | Deploying Semantic ID-based Generative Retrieval for Large-Scale Podcast Discovery at Spotify | Edoardo D'Amico et al. (Spotify) | 2026-03-18 | [pdf](2603.17540.pdf) | [txt](2603.17540.txt) | IDEA-glide-0 (updated) |
 | 2410.06682 | mrDPO: Multi-Round DPO with Rebirth Tuning for Video Captioning | Changli Tang et al. (Tsinghua + ByteDance) | 2024-10-11 | [pdf](2410.06682.pdf) | [txt](2410.06682.txt) | — |

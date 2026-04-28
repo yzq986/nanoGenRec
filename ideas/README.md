@@ -8,7 +8,7 @@
 
 | 文件 | 维度 | Ideas 数 | P0 |
 |------|------|---------|-----|
-| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision/Capacity/VRQ/MMQ/GeoSID/DualCodebook/Rebalance) | 14 | ~~sid-0~~ ❌ |
+| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision/Capacity/VRQ/MMQ/GeoSID/DualCodebook/Rebalance/AdaptiveCollision) | 15 | ~~sid-0~~ ❌ |
 | [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性/Caption) | 6 | — |
 | [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale/CascadedSparseDene) | 24 | — |
 | [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum/LAC/OneLive-BOS/CF-SoftLabel) | 20 | ~~onemall-0~~ ❌ (EXP-022 负结果) |
@@ -17,7 +17,7 @@
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | ~~oneloc-4~~ 部分完成 |
 | [ntp-features.md](ntp-features.md) | NTP 特征注入 (TimeGap/ActionType/SegmentEmb/Category/UserProfile/ContTime) | 6 | ~~feat-0/1/2~~ ✅ (EXP-036 全部验证) |
 
-**总计: 92 ideas (0 P0 活跃 / ~53 P1 / 28 P2 / 11 已完成或关闭)**
+**总计: 93 ideas (0 P0 活跃 / ~54 P1 / 29 P2 / 11 已完成或关闭)**
 
 **已完成/关闭**: sid-0 ❌, sid-1(emb) ❌(EXP-007/009), onemall-0 ❌(EXP-022), onemall-4 ✅, onemall-5 ✅, forge-0 ✅, oneloc-4 部分✅, oneloc-2 已被align3-0覆盖, feat-0/1/2 ✅(EXP-036), rpo-0 ✅(理论验证), spot-0 ✅(理论验证), uni-0 ❌(无搜索场景), mtgr-0 ✅(train_packed), lac-0 ✅(EXP-025/036), onerec-3 暂缓P2, static-0 ❌(SIDTrie已实现)
 
@@ -43,6 +43,7 @@ graph LR
         PIT0("pit-0 Co-gen Tokenizer"):::p1
         SID1("sid-1 协同信号 / onemall-3 属性增强"):::p1
         QS0("quasid-0 Hamming Repulsion"):::p1
+        ADASID0("adasid-0 Adaptive Collision"):::p2
         R3V0("r3vae-0 Reference Vector SID"):::p1
         UNIREC1("unirec-1 Capacity-Constrained SID"):::p2
         P2_TOK("sid-3, oneloc-3 &nbsp;(2 P2)"):::p2
@@ -113,6 +114,7 @@ graph LR
     PIT0 --> GLIDE0
     SID1 --> OL5
     SID1 --> QS0
+    QS0 --> ADASID0
 
     OM0 --> OM2
     OM0 --> AL0
@@ -171,6 +173,7 @@ graph LR
 | `hstu` | ULTRA-HSTU (arxiv 2602.16986) | Meta Sparse Attention Co-design |
 | `onerec` | OneRec (arxiv 2506.13695v4) | 快手主站生成式推荐 (400M DAU) |
 | `quasid` | QuaSID (arxiv 2603.00632) | 快手电商 SID 碰撞消歧 |
+| `adasid` | AdaSID (arxiv 2604.23522) | 快手电商自适应碰撞调控 (QuaSID 后续) |
 | `r3vae` | R3-VAE (arxiv 2604.11440) | Reference Vector SID 生成 + 评估指标 |
 | `dualgr` | DualGR (arxiv 2511.12518) | 快手短视频 Exposure-Aware NTP (WWW 2026) |
 | `stamp` | STAMP (arxiv 2604.05329) | 阿里 Semantic Pruning + MTP |
@@ -398,4 +401,5 @@ Text → [Qwen3-0.6B] → 1024D → [MLP-FSQ h=64] → 3-token SID → [NTP S-ti
 | IDEA-nsgr-0 | Architecture | Next-Scale 粗到细重排序 (Meituan CTR +2.89%) |
 | IDEA-flexcode-0 | Tokenizer | 双码本 CF+Semantic + MoE 动态分配 (Roblox) |
 | IDEA-crab-0 | Tokenizer | Codebook Rebalancing 去偏 (Walmart) |
+| IDEA-adasid-0 | Tokenizer | 自适应碰撞调控 (Kuaishou GMV +0.98%) |
 | IDEA-cobra-0 | Architecture | Cascaded Sparse-Dense 生成 (Baidu 200M+ DAU) |
