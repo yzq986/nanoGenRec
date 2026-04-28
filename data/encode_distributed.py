@@ -516,9 +516,7 @@ def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
     start_time = time.time()
     total = len(content_ids)
 
-    # max_workers=1: preprocess involves tokenizer + image processor which share state;
-    # single worker avoids thread-safety issues while still overlapping CPU with GPU
-    prefetch = ThreadPoolExecutor(max_workers=1)
+    prefetch = ThreadPoolExecutor(max_workers=prefetch_depth)
     queue = deque()
     # seed the prefetch queue — includes CPU preprocess (tokenize + image resize)
     for k in range(prefetch_depth):
