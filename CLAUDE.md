@@ -223,14 +223,31 @@ exp-040.sh   /tmp/exp040.log   EXP-040 complete!
 ```
 第4列 POST_HOOK 可选，支持 `EVAL_MID_CHECKPOINTS=NAME`（自动 eval ep1/ep2 中间 checkpoint 并选最优）。
 
+**守护 Cron 参数：间隔 2 分钟，durable=true。**
+
 **守护 Cron prompt（每个 session 只需一个，job ID 记录在 queue_state.json）：**
 ```
 实验队列守护进程 — 读取 experiments/queue_state.json 和 experiments/queue.txt 管理实验链。
 每次触发：
 1. 读 queue_state.json，检查当前实验 log 是否出现 done_string
-2. 未完成：报告进度（grep "step " LOG | tail -1），继续等待
-3. 出错（log 有 Traceback/Error）：告知用户，state 改为 error，停止
-4. 完成：
+2. 如果 status=pending_gpu：检查 log 文件是否存在且有内容（说明 GPU 侧已启动），如有则改 status=running
+3. 未完成：报告进度（grep "step \|EXP-" LOG | tail -3），继续等待
+4. 出错（log 有 Traceback/Error/exitcode : 1）：告知用户，state 改为 error，停止
+
+**早停检查 — 如发现以下任意情况，立即 kill 进程（pkill -f "<脚本名>"），更新 status=stopped，告知用户：**
+- log 中出现 Traceback / Error / exitcode : 1（非 SIGTERM）
+- 连续 3 次检查 step 数字没有增加（训练卡住）
+- reward_mean 持续为 0 超过 50 steps（reward 信号消失）
+- advantage_mean 绝对值 > 50（数值爆炸）
+- clip_fraction > 0.99 且持续 20+ steps（策略崩溃）
+
+**效果预警 — 告知用户但不自动停止（由用户决定是否继续）：**
+- inline eval R@500 明显低于前序 checkpoint（差距 > 10pp）
+- reward_mean 在 100 steps 后仍 < 0.1
+
+（后续实验可在此追加新的早停/预警条件）
+
+5. 完成：
    a. 执行 post_hook（如 EVAL_MID_CHECKPOINTS：串行 eval ep1/ep2，找最优 checkpoint）
    b. 读 train_meta.json，更新 experiments/log.md 对应 EXP 的 Results/Analysis
    c. git add experiments/ && git commit -m "EXP-XXX complete: ..." && ./push.sh
