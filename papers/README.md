@@ -22,4 +22,6 @@
 | 2604.05113 | CRAB: Codebook Rebalancing for Bias Mitigation in Generative Recommendation | Zezhong Fan et al. (Walmart) | 2026-04-06 | [pdf](2604.05113.pdf) | [txt](2604.05113.txt) | IDEA-crab-0 |
 | 2604.23522 | Beyond Static Collision Handling: Adaptive Semantic ID Learning for Multimodal Recommendation at Industrial Scale | Yongsen Pan et al. (Kuaishou + UESTC) | 2026-04-26 | [pdf](2604.23522.pdf) | [txt](2604.23522.txt) | IDEA-adasid-0 |
 | 2603.17540 | Deploying Semantic ID-based Generative Retrieval for Large-Scale Podcast Discovery at Spotify | Edoardo D'Amico et al. (Spotify) | 2026-03-18 | [pdf](2603.17540.pdf) | [txt](2603.17540.txt) | IDEA-glide-0 (updated) |
+| 2604.24432 | Kwai Summary Attention Technical Report | OneRec Team (Kuaishou) | 2026-04-27 | [pdf](2604.24432.pdf) | [txt](2604.24432.txt) | IDEA-ksa-0 |
+| 2604.22881 | MTServe: Efficient Serving for Generative Recommendation Models with Hierarchical Caches | Xin Wang et al. (Meituan + Wuhan Univ + Nvidia) | 2026-04-24 | [pdf](2604.22881.pdf) | [txt](2604.22881.txt) | IDEA-flame-0 (updated) |
 | 2410.06682 | mrDPO: Multi-Round DPO with Rebirth Tuning for Video Captioning | Changli Tang et al. (Tsinghua + ByteDance) | 2024-10-11 | [pdf](2410.06682.pdf) | [txt](2410.06682.txt) | — |

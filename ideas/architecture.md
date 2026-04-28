@@ -32,8 +32,10 @@ AutoregressiveNTPModel (当前 6-layer decoder, beam=5)
 │   └── Fake Item Token + DC Loss + Value-Aware Decoupling, GMV +1.34%
 ├── IDEA-orec-think-0: In-Text Reasoning (快手)
 │   └── Itemic Alignment + Reasoning Scaffolding + Multi-validity Reward
-└── IDEA-reg4rec-0: MoE 并行量化 + 推理自反思 (阿里)
-    └── MPQ 无序 token + PARS/MSRA/CORP 推理增强
+├── IDEA-reg4rec-0: MoE 并行量化 + 推理自反思 (阿里)
+│   └── MPQ 无序 token + PARS/MSRA/CORP 推理增强
+└── IDEA-ksa-0: Summary Attention (快手 OneRec 团队)
+    └── O(n/k) KV cache，learnable summary tokens，8x compression + 正交于 GQA/MLA
 ```
 
 ---
@@ -969,3 +971,68 @@ COBRA 发现纯 SID 生成存在信息损失（量化丢细粒度），纯 dense
 2. Full cascaded 需要序列长度翻倍 → 训练成本翻倍
 3. 与 IDEA-flexcode-0 的区别: FlexCode 在 tokenizer 层融合 CF+semantic, COBRA 在 generation 层融合 sparse+dense
 4. NTP 后阶段考虑 full architecture change → P2, 但 Phase 1 BeamFusion 可以更早尝试
+
+---
+
+## IDEA-ksa-0: Summary Attention (Kwai Summary Attention)
+
+**优先级**: P1
+**来源**: KSA Technical Report (Kuaishou OneRec Team, arxiv 2604.24432, Apr 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+Kwai Summary Attention (KSA) 是快手 OneRec 团队提出的新型注意力机制，在 Full Attention 的 O(n) KV cache 和 Linear/SWA 的 O(1)/O(w) 之间开辟了 **O(n/k) 路径** — 通过 learnable summary tokens 实现语义级别的序列压缩。
+
+**机制**:
+1. 将输入序列切分为固定大小的 chunk (默认 k=8 tokens/chunk)
+2. 每个 chunk 末尾注入一个 learnable summary token
+3. Text tokens 只看 local sliding chunk (相邻 chunk) + distant summary tokens
+4. Summary tokens 只看当前 chunk 内的 text tokens → 蒸馏该 chunk 的语义
+
+**Hybrid-KSA**: 3:1 混合比例 (3 层 KSA + 1 层 Full Attention)，保持全局精确注意力的同时大幅降低平均 KV cache。
+
+### 关键实验数据
+
+| 指标 | Full Attention | Hybrid-KSA | 提升 |
+|------|---------------|-----------|------|
+| RULER-128K (CPT) | 65.86 | 71.67 | +5.81 |
+| RULER-128K (Scratch) | 48.75 | 65.35 | +16.60 |
+| KV Cache @128K | 18.6 GB | 7.5 GB | 2.5x 减少 |
+| MMLU (CPT) | 71.83 | 70.50 | -1.33 (微降) |
+| GSM8K (Scratch) | 48.29 | 59.14 | +10.85 |
+
+**核心优势**:
+- **正交于 GQA/MLA**: KSA 压缩 token 数，GQA 压缩 head 数，MLA 压缩 embedding dim → 三者组合可达 8x 进一步压缩
+- **保留长程依赖**: 与 SWA (完全丢弃窗口外) 和 Linear Attention (固定 state 有损压缩) 不同，summary tokens 以可解释方式保留远距信息
+- **开源**: https://github.com/Kuaishou-OneRec/KSA
+
+**CPT 训练策略**: 三阶段 (1) Summary token adaptation: 独立 Q/K/V 权重 + 多粒度蒸馏 (layer-wise MSE + distribution-wise KL + objective-wise LM loss); (2) Parameter annealing: 线性插值将独立权重融入主 LLM 权重; (3) Full parameter tuning + 序列长度扩展。
+
+### 与当前项目的关联
+
+- **直接适用于 GR 长序列**: OneRec 团队明确表示下一步是 "Unifying with OneRec — 构建基于 KSA 的生成式推荐基础模型，将超长用户行为序列压缩为层次化 summary tokens"
+- **解决 IDEA-oneloc-4 (序列长度 scaling) 的计算瓶颈**: 当前 EXP-015 显示 scale up 模型收益递减，但序列长度 scaling 尚未验证 — KSA 可以让序列长度 8x 增长而 KV cache 只增长 1x
+- **与 IDEA-hstu-0 (Sparse Attention) 互补**: HSTU 使用稀疏 attention pattern，KSA 使用 summary compression — 可以组合
+- **与 IDEA-earn-0 (Register Token) 互补**: EARN 在输入首尾放 register token 减少后期层的 KV cache，KSA 在每个 chunk 放 summary token 减少全序列 KV cache — 方向正交
+- **与 IDEA-gems-0 (Multi-Stream) 互补**: GEMs 用多 stream 切分超长序列，KSA 用 summary tokens 压缩 — 可以先 KSA 压缩再 multi-stream
+
+### 实验设计草案
+
+**Phase 1 — 在当前 NTP 模型中验证 summary attention**:
+- 修改 `ntp/model.py` 的 attention layers: 将 3/4 层替换为 KSA (summary attention)，保留 1/4 为 full attention
+- Chunk size k=8 (对应 8 个 SID token ≈ 2-3 个 item，合理的 item-level summarization 粒度)
+- 对比: 原始 full attention vs Hybrid-KSA，在 14d 训练窗口上评估 PPL/R@500
+- 关注: 短序列场景 (我们当前 avg 21-30 items/user ≈ 63-90 tokens) KSA 是否有优势或退化
+
+**Phase 2 — 序列长度扩展验证**:
+- 利用 KSA 的 KV cache 减少，将训练序列长度从当前 ~200 tokens 扩展到 1000+ tokens
+- 验证 IDEA-oneloc-4 Phase 2 的假设: 更长序列是否改善 Recall
+
+### 关键问题
+
+1. 当前序列很短 (~90 tokens)，KSA 的优势在长序列才显现 — Phase 1 可能看不到效率收益
+2. Summary token 在 SID 语义空间中是否能有效压缩? LLM 的 summary 是语义级压缩，SID 的 summary 可能是行为模式级压缩
+3. CPT 三阶段训练策略是否适用于从零训练的小模型 (17.5M params)?
+4. 与 Flash Attention 的兼容性 — KSA 的 mixed attention mask 需要 custom kernel
+5. **优先级判断**: 在序列长度 scaling 成为瓶颈之前，KSA 的优先级偏低 → P1 但排在 RL 对齐 (EXP-037/038) 之后

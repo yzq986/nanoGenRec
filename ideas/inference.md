@@ -137,6 +137,14 @@ FLAME 是 GR 模型的专用推理系统，三个核心模块:
 1. 研究阶段优先级低，生产部署时再详细评估
 2. 部分优化 (如 FlashAttention) 已内置在现代 PyTorch 中
 
+> **补充 (2026-04-28)**: MTServe (arxiv 2604.22881, Meituan + Wuhan Univ + Nvidia) 提出了 GR 专用的分层 KV cache 管理系统:
+> - **问题**: GR 模型需要为每个用户持久化独立 KV cache (vs. LLM 共享 system prompt prefix)。HSTU 模型仅 1000 用户 × 10K tokens 就需 160GB，远超单卡 A100 80GB
+> - **方案**: GPU VRAM (primary) + Host RAM (backup) 两级存储，Page-Chunk 双粒度管理 (GPU 细粒度 paging + CPU 粗粒度 chunking)
+> - **关键技术**: (1) 异步 offload pipeline 掩藏 I/O 延迟; (2) LRU 替换策略保持 temporal locality; (3) 零拷贝逐出
+> - **结果**: 美团生产数据集 3.1x speedup (BS=8: 26.6ms vs 82.4ms), hit ratio 98.7%，KuaiRand-1K 3.04x speedup
+> - **与 FLAME 互补**: FLAME 解决 CPU-GPU 计算解耦 + kernel fusion，MTServe 解决跨请求 KV cache 持久化和分层存储
+> - **与 EARN 互补**: EARN 压缩 KV cache 大小 (register tokens → 80% reduction)，MTServe 扩展 KV cache 容量 (GPU→RAM 层级化)
+
 ---
 
 ## IDEA-earn-0: Register Token 压缩推理 (KV Cache 减少 80%)
