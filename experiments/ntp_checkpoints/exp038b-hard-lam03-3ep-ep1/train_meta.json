@@ -23,5 +23,37 @@
     "ntp_epochs": 3,
     "mid_epoch": 1,
     "n_steps": 406
+  },
+  "eval": {
+    "ppl": 23.6289,
+    "layer_ppl": [
+      313.6219,
+      9.6512,
+      4.434
+    ],
+    "avg_loss": 3.162472,
+    "depth_hit@10": [
+      0.2037,
+      0.176,
+      0.1715
+    ],
+    "depth_hit@10_indep": [
+      0.2028,
+      0.8249,
+      0.8639
+    ],
+    "depth_acc_beam": [
+      0.033,
+      0.019,
+      0.019
+    ],
+    "target_sid_found_rate": 0.621,
+    "n_eval_positions": 79702,
+    "n_eval_items": 26450,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.112,
+    "item_recall@50": 0.268,
+    "item_recall@100": 0.368,
+    "item_recall@500": 0.621
   }
 }

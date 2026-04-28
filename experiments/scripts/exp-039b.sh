@@ -1,16 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-# EXP-039B: ECPO on exp037-medium (Features 路线第四步 — RL 链路终点)
+# EXP-039B: ECPO on exp038b-ep1 (Features 路线第四步 — RL 链路终点)
 # Date: 2026-04-28
 #
 # RL 对齐链路:
 #   exp036-full-features (SFT)
-#   → EXP-037 SP-DPO → exp037-medium   (ref for this exp, skip RF-DPO)
+#   → EXP-037 SP-DPO → exp037-medium
+#   → EXP-038B RF-DPO → exp038b-hard-lam03-3ep-ep1 (best ep, R@500=62.1%)
 #   → [本实验: ECPO δ=0.1]
 #
 # 对标: EXP-029 ECPO on-policy (非 features 版本，从 exp020 起跑 → 67.8%)
-# EXP-038 RF-DPO 因退化被跳过，直接从 SP-DPO checkpoint 做 ECPO
+# EXP-038B ep1 R@500=62.1% (持平 SP-DPO ref), ep2/ep3 NTP 过拟合退化
 # 验证 features + ECPO 能否超越 exp020 SOTA (R@500=66.2%)
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -19,7 +20,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd "${REPO_ROOT}"
 
 N_GPUS="${N_GPUS:-$(python -c 'import torch; print(max(1, torch.cuda.device_count()))')}"
-SFT_CKPT="experiments/ntp_checkpoints/exp037-medium"   # RF-DPO output from EXP-038
+SFT_CKPT="experiments/ntp_checkpoints/exp038b-hard-lam03-3ep-ep1"   # RF-DPO ep1 (best: R@500=62.1%, matches ref)
 NTP_DATA="experiments/ntp_data/exp023-14d-features"
 SID_CACHE="experiments/sid_cache/exp013-4096x3-12d-binary"
 BEHAVIOR_CACHE="/mnt/workspace/gr-demo-behavior-cache"
@@ -46,8 +47,8 @@ echo ""
 
 # Sanity checks
 if [ ! -f "${SFT_CKPT}/train_meta.json" ]; then
-    echo "ERROR: exp037-medium checkpoint not found at ${SFT_CKPT}"
-    echo "Run exp-038.sh first."
+    echo "ERROR: exp038b-ep1 checkpoint not found at ${SFT_CKPT}"
+    echo "Run exp-038b.sh first."
     exit 1
 fi
 if [ ! -d "${BEHAVIOR_CACHE}/${DATE_END}" ]; then
@@ -134,11 +135,11 @@ echo ">>> Final comparison:"
 python3 -c "
 import json, os
 results = [
-    ('exp020-hard-lam03', 'SOTA (no features)'),
-    ('exp036-full-features', 'SFT w/ features'),
-    ('exp037-medium',       'SP-DPO'),
-    ('exp037-medium',   'RF-DPO'),
-    ('${NAME}',             'ECPO (this)'),
+    ('exp020-hard-lam03',                  'SOTA (no features)'),
+    ('exp036-full-features',               'SFT w/ features'),
+    ('exp037-medium',                      'SP-DPO'),
+    ('exp038b-hard-lam03-3ep-ep1',         'RF-DPO ep1 (ref)'),
+    ('${NAME}',                            'ECPO (this)'),
 ]
 for name, desc in results:
     path = f'experiments/ntp_checkpoints/{name}/train_meta.json'
