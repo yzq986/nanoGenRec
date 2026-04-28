@@ -348,26 +348,65 @@ gr_demo/
 
 ---
 
-### 阶段六：RL 对齐 Phase 3/4 — GRPO + ECPO (EXP-026 ~ 033)
-
-#### RL 完整演进路径
+### 实验谱系图
 
 ```
-EXP-026: GRPO/ECPO 原型 + Pluggable Reward（踩坑记录）
-    ↓  reward 太稀疏 (clip=99%)
-EXP-027: grpo_weight 对齐 RF-DPO (w=0.03, ratio=1.0)
-    ↓  BehaviorReward 覆盖率仍低
-EXP-028: WeightedBehaviorReward (100% coverage)
-    ↓  clip=99%，off-policy ratio 过大 → R@500 崩至 2%
-EXP-029: On-Policy Beam Search ← 关键修复
-    ↓  R@500=67.8%，超越 SFT SOTA
-EXP-030: A2PO + NLL Reg + HEPO Prefix Scoring
-    ↓  边际效益低（67.0~67.7%），持平 EXP-029
-EXP-031: Features SFT (exp025) + Full RL Stack
-    ↓  Config B (exp020 起点) = 67.7%；Config A (exp025 起点) = 61.8% ❌
-EXP-033: Features Bug 修复验证
-    →  clip 率不变 (96.2%)，真因是 ref/policy KL 不对齐
+EXP-016 (NTP baseline, R@500=58.5%)
+    │
+    ├──[RF-DPO]──► EXP-017 SP-DPO (68.3%)
+    │                   │
+    │              [Joint NTP+DPO]
+    │                   │
+    │              EXP-018 Pure DPO ✗ (catastrophic forgetting)
+    │                   │
+    │              EXP-019 λ sweep (66.4%)
+    │                   │
+    │              EXP-020 λ=0.03 (66.2%) ◄─── SFT SOTA baseline
+    │                   │
+    │    ┌─────────────┤
+    │    │             │
+    │    │        [Side Features]
+    │    │             │
+    │    │        EXP-022 InfoNCE ✗ (56~59%)
+    │    │             │
+    │    │        EXP-023 time_gap/action/segment (55~61.2%)
+    │    │             │  ← 信息泄漏
+    │    │        EXP-024 Feature Shift ✗ (52~60%)
+    │    │             │
+    │    │        EXP-025 Beam Feature Passing (63.6%)
+    │    │          exp025-beam-passes ◄─── Features SFT 起点
+    │    │             │
+    │    │        [EXP-036 planned]
+    │    │        Clean Features NTP (from scratch) ◄─── 当前进行中
+    │    │
+    │    └──[GRPO+ECPO]──────────────────────────────────────────
+    │                   │
+    │              EXP-026 GRPO/ECPO 原型 (clip=99%, reward 稀疏)
+    │                   │
+    │              EXP-027 grpo_weight 对齐 (中断)
+    │                   │
+    │              EXP-028 WeightedBehaviorReward ✗ (R@500=2%, off-policy崩)
+    │                   │
+    │              EXP-029 On-Policy Beam (67.8%) ◄─── RL SOTA
+    │                   │
+    │              EXP-030 A2PO+NLL+HEPO (67.0~67.7%, 边际效益低)
+    │                   │
+    │         ┌─────────┴──────────────────┐
+    │         │                            │
+    │    [exp020起点]                 [exp025起点]
+    │    EXP-031B (67.7%)            EXP-031A (61.8%) ← clip=96% bug
+    │         │                            │
+    │    EXP-029 SOTA持平            EXP-033 bug修复验证 (61.0%)
+    │                                      │
+    │                               EXP-034 ref对齐 (95% clip, 进行中)
+    │                                      │
+    │                               EXP-035 Sampling T=1.0 (R@500=61.5%)
+    │                               ← adv_std改善，coverage不足
+    │
+    └── [待定] EXP-036 features NTP → 新 RL 起点？
 ```
+
+### 阶段六：RL 对齐 Phase 3/4 — GRPO + ECPO (EXP-026 ~ 035)
 
 #### 详细结果表
 
@@ -380,6 +419,8 @@ EXP-033: Features Bug 修复验证
 | EXP-030 | A2PO + NLL Reg + HEPO | 14.1~14.5 | 12.5~13.3% | 67.0~67.7% | — | 边际效益低；NLL reg 略有负效果 |
 | EXP-031 | Features SFT 起点 (Config A/B) | 14.6/24.2 | 12.5/11.1% | **67.7%**/61.8% | 92%/96% | Config B 持平；Config A clip 率异常 |
 | EXP-033 | Features bug 修复验证 | 24.62 | 10.3% | 61.0% | 96.2% | 假设证伪；真因：ref≠policy 起点 |
+| EXP-034 | ref=exp025 对齐（中断） | — | — | — | 95% | clip 仍高；根因：NTP joint training softmax 漂移 |
+| EXP-035 | Constrained Sampling T=1.0 G=64 | — | 10.2% | 61.5% | 94.8% | adv_std=0.595 改善；但 coverage=89% 信号弱 |
 
 > *EXP-026 recall 为 inline eval（beam=500, 250 samples），不可与全量 baseline 直接比较。
 
@@ -391,23 +432,30 @@ EXP-033: Features Bug 修复验证
 | reward std≈0 → advantage 爆炸 | 稀疏 reward，整组 reward 相同 | `std<1e-6` group skip + `adv.clamp(-5,5)` + `log_rho.clamp(-10,10)` |
 | BehaviorReward 命中率 0.16% | 全 SID 精确匹配 | 加 prefix cascade fallback → L0 覆盖 24% |
 | off-policy clip=99%，R@500 崩至 2% | ref model beam search → candidates 与 policy 分布偏离 | On-policy beam search (EXP-029) |
-| Features 起点 clip 率 96% vs baseline 92% | policy(exp025)≠ref(exp020)，初始 KL 大 | 待 EXP-034：用 exp025 作为 ref model |
+| clip 率 92~96% 居高不下 | NTP joint training 驱动 softmax 漂移；与 beam/sampling 无关 | 分析中；clip 是虚警，adv_std 才是核心指标 |
+
+#### 核心 RL 认知更新（EXP-034/035 分析）
+
+- **clip 率是虚警**：所有实验 clip=92~96%，与 beam/sampling/ref 对齐无关，是 NTP loss 驱动的 softmax 漂移副产品
+- **真正的信号质量指标**：`adv_std`（advantage 标准差）和 `kl_mean`（KL 散度，新增）
+- **sampling 优于 beam**：adv_std 从 ≈0 提升到 0.595，但 G=64 coverage 不足限制了效果
+- **上游 SFT 是瓶颈**：exp025（features SFT）R@500=63.6% < exp020（66.2%），特征有效性未验证 → 暂停 RL，回到 NTP
 
 #### 当前最优结果对比
 
 | Checkpoint | 路线 | PPL | R@10 | R@500 | 状态 |
 |-----------|------|-----|------|-------|------|
 | exp020-hard-lam03 | NTP+RF-DPO | 16.3 | 14.1% | 66.2% | SFT SOTA |
-| **exp029-ecpo-onpolicy** | NTP+RF-DPO+ECPO | **14.1** | 13.0% | **67.8%** | **✅ 当前 SOTA** |
+| **exp029-ecpo-onpolicy** | NTP+RF-DPO+ECPO | **14.1** | 13.0% | **67.8%** | **✅ 当前 RL SOTA** |
 | exp031-baseline | NTP+RF-DPO+ECPO+full stack | 14.6 | 12.5% | 67.7% | 与 exp029 持平 |
+| exp025-beam-passes | features SFT (beam-passes) | 25.22 | 10.4% | 63.6% | features 起点（待替换） |
 
-**待做**：
-- **EXP-032**（planned）：G×batch sweep，G=512/128/32 × batch=4/16/64，验证 context diversity 假设
-- **EXP-034**（planned）：exp025 作为 ref model，验证 ref/policy KL 对齐假设
+**当前进行中**：
+- **EXP-036**（running）：Clean Features NTP from scratch，验证 features 是否真正有效
 
 ---
 
-**总结一句话**：`NTP(14d, S-tier) → RF-DPO(λ=0.03) → ECPO(on-policy, G=512)` 路线已验证，R@500 从 baseline 58.5% 提升至 **67.8%**（+9.3pp）。
+**总结一句话**：`NTP(14d, S-tier) → RF-DPO(λ=0.03) → ECPO(on-policy, G=512)` 路线已验证，R@500 从 baseline 58.5% 提升至 **67.8%**（+9.3pp）。下一步：验证 features NTP（EXP-036），若有效则建立新 SFT 起点再继续 RL。
 
 ## NTP Scaling Law (EXP-015)
 
