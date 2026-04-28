@@ -1,0 +1,1364 @@
+NEZHA: A Zero-sacrifice and Hyperspeed Decoding Architecture
+for Generative Recommendations
+Yejing Wang∗†
+yejing.wang@my.cityu.edu.hk
+City University of Hong Kong
+Hong Kong SAR, China
+Shengyu Zhou†
+Alibaba Group
+Beijing, China
+Jinyu Lu
+Alibaba Group
+Beijing, China
+Ziwei Liu
+City University of Hong Kong
+Hong Kong SAR, China
+Langming Liu
+Alibaba Group
+Hangzhou, China
+Maolin Wang
+City University of Hong Kong
+Hong Kong SAR, China
+Wenlin Zhang
+City University of Hong Kong
+Hong Kong SAR, China
+Feng Li
+Alibaba Group
+Beijing, China
+Wenbo Su
+Alibaba Group
+Beijing, China
+Pengjie Wang
+Alibaba Group
+Beijing, China
+Jian Xu
+Alibaba Group
+Beijing, China
+Xiangyu Zhao‡
+xianzhao@cityu.edu.hk
+City University of Hong Kong
+Hong Kong SAR, China
+Abstract
+Generative Recommendation (GR), powered by Large Language
+Models (LLMs), represents a promising new paradigm for industrial
+recommender systems. However, their practical application is se-
+verely hindered by high inference latency, making them infeasible
+for high-throughput, real-time services and limiting their overall
+business impact. While Speculative Decoding (SD) has been pro-
+posed to accelerate the autoregressive generation process, existing
+implementations introduce new bottlenecks: they typically require
+separate draft models and model-based verifiers, which require
+additional training and increase latency overhead. In this paper, we
+address these challenges with NEZHA, a novel architecture that
+achieves hyperspeed decoding for GR systems without sacrificing
+recommendation quality. Specifically, NEZHA integrates a nimble
+autoregressive draft head directly into the primary model, enabling
+efficient self-drafting. This design, combined with a specialized
+input prompt structure, preserves the integrity of sequence-to-
+sequence generation. Furthermore, to tackle the critical problem
+of hallucination—a major source of performance degradation—we
+introduce an efficient, model-free verifier based on a hash set. We
+demonstrate the effectiveness of NEZHA through extensive ex-
+periments on public datasets and have successfully deployed the
+system on Taobao since October 2025, achieving 1.2% business
+∗Work was conducted during the internship of Yejing Wang at Alibaba.
+†Yejing Wang and Shengyu Zhou contributed equally to this work..
+‡Xiangyu Zhao is the corresponding author.
+This work is licensed under a Creative Commons Attribution-NonCommercial-
+NoDerivatives 4.0 International License.
+WWW ’26, Dubai, United Arab Emirates
+© 2026 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2307-0/2026/04
+https://doi.org/10.1145/3774904.3792797
+improvement, translating to billion-level advertising revenue
+and serving hundreds of millions of daily active users. The
+code is available at https://github.com/Applied-Machine-Learning-
+Lab/WWW2026_NEZHA.
+CCS Concepts
+• Applied computing →Electronic commerce; • Information
+systems →Information retrieval.
+Keywords
+Generative Recommendations; Speculative Decoding
+ACM Reference Format:
+Yejing Wang, Shengyu Zhou, Jinyu Lu, Ziwei Liu, Langming Liu, Maolin
+Wang, Wenlin Zhang, Feng Li, Wenbo Su, Pengjie Wang, Jian Xu, and Xi-
+angyu Zhao. 2026. NEZHA: A Zero-sacrifice and Hyperspeed Decoding Ar-
+chitecture for Generative Recommendations. In Proceedings of the ACM Web
+Conference 2026 (WWW ’26), April 13–17, 2026, Dubai, United Arab Emirates.
+ACM, New York, NY, USA, 10 pages. https://doi.org/10.1145/3774904.3792797
+1
+Introduction
+The extraordinary capabilities of Large Language Models (LLMs)
+have catalyzed a wide range of applications in recommender sys-
+tems that leverage LLMs’ abilities [47, 51, 57], including world
+knowledge integration [12, 38], representation learning [31], and
+semantic understanding [1, 49]. Among these LLM-driven solu-
+tions, Generative Recommendation (GR) [13, 20, 44, 52] has rapidly
+emerged as a dominant paradigm due to its outstanding perfor-
+mance and notable strengths in addressing the cold-start problem
+and enhancing recommendation diversity [30, 36]. Consequently,
+GR has seen widespread adoption in various industrial applications
+and production systems [3, 15, 37, 55, 56].
+arXiv:2511.18793v2  [cs.AI]  3 Feb 2026
+
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Yejing Wang, et al.
+Method
+Model
+Size
+Beam
+Size
+Prefill
+Decode
+System
+Total
+Vanilla
+3B
+512
+1.58
+6.87
+0.96
+9.41
+Vanilla
+0.6B
+1.0
+2.95
+0.91
+4.86
+NEZHA
+0.6B
+1.0
+0.78
+0.08
+1.86
+Table 1: Serving latency decomposition.
+The typical GR deployment involves three stages [24]: (a) item
+tokenization [18, 35, 53], (b) LLM training [7, 45], and (c) LLM serv-
+ing [26, 39, 40]. While the first two stages are performed offline, the
+serving latency of the final stage presents a formidable obstacle to
+large-scale industrial adoption, particularly in latency-sensitive sce-
+narios [34]. For instance, in Taobao’s search advertising, a business
+unit that accounts for over a quarter of the company’s revenue, the
+core service requires a response time of less than 30 milliseconds.
+However, the latency of the current GR solution we deployed in
+this scenario exceeds 1 second, thus hindering the full commercial
+potential of real-time serving.
+LLM inference proceeds in two stages: a prefill stage, where the
+LLM processes the input prompt in parallel, followed by a decoding
+stage that autoregressively generates output tokens. For GR, this de-
+coding is typically performed using beam search [10] to produce a
+diverse set of high-quality candidate items, leading to the excessive
+inference latency as identified in prior literature [23, 39]. For in-
+stance, Lin et al. [26] reports that the decoding can consume nearly
+90% of the total inference time for Llama-7B. To empirically validate
+this claim, we profiled the serving latency and decomposed it into
+three components: prefilling, decoding, and system overhead. The
+results are presented in Table 1, where all timings are normalized by
+the prefilling time of the 0.6B model for confidentiality. We bench-
+marked two LLMs of different sizes (0.6B and 3B) using a beam size
+of 512, a common setting for recall tasks in industrial practice. The
+first two rows reveal that decoding consistently accounts for over
+60% of the total inference time (prefilling + decoding), corroborat-
+ing the findings in [26]. Furthermore, we observe that while model
+compression significantly reduces the decoding time, the prefill-
+ing and system overheads remain relatively stable. These empirical
+observations underscore the urgent need for a dedicated solution to
+accelerate the decoding stage.
+Algorithm-level solutions for this problem, i.e., efficient LLM
+inference, broadly fall into two categories [33]: KV-cache optimiza-
+tion [40] and speculative decoding (SD) [26, 46]. However, optimiz-
+ing the KV cache alone is often insufficient: these techniques, e.g.,
+FlashAttention [6], yield negligible efficiency gains when gener-
+ating the extremely short sequences (e.g., 3-4 tokens) common in
+GR [5]. The results presented in Table 1, which already incorpo-
+rate KV-cache enhancements, still significantly exceed the require-
+ments of industrial applications. Consequently, this paper focuses
+on developing SD solutions to bridge the efficiency gap. Despite
+considerable efforts for efficient LLM inference [41, 48, 50], a de-
+ployable solution for industrial-scale GR systems remains elusive.
+Existing SD frameworks tailored for applications exhibit critical
+shortcomings in both core stages: drafting and verification [48, 50]:
+• Drafting: Current approaches predominantly rely on external
+draft models, such as smaller language models [26, 46] or retrieval
+models [8, 39]. This strategy not only necessitates the costly
+maintenance of an extra model but also introduces additional
+inference overhead, offsetting the intended speed gains.
+• Verification: Prevailing methods still depend on invoking the
+original large model to validate the drafted tokens [8, 26, 39,
+46]. This reliance means they fail to completely avoid the time-
+consuming decoding steps of LLM, thereby placing a fundamental
+ceiling on the achievable acceleration.
+For these reasons, we design the Nimble drafting and Efficient
+verification, thus propose a Zero-sacrifice and Hyperspeed decod-
+ing Architecture for industrial-scale GR systems (NEZHA). Specifi-
+cally, NEZHA possesses a self-drafting capability [2, 25, 41]. This
+allows the model to efficiently predict the next item by itself, thus
+avoiding the training and serving of extra models. Additionally, we
+design a model-free verification method specific to GR problems:
+we attribute the poor performance of drafted results to hallucina-
+tion (invalid semantic IDs) and verify the draft item using a hash
+set. We further boost performance by incorporating the autore-
+gressive drafting head [4, 25] and setting prompts with special
+tokens to enforce the sequential integrity required for GR. The
+proposed NEZHA achieves satisfactory performance and hyper-
+speed decoding, as outlined in Table 1, and has been successfully
+deployed in Taobao, impacting billions-level advertising revenues.
+We summarize the major contributions of this paper as follows:
+• We identify high-latency decoding as the critical barrier to the
+large-scale deployment of GR systems. To address this, we pro-
+pose NEZHA, an accelerated architecture designed to meet strict
+industrial latency requirements.
+• We design a novel framework combining a nimble self-drafting
+mechanism with an efficient, model-free verifier. This approach
+preserves the high-fidelity output of autoregressive models while
+effectively mitigating hallucinations, thus ensuring the zero-
+sacrifice recommendation quality.
+• We conduct extensive experiments on three public datasets across
+two LLM backbones. The results demonstrate the superior effec-
+tiveness, efficiency, and adaptability of NEZHA.
+• We validate NEZHA’s performance on a large-scale industrial
+dataset and detail its successful deployment in Taobao, a leading e-
+commerce platform in China. The system now serves hundreds
+of millions of daily active users and drives billion-level
+increases in advertising revenue.
+Significance. Our work establishes a pivotal advancement in de-
+ploying generative recommendation (GR) systems under stringent
+latency constraints, unlocking their practical viability in real-time,
+large-scale industrial applications. By effectively addressing the
+critical challenge of excessive response time that has long hindered
+GR adoption, we not only demonstrate a highly efficient serving
+framework tailored for time-sensitive scenarios but also validate its
+substantial business impact through successful deployment in produc-
+tion. This breakthrough redefines the operational boundaries of GR,
+transforming it from a latency-prohibitive paradigm into a scalable,
+high-performance solution.
+2
+Preliminary
+This section provides the necessary background on the standard
+deployment of GR and existing acceleration techniques for autore-
+gressive decoding, with a focus on SD.
+
+
+NEZHA: A Zero-sacrifice and Hyperspeed Decoding Architecture for Generative Recommendations
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Algorithm 1 Beam Search for GR Decoding.
+Input: LLM M𝑝, query 𝑞, user sequence 𝑥, beam size 𝐾, length of
+semantic ID 𝐿
+Output: ˆ𝑌𝐿(Top 𝐾items represented by semantic IDs)
+1: Initialization: 𝑙= 1, ˆ𝑌0 = {∅}
+2: for 𝑙≤𝐿do
+3:
+for ˆ𝑦∈ˆ𝑌𝑙−1 do
+4:
+Prefilling contexts with LLM: 𝒉𝑙= M𝑝(𝑞,𝑥, ˆ𝑦)
+5:
+Calculating the probabilities of the next token:
+𝒑𝑙= lm_head(𝒉𝑙)
+6:
+Selecting 𝐾tokens with top probabilities: {𝑡𝑘
+𝑙, 𝑝𝑘
+𝑙}𝑘≤𝐾
+7:
+ˆ𝑌𝑙←ˆ𝑌𝑙∪[ ˆ𝑦,𝑡𝑘
+𝑙] for 𝑘≤𝐾
+8:
+end for
+9:
+Keeping 𝐾candidates in ˆ𝑌𝑙with the largest cumulative
+probability (Î
+𝑡𝑘
+𝑙∈ˆ𝑦𝑝𝑘
+𝑙, ˆ𝑦∈ˆ𝑌𝑙)
+10:
+𝑙←𝑙+ 1
+11: end for
+12: return ˆ𝑌𝐿
+2.1
+Generative Recommendation (GR)
+The typical process for constructing a GR system consists of three
+steps: item tokenization, LLM training, and LLM serving:
+1. Item Tokenization. The first stage involves converting each
+item into multi-token semantic IDs [11, 30, 42]. In this step, quanti-
+zation methods (e.g., RQ [22], PQ [19]) are usually applied to map
+item contextual representations to discrete codes. These codes are
+then added to the LLM’s vocabulary as special tokens. In this paper,
+we represent an item 𝑣𝑖as a three-token ID [𝑡𝑖
+1,𝑡𝑖
+2,𝑡𝑖
+3].
+2. LLM Training. Next, the LLM is trained to understand item
+semantics and predict user preferences by learning from historical
+user behavior sequences. The training data consists of tuples D =
+{(𝑞,𝑥),𝑦}, where 𝑞is the search query, 𝑥= [𝑣1, . . . , 𝑣𝑁] is the
+user interaction history, and 𝑦= 𝑣𝑦is the ground-truth target
+item ID (e.g., the item the user clicked). All item IDs are flattened
+into a sequence of tokens. Specifically, the input token sequence is
+[<BOS>,𝑞,𝑡1
+1,𝑡1
+2,𝑡1
+3, . . . ,𝑡𝑁
+1 ,𝑡𝑁
+2 ,𝑡𝑁
+3 ,𝑡𝑦
+1 ,𝑡𝑦
+2 ,𝑡𝑦
+3 , <EOS>] and the loss is
+only calculated on [𝑡𝑦
+1 ,𝑡𝑦
+2 ,𝑡𝑦
+3 ].
+3. LLM Serving. Finally, the trained model is deployed to generate
+recommendations for live user requests. For an incoming search
+query 𝑞from a user with history 𝑥, the model autoregressively gen-
+erates the semantic ID of the predicted item, token by token, usually
+with Beam Search [10]. Denoting the LLM as M𝑝, this inference
+process is formally described in Algorithm 1. The algorithm unifies
+the beam search steps by initializing the candidate set with a single
+empty element ( ˆ𝑌0 = {∅} in line 1)). Each step then iterates through
+the current set of top beams (line 3). For each beam, it generates
+new, longer sequences by prefilling the context and predicting the
+next possible tokens (lines 4-7). After all candidates have been ex-
+panded, the algorithm prunes the resulting set, retaining only the
+top 𝐾candidates with the highest cumulative probabilities (line 9)
+for the next iteration or output (line 10&12).
+A critical bottleneck hinders the full deployment of GR in high-
+throughput businesses with strict latency requirements. The issue
+stems from the autoregressive decoding process in beam search,
+where the LLM M𝑝is called iteratively to prefill the context for
+Algorithm 2 Speculative Decoding for GR.
+Input: target LLM M𝑝, draft model M𝑞, query 𝑞, user sequence 𝑥,
+beam size 𝐾, length of semantic ID 𝐿
+Output: ˆ𝑌(top 𝐾items represented by semantic IDs)
+1: Initialization: 𝑙= 1, ˆ𝑌0 = {∅}
+2: while 𝑙≤𝐿−1 do
+3:
+ˆ𝑌𝑙, . . . , ˆ𝑌𝐿←BeamSearch(M𝑞,𝑞,𝑥, ˆ𝑌𝑙−1, 𝐾, 𝐿)
+4:
+Verifying ˆ𝑌𝑙, . . . , ˆ𝑌𝐿with M𝑝in parallel
+5:
+if ˆ𝑌𝑚is rejected then
+6:
+Updating ˆ𝑌𝑚with M𝑝
+7:
+𝑙←𝑚+ 1
+8:
+end if
+9: end while
+10: return ˆ𝑌𝐿
+each new candidate sequence (line 4 in Algorithm 1). Specifically,
+the LLM is invoked (𝐾× (𝐿−1)) times after the initial context
+prefill, where 𝐾is the beam size and 𝐿is the number of tokens in
+the semantic ID. While 𝐿is configurable for different GR systems,
+𝐾is inevitably large in specific applications; for instance, in item
+retrieval scenarios, 𝐾can be as large as 1,000. Although optimiza-
+tions like KV-Caching [6, 40] can accelerate these LLM calls, they
+remain insufficient, as evident in Table 1, which shows that even
+with KV-Cache, the beam search decoding phase requires nearly
+triple the time of the initial prefilling for a 0.6B-parameterized LLM.
+Consequently, developing novel acceleration techniques is imperative
+for the industrial adoption of current GR systems.
+2.2
+Speculative Decoding (SD)
+Beyond KV-Caching, SD has emerged as the primary choice for
+algorithm-level acceleration techniques [41, 50]. It has garnered
+significant attention in academia [2, 25, 26] and recently seen suc-
+cessful deployments in industrial applications [39, 46].
+We illustrate the SD for GR in Algorithm 2, where we configure
+the draft model to generate the entire multi-token semantic ID in a
+single step. For clarity, we denote the Algorithm 1 as BeamSearch(·)
+in Algorithm 2, which alternatively predicts future tokens with the
+draft model M𝑞based on the given initialization ˆ𝑌𝑙−1 and returns
+the intermediate candidate set ˆ𝑌𝑙for any step 𝑙, not just the final
+result ˆ𝑌𝐿. The core process involves two main steps: drafting and
+verification. In the drafting stage, SD employs a smaller, faster
+draft model M𝑞to generate a sequence of candidate tokens for the
+larger, stronger target LLM M𝑝(line 3). The drafted tokens are then
+verified using a single, parallel forward pass of the target LLM (line
+4). Based on this verification, if the draft matches the target model’s
+predictions, it is accepted (line 10). If a mismatch is found, the draft
+is rejected from the point of the first incorrect token (line 5), and
+a new token is sampled from the target model’s output before the
+drafting process repeats (line 6-7).
+While SD has seen successful industrial applications in domains
+with relaxed latency requirements, such as travel planning [46]
+and recommendation knowledge generation [39], and has been
+explored academically for GR [26], a production-ready solution
+for high-throughput businesses remains elusive. These industrial
+systems operate under severe latency constraints that current SD
+
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Yejing Wang, et al.
+<BOS>  
+<SP_1>  <SP_2>  <SP_3> 
+LLM
+Draft
+Head
+Logit
+Head
+Verification
+Transition
+852723
+32158719
+8651276
+ ...
+...
+(243,129,3)=852723 
+(0,346,122)=32158720
+(243,12,501)=131340531
+...
+(12,1,33)=8651276
+Inference
+Training
+Figure 1: An illustration of the NEZHA framework for 𝐿=
+3, 𝐾= 3. The diagram differentiates between the training path
+(green dotted lines), the inference path (red dotted lines), and
+the shared computations (black solid lines).
+methods cannot meet. Their drafting process relies on an additional
+model M𝑞, while the verification process requires at least one call
+to the large model M𝑝. To address these issues, we propose NEZHA,
+which is based on two key innovations: eliminating the need for
+an independent draft model through self-drafting and verifying
+drafts using a hash set without calling M𝑝.
+3
+Methodology
+This section provides a detailed exposition of our proposed method,
+NEZHA. We begin with a high-level overview of the framework.
+Subsequently, we examine its two core components: nimble drafting
+and efficient verification. The section concludes by detailing the
+training and inference pipeline.
+3.1
+Overview
+The NEZHA framework, outlined in Figure 1, introduces several
+key modifications to the standard decoding process.
+First, NEZHA uses a specialized input prompt. Instead of the de-
+fault format, we append 𝐿special placeholder tokens (e.g., “<SP_1>”
+for the first ID token), visualized as cyan rectangles, to represent
+the positions of the ground-truth semantic ID. This unique prompt
+structure enables a critical optimization: with a single prefill pass,
+the model generates 𝐿+ 1 hidden states: one for the context and
+one for each placeholder. These hidden states are then fed into the
+draft head. The draft head consists of two components: a logit head
+(the yellow diamond), which predicts token probabilities, and a
+transition module (the gray step), which updates the context repre-
+sentation after each new token is generated. The behavior of this
+head differs between training and inference: During training, it
+learns to predict the known ground-truth tokens from the offline
+data (L). During inference, it performs a beam search, generating
+the top-𝐾candidate tokens at each step. After 𝐿iterative calls to
+the draft head, a pool of candidate items ˆ𝑌𝐿is generated. Finally,
+NEZHA performs a fast, model-free verification. Instead of invoking
+the target LLM, it simply checks the generated sequences against
+a pre-computed hash set of all valid item IDs V. The top-𝐾valid
+sequences with the highest cumulative probabilities are returned as
+the final recommendations. The figure provides an example where
+two of four candidates are valid (marked with checks).
+3.2
+Nimble Drafting
+This section constructs the drafting framework for NEZHA, includ-
+ing the prompting and the autoregressive draft head.
+Existing SD applications typically rely on an external draft
+model [26, 39, 46], which introduces significant maintenance over-
+head and deployment complexity. To circumvent these issues, we
+adopt a self-drafting architecture [2, 41], which empowers the target
+LLM itself to generate candidate tokens.
+However, applying general self-drafting architectures like multi-
+token-prediction (MTP) head [2, 14] to GR systems introduces a
+unique challenge: the highly structured nature of semantic IDs.
+Unlike free-form text, a semantic ID is a strictly ordered sequence.
+For an item 𝑣𝑖with three-digit ID [𝑡𝑖
+1,𝑡𝑖
+2,𝑡𝑖
+3], any permutation like
+[𝑡𝑖
+3,𝑡𝑖
+2,𝑡𝑖
+1] would represent an invalid or entirely different item. The
+token combinations are not arbitrary but are highly constrained,
+creating strong sequential dependencies. This means that only a
+sparse subset of all possible sequences is valid. For instance, know-
+ing the prefix [𝑡𝑖
+1,𝑡𝑖
+2] significantly narrows the set of possible values
+for the final token 𝑡𝑖
+3 .
+Our design for NEZHA directly addresses this structural con-
+straint. By prompting the input with positional placeholder tokens
+and utilizing an autoregressive draft head, we explicitly provide
+the model with the positional awareness and sequential modeling
+capabilities necessary to generate valid, structured IDs. Specifi-
+cally, NEZHA first modifies the input prompt for each training
+instance {(𝑞,𝑥),𝑦}. Instead of appending the ground-truth seman-
+tic ID 𝑦= [𝑡𝑦
+1 ,𝑡𝑦
+2 ,𝑡𝑦
+3 ], we append a sequence of 𝐿special tokens as
+the placeholder for item ID: [<SP_1>, . . . , <SP_L>].
+The purpose of these placeholders is twofold. First, drawing
+inspiration from [32], they explicitly encode positional information,
+prompting the model to leverage its full contexts for each step of
+the autoregressive generation. Second, they allow the LLM to pre-
+compute the hidden states for all future token positions in a single
+forward pass, as visualized in the cyan block of Figure 1.
+We now formally define the autoregressive draft head. Let
+𝒉0, 𝒉1, . . . , 𝒉𝐿be the hidden states from the LLM’s final layer, cor-
+responding to the prefix (𝒉0) and the 𝐿placeholder tokens, respec-
+tively. The draft head is defined as follows:
+𝒔1 = 𝒉0
+(1)
+𝒑𝑙= logit_head𝑙(𝒉𝑙, 𝒔𝑙)
+(2)
+𝒔𝑙+1 = Transition𝑙(𝒔𝑙, 𝒆𝑙)
+(3)
+
+
+NEZHA: A Zero-sacrifice and Hyperspeed Decoding Architecture for Generative Recommendations
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Here, 𝒔𝑙represents the evolving context state, which is initialized
+by the prefix representation 𝒉0. In each step, the logit_head𝑙pro-
+duces the next-token probability distribution 𝒑𝑙. Concurrently, the
+transition module, Transition𝑙, updates the context state from 𝒔𝑙to
+𝒔𝑙+1 by incorporating the embedding 𝒆𝑙of the newly selected token
+𝑡𝑙1, achieving the autoregressive prediction.
+3.3
+Efficient Verification
+We elaborate on the model-free verification in this section.
+Conventional SD verification requires a computationally expen-
+sive forward pass of the target model M𝑝to evaluate complex
+grammar and semantics [2, 23, 25]. This step can be a primary
+latency bottleneck in online systems.
+The highly structured nature of semantic IDs, which are defined
+by strict combinatorial rules rather than linguistic grammar, enables
+a far more efficient verification process. This key property allows
+us to verify a candidate sequence’s validity by performing a near-
+instantaneous lookup against a precomputed set of all valid item
+IDs, rather than executing a costly forward pass. The power of this
+approach stems from the extreme sparsity of the valid ID space.
+As supported by both public datasets [35] and our own industrial
+practice, the ratio of valid IDs is exceptionally low (around 0.1% in
+our system). This means our simple verification step can correctly
+filter out over 99.9% of all drafted candidates.
+To implement this model-free verification with minimal compu-
+tational overhead, we first encode each multi-token semantic ID
+into a single, unique integer [54]:
+𝑉𝑖= P(𝑣𝑖) =
+𝐿
+∑︁
+𝑙=1
+(𝑡𝑖
+𝑙×
+𝑙−1
+Ö
+𝑗=1
+𝑇𝑗)
+(4)
+where this equation maps the semantic ID [𝑡𝑖
+1, . . . ,𝑡𝑖
+𝐿] to a unique
+integer index𝑉𝑖using a mixed-radix conversion.𝑇𝑗is the vocabulary
+size for the 𝑗-th token position. The product term Î𝑙−1
+𝑗=1𝑇𝑗acts as
+a positional multiplier. For the first token (𝑙= 1), this product is
+empty and set to 1 by convention to correctly initialize the formula.
+Equation (4) provides a bijective mapping from this multi-
+dimensional token space to a one-dimensional integer space, assign-
+ing a unique index to every possible ID within the range [0, Î𝐿
+𝑙=1𝑇𝑙−
+1]. For example, consider the three-token ID (243, 129, 3) from Fig-
+ure 1, and assume the vocabulary size for each token position is
+512. The unique integer index is calculated as: 243 × 1 + 129 × 512 +
+3 × (512 × 512) = 852723.
+Let V be the set of all valid semantic IDs, implemented as a
+hash set for efficient, constant-time lookups. A batch of predicted
+sequences from the LLM can then be verified by computing the
+intersection with this set of valid IDs:
+ˆ𝑌𝐿= ˆ𝑌𝐿[V ∩V𝐿]
+(5)
+where V𝐿is the set of integer indices corresponding to the can-
+didate items in the final step ˆ𝑌𝐿. This set is then filtered in-place
+according to the verification process detailed in Equation (5), re-
+taining only the indices of valid items, i.e., with indices included in
+V ∩V𝐿. The visualized example in Figure 1 illustrates this process,
+1Note that for clarity in this general formulation, we omit the superscripts identifying
+specific candidates in the beam. This process is detailed further in Section 3.4.
+Algorithm 3 The NEZHA Pipeline: Training and Inference.
+Training Process
+Input: LLM M𝑝with the draft head, training data D = {(𝑞,𝑥),𝑦},
+length of semantic ID 𝐿
+Output: Optimized LLM M𝑝with the trained draft head
+1: for (𝑞,𝑥),𝑦∈D do
+2:
+Prefilling context and placeholders with LLM:
+𝒉0, 𝒉1, . . . , 𝒉𝐿= M𝑝(𝑞,𝑥, < 𝑆𝑃_1 >, . . . , < 𝑆𝑃_𝐿>)
+3:
+Initialization: 𝑙= 1, 𝒔1 = 𝒉0
+4:
+for 𝑙≤𝐿do
+5:
+Calculating the probabilities 𝒑𝑙of the next token
+according to Equation (2)
+6:
+Selecting the probability 𝑝𝑦
+𝑙and obtaining the embedding
+𝒆𝑦
+𝑙for the ground-truth token 𝑡𝑦
+𝑙
+7:
+Updating the context state: 𝒔𝑙+1 ←Transition𝑙(𝒔𝑙, 𝒆𝑦
+𝑙)
+8:
+end for
+9:
+Calculating the loss L according to Equation (6)
+10:
+Updating the parameter of M𝑝and the draft head
+(Transition𝑙and logit_head𝑙)
+11: end for
+12: return M𝑝with the trained draft head
+Inference Process
+Input: LLM M𝑝with the trained draft head, query 𝑞, user
+sequence 𝑥, beam size 𝐾, length of semantic ID 𝐿, index set for
+valid semantic IDs V
+Output: ˆ𝑌(top 𝐾items represented by semantic IDs)
+13: Prefilling context and placeholders with LLM:
+𝒉0, 𝒉1, . . . , 𝒉𝐿= M𝑝(𝑞,𝑥, < 𝑆𝑃_1 >, . . . , < 𝑆𝑃_𝐿>)
+14: Initialization: 𝑙= 1, 𝒔1 = 𝒉0, ˆ𝑌0 = {∅}, S0 = {𝒔1}
+15: for 𝑙≤𝐿do
+16:
+ˆ𝑌𝑙, S𝑙←{}, {}
+17:
+for ˆ𝑦∈ˆ𝑌𝑙−1, 𝒔𝑙∈S𝑙−1 do
+18:
+Calculating the probabilities 𝒑𝑙of the next token
+according to Equation (2)
+19:
+Selecting 𝐾tokens with top probabilities: {𝑡𝑘
+𝑙, 𝑝𝑘
+𝑙}𝑘≤𝐾
+20:
+Obtaining the embedding 𝒆𝑘
+𝑙for each beam 𝑡𝑘
+𝑙,
+𝒔𝑙+1 ←Transition𝑙(𝒔𝑙, 𝒆𝑘
+𝑙),
+21:
+ˆ𝑌𝑙←ˆ𝑌𝑙∪[ ˆ𝑦,𝑡𝑘
+𝑙], S𝑙←S𝑙∪𝒔𝑙+1, ∀𝑘
+22:
+end for
+23:
+if l==L then
+24:
+Calculating the index V𝐿for 𝐾× 𝐾candidates in ˆ𝑌𝐿
+according to Equation (4)
+25:
+Retaining valid predictions according to Equation (5)
+26:
+end if
+27:
+Keeping 𝐾candidates in ˆ𝑌𝑙and corresponding states S𝑙
+with the largest cumulative probability (Î
+𝑡𝑘
+𝑙∈ˆ𝑦𝑝𝑘
+𝑙, ˆ𝑦∈ˆ𝑌𝑙)
+28:
+𝑙←𝑙+ 1
+29: end for
+30: return ˆ𝑌𝐿
+where (0, 346, 122), (12, 1, 33) is included by the updated ˆ𝑌𝐿while
+excluding other candidates.
+The impact of this model-free verification is substantial. On our
+production data, it boosts the ratio of valid drafted candidates from
+
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Yejing Wang, et al.
+Table 2: The statistics of the preprocessed datasets
+Dataset
+# Users
+# Items
+# Intersections
+Avg.length
+Yelp
+15,719
+11,383
+192,214
+12.22
+Beauty
+52,204
+57,288
+394,908
+7.56
+Games
+64,071
+33,614
+568,314
+8.87
+just 43% to over 93%. This directly translates into a 12 percentage-
+point uplift in key offline evaluation metrics. A detailed component-
+wise analysis using public datasets to confirm this contribution is
+provided in Section 4.3.
+3.4
+Training and Inference
+This section details the pipeline of NEZHA, summarized in Algo-
+rithm 3, including the training and inference processes. While both
+processes share the architecture, their objectives differ, leading to
+distinct approaches for token selection and state transition.
+During training, the model learns to predict the ground-truth
+semantic ID using a teacher-forcing approach. For a given train-
+ing instance with label 𝑦= [𝑡𝑦
+1 , . . . ,𝑡𝑦
+𝐿]: LLM first initializes the
+representations with a single call(line 2). At each step 𝑙, the model
+uses Equation (2) to compute the probability distribution 𝒑𝑙(line
+5). For the subsequent transition step (Equation (3)), the context
+𝒔𝑙is updated using the embedding of the ground-truth token, i.e.,
+𝒆𝑙= 𝒆𝑦
+𝑙(line 6-7). This ensures the model learns the correct sequen-
+tial path, regardless of its own predictions at step 𝑙. Finally, the
+probability for the ground-truth token, 𝑝𝑦
+𝑙, is used to compute the
+cross-entropy loss, which would be minimized over D (line 9-10):
+L =
+∑︁
+𝑦∈D
+𝐿
+∑︁
+𝑙=1
+log𝑝𝑦
+𝑙
+(6)
+The model parameters are optimized by minimizing the loss L
+using a gradient-based optimizer (e.g., Adam [21]). This training
+procedure yields the final model as in line 12.
+In contrast, the goal of inference is to find the most probable
+semantic IDs, which we achieve using beam search. The process
+begins by prefilling the specialized prompt (line 13). Then, we
+initialize the step index 𝑙and the context state 𝒔1, and set up the
+prediction set ˆ𝑌0 and the state set S0 to track the candidate beams
+and their respective states (line 14). For each step, we iterate over
+each candidate beam (line 17), compute the probability distribution
+𝒑𝑙, and select the top 𝐾tokens 𝑡𝑘
+𝑙with the highest probabilities
+𝑝𝑘
+𝑙(lines 18-19). The context state for each beam is then updated
+independently using the embedding of its selected token 𝒆𝑘
+𝑙as in line
+20. New beams are finally included to ˆ𝑌and S𝑙(line 21) for further
+pruning (line 27), where the top 𝐾overall sequences are retained
+at each step based on their cumulative probabilities. Notably, the
+final decoding step (𝑙= 𝐿) includes a crucial verification stage to
+filter out hallucinated (i.e., invalid) semantic IDs, rather than simply
+selecting the top candidates by probability (lines 23-26).
+4
+Experiment
+To demonstrate the generalizability and robustness of NEZHA, this
+section presents an evaluation on public benchmark datasets.
+4.1
+Settings
+Datasets. We evaluate NEZHA on three public datasets widely
+used as benchmarks for GR: Yelp, Amazon Beauty, and Amazon
+Games [35, 52]. These datasets are particularly suitable as they con-
+tain rich contextual information, such as textual item descriptions.
+Following standard practice in prior work, we employ a leave-one-
+out strategy for data splitting. For each user, the last interaction
+is reserved for the test, the penultimate interaction is used for
+validation, and remaining interactions constitute the training set.
+Baselines and Backbones. We construct the generative recom-
+mender with two backbones, Llama-1B [9] and QWen3-0.8B [43],
+which have a similar size to the LLM we used in our production
+environments. We primarily compare with two baselines on public
+datasets: vanilla LLM decoding with beam search and MTP [14].
+Other baselines, such as Medusa [2, 46] and AtSpeed [26], are omit-
+ted due to their excessive latency and complexity for practical use.
+Evaluation Metrics. We evaluate all methods using Hit Rate (HR)
+and Normalized Discounted Cumulative Gain (NDCG) at cutoffs
+of 5 and 10, yielding four accuracy metrics: H@5, H@10, N@5, and
+N@10. For efficiency, we also report the average generation latency
+(LT) in milliseconds (ms), which is the sum of the “Prefill” and
+“Decode” costs shown in Table 1.
+Implementation Details. The evaluation on public datasets is
+conducted using the same GPU devices to ensure consistency. To
+achieve robust results, all experiments are averaged over three runs
+with distinct random seeds (42, 43, 44). For item tokenization, we
+set 𝐿= 3 with 𝑇𝑙= 512 for each layer, meaning the codebook
+size is 512 across all layers. Item tokenization is performed using
+RQ-VAE [22]. These settings are consistent with our production
+environment, with the exception of 𝑇𝑙, which varies due to the
+different volumes of items. We convert item attributes into textual
+instructions and obtain item representations through the public API,
+such as text-embedding-ada-0022. The backbone LLM is determined
+by the specific setting, either Llama or Qwen, and is optimized
+using Transformer Trainers, with the appropriate hyperparameters
+chosen for each test. In Equation (2), the logit_head𝑙represents
+a linear transformation layer shaped [𝑑ℎ𝑖𝑑,𝑇𝑙], which is used to
+convert the hidden state into logits; specifically, this is sized at
+1024 × 512 for each layer in our case. Additionally, we employ an
+RNN to update the context state, i.e., Transition𝑙in Equation (3).
+For inference, the beam size 𝑁is set as 10.
+4.2
+Overall Performance
+We test NEZHA with two LLM backbones and compare it with the
+original beam search and efficient decoding baseline to evaluate its
+effectiveness. The results are listed in Table 3, which consistently
+NEZHA presents the satisfactory performance with outstanding
+efficiency. We can observe that:
+• Comparison with Beam Search. The performance of NEZHA
+is comparable to that of beam search but with a significant in-
+crease in speed, achieving approximately a 10-fold improvement.
+This demonstrates its potential to effectively replace beam search
+for online GR serving. In certain instances, such as using Llama
+on Yelp, NEZHA even produces enhanced results.
+2https://platform.openai.com/docs/guides/embeddings
+
+
+NEZHA: A Zero-sacrifice and Hyperspeed Decoding Architecture for Generative Recommendations
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Table 3: Overall performance of NEZHA. The boldface refers to beating all baselines. “*” indicates the statistically significant
+improvements (i.e., one-sided t-test with 𝑝< 0.05). For performance metrics, the higher is better. For “LT”, the lower is better.
+Model
+Finetuning
+Beauty
+Games
+Yelp
+H@5
+H@10
+N@5
+N@10
+LT
+H@5
+H@10
+N@5
+N@10
+LT
+H@5
+H@10
+N@5
+N@10
+LT
+Llama
+Beam Search
+0.0392
+0.0568
+0.0254
+0.0311 74.21
+0.0305
+0.0406
+0.0224
+0.0256
+78.95
+0.0176
+0.0262
+0.0110
+0.0138
+75.99
+MTP
+0.0378
+0.0555
+0.0239
+0.0297
+6.74
+0.0291
+0.0400
+0.0212
+0.0248
+7.33
+0.0140
+0.0240
+0.0091
+0.0114
+7.18
+NEZHA
+0.0390
+0.0562
+0.0253
+0.0304
+7.00
+0.0313
+0.0410
+0.0231
+0.0259
+7.52
+0.0194* 0.0332* 0.0125* 0.0168*
+7.41
+Qwen
+Beam Search
+0.0446
+0.0643
+0.0306
+0.0370 47.70
+0.0226
+0.0305
+0.0153
+0.0179
+50.06
+0.0235
+0.0377
+0.0147
+0.0192
+48.31
+MTP
+0.0422
+0.0617
+0.0287
+0.0352
+4.18
+0.0204
+0.0283
+0.0136
+0.0170
+4.61
+0.0229
+0.0346
+0.0114
+0.0177
+4.24
+NEZHA
+0.0451 0.0649 0.0308 0.0377
+4.41
+0.0239* 0.0314 0.0165* 0.0193*
+4.80
+0.0235
+0.0363
+0.0143
+0.0185
+4.46
+Table 4: Ablation study on Yelp with Llama.
+H@5
+H@10
+N@5
+N@10
+LT
+NEZHA
+0.0194
+0.0332
+0.0125
+0.0168
+7.41
+NEZHA-1
+0.0044
+0.0083
+0.0024
+0.0037
+7.03
+NEZHA-2
+0.0188
+0.0309
+0.0120
+0.0159
+7.41
+NEZHA-3
+0.0173
+0.0322
+0.0110
+0.0158
+7.18
+NEZHA-4
+0.0194
+0.0328
+0.0124
+0.0167
+7.16
+• Comparison with MTP. Although MTP is more efficient than
+NEZHA in terms of lower latency (LT), it fails to deliver satisfac-
+tory performance due to its disregard for the characteristics of
+GR, specifically the structured semantic IDs. The parallel decod-
+ing approach used by MTP, which relies on a shared last hidden
+state, cannot leverage the sequential dependency inherent in the
+semantic ID, resulting in a failure to predict different tokens with
+discriminative representations.
+4.3
+Ablation Study
+To validate the contribution of each key component in NEZHA, we
+conduct an ablation study with the following four variants:
+• NEZHA-1: This variant removes the context state 𝒔𝑙from the
+logit calculation in Equation (2), which also implies the removal
+of the transition head Transition𝑙(Equation (3)), making the
+prediction of each token within a semantic ID independent of
+the previously generated tokens.
+• NEZHA-2: This variant removes the placeholder hidden state
+𝒉𝑙from Equation (2). This allows us to measure the importance
+of providing positional information for effective self-drafting.
+• NEZHA-3: This variant replace the RNN with simple addition for
+Transition𝑙to investigate the impact of state transition modeling.
+• NEZHA-4: This variant disables the model-free verification step
+entirely. It is designed to demonstrate the crucial trade-off be-
+tween efficiency and accuracy.
+We evaluate these variants using the Llama backbone on Yelp, with
+the results summarized in Table 4. We find the following insights:
+• NEZHA-1 suffers from performance collapse due to the absence
+of context and sequential dependency. This underlines the inade-
+quacy of placeholder representations for context understanding,
+highlighting the necessity of maintaining a context state.
+0.00
+0.25
+0.50
+0.75
+1.00
+Normalized H@1000
+NEZHA
+NEZHA-2
+NEZHA-3
+NEZHA-4
+Figure 2: Ablation study on production data. We present the
+normalized performance for confidentiality.
+• NEZHA-2 performs slightly worse than the original NEZHA,
+which can be attributed to the loss of placeholders. When com-
+bined with the performance of NEZHA-1, it is evident that place-
+holders can enhance performance by providing positional infor-
+mation for semantic IDs, although they are not indispensable.
+• The simplification of the transition module negatively impacts
+the performance of NEZHA-3, indicating the importance of ac-
+curately modeling state transitions to leverage the sequential
+dependency patterns of GR.
+• A comparison of NEZHA-4 with NEZHA shows that the slight
+increase in latency for verification (0.25 ms) can lead to improved
+performance (especially on H@10), emphasizing the effectiveness
+of our verification process.
+Additionally, we present the ablation results on offline produc-
+tion data in Figure 2 to further validate our conclusions. Notably,
+NEZHA consistently outperforms all variants. However, trends
+differ across specific variants compared with public data, which
+may stem from variations in data distribution and volume. For in-
+stance, the volume of items significantly increases in production
+data, resulting in greater performance degradation for NEZHA-3
+and NEZHA-4. This degradation can be driven by weakening the
+sequential dependency and by introducing too many invalid pre-
+dictions, respectively. Meanwhile, NEZHA-1 and NEZHA-2 show
+the consistent pattern as on public datasets: NEZHA-1 is omitted
+from the figure due to its limited performance, while NEZHA-2 is
+only slightly worse than the original version.
+5
+Real-world Deployment
+The proposed method, NEZHA, is deployed in the candidate gener-
+ation (recall) stage of the Taobao Search Advertising platform.
+The operational context is illustrated in Figure 3, which displays
+search results for the query “Dress”. Advertisements displayed on
+the first page (“Ad_1”) are subject to a stringent latency constraint
+of 30ms. Previously, our GR system’s inference time of over 1000ms
+
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Yejing Wang, et al.
+Ad_1
+Ad_2
+Figure 3: Illustration of the method’s deployment in Taobao
+Search. The example shows results for the query “Dress” (top
+left, in the red box). Advertisements are identified by an
+orange label in the bottom-right corner of each product. Sen-
+sitive information has been obscured for confidentiality.
+precluded its use for these prime positions, limiting its deployment
+to subsequent pages (“Ad_2”).
+With the introduction of NEZHA, we overcome this critical
+limitation. As detailed in Table 1, NEZHA provides a 2.6× algorithm-
+level speedup. This acceleration, coupled with system-level savings
+on queuing time, reduces the GR system’s total latency from over
+1000ms to below the 30ms threshold. Consequently, we can now
+deploy the GR system across all advertising slots, including the
+highly valuable first-page placements.
+The efficacy of this deployment is confirmed through extensive
+experiments. Offline evaluations show an absolute increase in the
+hit rate on clicked items by 0.58% and 0.61% for the top 500 and 1000
+results, respectively. The positive result enables the deployment
+of the GR system in the prime position as of October 2025, where
+7-day reverse online A/B testing on 10% traffic registered a 1.2%
+revenue increase (billion-level improvement).
+6
+Related Works
+Our work is situated at the intersection of two rapidly evolving
+research areas: generative recommendations, which leverage the
+power of LLMs for recommendation tasks, and speculative decoding,
+a key technique for accelerating LLM inference.
+Generative Recommendations. Significant research has been
+devoted to advancing each stage of the GR pipeline, i.e., item to-
+kenization, LLM training, and LLM serving. For item tokeniza-
+tion, beyond using multi-modal content, recent work has started
+to incorporate collaborative information to create more effective
+semantic IDs [35, 58]. The design of these IDs has also been ex-
+tended to more complex scenarios, such as multi-domain [53] and
+multi-behavior [28] recommendations, while other approaches seek
+to unify the training of the tokenizer and the LLM in an end-to-
+end framework [27]. For training, researchers have explored pre-
+training paradigms to align item semantics with the LLM’s linguistic
+space [52], as well as post-training techniques like Direct Preference
+Optimization (DPO) [29] to fine-tune model outputs toward specific
+business objectives [7, 37]. To facilitate serving, researchers adapted
+speculative decoding for top-k recommendation [26], enabled out-
+of-vocabulary inference with SpecGR [8], and reformulated the
+system with long semantic IDs and parallel decoding in RPG [17].
+Despite the impressive performance, the practical deployment of
+GR models is severely hampered by high inference latency. The au-
+toregressive generation requires multiple forward passes through
+LLMs, a process that is often too slow for industrial systems de-
+manding real-time responses, motivating the proposal of NEZHA.
+Speculative Decoding. To address the high latency associated
+with autoregressive generation, Speculative Decoding (SD) has
+emerged as a leading technique for accelerating inference [23, 41,
+50]. The standard SD framework utilizes a small, fast “draft model”
+to generate a sequence of candidate tokens, which is then verified in
+a single parallel forward pass by the larger, original “target model”.
+Subsequent research has explored various strategies to enhance
+both stages of this process. For instance, Medusa [2] introduces mul-
+tiple lightweight decoding “heads” attached to the target model to
+predict future tokens in parallel [14], and it proposes tree-attention
+verification to validate drafts with just one call to the large model.
+Some researchers have replaced the parallel decoding heads with
+autoregressive heads, shifting from parallel multi-token drafting to
+token-by-token generation [4, 25]. Additionally, researchers also
+suggest using retrieval models as the draft model instead of relying
+solely on language models [16]. These innovations have led to suc-
+cessful deployments in various industrial applications, including
+travel services [46] and knowledge-based recommendations [39].
+However, current practices still rely on separate draft models
+and require verification by the large target model. Our approach
+pioneers the exploration of self-drafting in large-scale production
+environments and introduces an instant and effective model-free
+verification specialized for GR.
+7
+Conclusion
+Industrial-scale Generative Recommendation (GR) using Large Lan-
+guage Models (LLMs) is severely constrained by high inference la-
+tency. Existing acceleration methods, including Speculative Decod-
+ing (SD), are often impractical due to their reliance on auxiliary draft
+models and expensive verification steps. To overcome these limita-
+tions, we propose NEZHA, a highly efficient decoding framework
+for GR. NEZHA introduces two key innovations: (1) self-drafting,
+which allows the main LLM to generate multiple candidates in a
+single pass, eliminating the need for a separate draft model; and
+(2) model-free verification, which uses a near-instantaneous hash
+lookup to validate candidates, bypassing costly model-based checks.
+Experiments show that NEZHA achieves zero-sacrifice accuracy
+while reducing latency to levels suitable for large-scale deployment.
+Acknowledgments
+This research was partially supported by National Natural Science
+Foundation of China (No.62502404), Hong Kong Research Grants
+Council (Research Impact Fund No.R1015-23, Collaborative Re-
+search Fund No.C1043-24GF, General Research Fund No.11218325),
+Institute of Digital Medicine of City University of Hong Kong
+(No.9229503), and Alibaba (CCF-Alimama Tech Kangaroo Fund
+No. 2024002).
+
+
+NEZHA: A Zero-sacrifice and Hyperspeed Decoding Architecture for Generative Recommendations
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+References
+[1] Keqin Bao, Jizhi Zhang, Wenjie Wang, Yang Zhang, Zhengyi Yang, Yanchen
+Luo, Chong Chen, Fuli Feng, and Qi Tian. 2025. A bi-step grounding paradigm
+for large language models in recommendation systems. ACM Transactions on
+Recommender Systems 3, 4 (2025), 1–27.
+[2] Tianle Cai, Yuhong Li, Zhengyang Geng, Hongwu Peng, Jason D Lee, Deming
+Chen, and Tri Dao. 2024. Medusa: Simple LLM Inference Acceleration Framework
+with Multiple Decoding Heads. In International Conference on Machine Learning.
+PMLR, 5209–5235.
+[3] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong Xiao,
+Bowen Xue, Xuxin Zhang, Ying Yang, et al. 2025. OneSearch: A Preliminary
+Exploration of the Unified End-to-End Generative Framework for E-commerce
+Search. arXiv preprint arXiv:2509.03236 (2025).
+[4] Yunfei Cheng, Aonan Zhang, Xuanyu Zhang, Chong Wang, and Yi Wang. 2024.
+Recurrent drafter for fast speculative decoding in large language models. arXiv
+preprint arXiv:2403.09919 (2024).
+[5] Tri Dao. [n. d.]. FlashAttention-2: Faster Attention with Better Parallelism and
+Work Partitioning. In The Twelfth International Conference on Learning Represen-
+tations.
+[6] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. Flashat-
+tention: Fast and memory-efficient exact attention with io-awareness. Advances
+in neural information processing systems 35 (2022), 16344–16359.
+[7] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding,
+Qiang Luo, and Guorui Zhou. 2025. OneRec: Unifying Retrieve and Rank with
+Generative Recommender and Iterative Preference Alignment. arXiv preprint
+arXiv:2502.18965 (2025).
+[8] Yijie Ding, Yupeng Hou, Jiacheng Li, and Julian McAuley. 2024.
+Inductive
+Generative Recommendation via Retrieval-based Speculation. arXiv preprint
+arXiv:2410.02939 (2024).
+[9] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad
+Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan,
+et al. 2024. The llama 3 herd of models. arXiv e-prints (2024), arXiv–2407.
+[10] Markus Freitag and Yaser Al-Onaizan. 2017. Beam Search Strategies for Neural
+Machine Translation. In Proceedings of the First Workshop on Neural Machine
+Translation. 56–60.
+[11] Kairui Fu, Tao Zhang, Shuwen Xiao, Ziyang Wang, Xinming Zhang, Chenchi
+Zhang, Yuliang Yan, Junjun Zheng, Yu Li, Zhihong Chen, et al. 2025. Forge:
+Forming semantic identifiers for generative retrieval in industrial datasets. arXiv
+preprint arXiv:2509.20904 (2025).
+[12] Zichuan Fu, Xiangyang Li, Chuhan Wu, Yichao Wang, Kuicai Dong, Xiangyu
+Zhao, Mengchen Zhao, Huifeng Guo, and Ruiming Tang. 2025. A unified frame-
+work for multi-domain ctr prediction via large language models. ACM Transac-
+tions on Information Systems 43, 5 (2025), 1–33.
+[13] Jingtong Gao, Yewen Li, Shuai Mao, Peng Jiang, Nan Jiang, Yejing Wang, Qing-
+peng Cai, Fei Pan, Peng Jiang, Kun Gai, et al. 2025. Generative auto-bidding with
+value-guided explorations. In Proceedings of the 48th International ACM SIGIR
+Conference on Research and Development in Information Retrieval. 244–254.
+[14] Fabian Gloeckle, Badr Youbi Idrissi, Baptiste Rozière, David Lopez-Paz, and
+Gabriel Synnaeve. 2024. Better & faster large language models via multi-token
+prediction. In Proceedings of the 41st International Conference on Machine Learning.
+15706–15734.
+[15] Xian Guo, Ben Chen, Siyuan Wang, Ying Yang, Chenyi Lei, Yuqing Ding, and Han
+Li. 2025. OneSug: The Unified End-to-End Generative Framework for E-commerce
+Query Suggestion. arXiv preprint arXiv:2506.06913 (2025).
+[16] Zhenyu He, Zexuan Zhong, Tianle Cai, Jason Lee, and Di He. 2024. REST:
+Retrieval-Based Speculative Decoding. In Proceedings of the 2024 Conference of the
+North American Chapter of the Association for Computational Linguistics: Human
+Language Technologies (Volume 1: Long Papers). 1582–1595.
+[17] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating long
+semantic IDs in parallel for recommendation. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V. 2. 956–966.
+[18] Wenyue Hua, Shuyuan Xu, Yingqiang Ge, and Yongfeng Zhang. 2023. How to
+index item ids for recommendation foundation models. In Proceedings of the
+Annual International ACM SIGIR Conference on Research and Development in
+Information Retrieval in the Asia Pacific Region. 195–204.
+[19] Herve Jegou, Matthijs Douze, and Cordelia Schmid. 2010. Product quantization
+for nearest neighbor search. IEEE transactions on pattern analysis and machine
+intelligence 33, 1 (2010), 117–128.
+[20] Clark Mingxuan Ju, Liam Collins, Leonardo Neves, Bhuvesh Kumar, Louis Yufeng
+Wang, Tong Zhao, and Neil Shah. 2025. Generative Recommendation with Seman-
+tic IDs: A Practitioner’s Handbook. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management. 6420–6425.
+[21] Diederik P Kingma. 2014. Adam: A method for stochastic optimization. arXiv
+preprint arXiv:1412.6980 (2014).
+[22] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive image generation using residual quantization. In Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition. 11523–11532.
+[23] Yaniv Leviathan, Matan Kalman, and Yossi Matias. 2023. Fast inference from
+transformers via speculative decoding. In International Conference on Machine
+Learning. PMLR, 19274–19286.
+[24] Xiaopeng Li, Bo Chen, Junda She, Shiteng Cao, You Wang, Qinlin Jia, Haiying He,
+Zheli Zhou, Zhao Liu, Ji Liu, et al. 2025. A survey of generative recommendation
+from a tri-decoupled perspective: Tokenization, architecture, and optimization.
+(2025).
+[25] Yuhui Li, Fangyun Wei, Chao Zhang, and Hongyang Zhang. 2024.
+Eagle:
+Speculative sampling requires rethinking feature uncertainty. arXiv preprint
+arXiv:2401.15077 (2024).
+[26] Xinyu Lin, Chaoqun Yang, Wenjie Wang, Yongqi Li, Cunxiao Du, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2025. Efficient Inference for Large Language Model-
+based Generative Recommendation. In The Thirteenth International Conference
+on Learning Representations.
+[27] Enze Liu, Bowen Zheng, Cheng Ling, Lantao Hu, Han Li, and Wayne Xin Zhao.
+2024. End-to-End Learnable Item Tokenization for Generative Recommendation.
+arXiv preprint arXiv:2409.05546 (2024).
+[28] Zihan Liu, Yupeng Hou, and Julian McAuley. 2024. Multi-behavior generative
+recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management. 1575–1585.
+[29] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano
+Ermon, and Chelsea Finn. 2023. Direct preference optimization: Your language
+model is secretly a reward model. Advances in Neural Information Processing
+Systems 36 (2023), 53728–53741.
+[30] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[31] Xubin Ren, Wei Wei, Lianghao Xia, Lixin Su, Suqi Cheng, Junfeng Wang, Dawei
+Yin, and Chao Huang. 2024. Representation learning with large language models
+for recommendation. In Proceedings of the ACM on Web Conference 2024. 3464–
+3475.
+[32] Mohammad Samragh, Arnav Kundu, David Harrison, Kumari Nishu, Devang
+Naik, Minsik Cho, and Mehrdad Farajtabar. 2025. Your LLM Knows the Future:
+Uncovering Its Multi-Token Prediction Potential. arXiv preprint arXiv:2507.11851
+(2025).
+[33] Zhongwei Wan, Xin Wang, Che Liu, Samiul Alam, Yu Zheng, Jiachen Liu, Zhong-
+nan Qu, Shen Yan, Yi Zhu, Quanlu Zhang, et al. [n. d.]. Efficient Large Language
+Models: A Survey. Transactions on Machine Learning Research ([n. d.]).
+[34] Maolin Wang, Jun Chu, Sicong Xie, Xiaoling Zang, Yao Zhao, Wenliang Zhong,
+and Xiangyu Zhao. 2025. Put Teacher in Student’s Shoes: Cross-Distillation for
+Ultra-compact Model Compression Framework. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V. 2. 4975–4985.
+[35] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable item tokenization for generative
+recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management. 2400–2409.
+[36] Yejing Wang, Shengyu Zhou, Jinyu Lu, Qidong Liu, Xinhang Li, Wenlin Zhang,
+Feng Li, Pengjie Wang, Jian Xu, Bo Zheng, et al. 2025. GFlowGR: Fine-tuning
+Generative Recommendation Frameworks with Generative Flow Networks. arXiv
+preprint arXiv:2506.16114 (2025).
+[37] Zhipeng Wei, Kuo Cai, Junda She, Jie Chen, Minghao Chen, Yang Zeng, Qiang Luo,
+Wencong Zeng, Ruiming Tang, Kun Gai, et al. 2025. OneLoc: Geo-Aware Genera-
+tive Recommender Systems for Local Life Service. arXiv preprint arXiv:2508.14646
+(2025).
+[38] Yunjia Xi, Weiwen Liu, Jianghao Lin, Xiaoling Cai, Hong Zhu, Jieming Zhu, Bo
+Chen, Ruiming Tang, Weinan Zhang, and Yong Yu. 2024. Towards open-world
+recommendation with knowledge augmentation from large language models. In
+Proceedings of the 18th ACM Conference on Recommender Systems. 12–22.
+[39] Yunjia Xi, Hangyu Wang, Bo Chen, Jianghao Lin, Menghui Zhu, Weiwen Liu,
+Ruiming Tang, Zhewei Wei, Weinan Zhang, and Yong Yu. 2025. Efficiency un-
+leashed: Inference acceleration for LLM-based recommender systems with spec-
+ulative decoding. In Proceedings of the 48th International ACM SIGIR Conference
+on Research and Development in Information Retrieval. 1891–1901.
+[40] Yunjia Xi, Hangyu Wang, Bo Chen, Jianghao Lin, Menghui Zhu, Weiwen Liu,
+Ruiming Tang, Weinan Zhang, and Yong Yu. 2024. A decoding acceleration
+framework for industrial deployable LLM-based recommender systems. arXiv
+e-prints (2024), arXiv–2408.
+[41] Heming Xia, Zhe Yang, Qingxiu Dong, Peiyi Wang, Yongqi Li, Tao Ge, Tianyu Liu,
+Wenjie Li, and Zhifang Sui. 2024. Unlocking Efficiency in Large Language Model
+Inference: A Comprehensive Survey of Speculative Decoding. In ACL (Findings).
+[42] Yi Xu, Chaofan Fan, Jinxin Hu, Yu Zhang, Zeng Xiaoyi, and Jing Zhang. 2025.
+STORE: Semantic Tokenization, Orthogonal Rotation and Efficient Attention for
+Scaling Up Ranking Models. arXiv preprint arXiv:2511.18805 (2025).
+[43] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng,
+Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. 2025. Qwen3 technical
+report. arXiv preprint arXiv:2505.09388 (2025).
+
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Yejing Wang, et al.
+[44] Liu Yang, Fabian Paischer, Kaveh Hassani, Jiacheng Li, Shuai Shao, Zhang Gabriel
+Li, Yun He, Xue Feng, Nima Noorshams, Sem Park, et al. 2024. Unifying gen-
+erative and dense retrieval for sequential recommendation.
+arXiv preprint
+arXiv:2411.18814 (2024).
+[45] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, et al. 2025. Sparse meets dense: Unified generative
+recommendations with cascaded sparse-dense representations. arXiv preprint
+arXiv:2503.02453 (2025).
+[46] Daniel Zagyva, Emmanouil Stergiadis, Laurens van der Maas, Aleksandra Dokic,
+Eran Fainman, Ilya Gusev, and Moran Beladev. 2025. Speed without sacrifice:
+Fine-tuning language models with Medusa and knowledge distillation in travel
+applications. (2025).
+[47] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Jiayuan He, et al. 2024. Actions Speak Louder than Words:
+Trillion-Parameter Sequential Transducers for Generative Recommendations. In
+International Conference on Machine Learning. PMLR, 58484–58509.
+[48] Chen Zhang, Zhuorui Liu, and Dawei Song. 2024. Beyond the speculative game:
+A survey of speculative execution in large language models. arXiv preprint
+arXiv:2404.14897 (2024).
+[49] Chao Zhang, Haoxin Zhang, Shiwei Wu, Di Wu, Tong Xu, Xiangyu Zhao, Yan Gao,
+Yao Hu, and Enhong Chen. 2025. Notellm-2: Multimodal large representation
+models for recommendation. In Proceedings of the 31st ACM SIGKDD Conference
+on Knowledge Discovery and Data Mining V. 1. 2815–2826.
+[50] Lingzhe Zhang, Liancheng Fang, Chiming Duan, Minghua He, Leyi Pan, Pei Xiao,
+Shiyu Huang, Yunpeng Zhai, Xuming Hu, Philip S Yu, et al. 2025. A survey on
+parallel text generation: From parallel decoding to diffusion language models.
+arXiv preprint arXiv:2508.08712 (2025).
+[51] Zhaoqi Zhang, Haolei Pei, Jun Guo, Tianyu Wang, Yufei Feng, Hui Sun, Shaowei
+Liu, and Aixin Sun. 2025. OneTrans: Unified Feature Interaction and Sequence
+Modeling with One Transformer in Industrial Recommender. arXiv preprint
+arXiv:2510.26104 (2025).
+[52] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting large language models by integrating
+collaborative semantics for recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). IEEE, 1435–1448.
+[53] Bowen Zheng, Hongyu Lu, Yu Chen, Wayne Xin Zhao, and Ji-Rong Wen. 2025.
+Universal Item Tokenization for Transferable Generative Recommendation. arXiv
+preprint arXiv:2504.04405 (2025).
+[54] Carolina Zheng, Minhui Huang, Dmitrii Pedchenko, Kaushik Rangadurai, Siyu
+Wang, Fan Xia, Gaby Nahum, Jie Lei, Yang Yang, Tao Liu, et al. 2025. Enhancing
+embedding representation stability in recommendation systems with semantic
+id. In Proceedings of the Nineteenth ACM Conference on Recommender Systems.
+954–957.
+[55] Zuowu Zheng, Ze Wang, Fan Yang, Jiangke Fan, Teng Zhang, and Xingxing
+Wang. 2025. EGA: A Unified End-to-End Generative Framework for Industrial
+Advertising Systems. arXiv preprint arXiv:2505.17549 (2025).
+[56] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, et al. 2025. OneRec-V2 Technical
+Report. arXiv preprint arXiv:2508.20900 (2025).
+[57] Jie Zhu, Zhifang Fan, Xiaoxie Zhu, Yuchen Jiang, Hangyu Wang, Xintian Han,
+Haoran Ding, Xinmin Wang, Wenlin Zhao, Zhen Gong, et al. 2025. Rankmixer:
+Scaling up ranking models in industrial recommenders. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+6309–6316.
+[58] Jieming Zhu, Mengqun Jin, Qijiong Liu, Zexuan Qiu, Zhenhua Dong, and Xiu Li.
+2024. CoST: Contrastive Quantization based Semantic Tokenization for Genera-
+tive Recommendation. In Proceedings of the 18th ACM Conference on Recommender
+Systems. 969–974.
