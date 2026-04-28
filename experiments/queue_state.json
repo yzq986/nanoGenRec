@@ -1,14 +1,14 @@
 {
-  "current": "exp-039b.sh",
-  "log": "/tmp/exp039b.log",
-  "done_string": "EXP-039B complete!",
+  "current": "exp-040.sh",
+  "log": "/tmp/exp040.log",
+  "done_string": "EXP-040 complete!",
   "status": "running",
-  "started_at": "2026-04-28 22:28",
-  "pid": 12201,
+  "started_at": "2026-04-29 00:00",
+  "pid": 73370,
   "prev": {
-    "exp": "exp-038b.sh",
+    "exp": "exp-039b.sh",
     "status": "completed",
-    "best_ckpt": "exp038b-hard-lam03-3ep-ep1",
-    "r500": 0.621
+    "ckpt": "exp039b-ecpo-from-spdpo",
+    "r500": 0.657
   }
 }
