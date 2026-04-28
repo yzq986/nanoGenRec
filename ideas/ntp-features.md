@@ -28,9 +28,9 @@
 
 ## IDEA-feat-0: Time Gap Embedding (时间间隔特征)
 
-**优先级**: P0
+**优先级**: ~~P0~~ → ✅ 已验证有效
 **来源**: 原创 + SASRec-T (CIKM 2020), TiSASRec (WSDM 2020)
-**状态**: 待实现
+**状态**: ✅ 已实现并验证 — EXP-036 clean ablation: +3.7pp R@500 (B vs A)
 
 ### 核心思想
 
@@ -77,9 +77,9 @@ x = token_emb + pos_emb + time_gap_emb[time_gaps]
 
 ## IDEA-feat-1: Action Type Embedding (行为类型特征)
 
-**优先级**: P0
+**优先级**: ~~P0~~ → ✅ 已验证有效
 **来源**: 原创 + HSTU1B (KDD 2026), OneLoc Multi-behavior, GR4AD Value-Aware
-**状态**: 待实现
+**状态**: ✅ 已实现并验证 — EXP-036 包含 `--use_action_level`，Config B vs A: +3.7pp R@500
 
 ### 核心思想
 
@@ -131,9 +131,9 @@ action_emb = self.action_proj(action_vec)
 
 ## IDEA-feat-2: Segment Embedding 解耦 (Item Position + Layer Position)
 
-**优先级**: P0
+**优先级**: ~~P0~~ → ✅ 已验证有效
 **来源**: 原创; 类似 BERT 的 segment embedding 设计
-**状态**: 待实现
+**状态**: ✅ 已实现并验证 — EXP-036 包含 `--use_segment_emb`，Config B vs A: +3.7pp R@500
 
 ### 核心思想
 
@@ -177,9 +177,9 @@ x = token_emb + item_pos_emb[item_pos] + layer_pos_emb[layer_pos]
 
 ## IDEA-feat-3: Item Category / Attribute Token
 
-**优先级**: P1
+**优先级**: ~~P1~~ → P4 暂缓
 **来源**: OneLoc §Category Prompt, UniRec Chain-of-Attribute, GeoGR
-**状态**: 待讨论 — 需要品类数据接入
+**状态**: 暂缓 — 品类信息已通过 Qwen3 text embedding 隐式编码；EXP-036 full-features (time_gap+action_level+segment) 已达 R@500=59.0%，品类 token 的边际增益预期有限。需要先完成 EXP-037→039 RL 链路再评估
 
 ### 核心思想
 
@@ -232,9 +232,9 @@ x[s0_positions] += cat_emb[category_ids]
 
 ## IDEA-feat-4: User Profile Prefix Token (用户画像 token)
 
-**优先级**: P1
+**优先级**: ~~P1~~ → P4 暂缓
 **来源**: MTGR Dynamic Masking, HPGR Preference Attention
-**状态**: 待讨论
+**状态**: 暂缓 — Align³GR ablation 显示用户特征 +0.9pp，收益有限；短序列冷启动场景先验价值有限，NTP 序列本身已隐式建模用户偏好。RL 对齐链路 (EXP-037→039) 优先级更高
 
 ### 核心思想
 
@@ -341,14 +341,14 @@ TO-RoPE 将 RoPE 扩展为同时编码 discrete index 和 wall-clock time：
 
 | 优先级 | ID | 特征 | 收益 | 实现成本 | 建议 |
 |--------|-----|------|------|---------|------|
-| P0 | IDEA-feat-0 | Time Gap Embedding | ★★★ | 低 | 首选，一次实验验证 side info 价值 |
-| P0 | IDEA-feat-1 | Action Type Embedding | ★★☆ | 低 | 和 feat-0 一起做 |
-| P0 | IDEA-feat-2 | Segment Embedding 解耦 | ★★ | 极低 | 顺手改，几行代码 |
-| P1 | IDEA-feat-3 | Item Category Token | ★★★ | 中 | 需要品类数据，第二轮 |
-| P1 | IDEA-feat-4 | User Profile Prefix | ★★ | 中 | 序列够长时不急 |
-| **P1** | **IDEA-feat-5** | **TO-RoPE Time+Order Encoding** | **★★★** | **中** | **feat-0 已验证，升级到 TO-RoPE** |
+| ~~P0~~ → ✅ | IDEA-feat-0 | Time Gap Embedding | ★★★ | 低 | ✅ EXP-036 验证有效，+3.7pp R@500 |
+| ~~P0~~ → ✅ | IDEA-feat-1 | Action Type Embedding | ★★☆ | 低 | ✅ EXP-036 包含，三合一联合验证 |
+| ~~P0~~ → ✅ | IDEA-feat-2 | Segment Embedding 解耦 | ★★ | 极低 | ✅ EXP-036 包含，三合一联合验证 |
+| P4 暂缓 | IDEA-feat-3 | Item Category Token | ★★ | 中 | 品类信息已隐含在 text embedding，边际收益有限 |
+| P4 暂缓 | IDEA-feat-4 | User Profile Prefix | ★☆ | 中 | Align³GR ablation 仅 +0.9pp，先做 RL 链路 |
+| **P1** | **IDEA-feat-5** | **TO-RoPE Time+Order Encoding** | **★★★** | **中** | **feat-0/1/2 已验证，下一步升级到 TO-RoPE** |
 
-**建议实验顺序**: feat-0 + feat-1 + feat-2 三合一 → 一轮实验验证 side information 的整体增量价值。如果有效，再推进 feat-3 (需要品类数据)。
+**当前状态**: feat-0/1/2 三合一已通过 EXP-036 验证有效（+3.7pp R@500）。下一步: 完成 RL 对齐链路 (EXP-037→039)，之后考虑 feat-5 TO-RoPE 进一步提升。
 
 ---
 
