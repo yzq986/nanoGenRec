@@ -10,14 +10,16 @@
 |------|------|---------|-----|
 | [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision/Capacity/VRQ/MMQ/GeoSID/DualCodebook/Rebalance/AdaptiveCollision) | 15 | ~~sid-0~~ ❌ |
 | [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性/Caption) | 6 | — |
-| [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale/CascadedSparseDense) | 24 | — |
-| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum/LAC/OneLive-BOS/CF-SoftLabel) | 20 | onemall-0 |
+| [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale/CascadedSparseDene) | 24 | — |
+| [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum/LAC/OneLive-BOS/CF-SoftLabel) | 20 | ~~onemall-0~~ ❌ (EXP-022 负结果) |
 | [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR/RPO/ElasticTether) | 12 | — |
 | [inference.md](inference.md) | 推理优化 (Dynamic Beam/CSR约束/Register压缩/PRM-Beam/GRC/FP8-PTQ) | 7 | — |
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | ~~oneloc-4~~ 部分完成 |
-| [ntp-features.md](ntp-features.md) | NTP 特征注入 (TimeGap/ActionType/SegmentEmb/Category/UserProfile/ContTime) | 6 | feat-0, feat-1, feat-2 |
+| [ntp-features.md](ntp-features.md) | NTP 特征注入 (TimeGap/ActionType/SegmentEmb/Category/UserProfile/ContTime) | 6 | ~~feat-0/1/2~~ ✅ (EXP-036 全部验证) |
 
-**总计: 93 ideas (6 P0 / 58 P1 / 29 P2)**
+**总计: 93 ideas (0 P0 活跃 / ~57 P1 / 29 P2 / 8 已完成或关闭)**
+
+**已完成/关闭**: sid-0 ❌, sid-1 ❌, onemall-0 ❌, onemall-4 ✅, onemall-5 ✅, forge-0 ✅, oneloc-4 部分✅, feat-0/1/2 ✅, rpo-0 ✅(验证), spot-0 ✅(验证), uni-0 ❌
 
 ## 全局演进图
 
@@ -50,7 +52,7 @@ graph LR
     %% ═══ Col 2: Architecture & Training ═══
     subgraph COL2 [" Architecture / Training "]
         direction TB
-        OM0("onemall-0 Contrastive Loss"):::p0
+        OM0("onemall-0 Contrastive Loss ❌ EXP-022"):::p2
         SID4("sid-4 MTP 辅助 Loss"):::p1
         GR1("gr4ad-1 LazyAR"):::p1
         PLUM0("plum-0 LLM CPT"):::p1
@@ -301,8 +303,11 @@ Text → [Qwen3-0.6B] → 1024D → [MLP-FSQ h=64] → 3-token SID → [NTP S-ti
 | ID | 维度 | 实验 | 原因 |
 |-----|------|------|------|
 | ~~IDEA-sid-0~~ | ~~Tokenizer~~ | ~~OPQ 并行语义 ID~~ | ❌ 关闭，行为质量输 MLP-FSQ |
-| IDEA-onemall-0 | Training | NTP Contrastive Loss | OneMall 标配，NTP baseline 已建立 (EXP-013) |
+| ~~IDEA-onemall-0~~ | ~~Training~~ | ~~NTP Contrastive Loss~~ | ❌ 负结果 (EXP-022)：SID 离散 token 空间与 InfoNCE 连续对比不匹配，5 configs 全败 |
 | ~~IDEA-oneloc-4~~ | ~~Scaling~~ | ~~序列长度 vs 模型大小~~ | 部分完成: 模型 scaling EXP-015 ✅ (趋平); 序列长度待验证 |
+| ~~IDEA-feat-0/1/2~~ | ~~NTP Features~~ | ~~Time Gap + Action Level + Segment Emb~~ | ✅ 验证有效 (EXP-036): +3.7pp R@500 (59.0% vs 55.3%), PPL ↓7.6 |
+
+**当前无活跃 P0** — RL 对齐链路 (EXP-037 SP-DPO → EXP-038 RF-DPO → EXP-039 ECPO) 是最高优先级。
 
 ### P1 — 高价值
 
