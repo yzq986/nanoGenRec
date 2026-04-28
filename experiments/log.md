@@ -88,7 +88,7 @@ TBD
 ## EXP-031: New SOTA — Features SFT + Full RL Stack
 
 **Date**: 2026-04-27
-**Status**: running
+**Status**: completed
 **Results**: `experiments/ntp_checkpoints/exp031-*/`
 
 ### Background
@@ -121,24 +121,29 @@ RL gradient 更有效 → R@500 从 63.6% 提升超过 exp020 的 66.2%，设立
 
 ### Results
 
-Config B (exp031-baseline-full-stack) 仍在训练中（~step 280/400）。
-
-| Config | 起点 SFT | PPL | R@10 | R@500 | 训练耗时 |
-|--------|---------|-----|------|-------|---------|
-| **A: features + full RL** | exp025-beam-passes (R@500=63.6%) | 24.2 | 11.1% | 61.8% | 81min |
-| B: baseline + full RL (ablation) | exp020-hard-lam03 (R@500=66.2%) | — | — | — | running |
-| EXP-029 baseline | exp020 + on-policy | — | — | 67.8% | 80min |
-| EXP-020 SOTA | — | 16.3 | 14.1% | 66.2% | 62min |
-
-Config A 全量 eval（n_recall=1000）完成，train wall_time=4874s（81min）。
-
-**Config A 未达预期**：R@500=61.8%，低于 SFT 起点 EXP-020 的 66.2%（-4.4pp）也低于 EXP-029 的 67.8%（-6pp）。Features 模型从 63.6% 出发，RL 后反而下滑 1.8pp，未能复现 EXP-029 的增益。
+| Config | 起点 SFT | PPL | R@10 | R@500 | clip | adv_std | 训练耗时 |
+|--------|---------|-----|------|-------|------|---------|---------|
+| **A: features + full RL** | exp025-beam-passes (63.6%) | 24.2 | 11.1% | 61.8% | 0.964 | 0.580 | 81min |
+| **B: baseline + full RL** | exp020-hard-lam03 (66.2%) | 14.6 | 12.5% | **67.7%** | 0.924 | 0.579 | 80min |
+| EXP-029 (on-policy only) | exp020 | 14.1 | 13.0% | 67.8% | 0.923 | — | 80min |
+| EXP-020 SFT SOTA | — | 16.3 | 14.1% | 66.2% | — | — | 62min |
 
 ### Analysis
-TBD（Config B 完成后补）
+
+**Config B（baseline + full RL stack）= 67.7%，与 EXP-029 的 67.8% 基本持平（-0.1pp）**，验证了 full RL stack（A2PO+NLL+HEPO）在 exp020 起点上没有带来额外增益，也没有损害——EXP-029 的 on-policy ECPO 已经是这条路线的上限。
+
+**Config A（features + full RL）= 61.8%，严重退化（-6pp vs EXP-029）**：
+1. **clip 率 0.964 vs 0.924**：features 模型的 clip 率显著更高，说明 policy 和 ref 的 importance ratio 更大——features 改变了 token 分布，on-policy beam search 生成的 candidates 与 ref_lp 的偏差更大。
+2. **adv_std 0.580 vs EXP-029 的 ~1.0**：advantage std 偏低，说明 group 内 reward variance 不足，有效梯度少。Features 模型的 beam candidates 可能都落在相似的 freshness/quality 区间，WeightedBehaviorReward 区分度低。
+3. **PPL 24.2（vs B 的 14.6）**：RL 训练损害了 features 模型的 NTP 能力，但 B 的 PPL 与 SFT 起点相近（14.6 vs 16.3），说明 features 模型的 NTP loss landscape 对 RL 更敏感。
+4. **根本原因**：exp025-beam-passes 的 SFT 起点本身比 exp020 弱 2.6pp（63.6% vs 66.2%），features RL pipeline 没有被充分调优——grpo_weight、reward 权重等超参都是为 exp020 调的，对 features 模型可能过强。
+
+**结论**：features 模型接入 RL 需要单独调参，不能直接复用 exp020 的 RL 超参。核心问题是 clip 率过高（0.964），说明 grpo_weight 或 lr 对 features 模型偏大。
 
 ### Next Steps
-TBD（Config B 完成后补）
+
+1. **EXP-032**（已启动）：G×batch sweep，验证 context diversity 假设，在 exp020 起点上继续优化 RL。
+2. **Features RL 调参**（可选）：降低 grpo_weight（0.03→0.01）或 lr（1e-4→5e-5），使 clip 率回到 0.92 附近，再验证 features 增益。
 
 ---
 
