@@ -1,0 +1,9 @@
+{
+  "current": "exp-038b.sh",
+  "log": "/tmp/exp038b.log",
+  "done_string": "EXP-038B complete!",
+  "status": "running",
+  "pid": 555720,
+  "started_at": "2026-04-28 20:25",
+  "post_hook": "EVAL_MID_CHECKPOINTS=exp038b-hard-lam03-3ep"
+}

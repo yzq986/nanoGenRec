@@ -1,0 +1,15 @@
+# Experiment queue — one entry per line (append to add new experiments)
+# Format: SCRIPT  LOG  DONE_STRING  POST_HOOK(optional)
+#
+# DONE_STRING: grep for this in LOG to detect completion
+# POST_HOOK: extra shell commands to run after completion (before next exp starts)
+#   - Use semicolons to separate multiple commands
+#   - Special token BEST_CKPT will be replaced with best checkpoint path (for multi-epoch exps)
+#
+# To add a new experiment:
+#   echo "exp-042.sh  /tmp/exp042.log  'EXP-042 complete!'" >> experiments/queue.txt
+
+exp-038b.sh  /tmp/exp038b.log  EXP-038B complete!  EVAL_MID_CHECKPOINTS=exp038b-hard-lam03-3ep
+exp-039b.sh  /tmp/exp039b.log  EXP-039B complete!
+exp-040.sh   /tmp/exp040.log   EXP-040 complete!
+exp-041.sh   /tmp/exp041.log   EXP-041 complete!
