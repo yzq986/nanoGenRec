@@ -53,7 +53,6 @@ if [ ! -f "${SMOKE_DIR}/train_meta.json" ]; then
         --use_segment_emb \
         --use_time_gap \
         --use_action_level \
-        --max_seq_len 512 \
         --dry_run
     echo "  Smoke test PASSED"
     rm -rf "${SMOKE_DIR}"
@@ -73,8 +72,7 @@ else
         --preprocessed_dir "${NTP_DATA}" \
         --output_dir "${OUTPUT_A}" \
         --name "${NAME_A}" \
-        --model s-tier \
-        --max_seq_len 512
+        --model s-tier
     T1=$(date +%s)
     TRAIN_MIN_A=$(( (T1 - T0) / 60 ))
     echo "  [${NAME_A}] Training complete  (${TRAIN_MIN_A}min)"

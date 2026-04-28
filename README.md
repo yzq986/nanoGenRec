@@ -350,60 +350,67 @@ gr_demo/
 
 ### 实验谱系图
 
-```
-EXP-016 (NTP baseline, R@500=58.5%)
-    │
-    ├──[RF-DPO]──► EXP-017 SP-DPO (68.3%)
-    │                   │
-    │              [Joint NTP+DPO]
-    │                   │
-    │              EXP-018 Pure DPO ✗ (catastrophic forgetting)
-    │                   │
-    │              EXP-019 λ sweep (66.4%)
-    │                   │
-    │              EXP-020 λ=0.03 (66.2%) ◄─── SFT SOTA baseline
-    │                   │
-    │    ┌─────────────┤
-    │    │             │
-    │    │        [Side Features]
-    │    │             │
-    │    │        EXP-022 InfoNCE ✗ (56~59%)
-    │    │             │
-    │    │        EXP-023 time_gap/action/segment (55~61.2%)
-    │    │             │  ← 信息泄漏
-    │    │        EXP-024 Feature Shift ✗ (52~60%)
-    │    │             │
-    │    │        EXP-025 Beam Feature Passing (63.6%)
-    │    │          exp025-beam-passes ◄─── Features SFT 起点
-    │    │             │
-    │    │        [EXP-036 planned]
-    │    │        Clean Features NTP (from scratch) ◄─── 当前进行中
-    │    │
-    │    └──[GRPO+ECPO]──────────────────────────────────────────
-    │                   │
-    │              EXP-026 GRPO/ECPO 原型 (clip=99%, reward 稀疏)
-    │                   │
-    │              EXP-027 grpo_weight 对齐 (中断)
-    │                   │
-    │              EXP-028 WeightedBehaviorReward ✗ (R@500=2%, off-policy崩)
-    │                   │
-    │              EXP-029 On-Policy Beam (67.8%) ◄─── RL SOTA
-    │                   │
-    │              EXP-030 A2PO+NLL+HEPO (67.0~67.7%, 边际效益低)
-    │                   │
-    │         ┌─────────┴──────────────────┐
-    │         │                            │
-    │    [exp020起点]                 [exp025起点]
-    │    EXP-031B (67.7%)            EXP-031A (61.8%) ← clip=96% bug
-    │         │                            │
-    │    EXP-029 SOTA持平            EXP-033 bug修复验证 (61.0%)
-    │                                      │
-    │                               EXP-034 ref对齐 (95% clip, 进行中)
-    │                                      │
-    │                               EXP-035 Sampling T=1.0 (R@500=61.5%)
-    │                               ← adv_std改善，coverage不足
-    │
-    └── [待定] EXP-036 features NTP → 新 RL 起点？
+```mermaid
+flowchart TD
+    %% ── 模型节点 ──────────────────────────────────────────────
+    M16["📦 NTP baseline\nexp016-14d-S\nR@500=58.5%"]
+    M17["📦 exp017-hard-medium\nSP-DPO hard\nR@500=68.3%"]
+    M20["📦 exp020-hard-lam03\nJoint NTP+DPO λ=0.03\nR@500=66.2% ✅ SFT SOTA"]
+    M23["📦 exp023-segment\nsegment_emb only\nR@500=61.2%"]
+    M25["📦 exp025-beam-passes\nBeam Feature Passing\nR@500=63.6%"]
+    M029["📦 exp029-ecpo-onpolicy\nECPO + On-Policy Beam\nR@500=67.8% ✅ RL SOTA"]
+    M031B["📦 exp031-baseline\nECPO full stack\nR@500=67.7%"]    M036A["📦 exp036-no-features\nClean NTP, no feat\nR@500=?? 🔄"]
+    M036B["📦 exp036-full-features\nClean NTP + all feat\nR@500=?? 🔄"]
+
+    %% ── 实验节点 ──────────────────────────────────────────────
+    E18["❌ EXP-018\nPure DPO\n灾难遗忘 PPL=50K+"]
+    E19["EXP-019\nλ sweep\n找到 0.03 甜点"]
+    E022["❌ EXP-022\nInfoNCE 对比\n全部失败 56~59%"]
+    E024["❌ EXP-024\nFeature Shift\n训练侧修复但推理仍泄漏"]
+    E026["EXP-026\nGRPO/ECPO 原型\nclip=99% reward 稀疏"]
+    E027["⚠️ EXP-027\ngrpo_weight 对齐\nBehaviorReward 仅 2.5% 覆盖"]
+    E028["❌ EXP-028\nWeightedBehaviorReward\nR@500 崩至 2% off-policy"]
+    E030["EXP-030\nA2PO+NLL+HEPO\n边际效益低 67.0~67.7%"]
+    E031A["❌ EXP-031A\nexp025 起点\nclip=96% ref≠policy"]
+    E033["❌ EXP-033\nFeatures bug 修复验证\n假设证伪 clip 仍 96%"]
+    E034["⚠️ EXP-034\nref=exp025 对齐\nclip=95% NTP漂移是根因"]
+    E035["EXP-035\nSampling T=1.0 G=64\nadv_std↑ 但 coverage=89%\nR@500=61.5%"]
+
+    %% ── 演进路径 ──────────────────────────────────────────────
+    M16 -->|"SP-DPO hard split\n想法：preference pair 直接对齐"| M17
+    M17 -->|"Joint NTP+DPO\n想法：加 NTP loss 防遗忘"| E18
+    M17 -->|"Joint NTP+DPO\nλ=0.01~0.1 sweep"| E19
+    E19 -->|"λ=0.03 sweet spot"| M20
+
+    M16 -->|"加 segment emb\n想法：SID 层级感知"| M23
+    M23 -->|"InfoNCE\n想法：对比学习拉开 SID 距离"| E022
+    M23 -->|"time_gap + action\n想法：时效/行为信号"| E024
+    E024 -->|"修复推理 gap\n想法：beam search 传入正确 features"| M25
+
+    M20 -->|"GRPO 原型\n想法：group 对比代替 paired DPO"| E026
+    E026 -->|"grpo_weight 对齐\n想法：稀疏触发变成每步触发"| E027
+    E027 -->|"WeightedBehaviorReward\n想法：连续 reward 替代 binary"| E028
+    E028 -->|"On-Policy Beam\n想法：policy 自己生成候选 ρ→1"| M029
+    M029 -->|"A2PO+NLL+HEPO\n想法：更精细的 advantage 估计"| E030
+    E030 -->|"exp020 起点\n沿用已有 RL stack"| M031B
+    E030 -->|"exp025 起点\n想法：features 模型 RL 潜力更大"| E031A
+    E031A -->|"bug 修复\n想法：features 注入 bug 导致 clip 高"| E033
+    E033 -->|"ref=exp025\n想法：KL 对齐降低初始 clip"| E034
+    E034 -->|"sampling T=1.0\n想法：ρ≈1 by construction 降 clip"| E035
+
+    M20 -->|"干净对照\n想法：从头训练验证 features 真实效益"| M036A
+    M20 -->|"干净对照\n想法：相同条件唯一变量是 features"| M036B
+
+    %% ── 样式 ──────────────────────────────────────────────────
+    classDef checkpoint fill:#2d6a4f,color:#fff,stroke:#1b4332
+    classDef sota fill:#d62828,color:#fff,stroke:#9d0208
+    classDef failed fill:#6c757d,color:#fff,stroke:#495057
+    classDef running fill:#e76f51,color:#fff,stroke:#b5451c
+
+    class M16,M17,M23,M25,M031B checkpoint
+    class M20,M029 sota
+    class E18,E022,E024,E028,E031A,E033 failed
+    class M036A,M036B running
 ```
 
 ### 阶段六：RL 对齐 Phase 3/4 — GRPO + ECPO (EXP-026 ~ 035)
