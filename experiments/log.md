@@ -87,7 +87,7 @@ TBD
 ## EXP-030: A2PO + NLL Regularization + HEPO Prefix Scoring
 
 **Date**: 2026-04-27
-**Status**: planned
+**Status**: completed
 **Results**: `experiments/ntp_checkpoints/exp030-*/`
 
 ### Background
@@ -114,13 +114,27 @@ EXP-028/029 使用 WeightedBehaviorReward 解决了稀疏 reward 问题（100% c
 `bash experiments/scripts/exp-030.sh`
 
 ### Results
-TBD
+| Config | R@10 | R@500 | PPL | behavior_mean | 备注 |
+|--------|------|-------|-----|---------------|------|
+| exp030-a2po-nll-hepo-w003-r100 (Config A) | 12.5% | 67.0% | 14.54 | ~0.580 | A2PO+NLL+HEPO (all-in) |
+| exp030-a2po-only-w003-r100 (Config B) | **13.3%** | **67.7%** | **14.14** | ~0.561 | A2PO only (ablation) |
+| exp029-ecpo-onpolicy-w003-r100 | 13.0% | 67.8% | 14.1 | 0.638 | on-policy baseline |
+| exp020-hard-lam03 (SFT SOTA) | 14.1% | 66.2% | 16.3 | — | SFT baseline |
+
+全量 eval（n_recall=1000）：
+- **Config A**: item_recall@10=0.125，item_recall@50=0.324，item_recall@100=0.425，item_recall@500=0.670
+- **Config B**: item_recall@10=0.133，item_recall@50=0.327，item_recall@100=0.418，item_recall@500=0.677
 
 ### Analysis
-TBD
+- **Config B (A2PO only) vs EXP-029**：R@500 67.7% vs 67.8%，基本持平（-0.1pp），未见显著提升
+- **Config A (A2PO+NLL+HEPO) vs Config B**：R@500 67.0% vs 67.7%，NLL reg + HEPO 反而略有下降（-0.7pp）
+- **NLL reg 可能抑制了 RL 优化空间**：直接推高 best candidate 概率可能与 GRPO advantage 机制存在轻微干扰
+- **HEPO prefix scoring 效果有限**：在 on-policy beam 已收敛的情况下，额外 prefix 信号未带来增益
+- **A2PO 本身贡献有限**：on-policy beam (EXP-029) 已经足够有效，A2PO 的额外 hard negative 信号在此场景下边际效益低
+- **结论**：R@500 瓶颈不在 reward shaping，而在 SFT 起点。EXP-031 将用 features SFT (exp025, R@500=63.6%) 作为起点，预期打破当前 67.8% 的天花板
 
 ### Next Steps
-TBD
+EXP-031：features SFT (exp025-beam-passes) + 完整 RL stack → 目标 R@500 > 67.8%
 
 ---
 
