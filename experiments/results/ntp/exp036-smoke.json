@@ -3,29 +3,29 @@
   "model_type": "s-tier",
   "n_params": 45700096,
   "n_active_params": 17388544,
-  "total_tokens": 108504,
-  "total_flops": 11320359469056,
+  "total_tokens": 90732,
+  "total_flops": 9466184245248,
   "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
   "eval": {
-    "ppl": 3253.9308,
+    "ppl": 3314.0598,
     "layer_ppl": [
-      3244.1717,
-      2657.1919,
-      3996.6206
+      3323.163,
+      2739.6281,
+      3998.0561
     ],
-    "avg_loss": 8.087619,
+    "avg_loss": 8.105929,
     "depth_hit@10": [
-      0.0233,
-      0.0011,
+      0.016,
+      0.0007,
       0.0
     ],
     "depth_hit@10_indep": [
-      0.0232,
-      0.0229,
-      0.0076
+      0.016,
+      0.0257,
+      0.007
     ],
     "depth_acc_beam": [
-      0.002,
+      0.0,
       0.0,
       0.0
     ],
