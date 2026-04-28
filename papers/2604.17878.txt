@@ -1,0 +1,1099 @@
+RankUp: Towards High-rank Representations for Large Scale
+Advertising Recommender Systems
+Jin Chen∗, Shangyu Zhang∗, Bin Hu∗, Chao Zhou∗†, Junwei Pan, Gengsheng Xue, Wentao Ning,
+Gengyu Weng, Wang Zheng, Shaohua Liu, Zeen Xu, Chengyuan Mai, Shijie Quan, Tingyu Jiang,
+Lifeng Wang, Shudong Huang, Chengguo Yin, Haijie Gu, Jie Jiang
+elinjinchen,vitosyzhang,glennbinhu,derekczhou,jonaspan,eddiegsxue,wentaoning,greyweng,wangzheng@tencent.com
+jimmyshliu,flashxu,henrymai,justinquan,travisjiang,fandywang,ericdhuang,turingyin,jerrickgu,zeus@tencent.com
+Tencent Inc.
+Abstract
+The scaling laws for recommender systems have been increasingly
+validated, where MetaFormer-based architectures consistently ben-
+efit from increased model depth, hidden dimensionality, and user
+behavior sequence length. However, whether representation capac-
+ity scales proportionally with parameter growth remains largely
+unexplored. Prior studies on RankMixer reveal that the effective
+rank of token representations exhibits a damped oscillatory trajec-
+tory across layers, failing to increase consistently with depth and
+even degrading in deeper layers. Motivated by this observation, we
+propose RankUp, an architecture designed to mitigate representa-
+tion collapse and enhance expressive capacity through randomized
+permutation splitting over sparse features, a multi-embedding par-
+adigm, global token integration, crossed pretrained embedding
+tokens and task-specific token decoupling. RankUp has been fully
+deployed in large-scale production across Weixin Video Accounts,
+Official Accounts and Moments, yielding GMV improvements of
+3.41%, 4.81% and 2.21%, respectively.
+Keywords
+Recommender Systems, Dimensional Collapse
+ACM Reference Format:
+Jin Chen∗, Shangyu Zhang∗, Bin Hu∗, Chao Zhou∗†, Junwei Pan, Gengsheng
+Xue, Wentao Ning, Gengyu Weng, Wang Zheng, Shaohua Liu, Zeen Xu,
+Chengyuan Mai, Shijie Quan, Tingyu Jiang, Lifeng Wang, Shudong Huang,
+Chengguo Yin, Haijie Gu, Jie Jiang. 2018. RankUp: Towards High-rank
+Representations for Large Scale Advertising Recommender Systems. In
+Proceedings of Make sure to enter the correct conference title from your rights
+confirmation emai (Conference acronym ’XX). ACM, New York, NY, USA,
+9 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Recommendation architectures have evolved from manual fea-
+ture interaction modeling toward deep representation learning,
+∗Equal contribution.
+†Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than ACM
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+to post on servers or to redistribute to lists, requires prior specific permission and/or a
+fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 ACM.
+ACM ISBN 978-1-4503-XXXX-X/18/06
+https://doi.org/XXXXXXX.XXXXXXX
+with Transformer-based structures emerging as the dominant par-
+adigm in modern industrial recommender systems. Inspired by
+the scaling laws observed in large language models (LLMs) [1],
+recent industrial recommendation models — including AutoInt [26],
+Hiformer [10], Wukong [39], Interformer [38], RankMixer [42],
+TokenMixer-Large [15] and Mixformer [14] — have increasingly
+converged toward the MetaFormer [37] paradigm. These archi-
+tectures consistently demonstrate improved ranking performance
+through scaling model depth, hidden dimensionality, and user be-
+havior sequence length, validating the scaling laws for recom-
+mender systems. Despite these empirical gains, an important ques-
+tion remains largely unexplored: does representation capacity im-
+prove with parameter scaling? Scaling model size and enhancing
+representation capacity are not equivalent. Existing approaches
+largely assume that larger models yield better representations, yet
+they overlook structural constraints that inherently limit represen-
+tational expressiveness. Consequently, scaling alone often leads
+to diminishing returns, where additional parameters contribute
+little to effective capacity and may even exacerbate representation
+collapse in deep architectures.
+Representation capacity plays a critical role in the scalability of
+recommendation models, as limited expressive power often leads to
+embedding collapse, where learned representations concentrate in
+low-dimensional subspaces, reducing the model’s ability to differ-
+entiate users and items and thereby limiting ranking performance.
+To characterize this phenomenon, prior studies commonly measure
+representation capacity through spectral metrics such as effective
+rank [24] and fractional effective rank [32], which quantify the
+diversity and utilization of learned latent representations. However,
+recent analyses [19] empirically reveal that deeper recommendation
+architectures do not necessarily exhibit increased representation
+capacity: as model depth increases, the effective rank of token rep-
+resentations follows a damped oscillatory trajectory across layers,
+failing to grow monotonically and often deteriorating in deeper lay-
+ers. Theoretically, this behavior stems from the intrinsic limitations
+of existing RankMixer, where token mixing provides only bounded
+rank expansion while FFN exhibit rank-contractive behavior, jointly
+preventing sustained representation growth as depth increases.
+While one could attempt to improve representation capacity
+by designing more sophisticated token mixing operations, such
+as Self-Attention [29], Full-Mix [19], or Unimixer [12], such ap-
+proaches primarily enhance feature interactions within an already
+constrained representation space and thus offer limited ability to
+prevent representation collapse in deep layers. In contrast, enhanc-
+ing the expressive diversity of the latent space directly increases the
+arXiv:2604.17878v2  [cs.IR]  21 Apr 2026
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Jin Chen, Shangyu Zhang, Bin Hu, Chao Zhou and et al.
+capacity of the representation itself, enabling the model to preserve
+richer and more distinguishable token representations throughout
+depth. Motivated by this insight, we propose RankUp, an archi-
+tecture that improves latent space diversity through: Randomized
+Permutation Splitting reduces correlation and collinearity between
+tokens compared to semantic grouping, generating richer combi-
+nations. The Multi-embedding Representation Paradigm expands
+the foundational degrees of freedom in latent space. Global Token
+Integration enables each token to interact with global contextual
+information during token mixing, capturing broader dependencies.
+Cross Integration of Pre-trained Embeddings incorporates knowl-
+edge from other domains, scenarios, or tasks to enrich the latent
+space with external priors. Finally, Task-Specific Token Decoupling
+mitigates gradient interference in multi-objective settings, ensuring
+that the expanded parameter space is effectively utilized. Collec-
+tively, these mechanisms enhance the flexibility and diversity of
+latent representations, alleviating embedding collapse and support-
+ing stronger representation capacity in deep layers.
+We evaluate RankUp on large-scale production datasets from
+Tencent’s advertising platforms, focusing on Click Conversion Rate
+(CVR) optimization. Extensive ablation studies show that each of the
+proposed mechanisms contributes to mitigating embedding collapse
+and enhancing latent representation diversity. These improvements
+translate to stronger online performance, with real-time AUC gains
+over the production baseline. Online A/B testing on 20% of traffic
+further demonstrates significant uplift, and full deployment across
+Weixin Video Accounts, Moments, and Official Accounts results in
+GMV increases of 3.41%, 4.81%, and 2.12%, respectively.
+2
+Preliminaries
+2.1
+Formulation
+We consider a large-scale recommendation system with hetero-
+geneous inputs, including sparse categorical IDs, dense numeri-
+cal vectors, and user behavior sequences. For 𝑀sparse features
+F = {𝑓1, . . . , 𝑓𝑀}, each 𝑓𝑖is mapped to an embedding e𝑖∈R𝑑𝑖.
+Due to the hundreds of sparse features, a splitting mechanism
+is typically employed to partition the high-dimensional feature
+space into a sequence of token representations. One prevalent ap-
+proach is Autosplit [42], which partitions the concatenated vector
+einput = [e1; e2; ...; e𝑀] into 𝑇equidistant segments of length 𝑑𝑠.
+Formally, the 𝑖-th token x𝑖is derived as:
+x𝑖= Proj𝑖(einput[𝑑𝑠· (𝑖−1) : 𝑑𝑠· 𝑖])
+where the function Proj maps the split embedding into 𝐷dimen-
+sion. Alternatively, a semantic-based approach leverages domain
+expertise to pre-define groups of features, where related features
+F𝑖⊂F are aggregated based on domain expertise. The 𝑖-th token
+representation x𝑖is then formulated by projecting the concatenated
+embeddings within the group:
+x𝑖= Proj(Concat({e𝑗| 𝑓𝑗∈F𝑖}))
+This ensures that features with intrinsic semantic correlations are
+fused into an unified token prior to high-order interaction modeling.
+Other auxiliary data (e.g., dense vectors, sequential representations)
+are similarly projected into the 𝐷-dimensional latent space. These
+tokens form the initial representation matrix H0 ∈R𝑇×𝐷.
+Modern industrial models typically follow the MetaFormer [37]
+paradigm, which decouples token-wise interactions from channel-
+wise transformations. The backbone consists of 𝐿stacked layers,
+each composed of a Token Mixer and a Per-token FFN:
+H′
+𝑙= TokenMixer(LN(H𝑙−1)) + H𝑙−1
+h𝑙,𝑖= FFN(LN(h′
+𝑙,𝑖)) + h′
+𝑙,𝑖,
+𝑖= 1, . . . ,𝑇
+where LN(·) denotes Layer Normalization. In RankMixer, the To-
+ken Mixer employs a multi-head token mixing strategy: each to-
+ken embedding is split into multiple heads, and the sub-vectors of
+all tokens are recombined across the sequence to facilitate global
+cross-token feature interaction. This operation is parameter-free,
+allowing efficient information exchange while maintaining high
+parallelism. The per-token FFN, in contrast, applies independent
+transformations to each token, preserving permutation equivalence
+and enhancing expressive capacity along the channel dimension.
+2.2
+Representation Rank Deficiency
+To quantitatively analyze the utilization of the latent space in rec-
+ommendation models, we consider the Effective Rank of the hidden
+representation matrix H𝑙∈R𝑇×𝐷at each layer 𝑙. Unlike the stan-
+dard algebraic rank, which is highly sensitive to infinitesimal noise,
+the effective rank provides a robust measure of the internal dimen-
+sionality or the distribution of information across the 𝐷embedding
+dimensions.
+Formally, let 𝜎1, . . . , 𝜎𝑘denote the singular values of H𝑙obtained
+via Singular Value Decomposition (SVD), where𝑘= min(𝑇, 𝐷). The
+effective rank is defined as the exponential of the Shannon entropy
+of the normalized singular value distribution 𝑝𝑖= 𝜎𝑖/Í𝑘
+𝑗=1 𝜎𝑗:
+erank(H𝑙) = exp
+ 
+−
+𝑘
+∑︁
+𝑖=1
+𝑝𝑖ln𝑝𝑖
+!
+This metric ranges from 1 to𝑘, where a value close to 1 indicates that
+the representation has collapsed into a single dominant dimension,
+while a value approaching 𝑘implies that information is uniformly
+distributed across all orthogonal dimensions.
+Empirical observations from prior work [19] reveal that in deep
+recommendation architectures such as RankMixer, the effective
+rank of token representations does not monotonically increase with
+depth. Instead, it exhibits a damped oscillatory trajectory across
+layers: after initial expansion, the rank often stagnates or even de-
+creases in deeper layers. This pattern indicates that despite scaling
+model depth and parameters, the latent space is not fully exploited,
+and the representations tend to collapse into low-dimensional sub-
+spaces. Such observations point to a fundamental limitation of
+existing token mixing and per-token FFN designs. Theoretically,
+token mixers can only provide bounded rank expansion across
+tokens, while per-token FFNs exhibit rank-contractive behavior
+along the channel dimension. Together, these intrinsic properties
+constrain the latent space, preventing sustained growth of repre-
+sentation diversity across layers. This theoretical insight motivates
+the need for architectural interventions that explicitly enhance the
+expressive capacity of the latent space.
+
+
+RankUp: Towards High-rank Representations for Large Scale Advertising Recommender Systems
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Block i
+Task Towers
+Stacked Blocks
+Tokens
+Embedding
+Layers
+Input Features
+Subset of Features
+Original Features
+(e.g., User/Item, Context)
+Global Embedding
+Embedding Table 1
+Embedding Table 2
+Dense Features
+Global
+Token
+Sparse
+Token 1
+Sparse
+Token 2
+...
+Sparse
+Token N
+Dense 
+Token
+Dense
+Cross
+Task
+Token 2
+...
+Task
+Token N
+Task 1 Tower
+...
+Task N Tower
+Global Token Group
+Shuffle & Grouping
+Group Embedding
+Dense Features
+(e.g., pre-trained embeddings)
+User sequence behaviors
+Sequence Encoder
+Sequential Modelling
+Per-token FFN (SwiGLU)
+Norm
+Token Mixing
+Norm
+Task 2 Tower
+Task
+Token 1
+Seq Token
+Embedding Table 3
+Predefined
+feature
+interactions
+Figure 1: Overall Framework of RankUp
+3
+Rank-Up Method
+3.1
+Overall Framework
+Motivated by the limitations of existing token mixing and per-token
+FFN designs—namely, bounded rank expansion across tokens and
+rank contraction along channels—RankUp enhances latent space
+diversity by reducing token correlations, expanding embedding
+degrees of freedom, integrating global context, incorporating cross-
+domain priors, and decoupling task-specific representations.
+Building on the MetaFormer backbone (Section 2), RankUp ad-
+dresses latent space under-utilization, aiming to preserve and en-
+rich the effective rank of token representations. Rather than relying
+solely on more sophisticated token mixing, it enhances the expres-
+sive diversity of the latent space, giving the model greater flexibility
+to maintain rich and distinguishable representations (Figure 1). Ran-
+domized Permutation Splitting reduces correlations and collinearity
+between tokens, generating richer combinatorial interactions. A
+Multi-embedding Representation Paradigm expands the degrees of
+freedom of initial token embeddings, increasing latent diversity. A
+Global Token captures holistic context, enabling interactions across
+all tokens. Cross Integration of Pre-trained Embeddings injects
+knowledge from other domains, and Task-Specific Token Decou-
+pling mitigates gradient interference in multi-objective settings.
+Together, these mechanisms enhance latent flexibility, alleviate em-
+bedding collapse, and support stronger representation capacity in
+deeper layers.
+To ensure stable optimization, we adopt Pre-Layer Normaliza-
+tion (PreNorm) [31, 36] and SwiGLU activations [7, 25] within the
+per-token FFN. PreNorm stabilizes gradient flow in deep layers,
+facilitating more reliable training. The gating mechanism within
+SwiGLU enhances the modeling of complex feature interactions.
+3.2
+Randomized Permutation Splitting
+Traditional industrial rankers divide the 𝑀sparse features F into
+𝑇tokens according to predefined groupings [6, 9]. As described in
+Section 2.1, these approaches either perform equidistant segmen-
+tation of a fixed concatenation eall (Autosplit) or assign features
+according to predefined semantic sets F𝑡(Semantic Grouping). Al-
+though these predefined groupings introduce a structured inductive
+bias, they often incur information redundancy, as highly collinear
+features clustered within the same token reduce the informational
+entropy [24]. To address this limitation, we propose Randomized
+Permutation Splitting, which decouples feature grouping from fixed
+structural or semantic priors. Formally, we define a stochastic per-
+mutation operator 𝜎that randomly shuffles the indices of the sparse
+feature set F :
+F𝜎= {𝑓𝜎(1), . . . , 𝑓𝜎(𝑀)}
+After applying Randomized Permutation Splitting, features within
+each group are vectorized and concatenated before projection. By
+randomly distributing highly correlated features across tokens, Ran-
+domized Permutation Splitting reduces inter-token correlation. This
+decorrelation expands the geometric basis of the initial representa-
+tion matrix H0, encouraging the model to learn a high-rank latent
+manifold and mitigating representation collapse in deeper layers.
+3.3
+Multi-embedding Representation Paradigm
+Conventional industrial rankers typically map sparse features to
+a latent space using a single embedding table 𝜓: F →R𝑑. While
+computationally efficient, this Single-embedding paradigm imposes
+a fixed, low-dimensional constraint on the input manifold, often
+limiting the informational diversity required by downstream token
+mixers. This constraint induces a representation bottleneck, forcing
+high-order interaction layers to operate on a compressed feature
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Jin Chen, Shangyu Zhang, Bin Hu, Chao Zhou and et al.
+basis and increasing the risk of representation collapse. To address
+this issue, we adopt a Multi-embedding Paradigm [11, 23] within
+the token set. Rather than using a single projection, we employ 𝐾in-
+dependent embedding tables 𝜓1, . . . ,𝜓𝐾to represent input features.
+For a feature 𝑓𝑗, its representation becomes a tuple of embeddings
+drawn from different tables: e𝑗= {𝜓𝑘(𝑓𝑗) | 𝜓𝑘∈K𝑗}, where K𝑗
+denotes the subset of tables assigned to 𝑓𝑗. This redundant mapping
+allows the same categorical signal to be represented from multiple
+geometric perspectives, providing a more granular initialization for
+subsequent token formation.
+Leveraging this multi-embedding architecture increases the di-
+versity of the input representation matrix H0. This high-rank ini-
+tialization alleviates the early-stage bottleneck common in single-
+embedding systems, enabling the model to better capture rare sig-
+nals in sparse scenarios.
+3.4
+Global Token Integration
+In typical MetaFormer-based architectures, each token represents
+information from a local subset of features. To provide a holistic
+view of the input for interaction, we introduce a Global Token g
+alongside the local tokens. Unlike local tokens, which encode intra-
+group interactions, the Global Token g aggregates information from
+all features 𝑓1, . . . , 𝑓𝑀via an aggregation function 𝐴:
+g = 𝐴(𝑓1, 𝑓2, ..., 𝑓𝑀) = func
+
+Pool({Embed(𝑓𝑖)}𝑀
+𝑖=1)
+
+The function func can be implemented as a Multi-Layer Percep-
+tron (MLP) or more sophisticated cross-interaction modules, such
+as FM [17, 18, 22] or DCNv2 [33], to capture global dependen-
+cies. This Global Token is then appended to the token sequence
+H(0) = [g, e1, . . . , e𝑇], providing global contextual information for
+subsequent token interactions.
+3.5
+Cross Integration of Pre-trained
+Embeddings
+In modern industrial ranking systems, pre-trained user and item em-
+beddings are widely adopted as a fundamental component. These
+embeddings are typically learned from large-scale historical inter-
+action data using two-tower retrieval models, capturing coarse-
+grained semantic similarity in a dense latent space [40, 41]. How-
+ever, such embeddings are primarily optimized under distance-
+based objectives, focusing on global similarity rather than fine-
+grained feature interactions required in ranking scenarios. In con-
+trast, ranking models fundamentally rely on explicit feature interac-
+tions to capture higher-order dependencies among heterogeneous
+signals. As a result, directly using pre-trained embeddings in a
+shallow manner (e.g., concatenation or linear projection) fails to
+fully expose their interaction structure to downstream layers. To
+bridge this gap, we introduce a cross integration mechanism that
+explicitly injects interaction priors into the representation space.
+Given the user and item embeddings z𝑢𝑒and z𝑖𝑒, we compute their
+interaction via element-wise product:
+e𝑐𝑟𝑜𝑠𝑠= Proj (z𝑢𝑒⊙z𝑖𝑒)
+which can be viewed as a soft feature-level interaction that aligns
+with the inductive bias of factorization-based ranking models. This
+token is appended to the input sequence H0, explicitly injecting
+interaction-aware prior knowledge from pre-trained models into
+the token-based ranking architecture, complementing sparse fea-
+ture interactions in downstream layers.
+3.6
+Task-Specific Token Decoupling
+In industrial ranking systems, models are commonly trained under
+multiple optimization objectives [21], which share a common input
+feature space while imposing heterogeneous and sometimes con-
+flicting requirements on the learned representations. This shared
+optimization setting leads to representation collapse under multi-
+task supervision, where heterogeneous signals compete within a
+unified latent space. This competition causes dominant tasks to
+compress the representation space toward task-specific directions,
+thereby reducing overall representational expressiveness. To allevi-
+ate this issue, we introduce Task-Specific Token Decoupling, which
+explicitly separates task-dependent information at the token level.
+Instead of forcing all objectives to operate on a shared set of tokens,
+we assign task-specific tokens that evolve independently within
+the same backbone. Formally, we introduce a set of task-specific
+tokens where 𝐾learnable task tokens {x(𝑘)
+𝑡𝑎𝑠𝑘}𝐾
+𝑘=1 are introduced
+and participate in input representation. These tokens are jointly
+processed with shared tokens but maintain task-specific represen-
+tations during feature mixing. Furthermore, the task-specific token
+is fed directly into its corresponding task tower along with the final
+output H′
+𝐿of models
+𝑦(𝑘) = Tower(𝑘) (x(𝑘)
+𝑡𝑎𝑠𝑘, Pool(H′
+𝐿))
+This design reduces interference among heterogeneous learning
+signals and alleviates the compression of the shared representation
+space into task-biased subspaces. As a result, it preserves higher
+representational capacity and enables more balanced utilization of
+the latent space across multiple objectives.
+4
+Experiments
+4.1
+Experimental Setting
+4.1.1
+DataSet. We evaluate the proposed framework on a real-
+world large-scale industrial dataset from WeChat Video Accounts
+Ads, comprising 20 million daily samples with over 1,200 sparse
+features. The dataset spans from July 2024 to March 2026, covering
+user interactions in a production system. For model training, we use
+historical logged data collected from the production system, while
+evaluation is conducted in an online setting where predictions are
+computed in real time to reflect practical deployment conditions.
+Our evaluation focuses on the Click Conversion Rate (CVR) pre-
+diction task, which aggregates 32 online optimization objectives
+from the production system. Each sub-task corresponds to a dis-
+tinct business target and is modeled within a unified multi-task
+learning framework. The primary baseline is RankMixer [42], a sota
+MetaFormer-based architecture for industrial ranking that achieves
+an optimal trade-off between computational efficiency and model
+performance. To ensure a fair comparison, all experiments maintain
+a consistent two-layer backbone configuration.
+4.1.2
+Evaluation Metrics. To capture the performance in a dynamic
+industrial environment, we employ Realtime AUC as our primary
+metric. Realtime AUC is calculated within short, continuous time
+
+
+RankUp: Towards High-rank Representations for Large Scale Advertising Recommender Systems
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+windows to monitor the model’s discriminative power against evolv-
+ing data distributions.
+To quantify representation quality, we monitor the Effective Rank
+(erank) of the hidden states produced by each block, as defined
+in Section 2.2. Specifically, for a given layer output, we collect
+the hidden representation tensor H ∈R𝐵×𝑇×𝐷, where 𝐵is the
+batch size. The effective rank is computed on each sample-wise
+token representation matrix H𝑏∈R𝑇×𝐷within the mini-batch. The
+final metric is reported as the empirical mean across samples and
+evaluated separately at different network depths to reflect layer-
+wise representation evolution. To further clarify the analysis, we
+denote the intermediate representations after the Token Mixer and
+the Feed-Forward Network (FFN) within each block as 𝑇𝑀and
+𝐹𝐹𝑁, respectively, where both include residual connections.
+4.2
+Results
+To evaluate the effectiveness of RankUp, we conduct ablation stud-
+ies on key components of the proposed architecture within the
+WeChat Video Accounts advertising system. We focus on three rep-
+resentative tasks, as they are among the most resource-intensive
+and high-traffic objectives in the production system, covering di-
+verse business scenarios: Task Order, Task Book, and Add Service.
+As shown in Table 1, our framework consistently improves Real-
+time AUC over the baseline backbone across all evaluated tasks.
+Each variant independently introduces a specific component of
+RankUp and demonstrates consistent gains over the baseline. In par-
+ticular, the variant with Global Token and Multi-embedding yields
+the largest improvement, suggesting that enriching the initial rep-
+resentation space and incorporating global contextual information
+are beneficial for downstream prediction performance.
+Table 1: Improvement of Realtime AUC over top-3 tasks
+Order
+Book
+Add Service
+Randomized Permutation Split
++0.06%
++0.06%
++0.08%
+w/ Global Token + Multi-Emb
++0.21%
++0.18%
++0.13%
+w/ Cross Embedding
++0.22%
++0.10%
++0.03%
+w/ Task Token
++0.09%
++0.02%
++0.02%
+Rank-Up
++0.41%
++0.23%
++0.25%
+4.3
+Effect of Split Strategy
+To validate the efficacy of our Randomized Permutation Splitting,
+we conduct an analysis of the tokens statistical properties.
+4.3.1
+Token Independence via Mutual Information. We evaluate
+the statistical independence among tokens by comparing the pair-
+wise Mutual Information (MI) [8] under semantic grouping versus
+our randomized strategy. Concretely, given a training batch with
+embedding tensor E ∈R𝐵×𝑇×𝐷, we flatten the 𝐵×𝑇embeddings
+and assign each to one of 𝐾clusters via 𝑘-means, yielding a dis-
+crete cluster label 𝑐(𝑏)
+𝑖
+∈{1, . . . , 𝐾} for the 𝑖-th token in the 𝑏-th
+sample. These cluster assignments serve as discrete proxies for the
+latent states of each token. We then compute a pairwise MI matrix
+M ∈R𝑇×𝑇, where each entry is defined as:
+𝑀𝑖𝑗=
+𝐾
+∑︁
+𝑎=1
+𝐾
+∑︁
+𝑏=1
+𝑝(𝑎,𝑏) log
+𝑝(𝑎,𝑏)
+𝑝𝑖(𝑎) 𝑝𝑗(𝑏) ,
+(1)
+where 𝑝(𝑎,𝑏) denotes the joint probability that token 𝑖is assigned
+to cluster 𝑎and token 𝑗to cluster 𝑏, while 𝑝𝑖(𝑎) and 𝑝𝑗(𝑏) are the
+corresponding marginal probability. A higher 𝑀𝑖𝑗indicates greater
+statistical redundancy between token 𝑖and 𝑗. To isolate the effect
+of the randomized strategy, we define the MI Difference Matrix as:
+ΔM = MRandomized −MSemantic.
+(2)
+Negative entries in ΔM signify that randomized assignment re-
+duces inter-token redundancy over semantic grouping, resulting in
+improved feature decoupling.
+As shown in Figure 2(a), where embeddings are clustered into 48
+centroids, the MI between sparse tokens (Token ID 0–31) is consis-
+tently lower under the randomized strategy than under semantic
+grouping, indicating that our approach yields more statistically in-
+dependent token representations. For non-sparse tokens (Token ID
+32–46), which are constructed identically across both methods, the
+pairwise MI remains largely unchanged, as expected. Notably, the
+cross-group MI between sparse and non-sparse tokens is also sub-
+stantially reduced under the randomized strategy, further demon-
+strating its effectiveness in disentangling token-level dependencies
+across heterogeneous feature groups.
+We further validate the robustness of this observation by increas-
+ing the number of clusters to 𝐾= 64. As shown in Figure 2(b), the
+MI difference matrix exhibits a consistent pattern, confirming that
+the above findings are not sensitive to the choice of 𝐾.
+(a) 48 clusters
+(b) 64 clusters
+Figure 2: MI difference matrices (MRandomized −MSemantic) of
+the lower triangle with 𝐾=48 (left) and 𝐾=64 (right) clusters.
+Blue entries indicate lower MI under the randomized strategy,
+demonstrating reduced inter-token redundancy. The pattern
+is consistent across different choices of 𝐾.
+4.3.2
+Effective Rank. We further examine the effective rank of
+the embedding matrix for each token to assess the diversity of
+learned representations. A higher effective rank indicates that the
+embedding spans a higher-dimensional subspace, reflecting greater
+representational capacity. As shown in Figure 3, the effective rank
+of tokens under the randomized strategy is consistently higher and
+more uniform across all 32 sparse tokens compared to semantic
+grouping. Under semantic grouping, tokens that aggregate long-
+tail features—which individually have low cardinality and limited
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Jin Chen, Shangyu Zhang, Bin Hu, Chao Zhou and et al.
+variation—tend to exhibit significantly lower effective ranks (e.g.,
+Token 12, 29, and 31 fall below 20). This is because semantically
+similar long-tail features are grouped into the same token, resulting
+in a low-rank embedding subspace. In contrast, the randomized
+strategy disperses such features across different tokens, effectively
+mitigating the rank collapse caused by long-tail concentration and
+ensuring that each token maintains a rich and diverse representa-
+tion.
+Figure 3: Effective rank comparison of token embeddings un-
+der randomized splitting and semantic splitting. The random-
+ized strategy yields consistently higher and more uniform
+effective ranks across all 32 sparse tokens, while semantic
+grouping suffers from rank collapse on tokens dominated
+by long-tail features.
+4.4
+Analysis of Effective Rank Dynamics
+We further investigate how different components of RankUp influ-
+ence representation quality across layers by analyzing the evolution
+of effective rank at different layers and different modules, as shown
+in Figure 4.
+Overall, we observe a consistent pattern of representation degra-
+dation in deeper layers, particularly within the FFN stages, where
+the effective rank decreases significantly. This observation is con-
+sistent with recent analyses [19], which report that deeper archi-
+tectures often fail to exhibit monotonic rank growth, instead show-
+ing degraded representation capacity in later layers. Meanwhile,
+RankUp variants maintain higher effective rank across both To-
+ken Mixer and Feed-Forward Network layers, indicating improved
+preservation of representation diversity throughout depth.
+To further understand the contribution of each component, we
+conduct an ablation study by independently modifying key modules
+in RankUp and analyzing their effects on effective rank dynamics.
+The results show a clear separation of roles across components.
+The Multi-embedding paradigm primarily improves early-stage
+representation diversity by mapping identical raw features into
+independent embedding subspaces, preventing early compression
+and promoting a more isotropic latent space. The Global Token
+mechanism stabilizes deep-layer dynamics by enabling global fea-
+ture aggregation, which mitigates information loss observed in
+subset-based variants where effective rank degrades over depth
+(e.g., from 40 to 38). The Cross Pre-trained Embedding contributes
+mainly at the initial stage, where removing it leads to a sharp drop
+in effective rank at Block 0, indicating that external semantic priors
+are crucial for forming a rich initialization space. Finally, Random-
+ized Permutation Splitting and cross-embedding interaction fur-
+ther enhance token-level diversity by reducing feature correlation
+block1-TM
+block1-FFN
+block2-TM
+block2-FFN
+32
+34
+36
+38
+40
+42
+44
+46
+48
+50
+Effective Rank
+RankUp
+Semantic Group
+Single Embedding
+Subset Features
+w/o Cross
+Figure 4: Layer-wise Effective Rank Evolution under RankUp
+Ablations. This figure illustrates the distinct impact of dif-
+ferent RankUp components on layer-wise representation
+capacity.
+and strengthening cross-feature interactions, leading to smoother
+rank propagation across layers. Overall, these components act in a
+complementary manner, addressing representation collapse from
+different perspectives.
+4.5
+Effect of Task Tokens
+To evaluate the contribution of task-specific tokens to representa-
+tion learning, we measure the alignment between learned repre-
+sentations and downstream tasks using Mutual Information (MI).
+Since hidden representations lie in a continuous high-dimensional
+space, we adopt a discretization-based estimation strategy by flat-
+tening token representations and partitioning the latent space into
+𝐾discrete regions via K-means clustering. The Mutual Information
+between the resulting cluster assignments 𝑍and the ground-truth
+labels 𝑌∈{0, 1} is computed as
+𝐼(𝑍;𝑌) =
+∑︁
+𝑧,𝑦
+𝑃(𝑧,𝑦) log 𝑃(𝑧,𝑦)
+𝑃(𝑧)𝑃(𝑦) ,
+where the joint and marginal probabilities are estimated using
+empirical frequencies over the evaluation set. A higher MI indicates
+stronger alignment between the learned representation structure
+and downstream task labels, suggesting that the model preserves
+more task-relevant information while suppressing irrelevant noise.
+As shown in Figure 5, RankUp with task-specific tokens consis-
+tently achieves higher Mutual Information than the variant without
+task tokens across both book and order tasks. This improvement re-
+mains stable under different clustering granularities, ranging from
+8 to 64 clusters, indicating that task tokens help preserve more
+task-relevant information in learned representations.
+Notably, as the number of clusters increases, the MI gap be-
+tween RankUp and the baseline becomes progressively larger. Since
+finer-grained clustering reflects a more detailed partitioning of
+the latent space, this trend suggests that task tokens improve not
+only coarse-grained task awareness but also the model’s ability to
+capture subtle task-specific structures. Overall, these results demon-
+strate that task-specific tokens encourage the model to organize
+latent representations in a task-aware manner, leading to better
+disentanglement of predictive signals from irrelevant noise.
+
+
+RankUp: Towards High-rank Representations for Large Scale Advertising Recommender Systems
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+8
+16
+32
+64
+# Clusters
+0.01
+0.02
+0.03
+Mutual Information
+rank-up / task book
+rank-up / task order
+w/o task token / task book
+w/o task token / task order
+Figure 5: Mutual Information across Different Cluster
+Granularities. Task-specific tokens consistently improve
+representation-task alignment, with larger gains observed
+under finer-grained clustering.
+5
+Online Performance
+RankUp has been fully deployed in Tencent Weixin’s produc-
+tion advertising systems, including pcvr models for Weixin Video
+Accounts, Official Accounts and Moments.
+5.1
+Deployment Details
+We evaluate RankUp in a large-scale industrial advertising system
+for Conversion Rate (CVR) prediction. All model variants are trained
+from scratch under the same training protocol without initializing
+from historical checkpoints. The training data consists of 18 months
+of large-scale user–ad interaction logs collected from real-world
+production traffic.
+Our framework is deployed across three major high-traffic adver-
+tising scenarios: Video Accounts, Official Accounts and Moments.
+To capture diverse user behaviors in these complex environments,
+each model is designed as a multi-task predictor jointly optimizing
+32 prediction tasks within the advertising ecosystem.
+The input layer operates over a high-dimensional sparse feature
+space containing more than 1,000 feature fields, including domain-
+specific categorical features, sequential behavior tokens extracted
+from sequence encoders, and multiple pre-trained semantic em-
+beddings. This design enables the model to jointly exploit sparse
+behavioral patterns and dense semantic signals during inference.
+For deployment, we adopt a 2-layer MetaFormer backbone as
+the core architecture. To support industrial-scale representation
+learning, the model size is scaled up by an order of magnitude
+compared to previous production systems, increasing from approx-
+imately 10M to 100M parameters per scenario. All experiments are
+conducted against the current production ranking system, such as
+the rankmixer as a submodule in Weixin Official Accounts. The
+deployed model operates with a batch size of 300, requiring ap-
+proximately 70 GFLOPs per batch. Notably, RankUp achieves a
+Model FLOPs Utilization (MFU) of 23%, indicating improved hard-
+ware efficiency despite the increased model capacity. Despite the
+increased computational complexity introduced by RankUp, the
+system remains within strict industrial latency constraints and is
+fully compatible with real-time serving requirements.
+5.2
+Online Deployment Results
+To evaluate the effectiveness of RankUp in real-world industrial en-
+vironments, we conducted large-scale online A/B testing on 20% of
+production traffic across three major advertising scenarios: Weixin
+Video Accounts, Weixin Official Accounts and Weixin Moments.
+All experiments were conducted against the existing production
+ranking system under identical serving conditions. Each A/B exper-
+iment was conducted continuously for 14 days to ensure statistical
+stability. All reported improvements are statistically significant un-
+der repeated daily measurements. We report key business metrics
+including Realtime AUC, CTCVR, and GMV to comprehensively
+assess ranking quality, advertising efficiency, and revenue impact.
+As summarized in Table 2, RankUp consistently improves online
+ranking performance across all deployment scenarios. In particular,
+the proposed model achieves up to 0.367% AUC gain in Weixin
+Video Accounts, demonstrating stronger ranking discrimination
+ability in real production settings. More importantly, these ranking
+improvements translate directly into business value, yielding 2.21%–
+4.81% GMV lift across all scenarios while maintaining healthy
+advertising cost efficiency.
+Given the scale of our advertising platform, even marginal im-
+provements in online metrics produce significant commercial im-
+pact. The observed gains correspond to an estimated increase of
+hundreds of millions of dollars in annual revenue. Based on
+these robust results, RankUp has been fully deployed to serve
+100% of live production traffic.
+Table 2: Online Performance Lift
+Scenario
+Δ AUC
+CTCVR
+GMV
+Weixin Video Accounts
++0.367%
++1.41%
++3.41%
+Weixin Official Accounts
++0.331%
++0.21%
++4.81%
+Weixin Moments
++0.269%
++0.87%
++2.12%
+Table 3: Online Performance Lift for New Ads
+Scenario
+GMV
+Weixin Video Accounts
++5.83%
+Weixin Official Accounts
++9.67%
+Weixin Moments
++2.84%
+Table 3 further highlights the effectiveness of RankUp in han-
+dling newly launched advertisements, which represent a challeng-
+ing cold-start scenario in industrial recommendation systems due to
+extreme data sparsity. By leveraging richer representation learning
+and stronger feature interaction modeling, RankUp generates more
+expressive representations even when behavioral supervision is lim-
+ited. Specifically, for first-day performance of new advertisements
+in Weixin Official Accounts, RankUp achieves a remarkable 9.67%
+GMV increase. These results indicate that RankUp substantially
+improves the discoverability of high-quality new advertisements,
+enabling more effective exploration and monetization during the
+cold-start stage.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Jin Chen, Shangyu Zhang, Bin Hu, Chao Zhou and et al.
+Table 4: Online Performance Lift for Order Task
+Scenario
+GMV
+Weixin Video Accounts
+5.18%
+Weixin Official Accounts
+7.18%
+Weixin Moments
+4.79%
+The effectiveness of RankUp is further validated on the Order
+Task, which constitutes the largest proportion of advertising con-
+sumption in our platform and serves as the primary optimization
+objective for conversion quality. As shown in Table 4, RankUp
+significantly improves this critical task, yielding 7.18% GMV lift
+in Weixin Official Accounts. These results suggest that RankUp
+effectively enhances representation quality for high-value conver-
+sion objectives, allowing the ranking model to better capture and
+preserve subtle purchase intent signals. Given the dominant busi-
+ness importance of the Order Task, such gains further demonstrate
+the practical value of RankUp in improving large-scale industrial
+recommendation systems.
+6
+Related Work
+6.1
+Dense Scaling Laws in Rec
+Alongside the continued scaling of embedding tables, a parallel
+thread of research has focused on upscaling the dense interaction
+network—a paradigm we term dense scaling—to unlock further
+performance gains. Early attempts at deepening or widening in-
+teraction layers yielded diminishing returns due to CPU-era archi-
+tectural constraints. AutoInt [26] pioneered the use of multi-head
+self-attention to explicitly model high-order feature interactions,
+though its homogeneous treatment of features limited expressive-
+ness. Hiformer [10] improved upon this by introducing heteroge-
+neous attention with feature-specific projections, enabling more
+nuanced interactions. Wukong [39] provided the first empirical
+demonstration of a clear scaling law within the dense component,
+showing that stacked Factorization Machines could scale quality
+across two orders of magnitude in computational complexity. A key
+challenge emerged in balancing sequential behavior modeling with
+dense feature interaction. InterFormer [38] addressed this through
+bidirectional information flow between non-sequential and sequen-
+tial features, preventing early summarization and information loss.
+RankMixer [42] introduced a hardware-aware architecture with
+token mixing and per-token FFNs, dramatically improving Model
+Flops Utilization (MFU) from 4.5% to 45% and enabling 100× pa-
+rameter scaling without increased latency. MixFormer [14] unified
+sequence and dense modeling within a single parameter space,
+resolving the co-scaling conflict between the two components. Col-
+lectively, these works establish the architectural foundations for
+the scaling laws we investigate in this paper.
+6.2
+Representation Collapse in Neural
+Networks and Recommender Systems
+Representation collapse—where learned embeddings concentrate
+in a low-dimensional subspace and fail to preserve discriminative
+information across semantically distinct samples—has been widely
+observed in representation learning paradigms [3, 16]. This phe-
+nomenon is often characterized by the degeneration of embedding
+diversity, where informative signals are restricted to a few principal
+directions, leading to a reduced effective rank of the representation
+matrix and impaired generalization.
+Representation collapse has been extensively studied in self su-
+pervised and contrastive learning [13, 13, 16, 28], which often stems
+from an imbalance between alignment (bringing similar pairs to-
+gether) and uniformity (spreading all embeddings across the hyper-
+sphere) [35]. Without explicit regularization, models may converge
+to trivial solutions where embeddings become rank-deficient or
+even constant [4]. Recent advances in Large Language Models
+(LLMs) have also identified similar patterns; for instance, the effec-
+tive rank of attention outputs can fluctuate across layers [27, 34],
+with MLP blocks and residual connections playing a critical role in
+re-ranking the representation space to prevent collapse [32].
+Representation collapse is further exacerbated by the inherent
+properties of industrial-scale data in recommender systems, such
+as extreme sparsity and power-law distributions [2, 11, 23]. In par-
+ticular, the long-tailed distribution of item frequencies often leads
+to a dominance of head items in the embedding space, while tail
+items receive insufficient updates. To mitigate these issues, prior
+studies have proposed a variety of strategies. One line of work
+introduces regularization terms or auxiliary losses to encourage
+embedding dispersion, such as uniformity-promoting objectives or
+orthogonality constraints [5, 20, 30]. As dense models continue to
+scale in industrial settings, ensuring the effectiveness and robust-
+ness of learned representations has become increasingly crucial for
+maintaining system performance.
+7
+Conclusion
+In this work, we revisit the scaling behavior of modern recom-
+mendation architectures from the perspective of representation
+capacity. While prior studies have validated the empirical scaling
+laws of MetaFormer-based recommenders, we show that parameter
+growth does not necessarily translate into proportional gains in
+expressive power, as deeper architectures often suffer from rep-
+resentation collapse and limited effective-rank improvement. To
+address this limitation, we propose RankUp, a novel architecture
+designed to mitigate representation collapse by enhancing rep-
+resentation diversity through randomized permutation splitting,
+multi-embedding representations, global token integration, crossed
+pre-trained embedding tokens, and task-specific token decoupling.
+Extensive experiments demonstrate that RankUp consistently im-
+proves effective rank and recommendation performance across
+large-scale industrial datasets. Moreover, RankUp has been success-
+fully deployed in production across multiple Tencent advertising
+scenarios, delivering significant GMV gains in real-world applica-
+tions. Our findings highlight that scaling recommendation models
+should emphasize not only parameter growth, but also the effective
+utilization of representation space.
+
+
+RankUp: Towards High-rank Representations for Large Scale Advertising Recommender Systems
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+References
+[1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Floren-
+cia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal
+Anadkat, et al. 2023. Gpt-4 technical report. arXiv preprint arXiv:2303.08774
+(2023).
+[2] Newsha Ardalani, Carole-Jean Wu, Zeliang Chen, Bhargav Bhushanam, and
+Adnan Aziz. 2022. Understanding Scaling Laws for Recommendation Models.
+arXiv preprint arXiv:2208.08489 (2022).
+[3] Randall Balestriero, Mark Ibrahim, Vlad Sobal, Ari Morcos, Shashank Shekhar,
+Tom Goldstein, Florian Bordes, Adrien Bardes, Gregoire Mialon, Yuandong Tian,
+et al. 2023. A cookbook of self-supervised learning. arXiv preprint arXiv:2304.12210
+(2023).
+[4] Adrien Bardes, Jean Ponce, and Yann LeCun. 2021.
+Vicreg: Variance-
+invariance-covariance regularization for self-supervised learning. arXiv preprint
+arXiv:2105.04906 (2021).
+[5] Miaomiao Cai, Lei Chen, Yifan Wang, Haoyue Bai, Peijie Sun, Le Wu, Min Zhang,
+and Meng Wang. 2024. Popularity-aware alignment and contrast for mitigating
+popularity bias. In Proceedings of the 30th ACM SIGKDD Conference on Knowledge
+Discovery and Data Mining. 187–198.
+[6] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra,
+Hrishi Aradhye, Glen Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, et al.
+2016. Wide & deep learning for recommender systems. In Proceedings of the 1st
+workshop on deep learning for recommender systems. 7–10.
+[7] Aakanksha Chowdhery, Sharan Narang, Jacob Devlin, Maarten Bosma, Gaurav
+Mishra, Adam Roberts, Paul Barham, Hyung Won Chung, Charles Sutton, Se-
+bastian Gehrmann, et al. 2023. Palm: Scaling language modeling with pathways.
+Journal of machine learning research 24, 240 (2023), 1–113.
+[8] Thomas M Cover. 1999. Elements of information theory. John Wiley & Sons.
+[9] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep neural networks
+for youtube recommendations. In Proceedings of the 10th ACM conference on
+recommender systems. 191–198.
+[10] Huan Gui, Ruoxi Wang, Ke Yin, Long Jin, Maciej Kula, Taibai Xu, Lichan Hong,
+and Ed H Chi. 2023. Hiformer: Heterogeneous feature interactions learning with
+transformers for recommender systems. arXiv preprint arXiv:2311.05884 (2023).
+[11] Xingzhuo Guo, Junwei Pan, Ximei Wang, Baixu Chen, Jie Jiang, and Mingsheng
+Long. 2023. On the Embedding Collapse when Scaling up Recommendation
+Models. arXiv preprint arXiv:2310.04400 (2023).
+[12] Mingming Ha, Guanchen Wang, Linxun Chen, Xuan Rao, Yuexin Shi, Tianbao
+Ma, Zhaojie Liu, Yunqian Fan, Zilong Lu, Yanan Niu, et al. 2026. UniMixer:
+A Unified Architecture for Scaling Laws in Recommendation Systems. arXiv
+preprint arXiv:2604.00590 (2026).
+[13] Tianyu Hua, Wenxiao Wang, Zihui Xue, Sucheng Ren, Yue Wang, and Hang
+Zhao. 2021. On feature decorrelation in self-supervised learning. In Proceedings
+of the IEEE/CVF International Conference on Computer Vision. 9598–9608.
+[14] Xu Huang, Hao Zhang, Zhifang Fan, Yunwen Huang, Zhuoxing Wei, Zheng
+Chai, Jinan Ni, Yuchao Zheng, and Qiwei Chen. 2026. MixFormer: Co-Scaling Up
+Dense and Sequence in Industrial Recommenders. arXiv preprint arXiv:2602.14110
+(2026).
+[15] Yuchen Jiang, Jie Zhu, Xintian Han, Hui Lu, Kunmin Bai, Mingyu Yang, Shikang
+Wu, Ruihao Zhang, Wenlin Zhao, Shipeng Bai, et al. 2026. TokenMixer-Large:
+Scaling Up Large Ranking Models in Industrial Recommenders. arXiv preprint
+arXiv:2602.06563 (2026).
+[16] Li Jing, Pascal Vincent, Yann LeCun, and Yuandong Tian. 2021. Understanding
+Dimensional Collapse in Contrastive Self-supervised Learning. In ICLR.
+[17] Yuchin Juan, Yong Zhuang, Wei-Sheng Chin, and Chih-Jen Lin. 2016. Field-
+aware factorization machines for CTR prediction. In Proceedings of the 10th ACM
+Conference on Recommender Systems (RecSys). 43–50.
+[18] Yehuda Koren, Robert Bell, and Chris Volinsky. 2009. Matrix factorization tech-
+niques for recommender systems. Computer 42, 8 (2009), 30–37.
+[19] Guoming Li, Shangyu Zhang, Junwei Pan, Wentao Ning, Jin Chen, Gengsheng
+Xue, Chao Zhou, Shudong Huang, Haijie Gu, and Mengling Yang. 2026. Ex-
+pand More, Shrink Less: Shaping Effective-Rank Dynamics for Dense Scaling in
+Recommendation. In Under Review.
+[20] Donald Loveland, Xinyi Wu, Tong Zhao, Danai Koutra, Neil Shah, and Mingxuan
+Ju. 2025. Understanding and scaling collaborative filtering optimization from the
+perspective of matrix rank. In Proceedings of the ACM on Web Conference 2025.
+436–449.
+[21] Jiaqi Ma, Zhe Zhao, Xinyang Yi, Jilin Chen, Lichan Hong, and Ed H. Chi. 2018.
+Modeling Task Relationships in Multi-task Learning with Multi-gate Mixture-of-
+Experts. In KDD. ACM, 1930–1939.
+[22] Junwei Pan, Jian Xu, Alfonso Lobos Ruiz, Wenliang Zhao, Shengjun Pan, Yu Sun,
+and Quan Lu. 2018. Field-weighted factorization machines for click-through
+rate prediction in display advertising. In Proceedings of the 2018 World Wide Web
+Conference (WWW). 1349–1357.
+[23] Junwei Pan, Wei Xue, Ximei Wang, Haibin Yu, Xun Liu, Shijie Quan, Xueming Qiu,
+Dapeng Liu, Lei Xiao, and Jie Jiang. 2024. Ads recommendation in a collapsed
+and entangled world. In Proceedings of the 30th ACM SIGKDD Conference on
+Knowledge Discovery and Data Mining. 5566–5577.
+[24] Olivier Roy and Martin Vetterli. 2007. The effective rank: A measure of effective
+dimensionality. In 2007 15th European signal processing conference. IEEE, 606–610.
+[25] Noam Shazeer. 2020.
+Glu variants improve transformer.
+arXiv preprint
+arXiv:2002.05202 (2020).
+[26] Weiping Song, Chence Shi, Zhiping Xiao, Zhijian Duan, Yewen Xu, Ming Zhang,
+and Jian Tang. 2019. Autoint: Automatic feature interaction learning via self-
+attentive neural networks. In Proceedings of the 28th ACM International Conference
+on Information and Knowledge Management (CIKM). 1161–1170.
+[27] Yi Tay, Dara Bahri, Donald Metzler, Da-Cheng Juan, Zhe Zhao, and Che Zheng.
+2021. Synthesizer: Rethinking self-attention for transformer models. In Interna-
+tional conference on machine learning. PMLR, 10183–10192.
+[28] Yuandong Tian, Xinlei Chen, and Surya Ganguli. 2021. Understanding self-
+supervised learning dynamics without contrastive pairs. In International Confer-
+ence on Machine Learning. PMLR, 10268–10278.
+[29] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. In NeurIPS.
+[30] Chenyang Wang, Yuanqing Yu, Weizhi Ma, Min Zhang, Chong Chen, Yiqun Liu,
+and Shaoping Ma. 2022. Towards representation alignment and uniformity in
+collaborative filtering. In Proceedings of the 28th ACM SIGKDD conference on
+knowledge discovery and data mining. 1816–1825.
+[31] Hongyu Wang, Shuming Ma, Li Dong, Shaohan Huang, Dongdong Zhang, and
+Furu Wei. 2024. Deepnet: Scaling transformers to 1,000 layers. IEEE Transactions
+on Pattern Analysis and Machine Intelligence 46, 10 (2024), 6761–6774.
+[32] Junxuan Wang, Xuyang Ge, Wentao Shu, Zhengfu He, and Xipeng Qiu. 2025.
+Attention Layers Add Into Low-Dimensional Residual Subspaces. arXiv preprint
+arXiv:2508.16929 (2025).
+[33] Ruoxi Wang, Rakesh Shivanna, Derek Cheng, Sagar Jain, Dong Lin, Lichan Hong,
+and Ed Chi. 2021. DCN-V2: Improved deep & cross network and practical lessons
+for web-scale learning to rank systems. In Proceedings of the Web Conference
+(WWW). 1785–1797.
+[34] Sinong Wang, Belinda Z Li, Madian Khabsa, Han Fang, and Hao Ma. 2020. Lin-
+former: Self-attention with linear complexity. arXiv preprint arXiv:2006.04768
+(2020).
+[35] Tongzhou Wang and Phillip Isola. 2020. Understanding contrastive representation
+learning through alignment and uniformity on the hypersphere. In International
+Conference on Machine Learning. PMLR, 9929–9939.
+[36] Ruibin Xiong, Yunchang Yang, Di He, Kai Zheng, Shuxin Zheng, Chen Xing,
+Huishuai Zhang, Yanyan Lan, Liwei Wang, and Tieyan Liu. 2020. On layer
+normalization in the transformer architecture. In International conference on
+machine learning. PMLR, 10524–10533.
+[37] Weihao Yu, Mi Luo, Pan Zhou, Chenyang Si, Yichen Zhou, Xinchao Wang, Jiashi
+Feng, and Shuicheng Yan. 2022. Metaformer is actually what you need for
+vision. In Proceedings of the IEEE/CVF conference on computer vision and pattern
+recognition. 10819–10829.
+[38] Zhichen Zeng, Xiaolong Liu, Mengyue Hang, Xiaoyi Liu, Qinghai Zhou, Chaofei
+Yang, Yiqun Liu, Yichen Ruan, Laming Chen, Yuxin Chen, et al. 2025. InterFormer:
+Effective Heterogeneous Interaction Learning for Click-Through Rate Prediction.
+In Proceedings of the 34th ACM International Conference on Information and
+Knowledge Management. 6225–6233.
+[39] Buyun Zhang, Liang Luo, Yuxin Chen, Jade Nie, Xi Liu, Shen Li, Yanli Zhao,
+Yuchen Hao, Yantao Yao, Ellie Dingqiao Wen, et al. 2024. Wukong: Towards a
+Scaling Law for Large-Scale Recommendation. In International Conference on
+Machine Learning. PMLR, 59421–59434.
+[40] Shangyu Zhang, Shijie Quan, Zhongren Wang, Junwei Pan, Tianqu Zhuang,
+Bo Fu, Yilong Sun, Jieying Lin, Jushuo Chen, Xiaotian Li, et al. 2025. Large
+Foundation Model for Ads Recommendation. arXiv preprint arXiv:2508.14948
+(2025).
+[41] Wei Zhang, Dai Li, Chen Liang, Fang Zhou, Zhongke Zhang, Xuewei Wang,
+Ru Li, Yi Zhou, Yaning Huang, Dong Liang, et al. 2024. Scaling User Modeling:
+Large-scale Online User Representations for Ads Personalization in Meta. In
+Companion Proceedings of the ACM on Web Conference 2024. 47–55.
+[42] Jie Zhu, Zhifang Fan, Xiaoxie Zhu, Yuchen Jiang, Hangyu Wang, Xintian Han,
+Haoran Ding, Xinmin Wang, Wenlin Zhao, Zhen Gong, et al. 2025. Rankmixer:
+Scaling up ranking models in industrial recommenders. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+6309–6316.

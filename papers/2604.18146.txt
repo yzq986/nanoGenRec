@@ -1,0 +1,1918 @@
+Modular Representation Compression: Adapting LLMs for
+Efficient and Effective Recommendations
+Yunjia Xi
+xiyunjia@sjtu.edu.cn
+Shanghai Jiao Tong University
+Shanghai, China
+Menghui Zhu
+zhumenghui1@huawei.com
+Huawei Noah’s Ark Lab
+Shanghai, China
+Jianghao Lin∗
+linjianghao@sjtu.edu.cn
+Antai College of Economics and
+Management, Shanghai Jiao Tong
+University
+Shanghai, China
+Bo Chen
+chenbo116@huawei.com
+Huawei Noah’s Ark Lab
+Shanghai, China
+Ruiming Tang
+tangruiming@huawei.com
+Huawei Noah’s Ark Lab
+Shenzhen, China
+Yong Yu
+yyu@sjtu.edu.cn
+Shanghai Jiao Tong University
+Shanghai, China
+Weinan Zhang
+wnzhang@sjtu.edu.cn
+Shanghai Jiao Tong University
+Shanghai, China
+Abstract
+Recently, large language models (LLMs) have advanced recom-
+mendation systems (RSs), and recent works have begun to explore
+how to integrate LLMs into industrial RSs. While most approaches
+deploy LLMs offline to generate and pre-cache augmented repre-
+sentations for RSs, high-dimensional representations from LLMs
+introduce substantial storage and computational costs. Thus, it is
+crucial to compress LLM representations effectively. However, we
+identify a counterintuitive phenomenon during representation com-
+pression: Mid-layer Representation Advantage (MRA), where
+representations from middle layers of LLMs outperform those from
+final layers in recommendation tasks. This degraded final layer
+renders existing compression methods, which typically compress
+on the final layer, suboptimal. We interpret this based on modular-
+ity theory that LLMs develop spontaneous internal functional
+modularity and force the final layer to specialize in the proxy train-
+ing task. Thus, we propose Modular Representation Compression
+(MARC) to explicitly control the modularity of LLMs. First, Modular
+Adjustment explicitly introduces compression and task adaptation
+modules, enabling the LLM to operate strictly as a representation-
+learning module. Next, to ground each module to its specific task,
+Modular Task Decoupling uses information constraints and differ-
+ent network structures to decouple tasks. Extensive experiments
+validate that MARC addresses MRA and produces efficient represen-
+tations. Notably, MARC achieved a 2.82% eCPM lift in an online A/B
+test within a large-scale commercial search advertising scenario.
+∗Corresponding authors.
+Please use nonacm option or ACM Engage class to enable CC licenses
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+© 2026 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2599-9/2026/07
+https://doi.org/10.1145/3805712.3809681
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Recommender Systems; Large Language Models; Representation
+Compression
+ACM Reference Format:
+Yunjia Xi, Menghui Zhu, Jianghao Lin, Bo Chen, Ruiming Tang, Yong Yu,
+and Weinan Zhang. 2026. Modular Representation Compression: Adapting
+LLMs for Efficient and Effective Recommendations. In Proceedings of the
+49th International ACM SIGIR Conference on Research and Development in
+Information Retrieval (SIGIR ’26), July 20–24, 2026, Melbourne, VIC, Australia.
+ACM, New York, NY, USA, 12 pages. https://doi.org/10.1145/3805712.3809681
+1
+Introduction
+The rapid advancement of large language models (LLMs) has pro-
+foundly transformed numerous domains, including recommenda-
+tion systems (RSs) [31, 71, 78]. Recent studies have increasingly ex-
+plored the integration of LLMs into RSs, achieving performance that
+surpasses traditional recommendation approaches [6, 32, 35, 59].
+However, their deployment in industrial RSs remains at a nascent
+stage. This is primarily because commercial RSs typically handle
+millions of users and items while adhering to stringent response
+latency requirements – often within 100ms [30, 33, 65]. The sub-
+stantial computational overhead and significant inference latency
+of LLMs render them impractical for online serving in such sce-
+narios. Consequently, most deployment strategies pre-cache LLM
+representations for traditional RSs, avoiding their online infer-
+ence [37, 47, 61, 66]. A prevalent pipeline entails leveraging LLMs
+offline to generate or encode textual knowledge into knowledge
+representations, which are subsequently utilized by downstream
+recommendation models.
+The LLM representations can inject richer information into RSs
+and significantly enhance their performance [37, 47, 61], but there
+arXiv:2604.18146v2  [cs.IR]  21 Apr 2026
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yunjia Xi et al.
+0
+1000
+2000
+3000
+4000
+Dimension of LLM Representation
+0.782
+0.784
+0.786
+0.788
+0.790
+0.792
+0.794
+0.796
+0.798
+Downstream Performance (AUC)
+Base
+TinyBERT
+BERT
+Qwen2
+-1.5B
+Phi-2
+Qwen2-7B
+Llama3
+-8B
+PCA-128
+PCA-768
+PCA-2048
+DCNv2
+DCNv2 + LLM Rep.
+DCNv2 + PCA Rep.
+(a) Performance
+0
+1000
+2000
+3000
+4000
+Dimension of LLM Representation
+1x
+10x
+20x
+30x
+40x
+N times Larger than Base DCNv2
+Training Time
+Inference Time
+Storage Space
+(b) Costs
+Figure 1: The impact of various LLM representations on
+downstream performance and costs in MovieLens-1M.
+is also a trade-off between effectiveness and efficiency. In Fig-
+ure 1a, larger LLMs bring greater enhancements to the downstream
+Click-Through Rate (CTR) model DCNv2 [55] (e.g., BERT [21] <
+Phi-2 [17] < Llama3-8B [5]). However, larger LLMs produce higher-
+dimensional representations, substantially increasing storage, train-
+ing, and inference overhead (Figure 1b), as detailed in Section 2.2.
+In industrial RSs, where user and item volumes far exceed public
+datasets, these costs are more prohibitive. While simple dimen-
+sionality reduction methods like PCA [41] can reduce costs, they
+suffer from severe performance degradation. In Figure 1a, when
+PCA reduces Llama3-8B’s representation to BERT’s dimensional-
+ity (PCA-768), it performs worse than BERT. This suggests that
+training-free compression methods, such as PCA, struggle to retain
+information useful for downstream tasks, making fine-tuning LLMs
+essential for efficient representation compression.
+Existing fine-tuning-based compression methods, including nested-
+based [22, 56] and projection-based [53] approaches, have signif-
+icantly outperformed training-free methods. These methods typ-
+ically compress on the final-layer output of LLMs with training
+objectives like contrastive loss. However, in our experiments 2.3,
+we identify a pervasive and critical issue: Mid-layer Representa-
+tion Advantage (MRA), where representations from middle lay-
+ers outperform those from the final layer in recommendation tasks.
+This observation reveals a fundamental limitation: existing training
+paradigms for representation compression degrade the quality of
+final-layer representations. Consequently, methods that focus on
+compressing this suboptimal final layer are bound to limit their
+potential effectiveness.
+We interpret this phenomenon through the lens of modularity
+theory that LLMs develop spontaneous internal functional mod-
+ularity during training. Specifically, the early-to-middle layers
+function as a Representation Learning Module, extracting rich, gen-
+eralized textual features. However, a critical functional shift occurs
+in the final layers. Under current training paradigms, the strong su-
+pervision signals from the training objective (e.g., contrastive loss)
+force the final layers to evolve into a specialized Task Adaptation
+Module. These final layers form an unintended information bot-
+tleneck, filtering out diverse semantics deemed redundant for the
+training objective but crucial for recommendation. This explains
+the MRA: while middle layers retain generalized information, the
+final layer sacrifices it for task adaptation. This emergent modular-
+ity is difficult to predict a priori, making it challenging to directly
+compress the optimal middle-layer representations.
+Based on this insight, we propose a Modular Representation
+Compression (dubbed MARC) framework to transform this implicit,
+uncontrolled modularity into an explicit, controllable architectural
+design. Our core intuition is to preserve the high-quality represen-
+tations in the final layer by structurally decoupling representation
+learning from task adaptation. First, we perform Modular Adjust-
+ment by explicitly introducing external modules responsible for
+different tasks. We introduce a lightweight Compression Network to
+act as the dedicated compression module and a User-Item Match-
+ing Network to offload the task adaptation burden. This explicit
+separation prevents the LLM’s final layers from collapsing into
+task-specific heads, allowing the backbone to focus purely on learn-
+ing high-quality, generalized representations. Next, to ensure that
+each module performs its specific task, we introduce Modular Task
+Decoupling, including information constraint, Hilbert-Schmidt In-
+dependence Criterion (HSIC), and different network structures for
+different tasks. HSIC constraint guides compression by maximizing
+the mutual information between original and compressed repre-
+sentations, effectively separating representation and compression
+tasks. The compression network processes individual represen-
+tations, while the matching network inputs both user and item
+representations, capturing their explicit and implicit interactions.
+These distinct structures separate compression and target tasks.
+This framework ensures that information filtering occurs strictly
+within the external modules, leaving the LLM’s representation ca-
+pability intact. Our contributions can be summarized as follows:
+• We identify the tradeoff between efficiency and effectiveness
+in LLM-based representations for recommendation. To the
+best of our knowledge, this is the first work that focuses on
+representation compression in LLM-based recommendation.
+• We reveal the mid-layer representation advantage issue
+in common LLM representation compression methods, and
+we analyze and explain it with modular theory for the first
+time.
+• We propose MARC to address this issue, with Modular Ad-
+justment to add compression and user-item matching net-
+work and Modular Task Decoupling to ensure each module
+performs its specific task, enabling LLMs to focus on repre-
+sentation learning.
+• Experiments validate that MARC mitigates mid-layer repre-
+sentation advantage and improves eCPM by 2.82% during an
+online A/B test in a large commercial search advertising
+scenario.
+2
+Analyses on LLM Representations for RSs
+2.1
+Background: LLM Representations for RSs
+LLMs’ massive parameters and autoregressive nature bring high
+inference latency, making it challenging to meet the online low-
+latency requirements of RSs. As a result, currently deployable LLM-
+based recommendation solutions typically leverage LLMs offline
+to generate representations for users and items, which can then be
+utilized in traditional recommendation tasks [12, 37, 47, 61, 73]. We
+refer to this approach as “LLM Representations for RSs”.
+Given the item set I and the user set U, each item 𝑖∈I and user
+𝑢∈U possesses specific attributes and descriptions, which can be
+converted into text𝑇𝑖and𝑇𝑢through predefined templates. In some
+
+
+Modular Representation Compression: Adapting LLMs for Efficient and Effective Recommendations
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+work [37], the text can incorporate LLM-generated knowledge to
+infer user preferences. Subsequently,𝑇𝑖and𝑇𝑢are transformed into
+representations 𝑟𝑖and 𝑟𝑢, with dimension 𝑑𝑜, through LLMs:
+𝑟𝑖= Pooling(LLM(𝑇𝑖)), 𝑟𝑢= Pooling(LLM(𝑇𝑢)),
+(1)
+where LLMs may be pre-trained or fine-tuned models, and pooling
+methods like mean pooling or EOS token pooling are used to obtain
+the final representations. Then, the user and item representations
+can be utilized as static features in any downstream models, e.g.,
+click-through rate (CTR) prediction models.
+2.2
+Tradeoff between Performance and Costs
+We first empirically investigate the impact of LLM scaling on rec-
+ommendation performance on MovieLens-1M and Yelp datasets
+following [61]. First, item-related features (e.g., titles) and user-
+related features (e.g., the most recent history) are converted to text
+using templates. Next, these texts are encoded into representations
+by LLMs, and then, the representations are incorporated into the
+downstream CTR model DCNv2 [55] (Base). The LLMs used in
+this study are pre-trained models without fine-tuning, including a
+range of models from small to large: TinyBERT [20], BERT [21],
+Phi-2 [17], Qwen2-1.5B/7B [15], and Llama3-8B [5]. Additionally,
+for Llama3-8B, its 4096-dimensional representations are reduced
+to 128, 768, and 2048 dimensions with PCA, producing PCA-128,
+PCA-768, and PCA-2048, respectively. The results on two datasets
+are presented in Figure 1 and Figure 2.
+0
+1000
+2000
+3000
+4000
+Dimension of LLM Representation
+0.731
+0.732
+0.733
+0.734
+0.735
+0.736
+0.737
+0.738
+0.739
+Downstream Performance (AUC)
+base
+tinyBERT
+BERT
+Qwen2
+-1.5B
+Phi-2
+Qwen2-7B
+Llama3
+-8B
+PCA-128
+PCA-768
+PCA-2048
+DCNv2
+DCNv2 + LLM Rep.
+DCNv2 + PCA Rep.
+(a) Performance
+0
+1000
+2000
+3000
+4000
+Dimension of LLM Representation
+1x
+30x
+60x
+90x
+120x
+N times Larger than Base DCNv2
+Training Time
+Inference Time
+Storage Space
+(b) Costs
+Figure 2: The impact of different sizes of LLMs on down-
+stream DCNv2 performance and costs in Yelp.
+As illustrated in Figure 2a, there is a clear positive correlation
+between model size and downstream performance. Larger LLMs
+consistently yield higher performance, but this comes at a steep cost. In
+Figure 2b, the storage, training, and inference overheads (which are
+expressed as multiples of base DCNv2) grow linearly with the rep-
+resentation dimension. For instance, deploying 4096-dimensional
+representations from Llama3-8B incurs a 140× increase in storage
+and 20× increase in training time compared to base settings. While
+simple dimension-reduction methods like PCA can reduce costs,
+they suffer from significant performance degradation. Thus, we
+need advanced representation compression techniques tailored to
+recommendations.
+2.3
+Mid-layer Representation Advantage (MRA)
+During Compression
+To achieve effective compression, recent works employ fine-tuning-
+based compression methods (e.g., MRL [22], LARR [53]), which
+all require fine-tuning on specific proxy tasks, such as contrastive
+loss, to achieve effective compression. Thus, we fine-tune Llama3-
+8B, Qwen2-7B, and Qwen2-1.5B on the MovieLens-1M and Yelp
+dataset and explore the layer-wise performance of various proxy
+target tasks, including both compression and non-compression ap-
+proaches: (1) Gen employs next-token prediction to predict the next
+positive item based on a user’s history; (2) CL uses in-batch nega-
+tive samples for contrastive learning; (3) CS uses cosine similarity
+loss between user and item representations; (4) MRL [22], nested-
+based compression with cross-entropy (CTR) loss; (5) LARR [53],
+projection-based compression with contrastive learning; (6) Ours,
+our proposed MARC. All the above models utilize the same click
+data for training. Then, we encoded user and item texts into repre-
+sentations with the fine-tuned LLMs. Lastly, representations from
+different layers of LLMs are applied to the downstream DCNv2.
+With the exception of our proposed MARC, the representa-
+tions that yield the best downstream performance consis-
+tently originate from the middle-to-later layers rather than
+the final layer. We term this phenomenon the Mid-layer Represen-
+tation Advantage. Specifically, while performance steadily increases
+in the early layers, it peaks in a middle layer and then drops as it
+approaches the final layer. Crucially, MRA persists even when base-
+lines are fine-tuned with the exact same recommendation-aligned
+loss (CTR loss for MRL), confirming MRA is a structural character-
+istic of LLMs in RS rather than an objective misalignment issue.
+This highlights a fundamental deficiency in current compression
+methods: their training paradigms degrade the quality of final-
+layer representations. Moreover, layer-wise selection in Figure 3 is
+impractical in real-world scenarios as the optimal layer varies across
+models and tasks. Consequently, existing compression methods,
+which operate on the final layer, are inherently suboptimal. In
+contrast, our MARC is designed to prevent this degeneration, and
+its final representation significantly outperform its middle layers
+and even the best-performing intermediate layers of all baselines.
+2.4
+Understanding MRA: A Modular Perspective
+Why does the final layer, theoretically the most “processed” one,
+fail to yield the optimal performance? We interpret it within the
+framework of Functional Modularity and Layer-wise Special-
+ization [69, 74]. Recent studies on the interpretability of Transform-
+ers have observed emergent modularity [69, 74], where pre-trained
+LLMs spontaneously differentiate into functional regions special-
+ized in different tasks during training.
+Building on these findings, we argue that during the previous
+fine-tuning process for representation compression, the LLM spon-
+taneously develops two internal functional modules:
+• Representation Learning Module (Early-to-Middle Lay-
+ers): The layers from the bottom up to the peak of MRA
+primarily focus on understanding and extracting rich, gen-
+eralized features, capturing diverse information potentially
+useful for various tasks.
+• Task Adaptation Module (Final Layers): These layers
+evolve to adapt these features to the training objective, e.g.,
+contrastive loss, due to their proximity to the supervision
+signal.
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yunjia Xi et al.
+0
+4
+8
+12
+16
+20
+24
+28
+32
+Layer
+0.792
+0.794
+0.796
+0.798
+0.800
+0.802
+Performance (AUC)
+(a) MovieLens-1M + Llama3-8B
+Gen
+CL
+CS
+MRL
+LARR
+Ours
+0
+4
+8
+12
+16
+20
+24
+28
+Layer
+0.790
+0.792
+0.794
+0.796
+0.798
+0.800
+(b) MovieLens-1M + Qwen2-7B
+Gen
+CL
+CS
+MRL
+LARR
+Ours
+0
+4
+8
+12
+16
+20
+24
+28
+Layer
+0.790
+0.792
+0.794
+0.796
+0.798
+(c) MovieLens-1M + Qwen2-1.5B
+Gen
+CL
+CS
+MRL
+LARR
+Ours
+0
+4
+8
+12
+16
+20
+24
+28
+32
+Layer
+0.739
+0.740
+0.741
+0.742
+(d) Yelp + Llama3-8B
+Gen
+CL
+CS
+MRL
+LARR
+Ours
+Figure 3: Mid-layer representation advantage across different datasets and LLMs.
+Crucially, in existing training paradigms, the boundary between
+these two modules is spontaneous and uncontrollable. Even
+when projection heads [53] are employed, they fail to shield the
+backbone. The strong supervision signals from the training loss
+inevitably propagate back to the LLM’s final layers, turning them
+into Task Adaptation Module. This aligns with the Information
+Bottleneck principle [51] that deep networks compress input data
+into a minimal sufficient statistic for the target. Thus, the final
+layers filter out information redundant for the proxy objective but
+vital for recommendations.
+2
+4
+6
+8
+10
+12
+14
+16
+18
+20
+22
+24
+26
+28
+30
+32
+Layer
+0.2
+0.3
+0.4
+0.5
+Loss
+CL
+CS
+MRL
+LARR
+Figure 4: Layer-wise performance on the proxy target task.
+Evidence from Target Task Analysis. To empirically validate this
+functional partitioning, we analyze the layer-wise performance
+on the fine-tuning proxy task itself. We use the representations
+extracted from each layer to calculate the final optimization loss,
+which serves as an indicator of their ability to handle the proxy
+target task. As illustrated in Figure 4, the optimization loss on the
+proxy tasks (CL, CS) decreases consistently, reaching its minimum
+at the final layer. This provides compelling evidence that the later
+layers are highly specialized for the proxy training objective, function-
+ing as the Task Adaptation Module. However, this comes at a cost:
+the model progressively discards information deemed redundant
+for the proxy task but critical for recommendations.
+Difficulty in Aligning Proxy Targets with Recommendation. Real-
+world recommendation scenarios are multifaceted, encompassing
+diverse tasks such as retrieval, ranking, and re-ranking, which
+thrive on rich, multi-dimensional semantic information. In contrast,
+fine-tuning tasks are typically driven by single-objective proxies.
+Thus, useful representations for recommendations are difficult to
+perfectly align with any single proxy target. Crucially, our experi-
+ments (Figure 3) show that MRA persists even when domain-aligned
+objectives like CTR loss are used in MRL. Consequently, the sponta-
+neous modularity driven by single-objective supervision force the
+final layer to specialize in proxy target and lose rich information vi-
+tal for RSs. Compressing an already degraded final layer inevitably
+leads to suboptimal performance, necessitating a new framework
+that can explicitly control the modularity.
+3
+Modular Representation Compression
+3.1
+Overview
+Based on the above findings and analysis, we propose MARC to
+transform this implicit, uncontrolled modularity into an explicit,
+controllable architectural design. Existing nested-based and projection-
+based compression methods lack explicit constraints on functional
+regions, so under the supervision of training tasks, the later layers
+of LLMs are still involved in other functions, e.g., task adaptation,
+as shown in the left panel of Figure 5. This leads to MRA in down-
+stream tasks, as discussed in Section 2.4. MARC, in the right panel
+of Figure 5, introduces explicit modularity, specifically two ex-
+ternal modules for compression and task adaptation and enforcing
+clear modular boundaries. This ensures that LLM’s final layers retain
+their robust representation learning capabilities.
+Specifically, we make Modular Adjustment, retaining the LLM
+strictly as a representation learning module, while introducing two
+external lightweight modules: (1) a compression network to con-
+dense high-dimensional semantics, and (2) a user-item matching
+network to serve as the dedicated task adaptation module. This
+design effectively prevents the LLM’s final layers from collapsing
+into task-specific heads, thereby preserving the rich, generalized
+information (typical of middle layers) throughout the entire net-
+work depth. To ensure functional decoupling, we devise Modular
+Task Decoupling. The information constraint HSIC is leveraged
+to maximize the mutual information between original and com-
+pressed representations, improving the information density of the
+compressed representation. The compression network processes
+individual representations, while the matching network inputs both
+user and item representations and models their interactions. These
+distinct structures separate compression and target tasks while pre-
+serving essential interactive information for recommendations. The
+model pipeline includes three modules: a representation module
+with LLMs, a compression module with a compression network,
+and a task adaptation module via a user-item matching network,
+and these modules are trained in an end-to-end manner.
+
+
+Modular Representation Compression: Adapting LLMs for Efficient and Effective Recommendations
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Layer  of LLM
+Layer  of LLM
+Layer 
+ of LLM
+Projection Layer
+...
+...
+User Text
+Item Text
+Layer  of LLM
+Layer 
+ of LLM
+...
+User Text
+Item Text
+Compression Net
+User-item Matching Net
+User Rep.
+Item Rep.
+Contrastive
+Learning
+User Rep.
+Item Rep.
+Score
+Compress
+& Target
+Task
+Rep. Task
+Rep.
+Task
+Compress
+Task
+Target
+Task
+HSIC
+Contraint
+Figure 5: Comparison between existing projection-based com-
+pression methods (left) and MARC (right). Note that User and
+Item Representation (Rep.) are used for downstream tasks.
+3.2
+Representation Module
+This stage is handled by LLMs, fully leveraging their powerful repre-
+sentational capabilities. Similar to previous works, our model takes
+as input the text related to the user 𝑢and the item 𝑖. Each item 𝑖
+has its attributes (e.g., category) and description, which are trans-
+formed into text 𝑇𝑖through templates. Each user 𝑢also has specific
+attributes (e.g., age, gender) and historical behaviors 𝐻𝑢, which are
+also converted into text 𝑇𝑢with templates. These texts are then
+encoded by LLMs. After pooling the representation from LLMs’ last
+layer, we obtain the user and item representations 𝑟𝑢∈R𝑑𝑜and
+𝑟𝑖∈R𝑑𝑜of dimension 𝑑𝑜, following Eq. (1). To distinguish repre-
+sentations generated in this stage from those in the compression
+stage, we refer to 𝑟𝑢and 𝑟𝑖as the original representations.
+Crucially, we deviate from standard fine-tuning paradigms, which
+typically impose task-specific losses directly on the LLM’s output
+representations 𝑟𝑢and 𝑟𝑖. Such direct supervision forces the LLM’s
+final layers to over-fit the specific target loss, turning the back-
+bone into a task-specific predictor. In contrast, MARC does not
+apply any direct supervision to the raw LLM representations
+𝑟𝑢and 𝑟𝑖at this stage. Instead, the task-specific loss is imposed
+strictly on the subsequent lightweight modules (i.e., the Compres-
+sion and Matching Networks). Consequently, the LLM backbone is
+optimized indirectly via backpropagation through these external
+modules. This architectural design ensures that the task adaptation
+pressure is primarily absorbed by the external modules, allowing
+the LLM backbone to maintain generalized, high-quality represen-
+tation without collapsing into a narrow, task-specific subspace.
+3.3
+Compression Module
+For compression, we introduce a dedicated compression network,
+𝑔(·), which takes user and item representations, 𝑟𝑢∈R𝑑𝑜and
+𝑟𝑖∈R𝑑𝑜, and generates the compressed representations𝑐𝑢∈R𝑑𝑐
+and 𝑐𝑖∈R𝑑𝑐of dimension 𝑑𝑐(𝑑𝑐≪𝑑𝑜), as follows:
+𝑐𝑖= 𝑔(𝑟𝑖), 𝑐𝑢= 𝑔(𝑟𝑢).
+(2)
+For simplification, we take the user’s original representation 𝑟𝑢
+and compressed representation 𝑐𝑢as examples to introduce the
+information constraint. The same process can be applied to item
+representations. During compression, we aim to preserve as much of
+the information from the original representations as possible in the
+compressed ones, which means maximizing the mutual information
+(MI) between the original and compressed representations:
+max
+𝜃
+𝑀𝐼(𝑟𝑢,𝑐𝑢),
+(3)
+where 𝜃represents the model parameters, and 𝑀𝐼(·) denotes the
+mutual information between the two representations. Common mu-
+tual information optimization methods, such as MSE, InfoNCE [44],
+and DIM [10], require the two representations to have matching
+dimensions. However, 𝑟𝑢and 𝑐𝑢reside in spaces of vastly different
+conceptual levels and dimensions, and mapping them to the same
+dimension with a simple projection layer could distort the infor-
+mation. To ensure the Compression Network retains the maximum
+amount of information from the backbone, we employ the sampling
+form of mutual information, Hilbert-Schmidt Independence Cri-
+terion (HSIC) [8, 39], as the constraint. It utilizes a kernel function
+to map vectors of different dimensions into a higher-dimensional
+Reproducing Kernel Hilbert Space (RKHS). This enables us to handle
+the dimension mismatch and maximize non-linear dependen-
+cies between the original and compressed views, effectively trans-
+ferring rich information to the lower-dimensional space without
+requiring dimension-matching projections. Mathematically, given
+a data batch 𝐷= {(𝑥1,𝑦1), . . . , (𝑥𝑛,𝑦𝑛)} (𝑛denotes batch size) from
+two random variables 𝑋and 𝑌, the HSIC is defined as follows:
+L𝐻𝑆𝐼𝐶= 𝐻𝑆𝐼𝐶(𝑋,𝑌) =
+1
+(𝑛−1)2𝑇𝑟(𝐾𝑋𝐽𝐾𝑌𝐽),
+(4)
+where 𝐾𝑋∈R𝑛×𝑛and 𝐾𝑌∈R𝑛×𝑛are the kernel matrices gener-
+ated by applying kernel functions to the samples from 𝑋and 𝑌.
+Here,each entry of 𝐾𝑋is defined as:
+𝐾𝑋(𝑖, 𝑗) = 𝑘𝑋(𝑥𝑖,𝑥𝑗), 𝐾𝑌(𝑖, 𝑗) = 𝑘𝑌(𝑦𝑖,𝑦𝑗),
+(5)
+where 𝑘𝑋(·) and 𝑘𝑌(·) are the kernel functions for 𝑋and 𝑌, respec-
+tively. Typically, a Gaussian kernel is employed for them, i.e.,
+𝑘𝑋(𝑥𝑖,𝑥𝑗) = 𝑒−
+||𝑥𝑖−𝑥𝑗||2
+2𝜎2
+,
+(6)
+where 𝜎is a hyperparameter. The matrix 𝐽= 𝐼𝑛−1
+𝑛𝐼𝑛𝐼𝑇
+𝑛is the
+centering matrix, which removes biases in the data by ensuring
+that the kernel matrices are centered. The operator 𝑇𝑟(·) denotes
+the trace of a matrix, summarizing the correlation of variables in the
+higher-dimensional space. It is worth noting that the computational
+complexity of HSIC is 𝑂(𝑛2) where 𝑛is the batch size. This is
+negligible compared to computation of the LLM backbone.
+This constraint achieves two key objectives: preserving relevant
+information during compression and effectively decoupling tasks.
+First, it maximizes the mutual information between the compressed
+and original representations, ensuring that the compressed repre-
+sentations retain as much information as possible and improving
+information density. Second, it separates the compression and rep-
+resentation tasks, reinforcing the distinct functions of the compres-
+sion network and LLMs’ representation learning. This enhances
+the compression functionality of the compression network while
+maintaining the representational power of LLMs.
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yunjia Xi et al.
+3.4
+Task Adaptation Module
+We introduce the User-Item Matching Network as the dedicated
+Task Adaptation Module to serve as the designated sink for supervi-
+sion signals, effectively absorbing the optimization pressure from
+the training objective. Unlike simple projection heads [53], this
+network incorporates rich explicit and implicit interaction mech-
+anisms that are more aligned with downstream recommendation
+tasks, allowing it to naturally assume the adaptation burden and
+clearly distinguishing them from the compression phase.
+Specifically, we introduce both explicit and implicit inter-
+action. The input representations (𝑐𝑢,𝑐𝑖) first undergo explicit
+manual feature interactions (|𝑐𝑖−𝑐𝑢| and 𝑐𝑖⊙𝑐𝑢) before passing
+through the interaction network 𝑓(·) for implicit interaction. This
+network predicts whether user 𝑢likes item 𝑖, denoted as ˆ𝑦,
+ˆ𝑦= 𝑓(𝑐𝑖,𝑐𝑢, |𝑐𝑖−𝑐𝑢|,𝑐𝑖⊙𝑐𝑢),
+(7)
+where ⊙denotes the element-wise product. This distinction in in-
+put and network structure helps better separate the matching and
+compression stages. These explicit and implicit interactions are
+better aligned with recommendation tasks, enabling representa-
+tions to retain more information relevant to recommendations and
+thereby improving representation quality. This structure ensures
+that the information bottleneck, filtering redundant information,
+and focusing on the target occur strictly within this lightweight
+external module, preventing the LLM representations from collaps-
+ing into task-specific logits. The matching task is designed with a
+cross-entropy loss function:
+L𝑚𝑎𝑡𝑐ℎ= −
+∑︁
+(𝑖,𝑢,𝑦)∈𝐷′
+𝑦log ˆ𝑦+ (1 −𝑦) log(1 −ˆ𝑦),
+(8)
+where 𝐷′ denotes the training data set and 𝑦represents the ground
+truth label (typically whether the item 𝑖is clicked or highly rated
+by user 𝑢). The representation, compression, and task adaptation
+modules of MARC are optimized in an end-to-end manner with
+the final loss function:
+L = L𝑚𝑎𝑡𝑐ℎ+ 𝛼L𝐻𝑆𝐼𝐶.
+(9)
+Upon completing the end-to-end training, we freeze the model to
+produce stable, low-dimensional representations, which are lever-
+aged as static features for downstream recommendation models.
+4
+Experiment
+To gain more insights into our proposed MARC, we aim to address
+the following research questions (RQs) in this section.
+• RQ1: How does our model, MARC, perform on various down-
+stream recommendation tasks?
+• RQ2: What is the online performance of MARC?
+• RQ3: What role does each module of MARC play?
+• RQ4: Is MARC compatible with downstream models and
+LLMs?
+• RQ5: How does our model perform with different sizes of
+compressed representations?
+4.1
+Setup
+4.1.1
+Datasets and Pipelines. The experiments are conducted on
+three public datasets, MovieLens-1M1, Yelp2, and MovieLens-25M3.
+MovieLens-1M (ML-1M for short) contains 1 million ratings pro-
+vided by 6000 users for 4000 movies. Yelp provides real-world data
+related to businesses, including about 8 million reviews, 209, 393
+businesses, and 1, 968, 703 users. MovieLens-25M (ML-25M for
+short) has 25 million ratings applied to 62,000 movies by 162,000
+users. Following [61, 77], we convert the ratings into binary labels
+by labeling ratings of 4 and 5 as positive and the rest as negative
+and split data into training and test sets in a 9:1 ratio based on user
+IDs. As described in Section 2.2, our pipeline begins by leveraging
+a randomly sampled portion of the training set to fine-tune LLMs,
+improving their representation and compression capabilities. Then,
+the fine-tuned LLMs are employed to encode user behaviors and
+item titles to obtain representations. These representations are sub-
+sequently used for training the downstream recommendation tasks
+on the full training set following [61].
+4.1.2
+Baselines and Downstream Models. In terms of baselines, we
+first select compression methods that do not fine-tune LLMs, such
+as PCA [41], Autoencoder (AE) [58], and Variational Autoencoder
+(VAE) [46]. Then, we choose several approaches fine-tuning LLMs,
+including two projection-based compression methods, LARR [53]
+and BAHE [7], and two nested-based approaches, ESE [56] and
+MRL [22]. LARR [53] applies an MLP to compress representations
+from LLM and then performs contrastive learning. BAHE [7] utilizes
+a linear layer for compression and incorporates a CTR head and
+cross-entropy loss. ESE [56] leverages AoE loss [25] and PCA-like
+constraints to guide the model in learning compact and efficient
+representations. MRL [22] employs nesting to concentrate criti-
+cal information in the early part of the representation. The above
+models, similar to our MARC, are based on Llama3-8B [52] and
+are trained on the same click-through data. Even for contrastive
+learning-based methods, e.g., LARR, we treat clicked user-item pairs
+as positive samples, injecting the same supervised signal. Addition-
+ally, we include smaller models such as TinyBERT [20], BERT [21],
+Qwen2-1.5B [15], Phi-2 (2.7B) [17], and Qwen2-7B [15] and utilize
+their original representations without compression.
+For downstream recommendation tasks, we primarily focus on
+CTR prediction in the ranking stage. The experiments involve sev-
+eral widely adopted CTR models, including DCNv2 [55], DCNv1 [54],
+DIN [77], DeepFM [9], and AutoInt [48]. Additionally, to demon-
+strate MARC’s compatibility, we also explore its application in other
+stages of recommendation, such as re-ranking and retrieval. For the
+re-ranking stage, we select the state-of-the-art model PRM [45],
+while for the retrieval stage, we employ the widely-used DSSM [13].
+4.1.3
+Metrics. We establish the following evaluation metrics based
+on previous works [16, 45, 55, 72, 77]. For CTR prediction tasks,
+we adopt widely used AUC and Logloss as metrics. It is worth
+noting that in CTR prediction, an improvement of 0.001 in AUC
+is generally considered significant and impactful [54, 55, 77]. For
+re-ranking tasks, we use NDCG@K and MAP@K as metrics, where
+1https://grouplens.org/datasets/movielens/1m/
+2https://www.kaggle.com/datasets/yelp-dataset/yelp-dataset
+3https://grouplens.org/datasets/movielens/25m/
+
+
+Modular Representation Compression: Adapting LLMs for Efficient and Effective Recommendations
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Table 1: The overall performance on CTR prediction task. The best result is given in bold, while the second-best compression
+baseline is underlined. MARC-C and MARC-O represent the compressed and the original representations of our MARC.
+MARC-O is the upper bound of MARC-C. Rel. Impr denotes the relative AUC improvement of MARC-C against other models.
+The symbol * indicates statistically significant improvement over the best compression baselines (t-test with 𝑝< 0.05).
+Pre-trained
+Language Models
+Compression
+Method
+Dimension
+ML-1M
+ML-25M
+Yelp
+AUC
+Logloss
+Rel.Impr
+AUC
+Logloss
+Rel.Impr
+AUC
+Logloss
+Rel.Impr
+base (DCNv2)
+/
+/
+0.7833
+0.5512
+2.28%
+0.7945
+0.5469
+3.63%
+0.7311
+0.5203
+1.58%
+TinyBERT
+/
+312
+0.7888
+0.5459
+1.57%
+0.8079
+0.5321
+1.91%
+0.7333
+0.5173
+1.27%
+BERT
+/
+768
+0.7931
+0.5418
+1.01%
+0.8119
+0.5276
+1.41%
+0.7361
+0.5159
+0.90%
+Qwen2-1.5B
+/
+1536
+0.7941
+0.5410
+0.88%
+0.8141
+0.5253
+1.14%
+0.7366
+0.5153
+0.82%
+Phi-2
+/
+2560
+0.7954
+0.5390
+0.73%
+0.8201
+0.5178
+0.40%
+0.7378
+0.5145
+0.67%
+Qwen2-7B
+/
+3584
+0.7955
+0.5402
+0.71%
+0.8213
+0.5153
+0.25%
+0.7382
+0.5141
+0.61%
+Llama3-8B
+(frozen)
+PCA
+128
+0.7897
+0.5449
+1.45%
+0.8138
+0.5222
+1.18%
+0.7345
+0.5175
+1.12%
+AE
+128
+0.7893
+0.5478
+1.50%
+0.8145
+0.5214
+1.08%
+0.7329
+0.5172
+1.34%
+VAE
+128
+0.7840
+0.5504
+2.18%
+0.8094
+0.5298
+1.72%
+0.7323
+0.5177
+1.42%
+/
+4096
+0.7961
+0.5397
+0.63%
+0.8215
+0.5157
+0.23%
+0.7384
+0.5137
+0.59%
+Llama3-8B
+(fine-tuned )
+LARR
+128
+0.7911
+0.5444
+1.27%
+0.8179
+0.5219
+0.67%
+0.7354
+0.5170
+0.99%
+BAHE
+128
+0.7936
+0.5408
+0.95%
+0.8182
+0.5191
+0.63%
+0.7360
+0.5150
+0.91%
+ESE
+128
+0.7940
+0.5406
+0.90%
+0.8183
+0.5193
+0.61%
+0.7364
+0.5147
+0.85%
+MRL
+128
+0.7943
+0.5404
+0.86%
+0.8186
+0.5188
+0.58%
+0.7372
+0.5166
+0.74%
+MARC-C
+128
+0.8011*
+0.5317*
+-
+0.8233*
+0.5127*
+-
+0.7427*
+0.5109*
+-
+MARC-O
+(oracle)
+4096
+0.8020*
+0.5321*
+-0.11%
+0.8254*
+0.5100*
+-0.25%
+0.7428*
+0.5105*
+-0.01%
+𝐾= 1, 5, 10. For retrieval tasks, we utilize NDCG@K, HitRate@K,
+and MRR (Mean Reciprocal Rank) as metrics, where 𝐾= 10, 20, 50.
+4.1.4
+Reproducibility. We randomly sample 200,000 data points
+from the training set to train the LLM-based representation model.
+Then, the user and item representations obtained from this LLM
+are used to train the downstream recommendation task on the full
+training data. Unless otherwise specified, MARC and compression
+baselines are based on Llama3-8B, and the downstream task is CTR
+prediction with base model DCNv2 [55]. MARC and compression
+baselines all produce 128-dimensional compressed representations.
+MARC-O denotes the original 4096-dimensional representations
+and MARC-C is the compressed ones. The compression network
+is implemented as an MLP with hidden layers of [256, 128], while
+the user-item matching network is an MLP with hidden layers of
+[128, 1]. The LLM module employs LoRA [11] for fine-tuning and
+𝛼in Eq. (9) is set to 0.01 to balance the magnitude of losses and
+we found the model performance is generally robust around this
+order of magnitude. We follow [61], leveraging MoE to integrate
+representations into the downstream model. Each expert in the
+MoE is an MLP with hidden layer sizes of [128, 32], and the number
+of experts varies with different downstream tasks and models, typi-
+cally ranging from 2 to 5. The embedding size for the downstream
+CTR model is fixed at 32, and the output layer MLP size is [200, 80].
+Other parameters, such as batch size and learning rate, are deter-
+mined with a grid search. Regarding computational overhead, the
+training time of MARC is comparable to current fine-tuning-based
+compression methods as it only introduces lightweight modules.
+4.2
+Overall Performance (RQ1)
+4.2.1
+Performance on CTR prediction task. We apply the represen-
+tations from MARC and various baselines to the downstream CTR
+prediction task on three public datasets, with results shown in Ta-
+ble 1. “Base” refers to DCNv2 without representation enhancement.
+The key findings are as follows: (i) Our MARC consistently and
+significantly outperforms other compression models. For example,
+on ML-1M and Yelp, MARC improves AUC by 0.89% and 0.74%,
+respectively, compared to the best compression baseline MRL. This
+improvement is due to MARC’s ability, as shown in Section 2.3, to
+alleviate mid-layer representation advantage and generate better
+representations. (ii) MARC produces compressed representations
+with high information density. MARC-C incurs minimal accuracy
+loss compared to MARC-O and even outperforms 4096-dimensional
+representations from frozen Llama3-8B without fine-tuning. For
+example, on ML-1M, the 128-dimensional MARC-C improves by
+0.63% over representations from frozen Llama3-8B, with only a
+0.11% accuracy loss compared to MARC-O. This suggests that our
+modular adjustment and task decoupling help the model better
+retain key information during compression. (iii) Fine-tuning LLMs
+for compression generally yields better results than non-fine-tuned
+methods. Fine-tuned approaches, e.g., LARR, MRL, and MARC, out-
+perform non-fine-tuned methods like PCA, AE, and VAE, likely
+because non-fine-tuned methods struggle to capture information
+useful for recommendations.
+4.2.2
+Performance on re-ranking & retrieval tasks. To investigate
+whether MARC’s representations are suitable for various recom-
+mendation tasks, we apply them to DSSM in the retrieval stage and
+PRM in the re-ranking stage on the ML-1M dataset. We compare
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yunjia Xi et al.
+Table 2: The overall performance on the re-ranking task. The symbol * indicates statistically significant improvement over the
+best compression baselines MRL (t-test with 𝑝< 0.05).
+Models
+MAP@1
+MAP@3
+@MAP5
+MAP@7
+NDCG@1
+NDCG@3
+NDCG@5
+NDCG@7
+base (PRM)
+0.6535
+0.7368
+0.7259
+0.7212
+0.6535
+0.6938
+0.7652
+0.7795
+Llama3-8B
+0.6789
+0.7541
+0.7422
+0.7388
+0.6789
+0.7145
+0.7814
+0.7926
+MRL
+0.6750
+0.7505
+0.7395
+0.7357
+0.6750
+0.7108
+0.7791
+0.7906
+MARC-C
+0.6806*
+0.7559*
+0.7445*
+0.7406*
+0.6806*
+0.7185*
+0.7835*
+0.7946*
+MARC-O
+0.6865*
+0.7592*
+0.7475*
+0.7440*
+0.6865*
+0.7222*
+0.7863*
+0.7966*
+Table 3: The overall performance on retrieval task. The sym-
+bol * indicates statistically significant improvement over the
+best compression baselines MRL (t-test with 𝑝< 0.05).
+Models
+NDCG
+HitRate
+MRR
+@10
+@20
+@50
+@10
+@20
+@50
+/
+base (DSSM)
+0.1570
+0.1838
+0.2132
+0.2867
+0.3924
+0.5403
+0.1324
+Llama3-8B
+0.1938
+0.2195
+0.2490
+0.3291
+0.4308
+0.5786
+0.1669
+MRL
+0.1842
+0.2115
+0.2402
+0.3177
+0.4255
+0.5698
+0.1582
+MARC-C
+0.2089* 0.2342* 0.2631* 0.3580* 0.4577* 0.6026* 0.1770*
+MARC-O
+0.2116*
+0.2386*
+0.2666*
+0.3591*
+0.4658*
+0.6066*
+0.1806*
+MARC’s original (MARC-O) and compressed (MARC-C) represen-
+tations against the base model without representation enhancement
+(base), the 4096-dimensional representations from Llama3-8B
+without fine-tuning, and the strongest compression baseline, MRL.
+Both MARC and MRL are fine-tuned on Llama3-8B and generate
+128-dimensional compressed representations. The results presented
+in Table 2 and Table 3 indicate that representation enhancement
+significantly improves the base model’s performance in both the
+re-ranking and retrieval stages, aligning with conclusions drawn
+from CTR prediction tasks. Notably, MARC outperforms both the
+strongest compression baseline, MRL, and the 4096-dimensional
+representations from frozen Llama3-8B. For instance, MARC-C im-
+proves HitRate@10 in the retrieval task by 12.67% over MRL and by
+8.76% over frozen Llama3-8B. We attribute this generalization to our
+modular design: by offloading the task adaptation to the Matching
+Network, the compressed representations are less likely to overfit
+to the specific objective and instead retain the rich, generalized
+information beneficial for diverse downstream tasks.
+4.2.3
+Online A/B Test (RQ2). We applied MARC’s representation
+to the downstream CVR model (conversion rate) in a commercial
+advertising scenario with tens of millions of users and ads. The mas-
+sive scale of users and items makes using raw LLM representations
+computationally prohibitive for storage and training, hindering real-
+world deployment. Our model, however, successfully compresses
+these representations into 128 dimensions with high quality. First,
+we train our MARC model offline on an industrial dataset to gener-
+ate compact representations which are updated periodically. These
+representations are then integrated as features into a downstream
+CVR model specifically tailored for this scenario.
+For the online A/B test, we randomly allocated 10% of users each
+to the experimental and control groups. While both groups used
+the same backbone CVR model, the experimental group integrated
+MARC representations. In contrast, the control group utilized the
+current online production champion. It incorporates a highly opti-
+mized compression scheme tailored to our industrial-scale environ-
+ment to reduce the raw LLM representations to 128 dimensions. The
+original, high-dimensional representations are not used online due
+to their large deployment costs. In a 7-day online A/B test, MARC
+achieved a 2.82% increase in eCPM against a strong production
+baseline, with similar inference latency.
+4.3
+In-depth Analysis
+4.3.1
+Ablation Study (RQ3). We design several variants and com-
+pare their performance in enhancing DCNv2 on the ML-1M dataset.
+w/o IN removes interaction components from MARC, replacing
+the user-item matching network with separate MLPs for users and
+items, and optimized with a cosine similarity loss. w/o MN re-
+moves the matching network and calculates cosine similarity loss
+directly from compressed representations. w/o EI removes explicit
+interactions from Eq. (7). w/o HSIC removes the HSIC loss. w/ CS
+maintains the same network structure but replaces the objective
+with cosine similarity loss. w/ AoE employs SOTA AoE loss [25]
+(consisting of angle, cosine similarity, and contrastive objectives)
+and replaces the matching network with two separate MLPs for
+user and item because AoE loss is incompatible with it. Figure 6
+shows the results, where “Orig.” denotes original representations
+and “Comp.” refers to compressed ones.
+w/o MN
+w/o IN w/o HSIC w/o EI
+w/ CS
+w/ AoE
+MARC
+0.796
+0.798
+0.800
+0.802
+0.804
+Performance (AUC)
+Orig.
+Comp.
+Figure 6: Ablation study on ML-1M dataset.
+The results indicate that removing any component leads to a
+decline in performance. The absence of HSIC loss (w/o HSIC) leads
+to the largest performance drop for both original and compressed
+representations, emphasizing its importance for information con-
+straints. Removing explicit interactions (w/o EI) or the matching
+network (w/o MN) has a limited effect on the original representa-
+tions but significantly impacts the compressed ones, indicating their
+role in maintaining information during compression. However, it
+is crucial to highlight that even without explicit interactions (w/o
+EI) or the matching network (w/o MN), MARC still outperforms
+
+
+Modular Representation Compression: Adapting LLMs for Efficient and Effective Recommendations
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+the strongest baseline MRL. This confirms that while explicit inter-
+actions contribute to performance, the core gain stems from our
+modular decoupling framework. Switching losses (w/ AoE and w/
+CS) also degrade representation quality, likely due to their reduced
+alignment with downstream tasks. AoE performs poorly in com-
+pression, likely because it cannot utilize matching network, failing
+to preserve interaction information crucial for downstream tasks.
+Additionally, we evaluate MARC’s performance across different
+loss functions and network architectures to identify what alleviates
+MRA. We designed three variants: w/ I-CS, which retains the orig-
+inal MARC structure but replaces cross-entropy loss with cosine
+similarity loss, same as w/ CS; w/ AoE, which employs the state-
+of-the-art AoE loss. Additionally, we devise w/ S-CS, which also
+adopts cosine similarity loss, but replaces the interactive matching
+network with the non-interactive network used in w/ AoE. The
+results of these variants’ representations on ML-1M are shown in
+Figure 7. Neither switching loss functions nor removing the in-
+teractive component of the matching network yields a mid-layer
+representation advantage (MRA), yet both still outperform base-
+lines. In all cases, good representations come from the final layer,
+suggesting that the primary factor alleviating MRA in MARC
+is the modular structure, rather than the loss function or interac-
+tive network. The loss function and the interaction in the matching
+network primarily enhance representation quality.
+0
+4
+8
+12
+16
+20
+24
+28
+32
+Layer
+0.792
+0.794
+0.796
+0.798
+0.800
+0.802
+Performance (AUC)
+w/ I-CS
+w/ AoE
+w/ S-CS
+MARC
+Figure 7: MARC alleviates MRA under various losses.
+4.3.2
+Compatibility Analysis (RQ4). Previous experiments have ex-
+plored the compatibility of MARC across various datasets and down-
+stream recommendation tasks. This section delves into the compati-
+bility of MARC with different CTR models and backbone LLMs. We
+select several commonly used CTR models, including DCNv1 [54],
+DeepFM [9], FiGNN [27], FiBiNet [14], AutoInt [48], xDeepFM [28],
+and DIN [77], and the results are presented in Table 4. Regarding
+backbone LLMs, we select a range of models with different sizes,
+including Qwen2-1.5B, Phi-2 (2.7B), Qwen2.5-3B, and Qwen2-
+7B, with their results based on DCNv2 shown in Figure 8. As in
+Section 4.2.2, we compare MARC’s original and compressed rep-
+resentations, MARC-O and MARC-C, with the high-dimensional
+representations from backbone LLMs without fine-tuning (Frozen
+LLM) and 128-dimensional representations from the strongest com-
+pression baseline, MRL.
+From Table 4, it is evident that MARC demonstrates performance
+similar to its results in DCNv2 across different CTR models. MARC-
+C significantly outperforms MRL and the frozen Llama3-8B, with a
+minimal gap of less than 0.1% when compared to the upper-bound
+MARC-O. Additionally, Figure 8 demonstrates that MARC also
+exhibits superior performance with various backbone LLMs, al-
+though the effectiveness of the representation may vary depending
+on the size of the LLMs. Furthermore, we verify that MARC can
+mitigate mid-layer representation advantage across different down-
+stream models and LLMs, which is detailed in Section 2.3. This
+confirms that our modular compression framework is versatile and
+compatible with a wide range of downstream models and back-
+bones, alleviates mid-layer representation advantage, and yields
+lightweight yet efficient representations.
+Qwen2-1.5B
+Phi-2
+Qwen2.5-3B
+Qwen2-7B
+0.7900
+0.7925
+0.7950
+0.7975
+0.8000
+0.8025
+Performance (AUC)
+Frozen LLM
+MRL
+MARC-C
+MARC-O
+Figure 8: Performance on different backbone LLMs. Frozen
+LLM denotes backbone LLM without fine-tuning.
+4.3.3
+Impact of Compressed Representation Dimension (RQ5). Lastly,
+we investigate the impact of the compressed representation dimen-
+sions on the representation quality. We vary the dimensionalities of
+compressed representations from MARC and the strongest baseline
+MRL, including 16, 32, 64, 128, 256, and 512, and apply them to the
+downstream DCNv2 model. The results are presented in Figure 9,
+where MARC-C and MARC-O represent the compressed and origi-
+nal representations from MARC, respectively. From the figure, it
+is evident that MARC significantly outperforms the baseline MRL
+across all dimensions, demonstrating that our model can generate
+more efficient and lightweight representations. When the com-
+pressed dimension is small, the original representation performs
+better. As the dimension increases, compressed representations
+demonstrate improved performance, likely because larger dimen-
+sions retain more information. However, after the dimension of
+128, the performance of MARC-O begins to decline, and since the
+original representations serve as the upper bound for compressed
+representations, this also leads to a decrease in the performance of
+MARC-C. This decline may be attributed to the increasing difficulty
+of model training as the compressed dimension grows larger.
+16
+32
+64
+128
+256
+512
+Compressed Dimension
+0.7925
+0.7950
+0.7975
+0.8000
+0.8025
+0.8050
+Performance (AUC)
+MARC-O
+MARC-C
+MRL
+Figure 9: Performance under different dimensions.
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yunjia Xi et al.
+Table 4: The overall performance on different CTR models.
+Models
+xDeepFM
+FiBiNet
+DeepFM
+FiGNN
+DCNv1
+DIN
+AutoInt
+AUC
+Logloss
+AUC
+Logloss
+AUC
+Logloss
+AUC
+Logloss
+AUC
+Logloss
+AUC
+Logloss
+AUC
+Logloss
+base
+0.7830
+0.5514
+0.7824
+0.5518
+0.7827
+0.5514
+0.7838
+0.5502
+0.7837
+0.5515
+0.7887
+0.5450
+0.7827
+0.5515
+Llama3-8B
+0.7962
+0.5378
+0.7963
+0.5398
+0.7956
+0.5431
+0.7966
+0.5398
+0.7961
+0.5390
+0.7983
+0.5367
+0.7965
+0.5434
+MRL
+0.7958
+0.5384
+0.7956
+0.5384
+0.7945
+0.5397
+0.7959
+0.5383
+0.7956
+0.5400
+0.7972
+0.5368
+0.7958
+0.5392
+MARC-C
+0.8009
+0.5336
+0.8013
+0.5315
+0.8001
+0.5332
+0.8012
+0.5323
+0.8016
+0.5329
+0.8019
+0.5323
+0.8006
+0.5351
+MARC-O
+0.8024
+0.5348
+0.8023
+0.5310
+0.8017
+0.5320
+0.8020
+0.5309
+0.8021
+0.5307
+0.8021
+0.5307
+0.8033
+0.5303
+5
+Related Work
+5.1
+Text Embedding and Compression
+With the rise of LLMs, many efforts in NLP have focused on lever-
+aging LLMs for sentence embedding learning. Most of these ap-
+proaches utilize unsupervised contrastive learning, which contrasts
+in-batch positive and negative samples to improve representation
+quality [2, 23, 26, 43, 60, 70]. Some supervised approaches have
+also been proposed to align embeddings with human perception,
+typically by maximizing the cosine similarity between positive
+pairs [19, 25, 56]. However, these methods often take the pooling of
+the last hidden states of LLMs as the final representation, resulting
+in a high-dimensional representation (e.g., 4096). Such representa-
+tions pose challenges for storage and downstream tasks, especially
+under resource constraints [56]. To address this, nested-based rep-
+resentation compression has been introduced in NLP, including
+Matryoshka Representation Learning (MRL) [22, 23, 40] and PCA-
+like approaches [56]. MRL learns nested lower-dimensional vectors
+within the same high-dimensional space to preserve information
+at multiple granularities, while PCA-like approaches apply PCA
+during training to concentrate important information in the leading
+dimensions of the representation. There are also some projection-
+based approaches that employ simple projection layers to compress
+the final representations [7, 53]. Note that we mainly focus on rep-
+resentation compression that directly maps high-dimensional LLM
+vectors to low-dimensional spaces. We do not include knowledge
+distillation approaches, which belong to model compression.
+The above representation compression methods often suffer from
+the mid-layer representation advantage, where intermediate rep-
+resentations perform better than final ones, leading to suboptimal
+compressed embeddings, as demonstrated in Section 2.3. Our work
+focuses on addressing this issue to enhance representation quality.
+5.2
+LLM-based Recommendation
+The emergence of LLMs has brought significant transformations to
+RSs [3, 24, 29, 34, 35, 59, 62, 64, 71, 80], with two main approaches:
+LLMs as core recommenders and as parts of traditional ones. The
+former uses LLMs as recommenders, which leads to superior per-
+formance, but faces deployment challenges due to large inference
+latency [1, 4, 49, 68, 75, 76, 79]. The latter integrates LLMs into
+traditional RSs, using LLM-derived representations for downstream
+RSs. Here, some methods first generate recommendation-related
+knowledge with LLMs and then encode this knowledge into repre-
+sentations [36, 38, 47, 50, 61, 63, 67], while others directly encode
+recommendation-related text with LLMs [7, 18, 53, 57, 73]. Regard-
+less of the specific method, leveraging LLMs’ representations is a
+crucial step.
+However, current deployable solutions still face notable chal-
+lenges. Approaches that utilize smaller models [36, 37, 50, 57, 61],
+e.g., BERT, often suffer from significant performance degradation.
+On the other hand, directly employing LLMs for representation
+leads to substantial resource consumption [12, 73]. Therefore, this
+work primarily focuses on representation compression, aiming to
+obtain lightweight and effective RSs representations from LLMs.
+6
+Conclusion
+This work identifies a trade-off between efficiency and effectiveness
+in LLM-based representations for recommendations, and focuses
+on representation compression. We reveal the phenomenon of mid-
+layer representation advantage during compression and explain it
+using modularity theory, where LLMs develop internal functional
+modularity during training. To address this, we propose MARC,
+which includes Modular Adjustment and Modular Task Decoupling.
+Extensive experiments validate that MARC effectively addresses
+mid-layer advantage and produces efficient representations for
+recommendation tasks. It also improves eCPM by 2.82% during an
+online A/B test in a large commercial search advertising scenario.
+Acknowledgments
+The Shanghai Jiao Tong University team is partially supported
+by Shanghai Municipal Science and Technology Major Project
+(2021SHZDZX0102), National Natural Science Foundation of China
+(624B2096, 72595872, 62322603), and National Key RD Program of
+China (2022ZD0114804), Changan Automobile & Chongqing Natu-
+ral Science Foundation Joint Fund for Innovation and Development
+(CSTB2023NSCQ-LZX0136). The work is also sponsored by Huawei
+Innovation Research Program. We thank MindSpore [42] for its
+partial support. The author Yunjia Xi is also supported by Wu Wen
+Jun Honorary Doctoral Scholarship.
+References
+[1] Keqin Bao, Jizhi Zhang, Yang Zhang, Wenjie Wang, Fuli Feng, and Xiangnan He.
+2023. Tallrec: An effective and efficient tuning framework to align large language
+model with recommendation. arXiv preprint arXiv:2305.00447 (2023).
+[2] Parishad BehnamGhader, Vaibhav Adlakha, Marius Mosbach, Dzmitry Bahdanau,
+Nicolas Chapados, and Siva Reddy. 2024. Llm2vec: Large language models are
+secretly powerful text encoders. arXiv preprint arXiv:2404.05961 (2024).
+[3] Jin Chen, Zheng Liu, Xu Huang, Chenwang Wu, Qi Liu, Gangwei Jiang, Yuanhao
+Pu, Yuxuan Lei, Xiaolong Chen, Xingmei Wang, et al. 2023. When large language
+models meet personalization: Perspectives of challenges and opportunities. arXiv
+preprint arXiv:2307.16376 (2023).
+[4] Qian Dong, Yiding Liu, Qingyao Ai, Zhijing Wu, Haitao Li, Yiqun Liu, Shuaiqiang
+Wang, Dawei Yin, and Shaoping Ma. 2024. Unsupervised large language model
+
+
+Modular Representation Compression: Adapting LLMs for Efficient and Effective Recommendations
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+alignment for information retrieval via contrastive feedback. In Proceedings of
+the 47th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 48–58.
+[5] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad
+Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan,
+et al. 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 (2024).
+[6] Wenqi Fan, Zihuai Zhao, Jiatong Li, Yunqing Liu, Xiaowei Mei, Yiqi Wang, Jiliang
+Tang, and Qing Li. 2023. Recommender systems in the era of large language
+models (llms). arXiv preprint arXiv:2307.02046 (2023).
+[7] Binzong Geng, Zhaoxin Huan, Xiaolu Zhang, Yong He, Liang Zhang, Fajie Yuan,
+Jun Zhou, and Linjian Mo. 2024. Breaking the length barrier: Llm-enhanced CTR
+prediction in long textual user behaviors. In SIGIR’24. 2311–2315.
+[8] Arthur Gretton, Olivier Bousquet, Alex Smola, and Bernhard Schölkopf. 2005.
+Measuring statistical dependence with Hilbert-Schmidt norms. In International
+conference on algorithmic learning theory. Springer, 63–77.
+[9] Huifeng Guo, Ruiming Tang, Yunming Ye, Zhenguo Li, and Xiuqiang He. 2017.
+DeepFM: a factorization-machine based neural network for CTR prediction. arXiv
+preprint arXiv:1703.04247 (2017).
+[10] R Devon Hjelm, Alex Fedorov, Samuel Lavoie-Marchildon, Karan Grewal, Phil
+Bachman, Adam Trischler, and Yoshua Bengio. 2018. Learning deep represen-
+tations by mutual information estimation and maximization. arXiv preprint
+arXiv:1808.06670 (2018).
+[11] Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean
+Wang, Lu Wang, and Weizhu Chen. 2021. Lora: Low-rank adaptation of large
+language models. arXiv preprint arXiv:2106.09685 (2021).
+[12] Jun Hu, Wenwen Xia, Xiaolu Zhang, Chilin Fu, Weichang Wu, Zhaoxin Huan,
+Ang Li, Zuoli Tang, and Jun Zhou. 2024. Enhancing sequential recommendation
+via llm-based semantic embedding learning. In Companion Proceedings of the
+ACM on Web Conference 2024. 103–111.
+[13] Po-Sen Huang, Xiaodong He, Jianfeng Gao, Li Deng, Alex Acero, and Larry
+Heck. 2013. Learning deep structured semantic models for web search using
+clickthrough data. In Proceedings of the 22nd ACM international conference on
+Information & Knowledge Management. 2333–2338.
+[14] Tongwen Huang, Zhiqi Zhang, and Junlin Zhang. 2019. FiBiNET: combining fea-
+ture importance and bilinear feature interaction for click-through rate prediction.
+In Proceedings of the 13th ACM conference on recommender systems. 169–177.
+[15] Binyuan Hui, Jian Yang, Zeyu Cui, Jiaxi Yang, Dayiheng Liu, Lei Zhang, Tianyu
+Liu, Jiajun Zhang, Bowen Yu, Keming Lu, et al. 2024. Qwen2. 5-coder technical
+report. arXiv preprint arXiv:2409.12186 (2024).
+[16] Kalervo Järvelin and Jaana Kekäläinen. 2002. Cumulated Gain-Based Evaluation
+of IR Techniques. ACM Trans. Inf. Syst. (2002), 422–446.
+[17] Mojan Javaheripi, Sébastien Bubeck, Marah Abdin, Jyoti Aneja, Sebastien Bubeck,
+Caio César Teodoro Mendes, Weizhu Chen, Allie Del Giorno, Ronen Eldan,
+Sivakanth Gopi, et al. 2023. Phi-2: The surprising power of small language
+models. Microsoft Research Blog 1, 3 (2023), 3.
+[18] Jian Jia, Yipei Wang, Yan Li, Honggang Chen, Xuehan Bai, Zhaocheng Liu, Jian
+Liang, Quan Chen, Han Li, Peng Jiang, et al. 2024. Knowledge Adaptation from
+Large Language Model to Recommendation for Practical Industrial Application.
+arXiv preprint arXiv:2405.03988 (2024).
+[19] Ting Jiang, Shaohan Huang, Zhongzhi Luan, Deqing Wang, and Fuzhen Zhuang.
+2023. Scaling sentence embeddings with large language models. arXiv preprint
+arXiv:2307.16645 (2023).
+[20] Xiaoqi Jiao, Yichun Yin, Lifeng Shang, Xin Jiang, Xiao Chen, Linlin Li, Fang Wang,
+and Qun Liu. 2019. Tinybert: Distilling bert for natural language understanding.
+arXiv preprint arXiv:1909.10351 (2019).
+[21] Jacob Devlin Ming-Wei Chang Kenton and Lee Kristina Toutanova. 2019. Bert:
+Pre-training of deep bidirectional transformers for language understanding. In
+Proceedings of naacL-HLT, Vol. 1. Minneapolis, Minnesota.
+[22] Aditya Kusupati, Gantavya Bhatt, Aniket Rege, Matthew Wallingford, Aditya
+Sinha, Vivek Ramanujan, William Howard-Snyder, Kaifeng Chen, Sham Kakade,
+Prateek Jain, et al. 2022. Matryoshka representation learning. Advances in Neural
+Information Processing Systems 35 (2022), 30233–30249.
+[23] Jinhyuk Lee, Zhuyun Dai, Xiaoqi Ren, Blair Chen, Daniel Cer, Jeremy R Cole, Kai
+Hui, Michael Boratko, Rajvi Kapadia, Wen Ding, et al. 2024. Gecko: Versatile text
+embeddings distilled from large language models. arXiv preprint arXiv:2403.20327
+(2024).
+[24] Lei Li, Yongfeng Zhang, Dugang Liu, and Li Chen. 2023. Large Language Models
+for Generative Recommendation: A Survey and Visionary Discussions. arXiv
+preprint arXiv:2309.01157 (2023).
+[25] Xianming Li and Jing Li. 2024. AoE: Angle-optimized embeddings for semantic
+textual similarity. In Proceedings of the 62nd Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers). 1825–1839.
+[26] Xianming Li and Jing Li. 2024. BeLLM: Backward Dependency Enhanced Large
+Language Model for Sentence Embeddings. In Proceedings of the 2024 Conference
+of the North American Chapter of the Association for Computational Linguistics:
+Human Language Technologies (Volume 1: Long Papers). 792–804.
+[27] Zekun Li, Zeyu Cui, Shu Wu, Xiaoyu Zhang, and Liang Wang. 2019. Fi-gnn:
+Modeling feature interactions via graph neural networks for ctr prediction. In
+CIKM’19. 539–548.
+[28] Jianxun Lian, Xiaohuan Zhou, Fuzheng Zhang, Zhongxia Chen, Xing Xie, and
+Guangzhong Sun. 2018. xdeepfm: Combining explicit and implicit feature in-
+teractions for recommender systems. In Proceedings of the 24th ACM SIGKDD
+international conference on knowledge discovery & data mining. 1754–1763.
+[29] Jianghao Lin, Bo Chen, Hangyu Wang, Yunjia Xi, Yanru Qu, Xinyi Dai, Kangning
+Zhang, Ruiming Tang, Yong Yu, and Weinan Zhang. 2024. ClickPrompt: CTR
+models are strong prompt generators for adapting language models to CTR
+prediction. In Proceedings of the ACM Web Conference 2024. 3319–3330.
+[30] Jianghao Lin, Xinyi Dai, Rong Shan, Bo Chen, Ruiming Tang, Yong Yu, and
+Weinan Zhang. 2025. Large language models make sample-efficient recommender
+systems. Frontiers of Computer Science 19, 4 (2025), 194328.
+[31] Jianghao Lin, Xinyi Dai, Yunjia Xi, Weiwen Liu, Bo Chen, Hao Zhang, Yong Liu,
+Chuhan Wu, Xiangyang Li, Chenxu Zhu, et al. 2025. How can recommender
+systems benefit from large language models: A survey. ACM Transactions on
+Information Systems 43, 2 (2025), 1–47.
+[32] Jianghao Lin, Rong Shan, Chenxu Zhu, Kounianhua Du, Bo Chen, Shigang Quan,
+Ruiming Tang, Yong Yu, and Weinan Zhang. 2024. Rella: Retrieval-enhanced
+large language models for lifelong sequential behavior comprehension in recom-
+mendation. In Proceedings of the ACM on Web Conference 2024. 3497–3508.
+[33] Chengkai Liu, Jianghao Lin, Hanzhou Liu, Jianling Wang, and James Caverlee.
+2024. Behavior-dependent linear recurrent units for efficient sequential recom-
+mendation. In Proceedings of the 33rd ACM international conference on information
+and knowledge management. 1430–1440.
+[34] Chengkai Liu, Jianghao Lin, Jianling Wang, Hanzhou Liu, and James Caverlee.
+2024. Mamba4rec: Towards efficient sequential recommendation with selective
+state space models. arXiv preprint arXiv:2403.03900 (2024).
+[35] Peng Liu, Lemei Zhang, and Jon Atle Gulla. 2023. Pre-train, prompt and recom-
+mendation: A comprehensive survey of language modelling paradigm adaptations
+in recommender systems. arXiv preprint arXiv:2302.03735 (2023).
+[36] Qijiong Liu, Nuo Chen, Tetsuya Sakai, and Xiao-Ming Wu. 2024. Once: Boosting
+content-based recommendation with both open-and closed-source large language
+models. In WSDM’24. 452–461.
+[37] Weiqing Luo, Chonggang Song, Lingling Yi, and Gong Cheng. 2024. KELLM-
+Rec: Knowledge-Enhanced Large Language Models for Recommendation. arXiv
+preprint arXiv:2403.06642 (2024).
+[38] Hanjia Lyu, Song Jiang, Hanqing Zeng, Yinglong Xia, Qifan Wang, Si Zhang,
+Ren Chen, Christopher Leung, Jiajie Tang, and Jiebo Luo. 2023. Llm-rec: Person-
+alized recommendation via prompting large language models. arXiv preprint
+arXiv:2307.15780 (2023).
+[39] Wan-Duo Kurt Ma, JP Lewis, and W Bastiaan Kleijn. 2020. The HSIC bottleneck:
+Deep learning without back-propagation. In Proceedings of the AAAI conference
+on artificial intelligence, Vol. 34. 5085–5092.
+[40] Xueguang Ma, Liang Wang, Nan Yang, Furu Wei, and Jimmy Lin. 2024. Fine-
+tuning llama for multi-stage text retrieval. In SIGIR’24. 2421–2425.
+[41] Andrzej Maćkiewicz and Waldemar Ratajczak. 1993. Principal components
+analysis (PCA). Computers & Geosciences 19, 3 (1993), 303–342.
+[42] MindSpore Team. 2020. MindSpore: A new open source deep learning train-
+ing/inference framework that could be used for mobile, edge and cloud scenarios.
+https://www.mindspore.cn/ Accessed: 2026-04.
+[43] Niklas Muennighoff, Hongjin Su, Liang Wang, Nan Yang, Furu Wei, Tao Yu, Aman-
+preet Singh, and Douwe Kiela. 2024. Generative representational instruction
+tuning. arXiv preprint arXiv:2402.09906 (2024).
+[44] Aaron van den Oord, Yazhe Li, and Oriol Vinyals. 2018. Representation learning
+with contrastive predictive coding. arXiv preprint arXiv:1807.03748 (2018).
+[45] Changhua Pei, Yi Zhang, Yongfeng Zhang, Fei Sun, Xiao Lin, Hanxiao Sun, Jian
+Wu, Peng Jiang, Junfeng Ge, Wenwu Ou, et al. 2019. Personalized re-ranking for
+recommendation. In Recsys’19. 3–11.
+[46] Yunchen Pu, Zhe Gan, Ricardo Henao, Xin Yuan, Chunyuan Li, Andrew Stevens,
+and Lawrence Carin. 2016. Variational autoencoder for deep learning of images,
+labels and captions. Advances in neural information processing systems 29 (2016).
+[47] Xubin Ren, Wei Wei, Lianghao Xia, Lixin Su, Suqi Cheng, Junfeng Wang, Dawei
+Yin, and Chao Huang. 2024. Representation learning with large language models
+for recommendation. In Proceedings of WWW 2024. 3464–3475.
+[48] Weiping Song, Chence Shi, Zhiping Xiao, Zhijian Duan, Yewen Xu, Ming Zhang,
+and Jian Tang. 2019. Autoint: Automatic feature interaction learning via self-
+attentive neural networks. In Proceedings of the 28th ACM international conference
+on information and knowledge management. 1161–1170.
+[49] Juntao Tan, Shuyuan Xu, Wenyue Hua, Yingqiang Ge, and Li. 2024. Idgenrec:
+Llm-recsys alignment with textual id learning. In SIGIR’24’. 355–364.
+[50] Changxin Tian, Binbin Hu, Chunjing Gan, Haoyu Chen, Zhuo Zhang, Li Yu,
+Ziqi Liu, Zhiqiang Zhang, Jun Zhou, and Jiawei Chen. 2024. ReLand: Integrating
+Large Language Models’ Insights into Industrial Recommenders via a Controllable
+Reasoning Pool. In Recsys’24. 63–73.
+[51] Naftali Tishby and Noga Zaslavsky. 2015. Deep learning and the information
+bottleneck principle. In 2015 IEEE Information Theory Workshop (ITW). IEEE, 1–5.
+https://doi.org/10.1109/ITW.2015.7133169
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yunjia Xi et al.
+[52] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne
+Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal
+Azhar, et al. 2023. Llama: Open and efficient foundation language models. arXiv
+preprint arXiv:2302.13971 (2023).
+[53] Zhizhong Wan, Bin Yin, Junjie Xie, Fei Jiang, Xiang Li, and Wei Lin. 2024. LARR:
+Large Language Model Aided Real-time Scene Recommendation with Semantic
+Understanding. In Proceedings of Recsys. 23–32.
+[54] Ruoxi Wang, Bin Fu, Gang Fu, and Mingliang Wang. 2017. Deep & cross network
+for ad click predictions. In Proceedings of the ADKDD’17. 1–7.
+[55] Ruoxi Wang, Rakesh Shivanna, Derek Cheng, Sagar Jain, Dong Lin, Lichan Hong,
+and Ed Chi. 2021. Dcn v2: Improved deep & cross network and practical lessons
+for web-scale learning to rank systems. In WWW’21. 1785–1797.
+[56] Shuai Wang, Shengyao Zhuang, Bevan Koopman, and Guido Zuccon. 2024. 2D
+Matryoshka Training for Information Retrieval. arXiv preprint arXiv:2411.17299
+(2024).
+[57] Yuling Wang, Changxin Tian, Binbin Hu, Yanhua Yu, Ziqi Liu, Zhiqiang Zhang,
+Jun Zhou, Liang Pang, and Xiao Wang. 2024. Can Small Language Models be
+Good Reasoners for Sequential Recommendation?. In Proceedings of the ACM on
+Web Conference 2024. 3876–3887.
+[58] Yasi Wang, Hongxun Yao, and Sicheng Zhao. 2016. Auto-encoder based dimen-
+sionality reduction. Neurocomputing 184 (2016), 232–242.
+[59] Likang Wu, Zhi Zheng, Zhaopeng Qiu, Hao Wang, Hongchao Gu, Tingjia Shen,
+Chuan Qin, Chen Zhu, Hengshu Zhu, Qi Liu, et al. 2023. A Survey on Large
+Language Models for Recommendation. arXiv preprint arXiv:2305.19860 (2023).
+[60] Yunjia Xi, Jianghao Lin, Menghui Zhu, Yongzhao Xiao, Zhuoying Ou, Jiaqi Liu,
+Tong Wan, Bo Chen, Weiwen Liu, Yasheng Wang, et al. 2025. InfoDeepSeek:
+Benchmarking Agentic Information Seeking for Retrieval-Augmented Generation.
+arXiv preprint arXiv:2505.15872 (2025).
+[61] Yunjia Xi, Weiwen Liu, Jianghao Lin, Xiaoling Cai, Hong Zhu, Jieming Zhu, Bo
+Chen, Ruiming Tang, Weinan Zhang, Rui Zhang, et al. 2023. Towards open-world
+recommendation with knowledge augmentation from large language models.
+arXiv preprint arXiv:2306.10933 (2023).
+[62] Yunjia Xi, Weiwen Liu, Jianghao Lin, Bo Chen, Ruiming Tang, Weinan Zhang, and
+Yong Yu. 2024. MemoCRS: Memory-enhanced Sequential Conversational Recom-
+mender Systems with Large Language Models. arXiv preprint arXiv:2407.04960
+(2024).
+[63] Yunjia Xi, Weiwen Liu, Jianghao Lin, Muyan Weng, Xiaoling Cai, Hong Zhu,
+Jieming Zhu, Bo Chen, Ruiming Tang, Yong Yu, et al. 2024. Efficient and Deploy-
+able Knowledge Infusion for Open-World Recommendations via Large Language
+Models. arXiv preprint arXiv:2408.10520 (2024).
+[64] Yunjia Xi, Weiwen Liu, Jianghao Lin, Chuhan Wu, Bo Chen, Ruiming Tang,
+Weinan Zhang, and Yong Yu. 2024. Play to Your Strengths: Collaborative Intelli-
+gence of Conventional Recommender Models and Large Language Models. arXiv
+preprint arXiv:2403.16378 (2024).
+[65] Yunjia Xi, Weiwen Liu, Yang Wang, Ruiming Tang, Weinan Zhang, Yue Zhu,
+Rui Zhang, and Yong Yu. 2023. On-device integrated re-ranking with heteroge-
+neous behavior modeling. In Proceedings of the 29th ACM SIGKDD Conference on
+Knowledge Discovery and Data Mining. 5225–5236.
+[66] Yunjia Xi, Hangyu Wang, Bo Chen, Jianghao Lin, Menghui Zhu, Weiwen Liu,
+Ruiming Tang, Zhewei Wei, Weinan Zhang, and Yong Yu. 2025. Efficiency un-
+leashed: Inference acceleration for LLM-based recommender systems with spec-
+ulative decoding. In Proceedings of the 48th International ACM SIGIR Conference
+on Research and Development in Information Retrieval. 1891–1901.
+[67] Yunjia Xi, Hangyu Wang, Bo Chen, Jianghao Lin, Menghui Zhu, Weiwen Liu,
+Ruiming Tang, Weinan Zhang, and Yong Yu. 2024. A Decoding Acceleration
+Framework for Industrial Deployable LLM-based Recommender Systems. arXiv
+preprint arXiv:2408.05676 (2024).
+[68] Yunjia Xi, Muyan Weng, Wen Chen, Chao Yi, Dian Chen, Gaoyang Guo, Mao
+Zhang, Jian Wu, Yuning Jiang, Qingwen Liu, et al. 2025. Bursting filter bubble:
+Enhancing serendipity recommendations with aligned large language models.
+In Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining V. 2. 5059–5070.
+[69] Chaojun Xiao, Zhengyan Zhang, Chenyang Song, Dazhi Jiang, Feng Yao, Xu Han,
+Xiaozhi Wang, Shuo Wang, Yufei Huang, Guanyu Lin, et al. 2024. Configurable
+foundation models: Building llms from a modular perspective. arXiv preprint
+arXiv:2409.02877 (2024).
+[70] Ran Xu, Wenqi Shi, Yue Yu, Yuchen Zhuang, Yanqiao Zhu, May D Wang, Joyce C
+Ho, Chao Zhang, and Carl Yang. 2024. Bmretriever: Tuning large language models
+as better biomedical text retrievers. arXiv preprint arXiv:2404.18443 (2024).
+[71] Junliang Yu, Hongzhi Yin, Xin Xia, Tong Chen, Jundong Li, and Zi Huang. 2023.
+Self-supervised learning for recommender systems: A survey. IEEE Transactions
+on Knowledge and Data Engineering (2023).
+[72] Yisong Yue, Thomas Finley, Filip Radlinski, and Thorsten Joachims. 2007. A
+support vector method for optimizing average precision. In SIGIR’07. 271–278.
+[73] Chao Zhang, Shiwei Wu, Haoxin Zhang, Tong Xu, Yan Gao, Yao Hu, and En-
+hong Chen. 2024. NoteLLM: A Retrievable Large Language Model for Note
+Recommendation. In Companion Proceedings of WWW. 170–179.
+[74] Zhengyan Zhang, Zhiyuan Zeng, Yankai Lin, Chaojun Xiao, Xiaozhi Wang, Xu
+Han, Zhiyuan Liu, Ruobing Xie, Maosong Sun, and Jie Zhou. 2023. Emergent
+modularity in pre-trained transformers. arXiv preprint arXiv:2305.18390 (2023).
+[75] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting large language models by integrating
+collaborative semantics for recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). IEEE, 1435–1448.
+[76] Zhi Zheng, Wenshuo Chao, Zhaopeng Qiu, Hengshu Zhu, and Hui Xiong. 2024.
+Harnessing large language models for text-rich sequential recommendation. In
+Proceedings of the ACM on Web Conference 2024. 3207–3216.
+[77] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD international conference
+on knowledge discovery & data mining. 1059–1068.
+[78] Jiachen Zhu, Jianghao Lin, Xinyi Dai, Bo Chen, Rong Shan, Jieming Zhu, Ruim-
+ing Tang, Yong Yu, and Weinan Zhang. 2024. Lifelong personalized low-rank
+adaptation of large language models for recommendation.
+arXiv preprint
+arXiv:2408.03533 (2024).
+[79] Yaochen Zhu, Liang Wu, Qi Guo, Liangjie Hong, and Jundong Li. 2024. Collab-
+orative large language model for recommender systems. In Proceedings of the
+ACM on Web Conference 2024. 3162–3172.
+[80] Yutao Zhu, Huaying Yuan, Shuting Wang, Jiongnan Liu, Wenhan Liu, Chen-
+long Deng, Zhicheng Dou, and Ji-Rong Wen. 2023. Large language models for
+information retrieval: A survey. arXiv preprint arXiv:2308.07107 (2023).

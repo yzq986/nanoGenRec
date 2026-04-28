@@ -340,3 +340,110 @@ Output = CrossAttn(Q, K, V)    (M × D)
 | P1 | IDEA-oneloc-3 | Side-info 融合量化输入 | QFormer 输入端可融合 side-info |
 | ~~P1~~ ❌ | ~~IDEA-sid-1~~ | ~~直接 fine-tune 协同信号~~ | ❌ EXP-007 full/LoRA + EXP-009 QFormer 全败，HR@50 卡在 0.02 |
 | P2 | IDEA-sid-3 | 多模态语义 ID (ESANS) | 需要多模态 embedding 基建 |
+| P1 | IDEA-marc-0 | Mid-Layer 选择 + Modular Compression | MARC SIGIR 2026 eCPM +2.82% A/B；Phase 1 (layer sweep) 几乎零成本，直接影响 SID 质量上限 |
+
+---
+
+## IDEA-marc-0: Mid-Layer Representation Advantage + Modular Compression
+
+**优先级**: P1
+**来源**: MARC (Huawei Noah + SJTU, arxiv 2604.18146, SIGIR 2026)
+**状态**: 待讨论 — Phase 1 (layer sweep) 可立即执行, 风险低
+
+### 核心思想
+
+MARC 系统性地研究了"将 LLM 表征用于推荐时应该从哪一层取 embedding"这个问题，得出两个重要发现：
+
+**1. Mid-layer Representation Advantage (MRA) — 反直觉现象**
+
+在 Llama3-8B / Qwen2-7B / Qwen2-1.5B 上做 CTR 微调（对比学习、MRL、LARR、next-token、cosine-sim 多种 proxy 任务），**中间层表征的下游 CTR AUC 始终优于最终层**，且无论用什么 proxy loss 都一致出现。作者在 MovieLens-1M 和 Yelp 上都复现了这一现象。
+
+**2. 模块化理论解释**
+
+LLM 在微调期间自动形成功能分工：
+- **Representation Learning Module (早期到中间层)**: 提取通用的语义特征，保留丰富信息
+- **Task Adaptation Module (最后几层)**: 被 proxy loss 强制塌陷为任务特化头，过滤掉对 CTR 有用但 proxy 任务"不需要"的多样性信息
+
+最终层其实是一个 **unintended information bottleneck** — 把对推荐有用的信号挤出去了。这解释了为什么取中间层反而更好。
+
+**3. MARC 框架（显式模块化）**
+
+三个组件解耦：
+- **LLM backbone**: 只做 representation learning，不被强加 task head 责任
+- **Compression Network**: 独立的轻量网络做维度压缩（从 LLM 隐藏维度 → 推荐用维度）
+- **User-Item Matching Network**: 独立网络做 CTR-style 匹配/预测
+
+加 **HSIC (Hilbert-Schmidt Independence Criterion)** 作为约束：最大化压缩前后表征的互信息，同时强制 compression 和 matching 模块的输出彼此独立。
+
+**4. 实验结果**
+
+- MARC 的最终层表征超越所有基线的最佳中间层（MARC 修复了 MRA）
+- 在线 A/B 测试 **eCPM +2.82%**（Huawei 商业搜索广告场景）
+
+### 与当前项目的关联
+
+**这是对我们 Qwen3-0.6B → MLP-FSQ 管线的直接挑战**：
+
+- 当前 `Qwen3TextEmbedder` 取的是 final layer (EOS token pooling 或 last hidden state)，1024D → MLP-FSQ
+- MARC 暗示: **中间层的 embedding 可能产生更好的 SID** — 保留了更多语义多样性，减少 tokenizer 重建压力
+- 我们 EXP-007/009 的 fine-tune 路线 (sid-1) 失败是因为强加 CF proxy 反而压坏 final layer — MARC 的理论恰好解释了这个现象
+- **Phase 1 实验零成本**: 不改 fine-tune 逻辑，只改 "取哪一层 hidden state" → 重跑 tokenizer → 重算 semantic_neighbor_HR
+
+与 EXP-007/009 的关系：
+- EXP-007/009 结论 ("fine-tune 路线不通") 仍然成立
+- MRA 提供了新的解释: final-layer 在微调时总会退化，与"用什么 proxy loss" 几乎无关
+- 新路径: 保持 Qwen3 **不 fine-tune**，但**换个 layer 取 embedding** — 可能绕过 fine-tune 失败并拿到更好 SID
+
+与 IDEA-onerec-3 (QFormer Tokenizer) 的关系：
+- QFormer 思路: 冻结底座 + Cross-Attention 从多层聚合 → MARC 是 QFormer 的理论佐证（多层聚合比单纯 final layer 更优）
+- MARC Phase 1 (单层选择) 比 QFormer (多层聚合) 轻得多，可作为前置 ablation
+
+### 实验设计草案
+
+**Phase 1 — Qwen3 Layer Sweep (极低成本, ~1 天)**:
+
+1. 在 `model/embedder.py::Qwen3TextEmbedder` 增加 `hidden_layer: int = -1` 参数
+2. 用 `output_hidden_states=True` + `hidden_states[hidden_layer]` 取指定层
+3. Qwen3-0.6B 有 ~28 层，sweep `{2, 7, 14, 21, 27}` (early, mid-early, mid, mid-late, final)
+4. 对每层：
+   - 重算 embedding cache (~几小时)
+   - 重训 MLP-FSQ tokenizer (~30 分钟)
+   - 评估 `semantic_neighbor_hit_rate@50` (秒级)
+
+**预期**: 如果 MRA 在 Qwen3 上也成立（论文在 Llama3/Qwen2 上都复现），应该观察到 mid-layer (第 14-21 层) semantic_neighbor_HR 明显优于 final layer (27)。
+
+| 假想结果 | 解读 | 下一步 |
+|---------|------|-------|
+| mid > final 显著 | MRA 在我们场景成立 | 切换默认 layer, 重训 NTP，看端到端 R@K 提升 |
+| mid ≈ final | 我们的 embedding 路径不受 MRA 影响（Qwen3 预训练 + 无微调可能不符合 MARC 假设） | 跳过 Phase 2，但至少 ruled out 一个变量 |
+| mid < final | MRA 反向 | 意外，需深入分析；可能我们的 MLP-FSQ 已经隐式补偿了 |
+
+**Phase 2 — MARC 完整框架 (高成本, 需 fine-tune)**:
+
+如果 Phase 1 显示 mid-layer 有优势，但单层选择收益有限，考虑完整 MARC：
+- 引入独立的 Compression Network (当前已有 MLP-FSQ encoder, 可视为已具备)
+- 引入 User-Item Matching Network (独立小 MLP 做交互)
+- 加 HSIC 约束（在 tokenizer 训练阶段）
+- 对 Qwen3 做 task-aware fine-tune（但加 HSIC 保护 final layer）
+
+Phase 2 改动大，且 MARC 是 CTR 排序场景，不是生成式推荐 — 需要谨慎评估是否直接移植。我们的场景里 "Matching Network" 对应的是 NTP 模型本身，不是独立小网络。
+
+**Phase 3 — 多层聚合 (IDEA-onerec-3 QFormer 的一个实例化)**:
+
+如果 Phase 1 显示 mid > final，还可以尝试：
+- 取中间层 hidden states + final layer hidden states, concat → linear projection → 送 MLP-FSQ
+- 或用 learned attention over layers (mini-QFormer) 做加权平均
+
+### 关键问题
+
+1. **MRA 是否在无微调的 Qwen3 上出现？** 论文实验都是"微调后"的 LLM。我们的 Qwen3 是冻结的预训练模型，可能不存在 final-layer 退化问题。但即便如此，中间层对推荐任务可能更合适（final layer 被预训练时的 LM head 拉偏）
+2. **Qwen3 的 EOS/last-token pooling 只在 final layer 有意义**: 如果取中间层，pooling 策略要同步改（mean pooling over non-pad tokens 更合适）
+3. **HSIC 实现复杂度**: Phase 2 的 HSIC 约束需要计算核矩阵，在 large batch 上是 O(B²) 内存，与当前 tokenizer 训练的 multi-GPU 模式不直接兼容
+4. **与 VL embedder 的一致性**: 如果文字 embedder 切到 mid-layer, 图像侧 `Qwen3VLEmbedder` 是否也应切？VL 的多模态融合层通常在中-后段，可能不能一致
+
+### 相关 idea
+
+- IDEA-sid-1 (CF 微调增强): ❌ 失败 — MRA 理论刚好解释了为什么 CF 微调 final layer 会退化
+- IDEA-onerec-3 (QFormer Tokenizer): 多层聚合路径, Phase 3 是其简化版
+- IDEA-forge-0 (Proxy Metrics): `semantic_neighbor_HR` 正是本实验的评估指标
+- IDEA-snap-0 (Snapchat SIDs): Snapchat 的多模态 embedding 融合 + STE 处理 codebook collapse，和本 idea 都指向 "embedding 端对 SID 质量至关重要"
