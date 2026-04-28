@@ -118,7 +118,7 @@ def test_forward_cached_cold_start():
 
     with torch.no_grad():
         logits_old = model.forward(input_tokens)
-        logits_new, _ = model.forward_cached(input_tokens)
+        logits_new, _, _, _ = model.forward_cached(input_tokens)
 
     diff = (logits_old - logits_new).abs().max().item()
     assert diff < 1e-5, f"Cold start mismatch: max diff = {diff}"
@@ -134,8 +134,8 @@ def test_forward_cached_incremental():
     with torch.no_grad():
         logits_full = model.forward(ctx, gen)
         # Incremental: encode ctx first, then gen
-        _, kv = model.forward_cached(ctx)
-        logits_incr, _ = model.forward_cached(generated_tokens=gen, kv_caches=kv)
+        _, kv, _, _ = model.forward_cached(ctx)
+        logits_incr, _, _, _ = model.forward_cached(generated_tokens=gen, kv_caches=kv)
 
     diff = (logits_full - logits_incr).abs().max().item()
     assert diff < 1e-5, f"Incremental mismatch: max diff = {diff}"
@@ -151,9 +151,9 @@ def test_forward_cached_token_by_token():
     with torch.no_grad():
         logits_full = model.forward(ctx, gen)
         # Token-by-token
-        _, kv = model.forward_cached(ctx)
+        _, kv, _, _ = model.forward_cached(ctx)
         for i in range(3):
-            logits_step, kv = model.forward_cached(
+            logits_step, kv, _, _ = model.forward_cached(
                 generated_tokens=gen[:, i:i+1], kv_caches=kv)
 
     diff = (logits_full - logits_step).abs().max().item()

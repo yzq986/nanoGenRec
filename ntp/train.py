@@ -809,6 +809,8 @@ def train_packed(
     time_gaps_list=None,
     action_levels_list=None,
     use_segment_emb=False,
+    use_torope=False,
+    torope_time_split=0.5,
 ):
     """Train NTPModel or NTPProbe with unified sequences (causal LM style).
 
@@ -847,6 +849,9 @@ def train_packed(
             _extra_kwargs['n_action_levels'] = 4
         if use_segment_emb:
             _extra_kwargs['use_segment_emb'] = True
+        if use_torope:
+            _extra_kwargs['use_torope'] = True
+            _extra_kwargs['torope_time_split'] = torope_time_split
         model = NTPModel(
             n_clusters_per_layer=n_clusters_per_layer,
             n_sid_layers=n_layers,
@@ -1165,6 +1170,9 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
             probe_config['n_time_buckets'] = probe.time_gap_emb.num_embeddings
         if hasattr(probe, 'action_emb'):
             probe_config['n_action_levels'] = probe.action_emb.num_embeddings
+        if hasattr(probe, 'use_torope') and probe.use_torope:
+            probe_config['use_torope'] = True
+            probe_config['torope_time_split'] = torope_time_split
     else:
         probe_config = {
             'model_type': 'probe',
@@ -1269,6 +1277,12 @@ def parse_args():
                         help='Enable action level embedding (4 levels)')
     parser.add_argument('--use_segment_emb', action='store_true', default=False,
                         help='Enable segment embedding (item_pos + layer_pos)')
+    # TO-RoPE (feat-5, arxiv 2510.20455)
+    parser.add_argument('--use_torope', action='store_true', default=False,
+                        help='Enable TO-RoPE (Time-and-Order RoPE). Replaces learnable pos_emb '
+                             'and time_gap_emb with split-by-dim rotary encoding.')
+    parser.add_argument('--torope_time_split', type=float, default=0.5,
+                        help='Fraction of RoPE planes for time encoding (default 0.5)')
     return parser.parse_args()
 
 
@@ -1610,6 +1624,8 @@ def main():
                 n_time_buckets=cfg.get('n_time_buckets', 0),
                 n_action_levels=cfg.get('n_action_levels', 0),
                 use_segment_emb=cfg.get('use_segment_emb', False),
+                use_torope=cfg.get('use_torope', False),
+                torope_time_split=cfg.get('torope_time_split', 0.5),
             )
         else:
             probe = NTPProbe(
@@ -1682,6 +1698,8 @@ def main():
             time_gaps_list=time_gaps_list,
             action_levels_list=action_levels_list,
             use_segment_emb=args.use_segment_emb,
+            use_torope=args.use_torope,
+            torope_time_split=args.torope_time_split,
         )
 
         # Update W&B config with model-specific info discovered during training

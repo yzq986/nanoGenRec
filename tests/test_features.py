@@ -179,8 +179,8 @@ def test_forward_cached_features_change_output():
     tg, al = make_features(batch=1, length=12)
 
     with torch.no_grad():
-        logits_with, _ = model.forward_cached(ctx, ctx_time_gaps=tg, ctx_action_levels=al)
-        logits_without, _ = model.forward_cached(ctx)
+        logits_with, _, _, _ = model.forward_cached(ctx, ctx_time_gaps=tg, ctx_action_levels=al)
+        logits_without, _, _, _ = model.forward_cached(ctx)
 
     diff = (logits_with - logits_without).abs().max().item()
     assert diff > 1e-4, \
@@ -207,7 +207,7 @@ def test_forward_cached_features_consistent_with_forward_packed():
     with torch.no_grad():
         # Use forward directly with packed mode to get hidden states
         # We compare log-probs at position T-1 (last context token)
-        logits_cached, _ = model.forward_cached(
+        logits_cached, _, _, _ = model.forward_cached(
             tokens, ctx_time_gaps=tg, ctx_action_levels=al)
 
     # forward_cached returns logits at position T (predicting next token from T-1)

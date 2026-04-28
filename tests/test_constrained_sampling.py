@@ -173,7 +173,7 @@ def test_sampling_ctx_kv_cache_reuse():
         model, ctx, trie, n_samples=10, temperature=1.0)
 
     # Second call — reuses kv cache (must provide initial_logits too)
-    initial_logits, kv2 = model.forward_cached(ctx)
+    initial_logits, kv2, _, _ = model.forward_cached(ctx)
     beams2, scores2, _ = constrained_sampling(
         model, ctx, trie, n_samples=10, temperature=1.0,
         ctx_kv_caches=kv2, initial_logits=initial_logits)

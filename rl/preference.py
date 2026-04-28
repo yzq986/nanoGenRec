@@ -386,7 +386,7 @@ def build_preference_pairs(
                         new_tensor = torch.tensor(
                             new_tokens, dtype=torch.long,
                             device=device).unsqueeze(0)
-                        shared_logits, shared_kv = model.forward_cached(
+                        shared_logits, shared_kv, _, _ = model.forward_cached(
                             generated_tokens=new_tensor, kv_caches=shared_kv)
 
                 pair, re, rm, rh, shared_kv, shared_logits = _process_item(

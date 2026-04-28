@@ -11,9 +11,140 @@ Reference:
 
 from typing import Dict, List, Optional, Set, Tuple
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+# ============================================================
+# TO-RoPE — Time-and-Order Rotary Position Embedding
+# arxiv 2510.20455 (Roblox), split-by-dim variant
+# ============================================================
+
+def build_torope_freqs(
+    head_dim: int,
+    max_seq_len: int,
+    time_split_ratio: float = 0.5,
+    index_base: float = 10000.0,
+    time_base: float = 10000.0,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Pre-compute TO-RoPE frequency tensors.
+
+    head_dim must be even. The first (1-time_split_ratio) fraction of rotary
+    planes encodes sequence index; the remaining fraction encodes wall-clock time.
+
+    Returns:
+        freq_idx:  (max_seq_len, head_dim//2) — angle per (position, plane) for index dim
+        freq_time: (max_seq_len, head_dim//2) — angle per (position, plane) for time dim
+        Both are pre-multiplied so that apply_rotary_emb only needs to index by position.
+        The two tensors are *logically* used via split_pos below.
+    """
+    half = head_dim // 2
+    n_time_planes = max(1, int(half * time_split_ratio))
+    n_idx_planes = half - n_time_planes
+
+    # Index planes: standard RoPE frequencies
+    if n_idx_planes > 0:
+        inv_freq_idx = 1.0 / (index_base ** (
+            torch.arange(0, n_idx_planes * 2, 2).float() / (n_idx_planes * 2)))
+        t = torch.arange(max_seq_len).float()
+        freq_idx = torch.outer(t, inv_freq_idx)  # (max_seq_len, n_idx_planes)
+    else:
+        freq_idx = torch.zeros(max_seq_len, 0)
+
+    # Time planes: RoPE with time_base (same formula, applied to τ at runtime)
+    if n_time_planes > 0:
+        inv_freq_time = 1.0 / (time_base ** (
+            torch.arange(0, n_time_planes * 2, 2).float() / (n_time_planes * 2)))
+    else:
+        inv_freq_time = torch.zeros(0)
+
+    return freq_idx, inv_freq_time, n_idx_planes, n_time_planes
+
+
+def _rotate_with_positions(
+    x: torch.Tensor,            # (B, H, T, head_dim)
+    positions: torch.Tensor,    # (B, T) integer indices
+    timestamps: torch.Tensor,   # (B, T) float hours
+    freq_idx: torch.Tensor,     # (max_len, n_idx_planes)
+    inv_freq_time: torch.Tensor,  # (n_time_planes,)
+    n_idx_planes: int,
+    n_time_planes: int,
+) -> torch.Tensor:
+    """Apply TO-RoPE rotation to a single tensor x given its positions and timestamps."""
+    B, H, T, D = x.shape
+    device = x.device
+
+    def rotate_half(v):
+        v1, v2 = v[..., ::2], v[..., 1::2]
+        return torch.stack([-v2, v1], dim=-1).flatten(-2)
+
+    parts = []
+    if n_idx_planes > 0:
+        pos_flat = positions.reshape(-1).long().clamp(0, freq_idx.size(0) - 1)
+        angles = freq_idx[pos_flat].reshape(B, 1, T, n_idx_planes).to(device)
+        cos_i = torch.cos(angles).repeat_interleave(2, dim=-1)
+        sin_i = torch.sin(angles).repeat_interleave(2, dim=-1)
+        xi = x[..., :n_idx_planes * 2]
+        parts.append(xi * cos_i + rotate_half(xi) * sin_i)
+
+    if n_time_planes > 0:
+        inv_f = inv_freq_time.to(device)
+        ts = timestamps.unsqueeze(1).unsqueeze(-1).float()  # (B,1,T,1)
+        angles_t = ts * inv_f.reshape(1, 1, 1, n_time_planes)
+        cos_t = torch.cos(angles_t).repeat_interleave(2, dim=-1)
+        sin_t = torch.sin(angles_t).repeat_interleave(2, dim=-1)
+        start = n_idx_planes * 2
+        xt = x[..., start:start + n_time_planes * 2]
+        parts.append(xt * cos_t + rotate_half(xt) * sin_t)
+
+    total_rotated = (n_idx_planes + n_time_planes) * 2
+    if total_rotated < D:
+        parts.append(x[..., total_rotated:])
+
+    return torch.cat(parts, dim=-1)
+
+
+def apply_torope(
+    q: torch.Tensor,            # (B, H, T_q, head_dim)
+    k: torch.Tensor,            # (B, H, T_k, head_dim)
+    positions_q: torch.Tensor,  # (B, T_q) or (1, T_q) — integer sequence indices for Q
+    positions_k: torch.Tensor,  # (B, T_k) — integer sequence indices for K
+    freq_idx: torch.Tensor,     # (max_seq_len, n_idx_planes) — precomputed
+    inv_freq_time: torch.Tensor,  # (n_time_planes,)
+    n_idx_planes: int,
+    n_time_planes: int,
+    timestamps_q: Optional[torch.Tensor] = None,  # (B, T_q) float hours — defaults to zeros
+    timestamps_k: Optional[torch.Tensor] = None,  # (B, T_k) float hours — defaults to zeros
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply TO-RoPE (split-by-dim) to Q and K independently.
+
+    Q and K may have different sequence lengths (cross-attention / KV-cache incremental).
+    Index planes use precomputed freq_idx; time planes compute angles from timestamps
+    * inv_freq_time at runtime.
+    """
+    B, H, T_q, D = q.shape
+    T_k = k.shape[2]
+    device = q.device
+
+    if timestamps_q is None:
+        timestamps_q = torch.zeros(positions_q.shape[0], T_q, device=device)
+    if timestamps_k is None:
+        timestamps_k = torch.zeros(positions_k.shape[0], T_k, device=device)
+
+    q_rot = _rotate_with_positions(
+        q, positions_q.expand(B, -1) if positions_q.size(0) == 1 else positions_q,
+        timestamps_q.expand(B, -1) if timestamps_q.size(0) == 1 else timestamps_q,
+        freq_idx, inv_freq_time, n_idx_planes, n_time_planes,
+    )
+    k_rot = _rotate_with_positions(
+        k, positions_k.expand(B, -1) if positions_k.size(0) == 1 else positions_k,
+        timestamps_k.expand(B, -1) if timestamps_k.size(0) == 1 else timestamps_k,
+        freq_idx, inv_freq_time, n_idx_planes, n_time_planes,
+    )
+    return q_rot, k_rot
 
 
 # ============================================================
@@ -107,7 +238,7 @@ def constrained_beam_search(
             model, input_tokens, trie, beam_size, prefix)
 
     if ctx_kv_caches is None:
-        initial_logits, ctx_kv_caches = model.forward_cached(
+        initial_logits, ctx_kv_caches, _, _ = model.forward_cached(
             input_tokens, ctx_time_gaps=ctx_time_gaps,
             ctx_action_levels=ctx_action_levels)
 
@@ -133,7 +264,7 @@ def constrained_beam_search(
                              device=device) if _has_tg else None
         sal_pfx = torch.full((B, P), gen_action_level, dtype=torch.long,
                              device=device) if _has_al else None
-        current_logits, step_kv = model.forward_cached(
+        current_logits, step_kv, _, _ = model.forward_cached(
             generated_tokens=prefix, kv_caches=step_kv,
             step_time_gap=stg_pfx, step_action_level=sal_pfx)
     else:
@@ -150,7 +281,7 @@ def constrained_beam_search(
         if step > start_step:
             last_tokens = beams[:, :, -1].reshape(B * n_beams, 1)
             stg_step, sal_step = _step_features(B * n_beams)
-            current_logits, step_kv = model.forward_cached(
+            current_logits, step_kv, _, _ = model.forward_cached(
                 generated_tokens=last_tokens, kv_caches=step_kv,
                 step_time_gap=stg_step, step_action_level=sal_step)
 
@@ -271,7 +402,7 @@ def constrained_sampling(
 
     # ── Encode context (or reuse cached) ──
     if ctx_kv_caches is None:
-        initial_logits, ctx_kv_caches = model.forward_cached(
+        initial_logits, ctx_kv_caches, _, _ = model.forward_cached(
             input_tokens, ctx_time_gaps=ctx_time_gaps,
             ctx_action_levels=ctx_action_levels)
 
@@ -304,7 +435,7 @@ def constrained_sampling(
         if step > 0:
             last_tok = sampled_tokens[-1].unsqueeze(1)  # (n_samples, 1)
             stg, sal = _feat(n_samples)
-            cur_logits, step_kv = model.forward_cached(
+            cur_logits, step_kv, _, _ = model.forward_cached(
                 generated_tokens=last_tok, kv_caches=step_kv,
                 step_time_gap=stg, step_action_level=sal)
             # cur_logits: (n_samples, C)
@@ -619,7 +750,12 @@ def _compute_entp_loss(
 # ============================================================
 
 class TransformerLayer(nn.Module):
-    """Pre-norm Transformer layer: LayerNorm → Attention → LayerNorm → FFN/MoE."""
+    """Pre-norm Transformer layer: LayerNorm → Attention → LayerNorm → FFN/MoE.
+
+    When torope_params is provided the layer uses manual SDPA (F.scaled_dot_product_attention)
+    and applies TO-RoPE to Q/K before the dot product.  Otherwise falls back to
+    nn.MultiheadAttention (no RoPE).
+    """
 
     def __init__(
         self,
@@ -631,9 +767,15 @@ class TransformerLayer(nn.Module):
         top_k: int = 2,
         expert_dim: int = 1024,
         causal: bool = True,
+        torope_params: Optional[dict] = None,
     ):
         super().__init__()
         self.causal = causal
+        self.n_heads = n_heads
+        self.head_dim = embed_dim // n_heads
+        self.dropout = dropout
+        self.torope_params = torope_params  # None → standard APE path
+
         self.attn = nn.MultiheadAttention(
             embed_dim, n_heads, dropout=dropout, batch_first=True,
         )
@@ -649,8 +791,74 @@ class TransformerLayer(nn.Module):
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
 
-    def forward(self, x: torch.Tensor, kv_cache=None, use_cache: bool = False):
-        # Pre-norm self-attention
+    def _attn_with_torope(
+        self,
+        x_norm: torch.Tensor,       # (B, T_q, D)
+        kv_src: torch.Tensor,        # (B, T_kv, D)
+        positions_q: torch.Tensor,   # (B, T_q) or (1, T_q)
+        positions_kv: torch.Tensor,  # (B, T_kv)
+        timestamps_q: torch.Tensor,  # (B, T_q)
+        timestamps_kv: torch.Tensor, # (B, T_kv)
+    ) -> torch.Tensor:
+        """Manual SDPA with TO-RoPE applied to Q and K."""
+        B, T_q, D = x_norm.shape
+        T_kv = kv_src.size(1)
+        H, Dh = self.n_heads, self.head_dim
+        tp = self.torope_params
+
+        # Project Q, K, V
+        W, b = self.attn.in_proj_weight, self.attn.in_proj_bias
+        q = F.linear(x_norm, W[:D], b[:D] if b is not None else None)
+        k = F.linear(kv_src, W[D:2*D], b[D:2*D] if b is not None else None)
+        v = F.linear(kv_src, W[2*D:], b[2*D:] if b is not None else None)
+
+        # Reshape to (B, H, T, Dh)
+        q = q.view(B, T_q, H, Dh).transpose(1, 2)
+        k = k.view(B, T_kv, H, Dh).transpose(1, 2)
+        v = v.view(B, T_kv, H, Dh).transpose(1, 2)
+
+        # Apply TO-RoPE independently to Q (T_q tokens) and K (T_kv tokens)
+        q, k = apply_torope(
+            q, k,
+            positions_q, positions_kv,
+            tp['freq_idx'], tp['inv_freq_time'],
+            tp['n_idx_planes'], tp['n_time_planes'],
+            timestamps_q=timestamps_q,
+            timestamps_k=timestamps_kv,
+        )
+
+        # Scaled dot-product attention
+        is_causal_call = self.causal and (T_q == T_kv)
+        attn_out = F.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=is_causal_call,
+            attn_mask=None,
+        )
+        # Non-square causal mask (incremental decode with Q_len > 1 unlikely but handle it)
+        if self.causal and not is_causal_call and T_q > 1:
+            mask = torch.full((T_q, T_kv), float('-inf'), device=x_norm.device)
+            for i in range(T_q):
+                mask[i, :T_kv - T_q + i + 1] = 0.0
+            attn_out = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=mask.unsqueeze(0).unsqueeze(0),
+                dropout_p=self.dropout if self.training else 0.0,
+            )
+
+        attn_out = attn_out.transpose(1, 2).reshape(B, T_q, D)
+        return F.linear(attn_out, self.attn.out_proj.weight, self.attn.out_proj.bias)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        kv_cache=None,
+        use_cache: bool = False,
+        positions: Optional[torch.Tensor] = None,        # (B,T) or (1,T) — for TO-RoPE
+        timestamps: Optional[torch.Tensor] = None,       # (B,T) — for TO-RoPE
+        kv_positions: Optional[torch.Tensor] = None,     # (B,T_kv) — KV cache positions
+        kv_timestamps: Optional[torch.Tensor] = None,    # (B,T_kv) — KV cache timestamps
+    ):
         x_norm = self.norm1(x)
 
         if kv_cache is not None:
@@ -658,20 +866,28 @@ class TransformerLayer(nn.Module):
         else:
             kv = x_norm
 
-        if self.causal:
+        use_torope = self.torope_params is not None and positions is not None and timestamps is not None
+
+        if use_torope:
+            # Positions and timestamps for the full KV sequence
+            if kv_positions is not None:
+                pos_kv = kv_positions
+                ts_kv = kv_timestamps
+            else:
+                pos_kv = positions
+                ts_kv = timestamps
+            attn_out = self._attn_with_torope(x_norm, kv, positions, pos_kv, timestamps, ts_kv)
+        elif self.causal:
             Q_len = x_norm.size(1)
             KV_len = kv.size(1)
             if Q_len == KV_len:
-                # Full sequence (no cache) — standard square mask
                 attn_mask = nn.Transformer.generate_square_subsequent_mask(
                     KV_len, device=x.device,
                 )
                 attn_out, _ = self.attn(x_norm, kv, kv, attn_mask=attn_mask)
             elif Q_len == 1:
-                # Single new token attends to all prior — no mask needed
                 attn_out, _ = self.attn(x_norm, kv, kv)
             else:
-                # Rectangular causal mask: (Q_len, KV_len)
                 attn_mask = torch.full(
                     (Q_len, KV_len), float('-inf'), device=x.device)
                 for i in range(Q_len):
@@ -679,9 +895,8 @@ class TransformerLayer(nn.Module):
                 attn_out, _ = self.attn(x_norm, kv, kv, attn_mask=attn_mask)
         else:
             attn_out, _ = self.attn(x_norm, x_norm, x_norm)
-        x = x + attn_out
 
-        # Pre-norm FFN/MoE
+        x = x + attn_out
         x = x + self.ffn(self.norm2(x))
         if use_cache:
             return x, kv
@@ -722,6 +937,8 @@ class NTPModel(nn.Module):
         n_time_buckets: int = 0,
         n_action_levels: int = 0,
         use_segment_emb: bool = False,
+        use_torope: bool = False,
+        torope_time_split: float = 0.5,
     ):
         super().__init__()
         assert len(n_clusters_per_layer) == n_sid_layers
@@ -732,6 +949,7 @@ class NTPModel(nn.Module):
         self.parallel = parallel
         self.seq_len = n_items * n_sid_layers
         self.use_segment_emb = use_segment_emb
+        self.use_torope = use_torope
 
         # Per-layer token embeddings (different codebook per SID layer)
         self.token_embs = nn.ModuleList([
@@ -742,18 +960,42 @@ class NTPModel(nn.Module):
         self.max_seq_len = max(max_seq_len, default_len)
 
         # Position embeddings: standard or segment (item_pos + layer_pos)
-        if use_segment_emb:
-            max_n_items = self.max_seq_len // n_sid_layers + 1
-            self.item_pos_emb = nn.Embedding(max_n_items, embed_dim)
-            self.layer_pos_emb = nn.Embedding(n_sid_layers, embed_dim)
+        # When use_torope=True these are replaced by RoPE (no learnable pos params).
+        if use_torope:
+            head_dim = embed_dim // n_heads
+            freq_idx, inv_freq_time, n_idx_planes, n_time_planes = build_torope_freqs(
+                head_dim, self.max_seq_len, time_split_ratio=torope_time_split,
+            )
+            # Register as buffers so they move with .to(device) but are not parameters
+            self.register_buffer('torope_freq_idx', freq_idx)
+            self.register_buffer('torope_inv_freq_time', inv_freq_time)
+            self.torope_n_idx_planes = n_idx_planes
+            self.torope_n_time_planes = n_time_planes
         else:
-            self.pos_emb = nn.Embedding(self.max_seq_len, embed_dim)
+            if use_segment_emb:
+                max_n_items = self.max_seq_len // n_sid_layers + 1
+                self.item_pos_emb = nn.Embedding(max_n_items, embed_dim)
+                self.layer_pos_emb = nn.Embedding(n_sid_layers, embed_dim)
+            else:
+                self.pos_emb = nn.Embedding(self.max_seq_len, embed_dim)
 
-        # Side information embeddings (EXP-023)
-        if n_time_buckets > 0:
+        # Side information embeddings
+        # With TO-RoPE: time is encoded via RoPE, so time_gap_emb is skipped.
+        # action_emb is still additive (not positional), always included if requested.
+        if n_time_buckets > 0 and not use_torope:
             self.time_gap_emb = nn.Embedding(n_time_buckets, embed_dim)
         if n_action_levels > 0:
             self.action_emb = nn.Embedding(n_action_levels, embed_dim)
+
+        # Build TO-RoPE params dict for TransformerLayer (or None)
+        torope_layer_params = None
+        if use_torope:
+            torope_layer_params = {
+                'freq_idx': self.torope_freq_idx,
+                'inv_freq_time': self.torope_inv_freq_time,
+                'n_idx_planes': n_idx_planes,
+                'n_time_planes': n_time_planes,
+            }
 
         # Transformer layers
         self.layers = nn.ModuleList([
@@ -762,6 +1004,7 @@ class NTPModel(nn.Module):
                 use_moe=use_moe, n_experts=n_experts,
                 top_k=top_k, expert_dim=expert_dim,
                 causal=not parallel,
+                torope_params=torope_layer_params,
             )
             for _ in range(n_transformer_layers)
         ])
@@ -801,7 +1044,11 @@ class NTPModel(nn.Module):
         return x
 
     def _get_pos_emb(self, positions: torch.Tensor) -> torch.Tensor:
-        """Get positional embedding for given positions (standard or segment)."""
+        """Get positional embedding for given positions (standard or segment).
+        Returns zeros when use_torope=True (position info lives in RoPE instead)."""
+        if self.use_torope:
+            return torch.zeros(*positions.shape, self.embed_dim,
+                               device=positions.device, dtype=torch.get_default_dtype())
         if self.use_segment_emb:
             L = self.n_sid_layers
             item_pos = positions // L
@@ -831,10 +1078,19 @@ class NTPModel(nn.Module):
             x = x + self.action_emb(action_levels)
         return x
 
-    def _transformer_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run through all transformer layers + final norm."""
+    def _transformer_forward(
+        self,
+        x: torch.Tensor,
+        positions: Optional[torch.Tensor] = None,
+        timestamps: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Run through all transformer layers + final norm.
+
+        positions and timestamps are forwarded to each layer for TO-RoPE.
+        Both are ignored when use_torope=False.
+        """
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, positions=positions, timestamps=timestamps)
         return self.final_norm(x)
 
     # ── KV-cached inference ──
@@ -852,7 +1108,15 @@ class NTPModel(nn.Module):
                 x[:, mask] = self.token_embs[l](tokens[:, mask])
         return x
 
-    def _transformer_forward_cached(self, x: torch.Tensor, kv_caches=None):
+    def _transformer_forward_cached(
+        self,
+        x: torch.Tensor,
+        kv_caches=None,
+        positions: Optional[torch.Tensor] = None,
+        timestamps: Optional[torch.Tensor] = None,
+        kv_positions: Optional[torch.Tensor] = None,
+        kv_timestamps: Optional[torch.Tensor] = None,
+    ):
         """Transformer forward with per-layer KV cache.
 
         Returns:
@@ -862,14 +1126,20 @@ class NTPModel(nn.Module):
         new_caches = []
         for i, layer in enumerate(self.layers):
             cache_i = kv_caches[i] if kv_caches is not None else None
-            x, new_cache = layer(x, kv_cache=cache_i, use_cache=True)
+            x, new_cache = layer(
+                x, kv_cache=cache_i, use_cache=True,
+                positions=positions, timestamps=timestamps,
+                kv_positions=kv_positions, kv_timestamps=kv_timestamps,
+            )
             new_caches.append(new_cache)
         return self.final_norm(x), new_caches
 
     @torch.no_grad()
     def forward_cached(self, input_tokens=None, generated_tokens=None, kv_caches=None,
                         ctx_time_gaps=None, ctx_action_levels=None,
-                        step_time_gap=None, step_action_level=None):
+                        step_time_gap=None, step_action_level=None,
+                        ctx_timestamps=None, step_timestamp=None,
+                        kv_positions_cache=None, kv_timestamps_cache=None):
         """Inference-only forward with KV cache.
 
         Calling patterns:
@@ -878,14 +1148,19 @@ class NTPModel(nn.Module):
                 — encodes only *new* tokens using cached context.
 
         Args:
-            ctx_time_gaps: (B, T_ctx) time gap buckets, only used on cold start.
-            ctx_action_levels: (B, T_ctx) action levels, only used on cold start.
-            step_time_gap: (B, T_new) time gap for incremental generated tokens.
-            step_action_level: (B, T_new) action level for incremental generated tokens.
+            ctx_time_gaps: (B, T_ctx) time gap buckets (non-TO-RoPE path).
+            ctx_action_levels: (B, T_ctx) action levels.
+            step_time_gap: (B, T_new) time gap for incremental tokens.
+            step_action_level: (B, T_new) action level for incremental tokens.
+            ctx_timestamps: (B, T_ctx) float timestamps in hours (TO-RoPE path).
+            step_timestamp: (B, T_new) float timestamps for new tokens (TO-RoPE path).
+            kv_positions_cache: (B, T_kv) positions already in KV cache (TO-RoPE incremental).
+            kv_timestamps_cache: (B, T_kv) timestamps already in KV cache (TO-RoPE incremental).
 
         Returns:
             logits: (B, C) logits for the next token.
             kv_caches: list of per-layer caches for reuse.
+            (kv_positions, kv_timestamps) — updated position/timestamp caches (TO-RoPE only).
         """
         if kv_caches is None:
             # Cold start — encode full sequence
@@ -895,7 +1170,7 @@ class NTPModel(nn.Module):
             T = tokens.size(1)
             device = tokens.device
             positions = torch.arange(T, device=device).unsqueeze(0)
-            # Pad ctx features to full sequence length (zeros for generated positions)
+
             tg = al = None
             if ctx_time_gaps is not None:
                 T_ctx = ctx_time_gaps.size(1)
@@ -908,7 +1183,26 @@ class NTPModel(nn.Module):
                                   dtype=torch.long, device=device)
                 al = torch.cat([ctx_action_levels, pad], dim=1)
             x = self.embed_with_features(tokens, positions, tg, al)
-            out, kv_caches = self._transformer_forward_cached(x)
+
+            # TO-RoPE: build full timestamp tensor for context
+            if self.use_torope:
+                if ctx_timestamps is not None:
+                    T_ctx = ctx_timestamps.size(1)
+                    ts_pad = torch.zeros(ctx_timestamps.size(0), T - T_ctx,
+                                         dtype=torch.float, device=device)
+                    timestamps = torch.cat([ctx_timestamps.float(), ts_pad], dim=1)
+                else:
+                    timestamps = torch.zeros(tokens.size(0), T,
+                                             dtype=torch.float, device=device)
+            else:
+                timestamps = None
+
+            out, kv_caches = self._transformer_forward_cached(
+                x, positions=positions, timestamps=timestamps)
+
+            # Return updated KV position/timestamp caches for incremental decode
+            new_kv_pos = positions if self.use_torope else None
+            new_kv_ts = timestamps if self.use_torope else None
         else:
             # Incremental — only new tokens
             offset = kv_caches[0].size(1)
@@ -922,12 +1216,34 @@ class NTPModel(nn.Module):
                 x = x + self.time_gap_emb(step_time_gap)
             if step_action_level is not None and hasattr(self, 'action_emb'):
                 x = x + self.action_emb(step_action_level)
-            out, kv_caches = self._transformer_forward_cached(x, kv_caches)
+
+            # TO-RoPE: pass full KV positions/timestamps so RoPE angles are correct
+            if self.use_torope:
+                ts_new = step_timestamp.float() if step_timestamp is not None \
+                    else torch.zeros(new_tokens.size(0), T_new, device=device)
+                if kv_positions_cache is not None:
+                    full_pos = torch.cat([kv_positions_cache, positions], dim=1)
+                    kv_ts_base = kv_timestamps_cache.float() if kv_timestamps_cache is not None \
+                        else torch.zeros(new_tokens.size(0), offset, device=device)
+                    full_ts = torch.cat([kv_ts_base, ts_new], dim=1)
+                else:
+                    full_pos = positions
+                    full_ts = ts_new
+                out, kv_caches = self._transformer_forward_cached(
+                    x, kv_caches,
+                    positions=positions, timestamps=ts_new,
+                    kv_positions=full_pos, kv_timestamps=full_ts,
+                )
+                new_kv_pos = full_pos
+                new_kv_ts = full_ts
+            else:
+                out, kv_caches = self._transformer_forward_cached(x, kv_caches)
+                new_kv_pos = new_kv_ts = None
 
         T_total = kv_caches[0].size(1)
         target_layer = T_total % self.n_sid_layers
         logits = self.output_projs[target_layer](out[:, -1, :])
-        return logits, kv_caches
+        return logits, kv_caches, new_kv_pos, new_kv_ts
 
     def forward(
         self,
@@ -985,7 +1301,9 @@ class NTPModel(nn.Module):
         if self.parallel:
             positions = torch.arange(self.seq_len, device=device).unsqueeze(0)
             x = self._embed_tokens(input_tokens) + self._get_pos_emb(positions)
-            out = self._transformer_forward(x)
+            tp_pos = positions if self.use_torope else None
+            tp_ts = torch.zeros(1, self.seq_len, device=device) if self.use_torope else None
+            out = self._transformer_forward(x, positions=tp_pos, timestamps=tp_ts)
             s = out[:, -1, :]
             return [self.output_projs[l](s) for l in range(self.n_sid_layers)]
 
@@ -998,7 +1316,10 @@ class NTPModel(nn.Module):
         T = tokens.size(1)
         positions = torch.arange(T, device=device).unsqueeze(0)
         x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
-        out = self._transformer_forward(x)
+        # For TO-RoPE: pass positions (timestamps default to zeros inside each layer)
+        torope_pos = positions if self.use_torope else None
+        torope_ts = torch.zeros(1, T, device=device) if self.use_torope else None
+        out = self._transformer_forward(x, positions=torope_pos, timestamps=torope_ts)
 
         if return_last_n == 1:
             target_layer = T % self.n_sid_layers
@@ -1048,7 +1369,9 @@ class NTPModel(nn.Module):
 
         positions = torch.arange(S, device=device).unsqueeze(0)
         x = self.embed_with_features(input_tokens, positions, time_gaps, action_levels)
-        hidden = self._transformer_forward(x)  # (B, S, D)
+        tp_pos = positions if self.use_torope else None
+        tp_ts = torch.zeros(1, S, device=device) if self.use_torope else None
+        hidden = self._transformer_forward(x, positions=tp_pos, timestamps=tp_ts)  # (B, S, D)
 
         # Flatten for efficient per-layer gather
         hidden_flat = hidden.reshape(-1, self.embed_dim)  # (B*S, D)
