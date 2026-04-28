@@ -181,26 +181,61 @@ def embed_with_features(self, tokens, positions, time_gaps=None, action_levels=N
 
 ## 实验排队与 Cron 监控
 
-**标准流程（每次启动实验都必须执行）：**
+### 标准方式：队列文件 + 单个守护 Cron
 
-1. `nohup bash experiments/scripts/exp-NNN.sh > /tmp/expNNN.log 2>&1 &` 启动实验
-2. 立即用 **CronCreate**（`*/3 * * * *`）设置监控任务
+实验队列由两个文件管理，**无需修改 cron prompt 或重启任何东西**：
+
+- `experiments/queue.txt` — 实验队列，追加即生效
+- `experiments/queue_state.json` — 当前状态，cron 读这个决定做什么
+
+**启动新实验 / 追加队列：**
+```bash
+# 当前有实验在跑，想排队下一个：
+echo "exp-042.sh  /tmp/exp042.log  EXP-042 complete!" >> experiments/queue.txt
+# cron 检测到队列新条目，上一个完成后自动启动
+```
+
+**首次启动（队列为空时）：**
+```bash
+# 1. 启动第一个实验
+nohup bash experiments/scripts/exp-NNN.sh --no-smoke > /tmp/expNNN.log 2>&1 &
+
+# 2. 写入 queue_state.json
+cat > experiments/queue_state.json <<EOF
+{
+  "current": "exp-NNN.sh",
+  "log": "/tmp/expNNN.log",
+  "done_string": "EXP-NNN complete!",
+  "status": "running",
+  "pid": $!
+}
+EOF
+
+# 3. 确认守护 cron 存在（CronList 检查），没有就创建一个（见下方 prompt）
+```
+
+**queue.txt 格式：**
+```
+# 注释行忽略
+exp-038b.sh  /tmp/exp038b.log  EXP-038B complete!  EVAL_MID_CHECKPOINTS=exp038b-hard-lam03-3ep
+exp-039b.sh  /tmp/exp039b.log  EXP-039B complete!
+exp-040.sh   /tmp/exp040.log   EXP-040 complete!
+```
+第4列 POST_HOOK 可选，支持 `EVAL_MID_CHECKPOINTS=NAME`（自动 eval ep1/ep2 中间 checkpoint 并选最优）。
+
+**守护 Cron prompt（每个 session 只需一个，job ID 记录在 queue_state.json）：**
+```
+实验队列守护进程 — 读取 experiments/queue_state.json 和 experiments/queue.txt 管理实验链。
+每次触发：
+1. 读 queue_state.json，检查当前实验 log 是否出现 done_string
+2. 未完成：报告进度（grep "step " LOG | tail -1），继续等待
+3. 出错（log 有 Traceback/Error）：告知用户，state 改为 error，停止
+4. 完成：
+   a. 执行 post_hook（如 EVAL_MID_CHECKPOINTS：串行 eval ep1/ep2，找最优 checkpoint）
+   b. 读 train_meta.json，更新 experiments/log.md 对应 EXP 的 Results/Analysis
+   c. git add experiments/ && git commit -m "EXP-XXX complete: ..." && ./push.sh
+   d. 读 queue.txt，找下一个未完成的实验，nohup 启动，更新 queue_state.json
+   e. 如队列已空：state 改为 done，告知用户，保持 cron 存活（等新追加）
+```
 
 **不要用脚本 chain（A 末尾调用 B）来排队实验**，因为前序实验可能已经在后台跑了。
-
-Cron prompt 标准模板（每次照此写）：
-```
-检查 EXP-NNN 训练进度：
-1. tail -20 /tmp/expNNN.log 查看最新日志
-2. 检查是否出现 "EXP-NNN complete!" 或错误
-3. 如果完成：读取 train_meta.json，更新 experiments/log.md 的 Results/Analysis，
-   git commit + ./push.sh，启动下一个实验（若有排队），CronDelete 本 job，告知用户
-4. 如果出错：告知用户错误内容，CronDelete 本 job
-5. 如果还在训练：报告当前进度（第几步/总步数，ETA，关键指标）并继续等待
-```
-
-**有后续实验排队时**，在 cron prompt 第 3 步里加：
-```
-nohup bash experiments/scripts/exp-MMM.sh > /tmp/expMMM.log 2>&1 &
-```
-这样上一个结束后自动启动下一个，无需人工干预。
