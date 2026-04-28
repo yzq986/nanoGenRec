@@ -33,6 +33,8 @@ AutoregressiveNTPModel (当前 6-layer decoder, beam=5)
 ├── IDEA-orec-think-0: In-Text Reasoning (快手)
 │   └── Itemic Alignment + Reasoning Scaffolding + Multi-validity Reward
 ├── IDEA-reg4rec-0: MoE 并行量化 + 推理自反思 (阿里)
+├── IDEA-sif-0: Sample-Level Tokenization + SIF-Mixer (美团)
+│   └── HGAQ 237x compression + factored row/col attention, CTR +2.03%
 │   └── MPQ 无序 token + PARS/MSRA/CORP 推理增强
 ├── IDEA-ksa-0: Summary Attention (快手 OneRec 团队)
 │   └── O(n/k) KV cache，learnable summary tokens，8x compression + 正交于 GQA/MLA
@@ -672,6 +674,60 @@ Huawei AppGallery 工业数据集 + 在线 A/B: **超越 HSTU 和 MTGR**, WWW 20
 
 ---
 
+## IDEA-sif-0: Sample-Level Tokenization + Factored Attention (SIF-Mixer)
+
+**优先级**: P2 — SIF 是 ranking 模型而非生成式检索，但 HGAQ 量化和 factored attention 设计有参考价值
+**来源**: SIF (Meituan, arxiv 2604.15650, Apr 2026)
+**状态**: 待讨论
+
+> **P2 原因**: SIF 的范式 (sample-level tokenization for ranking) 与我们的 SID-based NTP 生成式检索不同。但两个技术有跨范式价值: (1) HGAQ 量化方法可用于压缩丰富的 per-interaction context; (2) factored row/col attention 可用于处理带 side features 的长序列。
+
+### 核心思想
+
+SIF 将推荐序列从 **item-level** 升级到 **sample-level**: 不再用裸 item embedding 表示每个历史交互，而是将完整的 Raw Sample (user+item+context+cross features, 600+ 字段) 量化为 Token Sample。
+
+1. **Sample Tokenizer (HGAQ)**: 将 600+ features 分为 4 semantic groups (user/item/context/cross)，每组自适应切分为 K_g 个 sub-tokens (B=32 fields/token)，每个 sub-token 用 M=3 层 RVQ (V=256) 编码。总压缩: 600×8×32=153,600 bits → 27×3×8=648 bits (**237x compression**)。Label-supervised codebook: 联合优化 CTR loss + VQ commitment loss
+2. **SIF-Mixer**: Factored (L+1)×T attention — Token-level Mixer (intra-sample, T sub-tokens 间交互, 捕捉 user-item-context 关系) → Sample-level Mixer (inter-sample, L+1 samples 间交互, 捕捉时序模式) → Token-level FFN
+3. **Scaling 行为**: SIF 与 HyFormer 的差距随序列长度 **单调增大** (L=100: +0.0013 → L=2000: +0.0102 GAUC)。item-level 方法在 L=500 饱和，SIF 持续从更多 contextualized interactions 获益
+
+### 关键数据
+
+| 指标 | 数值 |
+|------|------|
+| Online A/B (Meituan 外卖, 5% 流量, 7 天) | CTR +2.03%, CVR +1.21%, GMV/session +1.35% |
+| Heavy users (L≥500) | CTR +3.12%, CVR +1.87%, GMV/session +2.06% |
+| Cold users (L<10) | CTR +0.53%, CVR +0.31% (Target Token Sample 也有增益) |
+| 数据规模 | 1B+ impressions, 50M+ users, 5M+ items, 600+ feature fields |
+| 量化压缩 | 237x (648 bits vs 153,600 bits raw) |
+| Model config | 4 SIF Blocks, 8 heads, d0=16, L=1000, T=27 sub-tokens |
+
+### 与当前项目的关联
+
+- **EXP-036 验证了 side features 价值** (time_gap + action_level → R@500 +3.7pp)。SIF 是这个方向的终极形态: 不止 2 个 side features，而是 600+ features 全部编码
+- **HGAQ 的 group-adaptive quantization** 与我们 MLP-FSQ tokenizer 的设计理念相近: 都是用分组量化压缩高维表示
+- **Factored row/col attention** 与 IDEA-ksa-0 (Summary Attention), IDEA-vista-0 (QLA) 类似: 都是通过分解 attention 降低序列建模成本
+- **关键区别**: SIF 是 discriminative ranking model (预测 CTR/CVR)，我们是 generative retrieval model (NTP 生成 SID tokens)。SIF 的 SIF-Mixer 替换不了我们的 causal decoder
+
+### 实验设计草案
+
+**Phase 1 — Rich Context Encoding (可在当前架构内实验)**:
+- 在 NTP 训练的 input sequence 中，每个 item 除了 SID tokens 外，注入更多 per-interaction features (e.g., item category, price bucket, user-item 交互频率)
+- 用 HGAQ-style group quantization 压缩这些额外 features 为固定长度 tokens
+- 评估: R@500 提升 vs 序列长度增加的 tradeoff
+
+**Phase 2 — Factored Attention (远期)**:
+- 如果引入多 sub-token per item (当前每个 item 是 3 SID tokens)，可用 token-level + sample-level factored attention
+- 与 IDEA-ksa-0 (Summary Attention) 的 block compression 对比
+
+### 关键问题
+
+1. **范式差异**: SIF 是 ranking model，我们是 generative retrieval。SIF 不需要生成 SID tokens，而是预测 CTR/CVR。直接迁移不可行
+2. **数据可用性**: 我们的行为数据可能没有 600+ features per interaction — 需要检查数据源
+3. **序列长度**: 当前 max_seq_len=512 (~170 items)，SIF 在 L=1000-2000 时优势最大
+4. Phase 1 的 per-interaction features 与 IDEA-feat-0/1/2 (time_gap/action_level) 和 IDEA-oneloc-5 (multi-behavior) 有重叠 — 可整合
+
+---
+
 ## 优先级总结
 
 | 优先级 | ID | 实验 | 原因 |
@@ -698,6 +754,7 @@ Huawei AppGallery 工业数据集 + 在线 A/B: **超越 HSTU 和 MTGR**, WWW 20
 | P2 | IDEA-higr-0 | Hierarchical Slate Planning | Tencent 验证, 属于 reranking 阶段 |
 | P1 | IDEA-genrec-1 | Asymmetric Token Merger | JD SIGIR 2026, prompt 长度减半, 一个 Linear 层, 性能无损 |
 | P2 | IDEA-nsgr-0 | Next-Scale 粗到细重排序 | 美团 CTR +2.89%, 但属于 reranking 阶段 |
+| P2 | IDEA-sif-0 | Sample-Level Tokenization + SIF-Mixer | 美团 CTR +2.03%, ranking 模型但 HGAQ 量化+factored attention 有参考价值 |
 
 ---
 

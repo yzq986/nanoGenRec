@@ -33,3 +33,4 @@
 | 2604.11440 | R3-VAE: Reference Vector-Guided Rating Residual Quantization VAE for GR | Qiang Wan et al. (ByteDance/Toutiao) | 2026-04-13 | [pdf](2604.11440.pdf) | [txt](2604.11440.txt) | IDEA-r3vae-0 |
 | 2603.00632 | QuaSID: Qualification-Aware Semantic ID Learning at Industrial Scale | Zheng Hu et al. (Kuaishou) | 2026-02-28 | [pdf](2603.00632.pdf) | [txt](2603.00632.txt) | IDEA-quasid-0 |
 | 2505.12663 | MTGenRec: Efficient Distributed Training System for GR at Meituan | Yuxiang Wang et al. (Meituan + Wuhan Univ) | 2025-05-19 | [pdf](2505.12663.pdf) | [txt](2505.12663.txt) | IDEA-mtgenrec-0 |
+| 2604.15650 | SIF: Sample Is Feature — Sample-Level Tokens for Unified Large Recommender Models | Shuli Wang et al. (Meituan) | 2026-04-17 | [pdf](2604.15650.pdf) | [txt](2604.15650.txt) | IDEA-sif-0 |

@@ -1,0 +1,1367 @@
+Sample Is Feature: Beyond Item-Level, Toward Sample-Level
+Tokens for Unified Large Recommender Models
+Shuli Wang∗
+Meituan
+Chengdu, China
+wangshuli03@meituan.com
+Junwei Yin
+Meituan
+Chengdu, China
+yinjunwei03@meituan.com
+Changhao Li
+Meituan
+Chengdu, China
+lichanghao@meituan.com
+Senjie Kou
+Meituan
+Chengdu, China
+kousenjie@meituan.com
+Chi Wang
+Meituan
+Chengdu, China
+wangchi06@meituan.com
+Yinqiu Huang
+Meituan
+Chengdu, China
+huangyinqiu@meituan.com
+Yinhua Zhu
+Meituan
+Chengdu, China
+zhuyinhua@meituan.com
+Haitao Wang
+Meituan
+Chengdu, China
+wanghaitao13@meituan.com
+Xingxing Wang
+Meituan
+Beijing, China
+wangxingxing04@meituan.com
+Abstract
+Scaling industrial recommender models has followed two parallel
+paradigms: sample information scaling—enriching the informa-
+tion content of each training sample through deeper and longer
+behavior sequences—and model capacity scaling—unifying se-
+quence modeling and feature interaction within a single Trans-
+former backbone. However, these two paradigms still face two
+structural limitations. Firstly, sample information scaling methods
+encode only a subset of each historical interaction into the sequence
+token, leaving the majority of the original sample context unex-
+ploited and precluding the modeling of sample-level, time-varying
+features. Secondly, model capacity scaling methods are inherently
+constrained by the structural heterogeneity between sequential and
+non-sequential features, preventing the model from fully realizing
+its representational capacity.
+To address these issues, we propose SIF (Sample Is Feature),
+which encodes each historical Raw Sample directly into the se-
+quence token—maximally preserving sample information while
+simultaneously resolving the heterogeneity between sequential
+and non-sequential features. SIF consists of two key components.
+The Sample Tokenizer quantizes each historical Raw Sample
+into a Token Sample via hierarchical group-adaptive quantization
+(HGAQ), enabling full sample-level context to be incorporated into
+the sequence efficiently. The SIF-Mixer then performs deep fea-
+ture interaction over the homogeneous sample representations via
+token-level and sample-level mixing, fully unleashing the model’s
+∗Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than ACM
+must be honored. Abstracting with credit is permitted. To copy otherwise, or republish,
+to post on servers or to redistribute to lists, requires prior specific permission and/or a
+fee. Request permissions from permissions@acm.org.
+Conference’17, Washington, DC, USA
+© 2025 ACM.
+ACM ISBN 978-1-4503-XXXX-X/18/06
+https://doi.org/XXXXXXX.XXXXXXX
+representational capacity. Extensive experiments on a large-scale
+industrial dataset validate SIF’s effectiveness, and we have success-
+fully deployed SIF on the Meituan food delivery platform.
+ACM Reference Format:
+Shuli Wang, Junwei Yin, Changhao Li, Senjie Kou, Chi Wang, Yinqiu Huang,
+Yinhua Zhu, Haitao Wang, and Xingxing Wang. 2025. Sample Is Fea-
+ture: Beyond Item-Level, Toward Sample-Level Tokens for Unified Large
+Recommender Models . In . ACM, New York, NY, USA, 10 pages. https:
+//doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Recommender systems are a core infrastructure for large-scale in-
+ternet platforms such as Meituan, connecting hundreds of millions
+of users to relevant content across e-commerce, short video, and
+local services. At Meituan, the food delivery platform alone serves
+hundreds of billions of daily recommendation requests, where even
+marginal improvements in ranking quality translate directly into
+business value. With the advancement of large-scale neural models,
+scaling—continuously improving model performance by expanding
+training data, sequence length, or model capacity—has become one
+of the most active research directions in industrial recommender
+systems.
+Existing scaling efforts fall into two complementary paradigms.
+The first, sample information scaling, enriches the informa-
+tion content of each training sample by extending and deepening
+historical behavior sequences. This has been pursued along two sub-
+directions: sequence lengthening, which extends behavior history
+from tens to thousands of interactions (SIM [14], ETA [4], TWIN [3],
+LONGER [2]), and sequence widening, which enriches each histori-
+cal token with additional context beyond the bare item embedding
+(DSAN [13], CAIN [5], HSTU [22]). The second, model capac-
+ity scaling, enlarges model expressiveness by unifying sequence
+modeling and feature interaction within a single Transformer back-
+bone. Rather than processing the behavior sequence and feature
+interactions in separate modules, methods such as HyFormer [9],
+OneTrans [25], and MixFormer [8] feed all feature fields—including
+arXiv:2604.15650v1  [cs.IR]  17 Apr 2026
+
+
+Conference’17, July 2017, Washington, DC, USA
+Wang et al.
+historical tokens—into a unified deep architecture, enabling richer
+cross-field interactions in a single forward pass.
+However, despite their respective advances, these two paradigms
+still face two structural limitations. Firstly, sample information scal-
+ing methods encode only a subset of each historical interaction into
+the sequence token: due to storage and serving cost constraints,
+they either retain bare item embeddings or enrich tokens with
+only selected feature subsets, leaving the majority of the origi-
+nal sample context—user profile, contextual signals, behavioral
+outcome—unexploited. More critically, this architectural choice ren-
+ders these methods structurally incapable of modeling sample-level,
+time-varying features—signals such as real-time item popularity,
+competitive exposure, and temporal demand shifts that are unique
+to each individual impression and cannot be recovered from any
+static item representation. Secondly, model capacity scaling meth-
+ods are inherently constrained by the structural heterogeneity be-
+tween sequential and non-sequential features: item-level history
+tokens and rich multi-field current-request tokens differ fundamen-
+tally in information density, and placing them in the same attention
+space creates a representational asymmetry that prevents the model
+from fully realizing its capacity.
+Consider two users who both clicked the same restaurant: one
+during a late-night session with a discount coupon active, the
+other during a lunch rush on a weekday. A bare item embedding
+treats these interactions as identical, yet their full request con-
+texts carry very different signals about user intent. Preserving the
+complete Raw Sample for each interaction—rather than a stripped
+item embedding—could substantially improve the model’s ability
+to reason about temporal and contextual patterns.
+To address the aforementioned challenges, we propose SIF (Sam-
+ple Is Feature), which encodes each historical Raw Sample directly
+into the sequence token—maximally preserving sample informa-
+tion while simultaneously resolving the heterogeneity between
+sequential and non-sequential features. The key insight is that,
+at training time, every historical interaction already has an asso-
+ciated full request record—user profile, item features, contextual
+signals, and pre-computed cross features—stored in the training
+log; the bottleneck lies not in data availability—every historical in-
+teraction is already logged—but in representation: the rich sample
+context stored in training logs has not been fully exploited. SIF
+closes this gap with two key components. The Sample Tokenizer
+compresses each Raw Sample offline into a Token Sample via hi-
+erarchical group-adaptive quantization (HGAQ), jointly optimized
+with the ranking objective, so that full sample-level context can
+be retrieved at serving time with negligible overhead. The result-
+ing sequence consists entirely of structurally homogeneous Token
+Samples, eliminating the representational asymmetry between his-
+torical and current-request features. The SIF-Mixer then performs
+deep feature interaction over these homogeneous representations
+via token-level and sample-level mixing, enabling the model to fully
+exploit its representational capacity across both intra-sample and
+inter-sample dimensions.
+In summary, our contributions are as follows:
+• We propose SIF, a framework that elevates each historical
+sequence token from item-level to sample-level, simultane-
+ously resolving the incomplete sample utilization in sample
+information scaling and the feature heterogeneity in model
+capacity scaling.
+• We introduce the Sample Tokenizer, which compresses
+Raw Samples into Token Samples via hierarchical group-
+adaptive quantization (HGAQ) for efficient serving, and the
+SIF-Mixer, which performs token-level and sample-level
+feature interaction over the resulting homogeneous sample
+representations.
+• We conduct extensive experiments on a large-scale indus-
+trial dataset, demonstrating that SIF consistently outper-
+forms strong baselines with up to +0.88% GAUC offline,
+and achieves +2.03% CTR and +1.21% CVR in online A/B
+testing on Meituan’s food delivery platform.
+2
+Related Work
+2.1
+Sample Information Scaling
+Sample Information Scaling improves recommendation quality by
+enriching the information carried per historical interaction. It has
+two complementary sub-directions: sequence lengthening (more
+tokens) and sequence widening (richer tokens).
+Sequence lengthening extends behavior history from tens to
+thousands of interactions. DIN [28] introduced attention-based in-
+terest extraction; DIEN [27] modeled interest evolution via GRU.
+SIM [14] and ETA [4] scaled to ultra-long sequences via two-stage
+retrieval, and LONGER [2] generalized this with hierarchical com-
+pression. Despite growing sequence lengths, all these methods
+leave each historical token as a bare item embedding—intra-token
+information density is an untouched bottleneck.
+Sequence widening enriches each historical token with addi-
+tional context beyond the item embedding. DSAN [13] appends
+context features to sequence tokens. TWIN [3] concatenates target-
+item features to each history token to enable target-aware retrieval.
+SINE [16] incorporates label and intent signals via contrastive learn-
+ing. Most relevant to SIF is HSTU [22], which encodes rich per-
+interaction side information (item features, engagement signals,
+and context) at Meta’s scale via linear attention over thousands of
+interactions. However, none of these methods can fully preserve the
+original sample information in each historical token: due to storage
+and serving cost constraints, they enrich tokens with only selected
+feature subsets—direct concatenation of all feature fields would
+multiply the sequence token dimension by an order of magnitude,
+making attention prohibitively expensive at 𝐿= 200, and storing
+full float16 snapshots at scale incurs prohibitive storage cost that
+significantly limits practical applicability.
+SIF completes the sequence widening direction by compressing
+the complete Raw Sample—rather than selected feature subsets—
+offline via group-wise RVQ; the per-token serving cost at inference
+time remains identical to a standard item embedding lookup, while
+the information content approaches that of the original sample.
+2.2
+Unified Architectures
+A recent generation of models unifies sequence modeling and
+feature interaction within a single Transformer backbone. Inter-
+Former [21] interleaves FI and sequence layers. MTGR [6] uses
+multi-task learning to jointly optimize sequence and FI objectives.
+OneTrans [25] processes all feature fields as tokens in a single
+
+
+Sample Is Feature: Beyond Item-Level, Toward Sample-Level Tokens for Unified Large Recommender Models
+Conference’17, July 2017, Washington, DC, USA
+Transformer. HyFormer [9], our primary baseline, introduces a
+hybrid attention mechanism that separates intra-field and cross-
+field attention for efficiency. MixFormer [8] combines MLP-Mixer
+and Transformer layers. The common limitation across all these
+architectures is that historical tokens remain at the item level.
+2.3
+Vector Quantization for Recommendation
+Vector quantization (VQ) has seen growing adoption in recom-
+mender systems for item tokenization. VQ-Rec [7] learns discrete
+item codes via VQ for transferable recommendation. TIGER [15]
+uses residual quantization to generate item identifiers for genera-
+tive retrieval. SIF instead quantizes Raw Samples—multi-field, multi-
+modal feature concatenations—for efficient storage and serving in
+a discriminative ranking model. This requires group-wise decom-
+position to handle heterogeneous feature fields and a label-aware
+supervision signal to keep the codebook meaningful for ranking,
+neither of which arise in item-VQ settings.
+Beyond retrieval, VQ has recently demonstrated strong poten-
+tial in ranking. UIST [12] pioneers discrete semantic tokenization
+for deep CTR prediction, achieving ∼200× storage compression
+with negligible ranking loss. STORE [20] further introduces or-
+thogonal rotation for semantic tokenization in ranking, achieving
+online AUC +1.195% and click rate +2.71%. TRM [26] replaces
+item ID embeddings with semantic tokens in search and ranking
+at scale, reducing sparse storage by 33% and improving AUC by
++0.85%. Zenith [24] proposes a scalable ranking architecture with
+Token Fusion and Token Boost modules to efficiently handle high-
+dimensional Prime Tokens, demonstrating superior scaling laws
+and achieving significant online gains on TikTok Live’s billion-scale
+livestreaming platform. IAT [11] proposes a two-stage framework
+that compresses all features of each historical interaction instance
+into a unified instance embedding via temporal-order or user-order
+schemes, demonstrating strong in-domain and cross-domain trans-
+ferability.
+3
+Preliminaries
+3.1
+Problem Formulation and Notation
+Table 1: Key Notation.
+Symbol
+Definition
+𝐿
+Behavior sequence length
+𝑁
+Number of SIF Blocks
+𝐺
+Number of semantic feature groups
+𝐾𝑔
+Number of sub-tokens for group 𝑔(𝐾𝑔= ⌈| F𝑔|/𝐵⌉)
+𝑇
+Total token count per sample (𝑇= Í𝐺
+𝑔=1 𝐾𝑔)
+𝐵
+Sub-token granularity: target feature fields per sub-token
+𝑀
+RVQ residual levels per sub-token
+𝑉
+Codebook size per level
+S ∈R𝑑𝑠
+Raw Sample (feature snapshot of one historical interaction)
+Q
+Token Sample: 𝑇× 𝑀discrete codebook indices
+z(𝑔,𝑘)
+𝑙
+∈R𝑑0
+Sub-token (𝑔,𝑘) embedding (codebook lookup of Q𝑙)
+H0
+SIF-Mixer input: all 𝐿+1 Token Sample embeddings
+𝑊(𝑔,𝑘)
+res
+Target sub-token projection (H0
+0,(𝑔,𝑘) =𝑊(𝑔,𝑘)
+res
+f (𝑔,𝑘)
+𝜏
+)
+Formal problem definition. Let U, I, and C denote the sets
+of users, items, and contextual signals, respectively. At request time
+𝜏, a ranking model receives a current-request feature tuple f𝜏=
+(fuser
+𝜏
+, fitem
+𝑗
+, fctx
+𝜏) for candidate item 𝑗, and a behavior sequence
+B = {𝑖𝑙}𝐿
+𝑙=1 recording the 𝐿most recent positive interactions of the
+user, strictly before 𝜏, ordered chronologically. The model outputs
+a score ˆ𝑦∈[0, 1] predicting the probability of engagement. In
+standard unified architectures, the behavior sequence is encoded as
+a set of item embeddings {e𝑖1, . . . , e𝑖𝐿}. SIF augments each entry 𝑖𝑙
+with the complete feature snapshot of the historical request, and
+compresses this Raw Sample to a Token Sample z via the Sample
+Tokenizer.
+In standard unified architectures such as HyFormer [9], the be-
+havior sequence B is represented as a set of item embeddings
+{e𝑖1, . . . , e𝑖𝐿} placed alongside rich field-level current-request to-
+kens in the same attention space. This token heterogeneity is the
+common root of both blind spots that SIF addresses.
+4
+The SIF Framework
+4.1
+Sample-Level Token Definition
+Core idea. We define a Raw Sample at interaction time 𝑡as the
+complete feature tuple that characterized that historical event:
+S = [fuser | fitem | fctx | fcross]
+(1)
+where fuser are user profile features, fitem are item features, fctx
+are contextual signals, and fcross are pre-computed cross features
+capturing joint user-item-context interaction patterns (e.g., user-
+category affinity, item-context co-occurrence statistics). The Raw
+Sample S ∈R𝑑𝑠is high-dimensional. The Sample Tokenizer com-
+presses S into a Token Sample.
+We distinguish two types of features in a sample: (1) point fea-
+tures—user attributes, item attributes, and contextual signals—which
+are amenable to quantization; and (2) sequential features—the user’s
+historical interaction sequence B—which carry temporal ordering
+information and are therefore excluded from sample quantization.
+Sequential features are modeled directly by the Sample-level Mixer
+in SIF-Mixer (§4.6), which captures inter-sample dynamics via cross-
+temporal attention.
+4.2
+Sample Tokenizer: Hierarchical
+Group-Adaptive Quantization
+The Sample Tokenizer T : S ↦→Q maps each Raw Sample to
+a Token Sample Q = (𝑞(𝑔,𝑘,𝑚))—a compact set of 𝑇× 𝑀discrete
+codebook indices. At serving time only these indices need to be
+stored and retrieved; the corresponding embedding vectors are
+looked up on-the-fly from the codebook maintained in the SIF-
+Mixer.
+4.2.1
+Group-Wise Decomposition. Different components of S cap-
+ture qualitatively different information. Rather than quantizing the
+entire snapshot with a single codebook, we first partition S into
+𝐺= 4 semantic groups:
+S = [ fuser
+|{z}
+𝐺1
+| fitem
+|{z}
+𝐺2
+| fctx
+|{z}
+𝐺3
+| fcross
+|{z}
+𝐺4
+]
+(2)
+
+
+Conference’17, July 2017, Washington, DC, USA
+Wang et al.
+item id
+user feature group
+item feature group
+Task Tower
+...
+...
+...
+...
+context feature group
+...
+...
+Key
+features
+slot id
+...
+...
+Token
+Token
+Token
+Token
+Token
+y
+Tokenizer
+Embedding Layer
+Raw
+sample
+Token
+sample
+...
+...
+Raw sample
+Token sample
+...
+Join on
+PV
+ID
+Item
+ID
+...
+...
+...
+...
+...
+Sample-level
+sequence
+Item-level
+sequence
+...
+Item 1
+Item 2
+Item 3
+Item L
+Sample 1
+Sample 2
+Sample 3
+...
+...
+Sample 4
+...
+...
+...
+...
+...
+...
+...
+...
+Seq token sample 
+...
+...
+SIF Block 1
+SIF Block K
+SIF Block 2
+Token-level Mixer
+Sample-level Mixer
+Token-level FFN
+...
+Multi Head Attention
+Token-level Mixer
+Sample-level Mixer
+(a) Sample Tokenizer
+(b) Sample splicing
+(c) Sample serialization
+(d) SIF-Mixer  
+Target raw sample
+...
+...
+...
+Sample Tokenizer
+Embedding Layer
+Task Tower
+...
+...
+Multi Head Attention
+...
+...
+Target token sample
+...
+Figure 1: SIF Architecture Overview. (a) Sample Tokenizer compresses a Raw Sample S via HGAQ into a Token Sample Q.
+(b) Sample splicing replaces item embeddings with Token Samples Q, yielding a token-homogeneous sequence. (c) Sample
+serialization orders historical Token Samples chronologically with temporal position embeddings. (d) SIF-Mixer embeds each
+Token Sample Q into H0 via codebook lookup, then stacks 𝑁SIF Blocks, each comprising a Token-level Mixer (intra-sample
+attention), a Sample-level Mixer (inter-sample temporal attention), and a Token-level FFN, followed by a prediction head.
+This grouping is flexible: high-cardinality key features (e.g., item
+ID) that carry strong identity signals can be assigned to a dedicated
+singleton group, ensuring their discriminative information is not
+diluted by lower-cardinality features within a shared codebook.
+Adaptive intra-group sub-tokenization. Within each seman-
+tic group 𝑔, the number of features |F𝑔| varies considerably. Com-
+pressing a large group into a single token forces semantically dis-
+tinct sub-concepts into one vector, limiting the Token-level Mixer’s
+ability to disentangle them. We therefore further divide each group
+into 𝐾𝑔sub-tokens, where the number of sub-tokens is determined
+adaptively by the group’s feature count:
+𝐾𝑔=
+ |F𝑔|
+𝐵
+
+(3)
+where 𝐵is the sub-token granularity—the target number of feature
+fields assigned to each sub-token (default 𝐵= 32). Groups with
+more features naturally produce more sub-tokens, granting them
+proportionally more positions in the Token-level Mixer. The |F𝑔|
+features in group 𝑔are evenly partitioned into 𝐾𝑔non-overlapping
+subsets {F (𝑘)
+𝑔
+}
+𝐾𝑔
+𝑘=1; each subset is projected to a fixed sub-token
+dimension 𝑑0 via a group-and-slot-specific linear layer:
+˜f (𝑔,𝑘) =𝑊(𝑔,𝑘)
+proj f (𝑔,𝑘) ∈R𝑑0
+(4)
+where f (𝑔,𝑘) denotes the raw features in the 𝑘-th subset of group
+𝑔. All sub-tokens share the same dimension 𝑑0 (default 𝑑0 = 16),
+making the total token count per sample 𝑇= Í𝐺
+𝑔=1 𝐾𝑔and the total
+token embedding dimension 𝑑= 𝑇· 𝑑0. Each sub-token has its
+
+
+Sample Is Feature: Beyond Item-Level, Toward Sample-Level Tokens for Unified Large Recommender Models
+Conference’17, July 2017, Washington, DC, USA
+own codebook C𝑔,𝑘= {c(𝑔,𝑘,𝑚)
+𝑣
+}𝑚,𝑣with 𝑉= 256 codes per level of
+dimension 𝑑0.
+4.2.2
+Residual Quantization. Within each sub-token (𝑔,𝑘), we ap-
+ply 𝑀-level residual vector quantization (RVQ) to the projected
+sub-token vector ˜f (𝑔,𝑘):
+𝑞(𝑔,𝑘,𝑚) = arg min
+𝑣
+∥r(𝑔,𝑘,𝑚)−c(𝑔,𝑘,𝑚)
+𝑣
+∥2,
+r(𝑔,𝑘,𝑚) = r(𝑔,𝑘,𝑚−1)−c(𝑔,𝑘,𝑚−1)
+𝑞(𝑔,𝑘,𝑚−1)
+(5)
+where the initial residual r(𝑔,𝑘,1) = ˜f (𝑔,𝑘). The Token Sample con-
+catenates all sub-token index sequences across all groups:
+Q =
+
+(𝑞(𝑔,𝑘,1), . . . ,𝑞(𝑔,𝑘,𝑀))
+
+𝑔=1,...,𝐺; 𝑘=1,...,𝐾𝑔
+(6)
+With 𝐺= 4, 𝐵= 32, 𝑀= 3,𝑉= 256: the total number of sub-tokens
+is 𝑇= Í
+𝑔𝐾𝑔(e.g. 𝑇=27 under our feature schema), and each S is
+compressed to 𝑇× 𝑀× log2 𝑉= 27×3×8 = 648 bits.
+4.2.3
+Label-Supervised Codebook Training. The Sample Tokenizer
+is jointly trained with the ranking objective. During training, the
+RVQ reconstruction ˆs is fed to a lightweight MLP to predict CTR:
+ˆs =
+hÍ
+𝑚c(𝑔,𝑘,𝑚)
+𝑞(𝑔,𝑘,𝑚)
+i
+𝑔,𝑘,
+ˆ𝑦token = 𝜎 MLP(ˆs)
+(7)
+This auxiliary pCTR loss Ltoken = LBCE( ˆ𝑦token,𝑦) is added to the
+overall training objective, ensuring that the codebook is organized
+by predictive relevance rather than purely by reconstruction error.
+Importantly, for important categorical features such as item IDs, we
+retain a dedicated per-field quantization group to preserve individ-
+ual item identity, preventing high-cardinality identifiers from being
+merged with less-discriminative features within a shared group.
+4.3
+Sample Splicing and Serialization
+Standard behavior sequences record only item IDs. SIF upgrades
+each entry with the full feature snapshot and compresses it into
+a Token Sample, transforming the sequence from item-level to
+sample-level:
+{𝑖1, . . . , 𝑖𝐿}
+|         {z         }
+item sequence (standard)
+T
+−−→{Q1, . . . , Q𝐿}
+|            {z            }
+sample sequence (SIF)
+(8)
+Each Q𝑙∈{1, . . . ,𝑉}𝑇×𝑀encodes the complete multi-field snap-
+shot of the 𝑙-th interaction as 𝑇×𝑀discrete indices (𝑇×𝑀×8 bits
+at 𝑉=256), a substantially more compact representation than the
+original float32 features. The Token Samples are pre-computed of-
+fline and stored in a key-value store; the sample sequence, ordered
+chronologically, constitutes the offline-prepared input to SIF-Mixer.
+4.4
+SIF-Mixer
+SIF-Mixer is a backbone architecture, inspired by MLP-Mixer-style
+factored designs [8], that stacks 𝑁identical SIF Blocks. Each block
+decomposes the interaction into three sequential sub-operations:
+Token-level Mixer, Sample-level Mixer, and Token-level FFN. This
+factored design explicitly separates intra-sample feature interac-
+tion from inter-sample temporal interaction, reducing attention
+complexity while preserving both interaction types.
+Input layout. The input to SIF-Mixer consists of two parts,
+which together form the initial hidden state H0 ∈R(𝐿+1)×𝑇×𝑑0,
+where 𝑇= Í𝐺
+𝑔=1 𝐾𝑔is the total number of sub-tokens per sample.
+Seq Token Samples (𝑙= 1, . . . , 𝐿): the sample sequence {Q1, . . . , Q𝐿}
+from §4.3 is embedded via codebook lookup with recency encoding.
+For the sub-token at position (𝑔,𝑘):
+z(𝑔,𝑘)
+𝑙
+=
+𝑀
+∑︁
+𝑚=1
+c(𝑔,𝑘,𝑚)
+𝑞(𝑔,𝑘,𝑚)
+𝑙
+∈R𝑑0,
+H0
+𝑙,∗=
+
+z(1,1)
+𝑙
+∥· · · ∥z(𝐺,𝐾𝐺)
+𝑙
+
++p𝐿−𝑙
+(9)
+Target Token Sample (𝑙= 0): unlike historical Token Samples, the
+current-request features {f (𝑔)
+𝜏
+} are only available at serving time
+and cannot be pre-quantized offline. They are instead projected per
+sub-token into the same codebook space on-the-fly via a learned
+linear projection:
+H0
+0,(𝑔,𝑘) =𝑊(𝑔,𝑘)
+res
+f (𝑔,𝑘)
+𝜏
+(10)
+Lalign ensures each𝑊(𝑔,𝑘)
+res
+maps into the same space as its codebook,
+making all 𝐿+ 1 rows compatible for cross-temporal attention.
+SIF Block. Each block 𝑛∈{1, . . . , 𝑁} operates on H𝑛−1 viewed
+as a (𝐿+1) ×𝑇matrix of 𝑑0-dimensional vectors—rows are samples,
+columns are sub-token positions (𝑇sub-tokens from all groups):
+H𝑛=
+←−𝑇sub-tokens −→Token-level Mixer
+z                       }|                       {
+
+H𝑛
+0,1
+· · ·
+H𝑛
+0,𝑇
+H𝑛
+1,1
+· · ·
+H𝑛
+1,𝑇
+...
+...
+...
+H𝑛
+𝐿,1
+· · ·
+H𝑛
+𝐿,𝑇
+
+
+
+𝐿+1
+samples
+Sample-
+level
+Mixer
+(11)
+Three sub-operations are applied in sequence (MHA: multi-head
+attention [18]; LN: pre-norm LayerNorm [1]):
+(i) Token-level Mixer runs self-attention along each row, modeling
+interactions among all𝑇sub-tokens within a single sample. Because
+sub-tokens from different groups (and different sub-positions within
+the same group) occupy distinct column positions, the attention can
+capture both inter-group correlations (e.g. user–item–context) and
+intra-group sub-concept interactions (e.g. price signals interacting
+with review signals within the item group):
+˜H𝑛
+𝑙= H𝑛−1
+𝑙
++ MHA LN(H𝑛−1
+𝑙
+),
+𝑙= 0, . . . , 𝐿
+(12)
+(ii) Sample-level Mixer runs self-attention along each column, mod-
+eling interactions among all 𝐿+ 1 samples at the same sub-token
+position—crucially, the Target Token Sample (𝑙= 0) can attend to
+all Seq Token Samples to extract relevant historical context:
+¯H𝑛
+∗,𝑝= ˜H𝑛
+∗,𝑝+ MHA LN( ˜H𝑛
+∗,𝑝),
+𝑝= 1, . . . ,𝑇
+(13)
+(iii) Token-level FFN applies a position-wise non-linear transforma-
+tion to each entry:
+H𝑛
+𝑙,𝑝= ¯H𝑛
+𝑙,𝑝+ FFN LN( ¯H𝑛
+𝑙,𝑝)
+(14)
+Prediction head. After 𝑁SIF Blocks, we extract the target
+sample representation by mean-pooling its 𝑇sub-token outputs:
+h = 1
+𝑇
+𝑇∑︁
+𝑝=1
+H𝑁
+0,𝑝
+(15)
+The ranking score is produced by a two-layer MLP with sigmoid
+output:
+ˆ𝑦= 𝜎 w⊤
+2 ReLU(W1h + b1) + 𝑏2
+
+(16)
+
+
+Conference’17, July 2017, Washington, DC, USA
+Wang et al.
+Training objective. The overall loss is:
+L = LBCE + 𝛽LVQ + 𝛾Lalign
+(17)
+where 𝛽= 1.0 and 𝛾= 0.25. LVQ is the standard VQ commitment
+loss [17] (𝜆=0.25) between the group encoder output and the RVQ
+reconstruction. The alignment loss trains the target token projec-
+tion 𝑊(𝑔)
+res to be consistent with the codebook space, so that target
+and historical token representations are compatible at inference
+time:
+Lalign =
+𝐺
+∑︁
+𝑔=1
+𝐾𝑔
+∑︁
+𝑘=1
+𝑊(𝑔,𝑘)
+res
+f (𝑔,𝑘)
+𝜏
+−sg(e𝑔,𝑘)
+
+2
+(18)
+where sg(·) denotes stop-gradient and e𝑔,𝑘= Í
+𝑚c(𝑔,𝑘,𝑚)
+𝑞(𝑔,𝑘,𝑚) is the
+Tokenizer’s codebook reconstruction for sub-token (𝑔,𝑘). During
+training, e𝑔,𝑘is obtained by passing the current-request Raw Sample
+S𝜏through the Sample Tokenizer to produce the RVQ reconstruc-
+tion e𝑔,𝑘= Í
+𝑚c(𝑔,𝑘,𝑚)
+𝑞(𝑔,𝑘,𝑚)
+𝜏
+, which serves as the alignment target; at
+serving time this Tokenizer forward pass is skipped and only𝑊(𝑔,𝑘)
+res
+is applied. Because each Raw Sample S incorporates the behav-
+ioral outcome of the original interaction, the ranking supervision
+signal LBCE propagates through VQ into codebook learning, orga-
+nizing snapshots by their predictive context without requiring an
+additional contrastive term. Complexity. Each SIF Block incurs
+𝑂(𝑇2 · (𝐿+ 1) · 𝑑0 + (𝐿+ 1)2 · 𝑇· 𝑑0) attention operations. Since
+𝑇≪𝐿+ 1 in practice (a modest number of sub-tokens vs. hundreds
+of history steps), the sample-level mixer dominates: 𝑂(𝐿2 · 𝑇· 𝑑0),
+matching the complexity of standard sequence attention at the
+same sequence length. The adaptive sub-tokenization increases 𝑇
+relative to the fixed-𝐺design, but𝑇remains small (typically𝑇< 20
+under 𝐵=8), keeping the token-level mixer overhead negligible.
+5
+Experiments
+5.1
+Experimental Setup
+Datasets. We evaluate SIF on one large-scale industrial dataset:
+• Industrial Dataset (Meituan Local-Life): 1B+ impression
+records (spanning 90 days), 50M+ users, 5M+ items. Each
+sample includes ∼600+ feature fields spanning user profile,
+item attributes, contextual signals, and a 1000-item behavior
+sequence. All 4 semantic groups (𝐺1–𝐺4) with adaptive sub-
+tokenization (𝐵=32) are fully utilized.
+All baseline models receive the same current-request feature set
+as SIF (user fields, item fields, and contextual fields for the target
+request); the sole difference across methods is the representation
+of the historical behavior sequence—baselines use standard item
+embeddings, while SIF replaces each historical token with an HGAQ-
+compressed Token Sample.
+Evaluation Metrics. We report AUC, GAUC (Group AUC),
+and FLOPs on the industrial dataset. All results are averaged over 5
+independent runs; statistical significance by paired 𝑡-test (𝑝< 0.01).
+Baselines. Each model is characterized by its sequence model-
+ing component and feature interaction component. We organize
+comparisons along two axes:
+• Varying feature interaction: DCNv2 [19] (base), Wukong [23],
+RankMixer [29].
+• Varying sequence modeling: DIN [28], SIM [14], LONGER [2].
+• Unified frameworks (both components jointly optimized): Hy-
+Former [9], OneTrans [25].
+Implementation Details. All models are implemented in Py-
+Torch on 8×A100-80G GPUs. For the SIF-Mixer: 𝑁= 4 SIF Blocks,
+8 attention heads, sub-token dimension 𝑑0 = 16, FFN dimension
+4×𝑑0, pre-norm LayerNorm, mean pooling over 𝑇sub-tokens. The
+Sample Tokenizer: 𝐺= 4, 𝐵= 32, 𝑀= 3, 𝑉= 256, 𝑑0 = 16. Opti-
+mizer: Adam [10] (lr=10−3, 𝛽1 = 0.9, 𝛽2 = 0.999, weight decay 10−5),
+batch size 4096. Sequence length 𝐿= 1000.
+5.2
+Main Results
+Table 2 presents the main comparison results. Bold indicates the
+best result; ‡ denotes statistically significant improvement over
+HyFormer (𝑝< 0.01, paired 𝑡-test, 5 runs).
+Analysis. SIF outperforms all baselines across all metrics, with
+improvements that are statistically significant (𝑝< 0.01) in every
+setting.
+(1) SIF vs. unified baselines. SIF outperforms HyFormer by
++0.91% AUC and +0.88% GAUC on CTR, and by +0.77% AUC and
++0.73% GAUC on CVR (𝑝< 0.01). Elevating sequence tokens from
+item-level to sample-level delivers a substantial and reliable gain
+beyond the unified Transformer architecture itself.
+(2) Specialized models vs. unified frameworks. Among spe-
+cialized models, sequence-modeling approaches (SIM, LONGER)
+consistently outperform feature-interaction approaches (Wukong,
+RankMixer) on CTR, confirming the importance of sequential mod-
+eling in behavior-rich industrial settings. Unified frameworks (Hy-
+Former, OneTrans) further outperform all specialized models by
+jointly modeling sequence dynamics and feature interactions, vali-
+dating the architectural paradigm of unification.
+(3) Industrial significance. The observed AUC improvement
+of SIF over HyFormer (+0.91% relative, +0.0071 absolute on CTR
+AUC) is practically meaningful at industrial scale. A widely vali-
+dated empirical rule-of-thumb [3, 23, 28] is that 0.001 absolute AUC
+corresponds to approximately 0.1%+ CTR improvement in online
+A/B experiments, projecting SIF’s gains to +0.7%+ CTR improve-
+ment. The observed online gain (+2.03% CTR, §5.5) substantially
+exceeds this projection, suggesting that sample-level token enrich-
+ment provides complementary signals—such as time-varying item
+popularity and contextual demand shifts—that are not captured by
+static AUC evaluation.
+5.3
+Ablation Study
+We organize the ablation into two parts: (1) ablation of the Sample
+Tokenizer, evaluating different token representations along both
+quality (GAUC) and compression efficiency (compression ratio); and
+(2) ablation of the SIF-Mixer backbone, isolating the contribution
+of each mixing component.
+5.3.1
+Sample Tokenizer Ablation. Table 3 compares four token
+representation strategies. Metrics are the GAUC gap relative to SIF
+full on CTR and CVR, and the storage compression ratio, defined as
+the ratio of the original raw snapshot storage to the per-sample
+token storage:
+Storage Compression Ratio = 𝑏snapshot
+𝑏token
+,
+(19)
+
+
+Sample Is Feature: Beyond Item-Level, Toward Sample-Level Tokens for Unified Large Recommender Models
+Conference’17, July 2017, Washington, DC, USA
+Table 2: Offline effectiveness (CTR/CVR) and efficiency on the industrial dataset. Higher AUC/GAUC is better. ∗indicates
+models deployed in production.
+Feature Interaction
+Sequence Modeling
+CTR
+CVR (order)
+Efficiency
+AUC↑
+GAUC↑
+AUC↑
+GAUC↑
+Params (M)
+TFLOPs
+DCNv2 [19]
+DIN [28]
+0.7832
+0.7614
+0.8103
+0.7891
+48
+0.31
+Wukong [23]
+SIM [14]
++0.41%
++0.38%
++0.35%
++0.33%
+56
+0.38
+Wukong [23]
+LONGER [2]
++0.53%
++0.49%
++0.44%
++0.41%
+62
+0.42
+RankMixer [29]
+SIM [14]
++0.67%
++0.61%
++0.58%
++0.54%
+51
+0.35
+RankMixer [29]
+LONGER [2]
++0.79%
++0.72%
++0.68%
++0.63%
+53
+0.40
+HyFormer [9]
++1.12%
++1.01%
++0.97%
++0.88%
+120
+0.87
+OneTrans [25]
++1.08%
++0.96%
++0.91%
++0.83%
+115
+0.82
+SIF (Ours)
++2.03%
++1.89%
++1.74%
++1.61%
+128
+0.93
+Table 3: Sample Tokenizer ablation on the industrial
+dataset. ΔCTR-GAUC and ΔCVR-GAUC are relative to
+SIF full. Storage compression ratio: raw snapshot bits
+(600×8×32=153,600 bits) / stored token bits; higher is more
+compact. ±std over 5 runs.
+Token Representation
+ΔCTR-GAUC
+ΔCVR-GAUC
+Comp. Ratio
+SIF (HGAQ token, ours)
+—
+—
+≈237×
+Item ID only
+−1.00%
+−0.86%
+≈2400×
+Item ID + key features
+−0.60%
+−0.51%
+≈185×
+Raw sample emb (𝑑=512, dense)
+−0.27%
+−0.23%
+≈9×
+where 𝑏snapshot is the bit-size of the full non-item snapshot stored in
+float32 (|Fnon-seq|×𝑑𝑒×32 bits), and𝑏token is the bit-size of the stored
+token. In our setup, |Fnon-seq|=600,𝑑𝑒=8, giving𝑏snapshot=153,600 bits.
+For HGAQ, only 𝑇×𝑀discrete indices (each log2 𝑉= 8 bits) are
+stored: 𝑏token = 27×3×8 = 648 bits, yielding a storage compres-
+sion ratio of ≈237×. Crucially, this high ratio is achieved through
+genuine compression—the full snapshot context is recovered at
+inference via codebook lookup—rather than by discarding features.
+Variant descriptions.
+Item ID only: each historical position is represented by a single
+item-ID embedding, equivalent to a standard item-embedding se-
+quence backbone. Cross-feature groups and the Token-level Mixer
+are inapplicable and thus disabled. Storage: 1 int64 item ID index
+= 64 bits (≈2400× vs. raw snapshot).
+Item ID + key features: item-ID embedding concatenated with a
+small set of high-importance handcrafted features (e.g., price bucket,
+category, CTR statistics), projected to the same token dimension.
+Storage: 1 int64 item ID index + ∼24 int32/float32 scalar fields
+= 64 + 24×32 = 832 bits (≈185× vs. raw snapshot).
+Raw sample emb (𝑑=512, dense): all raw snapshot features con-
+catenated and projected via a linear layer to a 512-dim dense vector,
+without any quantization. Storage: 512 float32 values = 512×32 =
+16,384 bits (≈9× vs. raw snapshot). Token-level Mixer applies but
+quantization structure is absent.
+SIF (HGAQ token, ours): only𝑇×𝑀discrete codebook indices are
+stored offline; at serving time embeddings are retrieved via code-
+book lookup. Storage: 27×3×8 = 648 bits (≈237× vs. raw snapshot),
+with full snapshot semantics recovered on-the-fly.
+Analysis. Item ID only performs worst (−1.00% CTR-GAUC,
+−0.86% CVR-GAUC), falling below OneTrans (Table 2), because
+the entire non-item snapshot context is discarded and the Token-
+level Mixer cannot be applied. Although its storage ratio (≈2400×)
+appears high, this reflects information loss rather than genuine
+compression—the entire non-item context is simply discarded. Adding
+key features recovers a portion of the gap (−0.60%/−0.51%) at ≈185×,
+but still discards the majority of contextual signals. Notably, HGAQ
+achieves a higher storage ratio (≈237×) than “Item ID + key features”
+while retaining the full snapshot context of 800+ feature fields.
+The dense raw-sample embedding (𝑑=512) retains all snapshot
+features yet still underperforms HGAQ (−0.27%/−0.23%), despite
+having a comparable storage footprint (≈9× compression). Higher
+information volume does not directly translate to better sequence
+modeling. Three factors explain the quality gap. First, a 512-dim
+token is comparable in size to an HGAQ token (𝑇×𝑑0 = 432 dim),
+but lacks discrete structure, making cross-temporal attention over
+𝐿=1000 positions significantly harder to optimize—larger token di-
+mensions enlarge the parameter space, increase gradient variance,
+and slow convergence. Second, HGAQ’s discrete codebook imposes
+an implicit clustering constraint: historically similar snapshots map
+to identical or nearby codes, providing a natural regularization that
+an unconstrained linear projection lacks. Third, because all histori-
+cal positions share the same codebook, HGAQ tokens are semanti-
+cally aligned across time, enabling the Token-level and Sample-level
+Mixers to learn cross-temporal patterns more effectively. In short,
+HGAQ trades raw information volume for learnability: the struc-
+tured, compact, and temporally aligned token representation proves
+more useful to the downstream Mixer than a higher-dimensional
+but unstructured dense vector.
+Sensitivity to sub-token granularity 𝐵. We sweep the sub-
+token granularity 𝐵∈{2, 4, 8, 16, 32, 64}, which controls how many
+sub-tokens each group produces via 𝐾𝑔= ⌈|F𝑔|/𝐵⌉, giving 𝑇≈
+
+
+Conference’17, July 2017, Washington, DC, USA
+Wang et al.
+⌈600/𝐵⌉total sub-tokens (Figure 2). 𝐵= 32 achieves the best GAUC
+(0.7758), striking the optimal balance between intra-group disen-
+tanglement and model compactness. At 𝐵= 2 (fine-grained sub-
+tokenization, 𝑇=300), GAUC drops slightly to 0.7750 due to exces-
+sive token sequence length making the Token-level Mixer harder
+to optimize. At 𝐵= 64 (coarse sub-tokenization, 𝑇=12), GAUC falls
+to 0.7735, approaching the behavior of the fixed-𝐺design with
+insufficient intra-group decomposition. SIF outperforms HyFormer
+(GAUC=0.7691) for all tested values of 𝐵, demonstrating robustness
+across a wide range of granularity choices. We adopt 𝐵= 32 (𝑇=20)
+as the default.
+Figure 2: CTR GAUC vs. sub-token granularity 𝐵on the in-
+dustrial dataset. The top axis shows the corresponding total
+sub-token count 𝑇≈⌈600/𝐵⌉. SIF consistently outperforms
+HyFormer (dashed, GAUC=0.7691) across all tested 𝐵; the red
+dot marks the optimal 𝐵=32 (𝑇=20).
+5.3.2
+SIF-Mixer Architecture Ablation. Given that each sequence
+position carries 𝑇side-information sub-tokens, there are multiple
+ways to apply attention over the resulting (𝐿+1)×𝑇token matrix.
+Table 4 compares three strategies on the industrial dataset (5 runs
+each) to identify which attention pattern best exploits the sample-
+level token structure. Metrics are the GAUC gap relative to SIF full
+on CTR and CVR.
+Table 4: SIF-Mixer attention strategy comparison on the in-
+dustrial dataset (±std over 5 runs). ΔCTR-GAUC and ΔCVR-
+GAUC are relative to SIF full.
+Attention Strategy
+ΔCTR-GAUC
+ΔCVR-GAUC
+SIF-Mixer (factored row+col)
+—
+—
+Flat attention
+−0.24%±0.01%
+−0.20%±0.01%
+Pooled-then-attend
+−0.81%±0.02%
+−0.68%±0.02%
+Strategy descriptions.
+Flat attention: all (𝐿+1)×𝑇sub-tokens are flattened into a sin-
+gle sequence and processed by standard full self-attention, with
+complexity 𝑂((𝐿𝑇)2).
+Table 5: CTR GAUC vs. sequence length 𝐿on the industrial
+dataset (mean over 5 runs).
+Seq. Length 𝐿
+OneTrans
+HyFormer
+SIF (ours)
+Δ(SIF−Hyf)
+100
+0.7674
+0.7680
+0.7693
++0.0013
+200
+0.7689
+0.7695
+0.7745
++0.0050
+500
+0.7706
+0.7712
+0.7782
++0.0070
+1000
+0.7710
+0.7715
+0.7803
++0.0088
+2000
+0.7713
+0.7718
+0.7820
++0.0102
+Pooled-then-attend: each sample’s 𝑇sub-tokens are first mean-
+pooled into a single vector, then standard sequence attention is
+applied across 𝐿+1 pooled representations, with complexity 𝑂(𝐿2).
+This is the typical approach in existing sequence models that incor-
+porate side information.
+SIF-Mixer (factored row+col): intra-sample Token-level Mixer (row
+attention, 𝑂(𝑇2 · 𝐿)) followed by inter-sample Sample-level Mixer
+(column attention, 𝑂(𝐿2 · 𝑇)), total 𝑂(𝐿2𝑇+ 𝐿𝑇2) ≈𝑂(𝐿2𝑇).
+Analysis. Pooled-then-attend (−0.81%/−0.68%) suffers the largest
+drop: collapsing 𝑇sub-tokens into a single vector before atten-
+tion discards intra-sample feature structure, preventing the model
+from capturing fine-grained interactions among user, item, con-
+text, and cross features within each historical snapshot. Its absolute
+CTR-GAUC (+1.08% over DCNv2+DIN) is only marginally above
+HyFormer (+1.01%), confirming that the gain from richer Token
+Sample inputs is largely wasted when sub-token structure is dis-
+carded via pooling. Flat attention (−0.24%/−0.20%) recovers most
+of the gap by attending over all sub-tokens jointly, but lacks the
+explicit row/column inductive bias and incurs 𝑂((𝐿𝑇)2) complexity
+that becomes prohibitive at 𝐿=1000, 𝑇=27. The factored SIF-Mixer
+achieves the best quality at lower cost: by decomposing attention
+into intra-sample and inter-sample axes, it fully exploits the two-
+dimensional structure of the token matrix while keeping complexity
+linear in 𝑇.
+5.4
+Scaling Analysis
+We study two dimensions of SIF’s scaling behavior: model depth
+and sequence length.
+Model Depth (𝑁). Figure 3 plots GAUC against TFLOPs as the
+number of layers 𝑁is varied from 1 to 6 for all three models. SIF
+achieves a consistently better GAUC-FLOPs trade-off across the
+entire depth range: at matched FLOPs (0.87 TFLOPs, 𝑁= 4), SIF
+reaches GAUC 0.7803 vs. HyFormer’s 0.7715 (+0.0088) and One-
+Trans’s 0.7710 (+0.0093), consistent with the default-configuration
+results in Table 2. HyFormer saturates early due to the heavy per-
+layer cost of full attention, while OneTrans plateaus at a lower
+GAUC ceiling. SIF continues to improve until 𝑁= 4 and we adopt
+this as the default.
+Sequence Length. A key property of SIF is whether its advantage
+persists or grows as the history budget increases. We evaluate SIF,
+HyFormer, and OneTrans across 𝐿∈{100, 200, 500, 1000, 2000} on
+the industrial dataset (default 𝐿=1000, consistent with Table 2).
+All three models improve with longer sequences; however, the
+gains diverge substantially. HyFormer and OneTrans saturate quickly:
+
+
+Sample Is Feature: Beyond Item-Level, Toward Sample-Level Tokens for Unified Large Recommender Models
+Conference’17, July 2017, Washington, DC, USA
+Figure 3: CTR GAUC vs. TFLOPs as model depth 𝑁
+∈
+{1, 2, 3, 4, 6} varies for SIF, HyFormer, and OneTrans. SIF
+achieves a consistently better CTR GAUC–FLOPs trade-off;
+the red dot marks the optimal 𝑁=4.
+from 𝐿= 500 to 𝐿= 2000 the GAUC improvement is only +0.0005
+and +0.0006 respectively, consistent with the encoding bottleneck in
+item-level sequence architectures. All three models benefit substan-
+tially from longer sequences, but SIF’s gains are markedly steeper.
+At 𝐿=100, SIF (0.7693) is already competitive with HyFormer at
+𝐿=200 (0.7695), and by 𝐿=500 SIF (0.7782) surpasses HyFormer
+at 𝐿=1000 (0.7715). The performance gap over HyFormer widens
+monotonically from +0.0013 at 𝐿= 100 to +0.0102 at 𝐿= 2000.
+This reflects SIF’s token design: each additional history position
+contributes a fully-contextualized Raw Sample to cross-temporal
+attention, while item-level methods compress each position to a
+bare item embedding and hit a representational ceiling. Figure 4
+visualizes these trends.
+5.5
+Online A/B Experiment
+SIF is deployed in Meituan’s local-service recommendation pipeline.
+Results from a 5% traffic holdout over 7 days show improvements
+of +2.03% CTR, +1.21% CVR, and +1.35% GMV/session compared
+to the HyFormer production baseline.
+To understand how SIF’s benefit depends on users’ history rich-
+ness, we further stratify the online result by behavior sequence
+length 𝐿—the number of logged interactions available for each
+user. Table 6 reports the per-stratum CTR, CVR, and GMV/session
+lifts.
+The gains scale monotonically with 𝐿across all three metrics.
+Heavy users (𝐿≥500) benefit most (+3.12% CTR, +1.87% CVR,
++2.06% GMV/session), as the Sample-level Mixer can leverage a
+richer pool of fully-contextualized Token Samples for cross-temporal
+reasoning. Even cold users (𝐿< 10) see a meaningful improvement
+(+0.53% CTR, +0.31% CVR), which we attribute primarily to the
+Sample Tokenizer rather than the sequence modeling component:
+by encoding the current-request features into the same codebook
+space as historical Token Samples, the Target Token Sample repre-
+sentation becomes more expressive and semantically aligned even
+Figure 4: CTR GAUC vs. sequence length 𝐿on the industrial
+dataset. All three models improve with longer sequences; SIF
+scales most steeply, widening its lead over HyFormer and
+OneTrans monotonically, reflecting its structural advantage
+from sample-level token enrichment.
+Table 6: Online A/B results stratified by user behavior se-
+quence length 𝐿(5% traffic holdout, 7 days). ΔCTR, ΔCVR,
+and ΔGMV/session are relative lifts vs. the HyFormer pro-
+duction baseline.
+Sequence Length
+ΔCTR
+ΔCVR
+ΔGMV/session
+𝐿< 10 (cold users)
++0.53%
++0.31%
++0.37%
+10 ≤𝐿< 100
++1.18%
++0.71%
++0.84%
+100 ≤𝐿< 500
++2.07%
++1.24%
++1.38%
+𝐿≥500 (heavy users)
++3.12%
++1.87%
++2.06%
+Overall
++2.03%
++1.21%
++1.35%
+without a long history—a benefit that is orthogonal to sequence
+length. The improvement is consistent across all user segments,
+with the largest gains for users with 𝐿≥500.
+6
+Conclusion
+We presented SIF (Sample Is Feature), a framework that elevates
+each historical sequence token from a bare item embedding to a
+full sample-level representation. Every past interaction already has
+a complete request record in the training log—yet existing archi-
+tectures discard it in favor of a bare item ID. SIF closes this gap
+via the Sample Tokenizer (offline HGAQ compression of Raw
+Samples into compact Token Samples) and the SIF-Mixer (factored
+token-level and sample-level mixing over homogeneous represen-
+tations). Offline experiments show up to +0.88% GAUC over the
+best unified baseline; online A/B testing on Meituan’s platform
+yields +2.03% CTR, +1.21% CVR, and +1.35% GMV/session, with
+gains scaling monotonically with user history length. We hope SIF
+inspires the community to treat historical interactions as first-class,
+
+
+Conference’17, July 2017, Washington, DC, USA
+Wang et al.
+context-rich objects—unlocking sample-level, time-varying signals
+that static item embeddings fundamentally cannot capture.
+References
+[1] Jimmy Lei Ba, Jamie Ryan Kiros, and Geoffrey E. Hinton. 2016. Layer Normaliza-
+tion. arXiv:1607.06450 [stat.ML]
+[2] Zheng Chai, Qin Ren, Xijun Xiao, Huizhi Yang, Bo Han, Sijun Zhang, Di Chen,
+Hui Lu, Wenlin Zhao, Lele Yu, et al. 2025. Longer: Scaling up long sequence
+modeling in industrial recommenders. In Proceedings of the Nineteenth ACM
+Conference on Recommender Systems. 247–256.
+[3] Jianxin Chang, Chenbin Zhang, Zhiyi Fu, Xiaoxue Zang, Lin Guan, Jing Lu, Yiqun
+Hui, Dewei Leng, Yanan Niu, Yang Song, et al. 2023. TWIN: TWo-stage interest
+network for lifelong user behavior modeling in CTR prediction at kuaishou. In
+Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining. 3785–3794.
+[4] Qiwei Chen, Changhua Pei, Shanshan Lv, Chao Li, Junfeng Ge, and Wenwu Ou.
+2021. End-to-end user behavior retrieval in click-through rateprediction model.
+arXiv preprint arXiv:2108.04468 (2021).
+[5] Ting Guo, Zhaoyang Yang, Qinsong Zeng, and Ming Chen. 2025. Context-Aware
+Lifelong Sequential Modeling for Online Click-Through Rate Prediction. arXiv
+preprint arXiv:2502.12634 (2025).
+[6] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, et al. 2025. Mtgr: Industrial-
+scale generative recommendation framework in meituan. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+5731–5738.
+[7] Yupeng Hou, Zhankui He, Julian McAuley, and Wayne Xin Zhao. 2023. Learning
+vector-quantized item representation for transferable sequential recommenders.
+In Proceedings of the ACM Web Conference 2023. 1162–1171.
+[8] Xu Huang, Hao Zhang, Zhifang Fan, Yunwen Huang, Zhuoxing Wei, Zheng
+Chai, Jinan Ni, Yuchao Zheng, and Qiwei Chen. 2026. MixFormer: Co-Scaling Up
+Dense and Sequence in Industrial Recommenders. arXiv preprint arXiv:2602.14110
+(2026).
+[9] Yunwen Huang, Shiyong Hong, Xijun Xiao, Jinqiu Jin, Xuanyuan Luo, Zhe Wang,
+Zheng Chai, Shikang Wu, Yuchao Zheng, and Jingjian Lin. 2026. HyFormer: Revis-
+iting the Roles of Sequence Modeling and Feature Interaction in CTR Prediction.
+arXiv preprint arXiv:2601.12681 (2026).
+[10] Diederik P. Kingma and Jimmy Ba. 2015. Adam: A Method for Stochastic Opti-
+mization. In Proc. Int. Conf. on Learning Representations (ICLR).
+[11] Xinchun Li, Ning Zhang, Qianqian Yang, Fei Teng, Wenlin Zhao, Huizhi Yang,
+Heng Shi, Linlan Chen, Yixin Wu, Zhen Wang, et al. 2026. IAT: Instance-As-Token
+Compression for Historical User Sequence Modeling in Industrial Recommender
+Systems. arXiv preprint arXiv:2604.08933 (2026).
+[12] Qijiong Liu, Hengchang Hu, Jiahao Wu, Jieming Zhu, Min-Yen Kan, and Xiao-
+Ming Wu. 2024. Discrete semantic tokenization for deep ctr prediction. In Com-
+panion Proceedings of the ACM Web Conference 2024. 919–922.
+[13] Yimin Lv, Shuli Wang, Beihong Jin, Yisong Yu, Yapeng Zhang, Jian Dong,
+Yongkang Wang, Xingxing Wang, and Dong Wang. 2023. Deep situation-aware
+interaction network for click-through rate prediction. In Proceedings of the 17th
+ACM conference on recommender systems. 171–182.
+[14] Qi Pi, Guorui Zhou, Yujing Zhang, Zhe Wang, Lejian Ren, Ying Fan, Xiaoqiang
+Zhu, and Kun Gai. 2020. Search-based user interest modeling with lifelong
+sequential behavior data for click-through rate prediction. In Proceedings of the
+29th ACM International Conference on Information & Knowledge Management.
+2685–2692.
+[15] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[16] Qiaoyu Tan, Jianwei Zhang, Jiangchao Yao, Ninghao Liu, Jingren Zhou, Hongxia
+Yang, and Xia Hu. 2021. Sparse-interest network for sequential recommendation.
+In Proceedings of the 14th ACM international conference on web search and data
+mining. 598–606.
+[17] Aaron van den Oord, Oriol Vinyals, and Koray Kavukcuoglu. 2017. Neural
+Discrete Representation Learning. In Proc. Annual Conf. on Neural Information
+Processing Systems (NeurIPS). 6306–6315.
+[18] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. 2017. Attention is All You
+Need. In Proc. Annual Conf. on Neural Information Processing Systems (NeurIPS).
+5998–6008.
+[19] Ruoxi Wang, Rakesh Shivanna, Derek Cheng, Sagar Jain, Dong Lin, Lichan Hong,
+and Ed Chi. 2021. Dcn v2: Improved deep & cross network and practical lessons
+for web-scale learning to rank systems. In Proceedings of the web conference 2021.
+1785–1797.
+[20] Yi Xu, Chaofan Fan, Jinxin Hu, Yu Zhang, Zeng Xiaoyi, and Jing Zhang. 2025.
+STORE: Semantic Tokenization, Orthogonal Rotation and Efficient Attention for
+Scaling Up Ranking Models. arXiv preprint arXiv:2511.18805 (2025).
+[21] Zhichen Zeng, Xiaolong Liu, Mengyue Hang, Xiaoyi Liu, Qinghai Zhou, Chaofei
+Yang, Yiqun Liu, Yichen Ruan, Laming Chen, Yuxin Chen, et al. 2025. InterFormer:
+Effective Heterogeneous Interaction Learning for Click-Through Rate Prediction.
+In Proceedings of the 34th ACM International Conference on Information and
+Knowledge Management. 6225–6233.
+[22] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, et al. 2024. Actions speak louder than words:
+Trillion-parameter sequential transducers for generative recommendations. arXiv
+preprint arXiv:2402.17152 (2024).
+[23] Buyun Zhang, Liang Luo, Yuxin Chen, Jade Nie, Xi Liu, Daifeng Guo, Yanli Zhao,
+Shen Li, Yuchen Hao, Yantao Yao, et al. 2024. Wukong: Towards a scaling law for
+large-scale recommendation. arXiv preprint arXiv:2403.02545 (2024).
+[24] Ruifeng Zhang, Zexi Huang, Zikai Wang, Ke Sun, Bohang Zheng, Yuchen Jiang,
+Zhe Chen, Zhen Ouyang, Huimin Xie, Phil Shen, et al. 2026. Zenith: Scaling up
+Ranking Models for Billion-scale Livestreaming Recommendation. arXiv preprint
+arXiv:2601.21285 (2026).
+[25] Zhaoqi Zhang, Haolei Pei, Jun Guo, Tianyu Wang, Yufei Feng, Hui Sun, Shaowei
+Liu, and Aixin Sun. 2025. OneTrans: Unified Feature Interaction and Sequence
+Modeling with One Transformer in Industrial Recommender. arXiv preprint
+arXiv:2510.26104 (2025).
+[26] Zhen Zhao, Tong Zhang, Jie Xu, Qingliang Cai, Qile Zhang, Leyuan Yang, Daorui
+Xiao, and Xiaojia Chang. 2026. Farewell to Item IDs: Unlocking the Scaling Poten-
+tial of Large Ranking Models via Semantic Tokens. arXiv preprint arXiv:2601.22694
+(2026).
+[27] Guorui Zhou, Na Mou, Ying Fan, Qi Pi, Weijie Bian, Chang Zhou, Xiaoqiang
+Zhu, and Kun Gai. 2019. Deep interest evolution network for click-through rate
+prediction. In Proceedings of the AAAI conference on artificial intelligence, Vol. 33.
+5941–5948.
+[28] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD international conference
+on knowledge discovery & data mining. 1059–1068.
+[29] Jie Zhu, Zhifang Fan, Xiaoxie Zhu, Yuchen Jiang, Hangyu Wang, Xintian Han,
+Haoran Ding, Xinmin Wang, Wenlin Zhao, Zhen Gong, et al. 2025. Rankmixer:
+Scaling up ranking models in industrial recommenders. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+6309–6316.
