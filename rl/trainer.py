@@ -860,6 +860,7 @@ def train_grpo(
     total_advantage_std = 0.0
     total_ratio_mean = 0.0
     total_clip_frac = 0.0
+    total_kl_mean = 0.0
     total_reward_mean = 0.0
     total_reward_std = 0.0
     total_early_clip_frac = 0.0
@@ -1135,6 +1136,7 @@ def train_grpo(
             total_advantage_std  += diag.get('advantage_std', 0.0)
             total_ratio_mean     += diag.get('policy_ratio_mean', 0.0)
             total_clip_frac      += diag.get('clip_fraction', 0.0)
+            total_kl_mean        += diag.get('kl_mean', 0.0)
             total_reward_mean    += diag.get('reward_mean', 0.0)
             total_reward_std     += diag.get('reward_std', 0.0)
             total_early_clip_frac += diag.get('early_clip_fraction', 0.0)
@@ -1162,6 +1164,7 @@ def train_grpo(
                     'advantage_std':     round(diag.get('advantage_std', 0.0), 4),
                     'policy_ratio_mean': round(diag.get('policy_ratio_mean', 0.0), 4),
                     'clip_fraction':     round(diag.get('clip_fraction', 0.0), 4),
+                    'kl_mean':           round(diag.get('kl_mean', 0.0), 4),
                     'reward_mean':       round(diag.get('reward_mean', 0.0), 4),
                     'reward_std':        round(diag.get('reward_std', 0.0), 4),
                 })
@@ -1186,6 +1189,7 @@ def train_grpo(
                         'grpo/advantage_std':     diag.get('advantage_std', 0.0),
                         'grpo/policy_ratio_mean': diag.get('policy_ratio_mean', 0.0),
                         'grpo/clip_fraction':     diag.get('clip_fraction', 0.0),
+                        'grpo/kl_mean':           diag.get('kl_mean', 0.0),
                         'grpo/reward_mean':       diag.get('reward_mean', 0.0),
                         'grpo/reward_std':        diag.get('reward_std', 0.0),
                     })
@@ -1205,7 +1209,8 @@ def train_grpo(
             if n_grpo_steps > 0:
                 avg_adv  = total_advantage_mean / n_grpo_steps
                 avg_clip = total_clip_frac / n_grpo_steps
-                adv_str = f", adv={avg_adv:.2f}, clip={avg_clip:.0%}"
+                avg_kl   = total_kl_mean / n_grpo_steps
+                adv_str = f", adv={avg_adv:.2f}, clip={avg_clip:.0%}, kl={avg_kl:.3f}"
                 if reward_metric_totals:
                     parts = [f"{k.split('/')[-1]}={reward_metric_totals[k]/n_grpo_steps:.3f}"
                              for k in reward_metric_totals]
@@ -1259,6 +1264,7 @@ def train_grpo(
             'avg_advantage_mean':    round(total_advantage_mean / n_grpo_steps, 4),
             'avg_advantage_std':     round(total_advantage_std  / n_grpo_steps, 4),
             'avg_clip_fraction':     round(total_clip_frac      / n_grpo_steps, 4),
+            'avg_kl_mean':           round(total_kl_mean        / n_grpo_steps, 4),
             'avg_reward_mean':       round(total_reward_mean    / n_grpo_steps, 4),
             'avg_reward_std':        round(total_reward_std     / n_grpo_steps, 4),
         })

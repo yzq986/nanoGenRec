@@ -19,8 +19,8 @@ Record a new experiment entry in `experiments/log.md` using the project's struct
 3. **Extract experiment info from conversation context**:
    - Title: Use the argument if provided, otherwise infer from discussion
    - Background: Current state and problem being solved
-   - Hypothesis: Expected results and reasoning
-   - Design: Variables, fixed params, metrics, data
+   - Hypothesis: Expected results and reasoning — **必须逐指标列出预期变化方向**（见下方 Hypothesis 要求）
+   - Design: Variables, fixed params, metrics, data — **如现有 metrics 不足以验证假设，必须新增 metrics**
    - Results/Analysis/Next Steps: Fill if results are available in conversation, otherwise leave placeholder
 
 4. **Determine status**:
@@ -83,6 +83,40 @@ Record a new experiment entry in `experiments/log.md` using the project's struct
      ./push.sh
      ```
 
+## Hypothesis 要求（强制）
+
+每次写 Hypothesis 时，**必须用表格逐指标列出预期变化方向和理由**。不允许只写笼统的文字描述。
+
+格式：
+```markdown
+### Hypothesis
+
+{假设的核心机制描述，1-2 句话}
+
+| 指标 | 当前值（对照） | 预期变化 | 理由 |
+|------|--------------|---------|------|
+| clip 率 | 95% | ↓ ~20% | sampling 使 ρ≈1 by construction |
+| adv_std | ≈0 | ↑ >0.3 | 候选多样性增加，reward 方差变大 |
+| behavior_coverage | 99% | ↓ ~89% | G 从 512→64，撒网变小 |
+| behavior_mean | 0.65 | ↓ ~0.35 | coverage 下降 + 稀疏 reward |
+| kl_mean | — | ≈0 初始，随训练↑ | 新增指标，基准待建立 |
+| R@500 | 0.678 | 待定 | 取决于 reward 信号是否足够 |
+```
+
+**如果某个指标在现有代码中没有被记录，必须先在代码中新增该指标，再写实验**。
+
+## Metrics 要求（强制）
+
+核心 RL 指标（每个实验都必须记录）：
+- `clip_fraction`：PPO clip 率
+- `kl_mean`：KL(π_θ || π_ref)，跨实验可比的 policy 漂移指标
+- `adv_std`（advantage_std）：advantage 的标准差，反映对比信号强度
+- `behavior_coverage`：有非零 reward 的 context 比例
+- `behavior_mean`：平均 behavior reward（注意受 G 影响，跨实验对比需标注 G）
+- `R@500`（全量 eval）：最终业务指标
+
+如果假设涉及新的机制（如 entropy、diversity、on-policy ratio 等），**必须在实验前把对应指标加入代码**，不能事后才发现没有数据。
+
 ## Entry Format
 
 ```markdown
@@ -96,12 +130,22 @@ Record a new experiment entry in `experiments/log.md` using the project's struct
 {当前状态、要解决的问题}
 
 ### Hypothesis
-{预期结果及原因}
+
+{假设的核心机制，1-2 句话}
+
+| 指标 | 当前值（对照） | 预期变化 | 理由 |
+|------|--------------|---------|------|
+| clip 率 | ? | ↑/↓/→ ? | ... |
+| kl_mean | ? | ↑/↓/→ ? | ... |
+| adv_std | ? | ↑/↓/→ ? | ... |
+| behavior_coverage | ? | ↑/↓/→ ? | ... |
+| behavior_mean | ? | ↑/↓/→ ? | ... |
+| R@500 | ? | ↑/↓/→ ? | ... |
 
 ### Design
 - **Variable**: {实验变量}
 - **Fixed**: {固定参数}
-- **Metric**: {评估指标}
+- **Metric**: {评估指标，如现有不够需新增}
 - **Data**: {数据集}
 
 ### Run
