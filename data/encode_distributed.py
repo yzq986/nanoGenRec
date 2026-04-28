@@ -500,10 +500,22 @@ def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
                     new_embeddings[cid] = e
                 i = end
             except torch.cuda.OutOfMemoryError:
+                import gc
+                del sub_inputs
+                gc.collect()
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()
                 if chunk_size == 1:
-                    # 单条还 OOM, 跳过这一条 (记录 cid 便于排查)
-                    print(f"    [Rank {rank}] Skip cid={sub_cids[0]} (OOM at size=1)")
+                    # 单条还 OOM, 打印 text 长度 + 显存情况, 然后 skip
+                    bad_cid = sub_cids[0]
+                    bad_text = texts[batch_idx + i] if (batch_idx + i) < len(texts) else ""
+                    bad_imgs = images[batch_idx + i] if (batch_idx + i) < len(images) else []
+                    mem_alloc = torch.cuda.memory_allocated() / 1e9
+                    mem_reserved = torch.cuda.memory_reserved() / 1e9
+                    mem_total = torch.cuda.get_device_properties(0).total_memory / 1e9
+                    print(f"    [Rank {rank}] Skip cid={bad_cid} "
+                          f"(text_len={len(bad_text)}, n_imgs={len(bad_imgs) if bad_imgs else 0}, "
+                          f"mem={mem_alloc:.1f}/{mem_reserved:.1f}/{mem_total:.1f}GB alloc/reserved/total)")
                     n_skipped += 1
                     i += 1
                 else:
