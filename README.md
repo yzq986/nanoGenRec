@@ -358,7 +358,7 @@ flowchart TD
         M17["📦 exp017\nSP-DPO hard split\nR@500=68.3%"]
         E18["❌ EXP-018\nPure DPO → 灾难遗忘"]
         E19["EXP-019\nλ sweep"]
-        M20["⭐ exp020\nNTP + RF-DPO λ=0.03\nR@500=66.2%  SFT SOTA"]
+        M20["⭐ exp020\nNTP + RF
 
         M16 ==>|"preference pair 直接对齐"| M17
         M17 -->|"去掉 NTP loss，DPO 单独训练"| E18
