@@ -16,7 +16,7 @@
 # %%
 from datetime import datetime, timedelta
 
-from config import S3_CONTENT_TEXT_EXPOSED
+from config import S3_CONTENT_TEXT_EXPOSED, S3_CONTENT_TEXT_EXPOSED_S3
 
 # 范围模式 (与 export_content.py 保持一致)
 DATE_KEY_START = "2026-01-01"
@@ -27,8 +27,7 @@ DATE_KEY_END = "2026-03-31"
 # DATE_KEY_END = "2026-04-01"
 
 _BASE = S3_CONTENT_TEXT_EXPOSED.rsplit("/", 1)[0]
-S3_CONTENT_IMAGES        = f"{_BASE}/feed_content_images"
-S3_CONTENT_TEXT_EXPOSED_S3 = f"{_BASE}/feed_content_text_exposed_s3"
+S3_CONTENT_IMAGES = f"{_BASE}/feed_content_images"
 
 HTTP_TIMEOUT = 5                   # 秒
 MAX_BYTES = 5 * 1024 * 1024        # 5MB 单图上限

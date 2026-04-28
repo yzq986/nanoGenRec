@@ -29,7 +29,7 @@ import torch.distributed as dist
 from transformers import AutoModel, AutoTokenizer
 
 from model.embedders import Qwen3TextEmbedder, Qwen3VLEmbedder
-from config import S3_CONTENT_TEXT_EXPOSED, EFS_EMBEDDING_CACHE, EFS_IMAGE_CACHE
+from config import S3_CONTENT_TEXT_EXPOSED, S3_CONTENT_TEXT_EXPOSED_S3, EFS_EMBEDDING_CACHE, EFS_IMAGE_CACHE
 from config import DEFAULT_DATE_START, DEFAULT_DATE_END
 
 NUM_SHARDS = 8  # 固定 shard 数，与 8xA100 对齐
@@ -609,6 +609,8 @@ def main():
         if is_vl:
             print(f"VL: max_images={args.max_images}, max_pixels={args.max_pixels:,} "
                   f"(~{args.max_pixels // 1024} vision tokens/image)")
+        s3_src = S3_CONTENT_TEXT_EXPOSED_S3 if is_vl else S3_CONTENT_TEXT_EXPOSED
+        print(f"Source: {s3_src}")
         print(f"Output: {output_dir}")
         print("=" * 60)
 
@@ -683,7 +685,8 @@ def main():
 
     # ── 逐日期处理 (新 → 旧) ──
     for di, date_str in enumerate(dates):
-        date_path = f"{S3_CONTENT_TEXT_EXPOSED}/{date_str}"
+        s3_base = S3_CONTENT_TEXT_EXPOSED_S3 if is_vl else S3_CONTENT_TEXT_EXPOSED
+        date_path = f"{s3_base}/{date_str}"
         if rank == 0:
             print(f"[{di+1}/{len(dates)}] {date_str}")
 
