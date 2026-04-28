@@ -502,11 +502,8 @@ def _prepare_vl_batch(content_ids, texts, images, batch_idx, batch_size, max_ima
     return batch_cids, inputs, t_dl, n_ok, len(all_urls)
 
 
-PREFETCH_DEPTH = 3
-
-
 def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
-                    max_images: int = VL_MAX_IMAGES):
+                    max_images: int = VL_MAX_IMAGES, prefetch_depth: int = 3):
     """VL 编码: prefetch 多个 batch 的图片下载 + 输入构造，与 GPU 推理重叠。"""
     from collections import deque
     from concurrent.futures import ThreadPoolExecutor
@@ -515,10 +512,10 @@ def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
     start_time = time.time()
     total = len(content_ids)
 
-    prefetch = ThreadPoolExecutor(max_workers=PREFETCH_DEPTH)
+    prefetch = ThreadPoolExecutor(max_workers=prefetch_depth)
     queue = deque()
     # seed the prefetch queue
-    for k in range(PREFETCH_DEPTH):
+    for k in range(prefetch_depth):
         idx = k * batch_size
         if idx < total:
             queue.append((idx, prefetch.submit(
@@ -530,7 +527,7 @@ def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
         batch_cids, inputs, t_dl, n_ok, n_urls = future.result()
 
         # enqueue next batch
-        next_idx = batch_idx + PREFETCH_DEPTH * batch_size
+        next_idx = batch_idx + prefetch_depth * batch_size
         if next_idx < total:
             queue.append((next_idx, prefetch.submit(
                 _prepare_vl_batch, content_ids, texts, images, next_idx, batch_size, max_images)))
@@ -623,6 +620,8 @@ def main():
                         help='(VL) per-image pixel cap; each IMAGE_FACTOR² (=1024) pixels → 1 vision token')
     parser.add_argument('--oldest_first', action='store_true',
                         help='Process dates oldest→newest (default: newest first)')
+    parser.add_argument('--prefetch', type=int, default=3,
+                        help='(VL) number of batches to prefetch (default: 3)')
     args = parser.parse_args()
 
     # 分布式设置
@@ -748,7 +747,7 @@ def main():
         if is_vl:
             new_embeddings = encode_batch_vl(
                 embedder, my_cids, my_texts, my_images, batch_size, rank,
-                max_images=args.max_images)
+                max_images=args.max_images, prefetch_depth=args.prefetch)
         else:
             new_embeddings = encode_batch(
                 embedder, my_cids, my_texts, batch_size, rank, text_cache=text_cache)
