@@ -352,77 +352,85 @@ gr_demo/
 
 ```mermaid
 flowchart TD
-    subgraph NTP["🗂 阶段一：NTP + SFT"]
+    subgraph NTP["🗂 阶段一：NTP baseline 路线（主干）"]
         direction TB
         M16["📦 exp016\nNTP baseline\nR@500=58.5%"]
-        M17["📦 exp017\nSP-DPO hard split\nR@500=68.3%"]
-        E18["❌ EXP-018\nPure DPO → 灾难遗忘"]
-        E19["EXP-019\nλ sweep"]
-        M20["⭐ exp020\nNTP + RF
+        M17["📦 exp017\nSP-DPO Easy+Medium\nR@500=68.3%"]
+        E18["❌ EXP-018\nPure RF-DPO → 灾难遗忘\nPPL=50K+"]
+        E19["EXP-019\nJoint NTP+RF-DPO λ sweep"]
+        M20["⭐ exp020\nJoint NTP+RF-DPO λ=0.03\nref=SP-DPO, R@500=66.2%  SFT SOTA"]
 
-        M16 ==>|"preference pair 直接对齐"| M17
-        M17 -->|"去掉 NTP loss，DPO 单独训练"| E18
-        M17 ==>|"加 NTP loss 防灾难遗忘，λ sweep"| E19
+        M16 ==>|"SP-DPO: beam search self-play pairs"| M17
+        M17 -->|"pure RF-DPO，无 NTP 正则化"| E18
+        M17 ==>|"Joint NTP+RF-DPO，ref=SP-DPO checkpoint"| E19
         E19 ==>|"λ=0.03 是甜点"| M20
     end
 
-    subgraph FEAT["🗂 阶段二：Features 探索（支线）"]
+    subgraph FEAT["🗂 阶段二：Features 路线（当前推进）"]
         direction TB
         M23["📦 exp023\nsegment_emb only\nR@500=61.2%"]
         E022["❌ EXP-022\nInfoNCE 对比学习 → 全失败"]
         E024["❌ EXP-024\ntime_gap+action 训练侧修复\n推理侧仍泄漏"]
         M25["📦 exp025\nBeam Feature Passing\nR@500=63.6%"]
         M036A["📦 exp036-A\nClean NTP, no feat\nR@500=55.3%"]
-        M036B["📦 exp036-B\nClean NTP + all feat\nR@500=59.0% ✅ features有效"]
+        M036B["📦 exp036-B\nClean NTP + all feat\nR@500=59.0%"]
+        E037["🔄 EXP-037\nSP-DPO on exp036-B\n（当前）"]
+        F038["EXP-038\nJoint NTP+RF-DPO\nref=SP-DPO checkpoint"]
+        F039["EXP-039\nECPO on-policy"]
 
-        M23 -->|"用对比学习拉开 SID 语义距离"| E022
-        M23 -->|"加时效/行为信号，但推理时 features 未传入"| E024
+        M23 -->|"对比学习拉开 SID 语义距离"| E022
+        M23 -->|"加时效/行为信号，但推理侧 features 未传入"| E024
         E024 -->|"beam search 推理时补传 features"| M25
+        M036B ==>|"SP-DPO：用 exp036-B 重新生成 beam pairs"| E037
+        E037 ==>|"Joint NTP+RF-DPO λ=0.03，ref=SP-DPO ckpt"| F038
+        F038 ==>|"ECPO on-policy beam"| F039
     end
 
-    subgraph RL["🗂 阶段三：RL 对齐 (GRPO/ECPO)"]
+    subgraph RL["🗂 阶段三：RL 对齐（主干路线）"]
         direction TB
         E026["EXP-026\nGRPO/ECPO 原型\nclip=99%, reward 极稀疏"]
-        E027["⚠️ EXP-027\ngrpo_weight=0.03\nBehaviorReward 覆盖仅 2.5%"]
+        E027["⚠️ EXP-027\ngrpo_weight=0.03\nreward 覆盖仅 2.5%"]
         E028["❌ EXP-028\nWeightedBehaviorReward\nR@500 崩至 2%"]
         M029["⭐ exp029\nECPO On-Policy Beam\nR@500=67.8%  RL SOTA"]
         E030["EXP-030\nA2PO+NLL+HEPO\nR@500=67.0~67.7%"]
         M031B["📦 exp031\nECPO full stack\nR@500=67.7%"]
         E031A["❌ EXP-031A\nexp025 起点 → clip=96%"]
-        E033["❌ EXP-033\nFeatures bug 修复验证 → 假设证伪"]
-        E034["⚠️ EXP-034\nref=exp025 对齐 → clip 仍 95%"]
-        E035["EXP-035\nSampling T=1.0 G=64\nadv_std↑, coverage=89%\nR@500=61.5%"]
+        E033["❌ EXP-033\nFeatures bug 修复 → 假设证伪"]
+        E034["⚠️ EXP-034\nref=exp025 → clip 仍 95%"]
+        E035["EXP-035\nSampling T=1.0 G=64\nR@500=61.5%"]
 
-        E026 ==>|"每步都触发 GRPO，不再稀疏采样"| E027
-        E027 ==>|"policy 生成候选，消除 off-policy"| E028
-        E028 ==>|"on-policy beam search，ρ→1"| M029
+        E026 ==>|"每步触发 GRPO，不再稀疏"| E027
+        E027 ==>|"policy 自己生成候选，消除 off-policy"| E028
+        E028 ==>|"on-policy beam，ρ→1"| M029
         M029 ==>|"更精细的 advantage 估计"| E030
-        E030 ==>|"exp020 为 SFT 起点"| M031B
-        E030 -->|"exp025 为起点，features 模型 RL 潜力更大"| E031A
-        E031A -->|"怀疑 features 注入 bug 导致 clip 高"| E033
-        E033 -->|"KL 对齐：ref 换成 policy 起点"| E034
+        E030 ==>|"沿用 exp020 起点"| M031B
+        E030 -->|"尝试 features SFT 起点"| E031A
+        E031A -->|"怀疑 features 注入 bug"| E033
+        E033 -->|"ref 换成 policy 起点对齐 KL"| E034
         E034 -->|"sampling 让 ρ≈1 by construction"| E035
     end
 
     %% ── 阶段间连接 ──────────────────────────────────────
-    M16 -->|"加 segment emb，让模型感知 SID 层级"| M23
+    M16 -->|"加 segment emb"| M23
+    M16 ==>|"从 NTP baseline 出发做 SP-DPO"| M17
     M20 ==>|"以 SFT SOTA 为起点做 RL"| E026
-    M25 -->|"features SFT 作 RL 起点"| E031A
-    M20 -->|"干净对照：唯一变量是 features on/off"| M036A
-    M20 -->|"干净对照：唯一变量是 features on/off"| M036B
+    M25 -->|"features SFT 起点（未对齐 ref）"| E031A
+    M20 -->|"干净对照验证 features 效果"| M036A
+    M20 -->|"干净对照验证 features 效果"| M036B
 
     %% ── 样式 ──────────────────────────────────────────────────
     classDef checkpoint fill:#2d6a4f,color:#fff,stroke:#1b4332
     classDef sota fill:#8B0000,color:#fff,stroke:#5c0000,stroke-width:3px
     classDef failed fill:#6c757d,color:#fff,stroke:#495057
     classDef running fill:#e76f51,color:#fff,stroke:#b5451c
+    classDef planned fill:#457b9d,color:#fff,stroke:#1d3557
     classDef warn fill:#f4a261,color:#000,stroke:#e76f51
 
-    class M16,M17,M23,M25,M031B checkpoint
-    class M20,M029 sota
+    class M16,M17,M23,M25,M031B,M036A checkpoint
+    class M20,M029,M036B sota
     class E18,E022,E024,E028,E031A,E033 failed
-    class M036A checkpoint
-    class M036B sota
+    class E037 running
+    class F038,F039 planned
     class E027,E034 warn
 ```
 
