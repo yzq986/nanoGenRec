@@ -39,6 +39,54 @@
 
 ---
 
+## EXP-036: Clean Features NTP — From-Scratch Training with time_gap + action_level
+
+**Date**: 2026-04-28
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+exp025（R@500=63.6%）是目前唯一带 features 的 NTP checkpoint，但它不是干净的对照实验：
+- 基于 exp023 做了 beam-passes SFT（而非从头训练）
+- 与 exp020（R@500=66.2%）的差异不只是 features，还有训练方式、数据集不同
+
+EXP-023 的 "all features" config（time_gap + action + segment）R@500 只有 55.0%，比 segment_only（61.2%）还低，主要原因是**训练-推理信息泄漏**（EXP-024 已分析）。EXP-025 修复了泄漏（delayed features + beam_passes），但只做了 1 epoch beam_passes，训练不充分。
+
+**目标**：用与 exp020 完全相同的训练条件（相同数据集、相同超参、从头训练），唯一变量是是否加 features，得到干净的对照结果。
+
+### Hypothesis
+
+features（time_gap + action_level + segment_emb）在训练-推理 gap 修复后，从头训练应能超越 exp020：
+
+| 指标 | exp020 (no features) | EXP-036 (features, 从头训) | 预期变化 | 理由 |
+|------|---------------------|--------------------------|---------|------|
+| PPL | 16.3 | 预期 ≤16.3 | ↓ | features 提供额外区分信号 |
+| R@10 | 14.1% | 预期 ≥14.1% | ↑ | time_gap 区分时效性 |
+| R@500 | 66.2% | 预期 ≥67% | ↑ | action_level 区分交互强度 |
+| 训练时间 | ~62min | ~65min | ↑小 | features embedding 计算量微增 |
+
+### Design
+- **Variable**: features on/off（Config A: 无 features 复现 exp020；Config B: time_gap + action_level + segment）
+- **Fixed**: 相同数据集（exp023-14d-features，已含 time_gaps/action_levels）、相同超参（lr=1e-3, batch=4096, 1 epoch, s-tier model）、相同 SID cache（exp013-4096x3-12d-binary）
+- **Metric**: PPL, R@10, R@500（full eval n_recall=1000）；新增 kl_mean 作为后续 RL 基准
+- **Data**: experiments/ntp_data/exp023-14d-features（已有，无需重新 preprocess）
+
+### Run
+`bash experiments/scripts/exp-036.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+- 如果 Config B > Config A：features 有效，用 Config B checkpoint 作为新 RL 起点（替代 exp025）
+- 如果 Config B ≤ Config A：features 在当前架构下无效，回到 exp020 路线
+
+---
+
 ## EXP-035: Constrained Sampling — Replace Beam Search with T=1.0 Sampling
 
 **Date**: 2026-04-28
