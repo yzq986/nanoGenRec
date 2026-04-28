@@ -78,6 +78,7 @@ def _grpo_core(
     diag_adv_std = []
     diag_ratio_mean = []
     diag_clip_frac = []
+    diag_kl_mean = []
     diag_reward_mean = []
     diag_reward_std = []
     diag_early_clip_frac = []  # ECPO only
@@ -172,6 +173,8 @@ def _grpo_core(
                 (rho_eff.detach() - rho_clipped.detach()).abs() > 1e-6
             ).float().mean().item()
             diag_clip_frac.append(clip_frac)
+            # KL(π_θ || π_ref) ≈ E[log π_θ - log π_ref] per group
+            diag_kl_mean.append((g_policy.detach() - g_ref.detach()).mean().item())
             diag_reward_mean.append(g_reward.detach().mean().item())
             diag_reward_std.append(g_reward.detach().std().item())
 
@@ -194,6 +197,7 @@ def _grpo_core(
         'advantage_std':     _avg(diag_adv_std),
         'policy_ratio_mean': _avg(diag_ratio_mean),
         'clip_fraction':     _avg(diag_clip_frac),
+        'kl_mean':           _avg(diag_kl_mean),
         'reward_mean':       _avg(diag_reward_mean),
         'reward_std':        _avg(diag_reward_std),
     }
