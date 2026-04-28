@@ -2,9 +2,8 @@
   "current": "exp-040.sh",
   "log": "/tmp/exp040.log",
   "done_string": "EXP-040 complete!",
-  "status": "running",
-  "started_at": "2026-04-29 01:50",
-  "pid": 74776,
+  "status": "stopped",
+  "note": "Stopped by user. Issues: --wandb not supported by train-ntp. Discuss design before restarting.",
   "prev": {
     "exp": "exp-039b.sh",
     "status": "completed",
