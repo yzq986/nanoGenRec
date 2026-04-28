@@ -667,7 +667,17 @@ def main():
     print(f"  [Rank {rank}] Managing shards {my_shard_ids}, "
           f"{sum(len(s) for s in existing_shards.values()):,} existing items")
 
-    embedder = None  # 惰性加载模型
+    # 模型加载前置 — 避免惰性加载导致各 rank barrier 序列不一致
+    # (有数据的 rank 走 download_model_if_needed 内的 barrier + 末尾 barrier,
+    #  无数据的 rank 只走 empty-skip barrier, 多日期叠加后 SeqNum 错位 → NCCL timeout)
+    download_model_if_needed(model_name, rank, world_size, is_vl=is_vl)
+    print(f"  [Rank {rank}] Loading model on {device}...")
+    if is_vl:
+        embedder = Qwen3VLEmbedder(
+            model_name, device=device, max_pixels=args.max_pixels)
+    else:
+        embedder = Qwen3TextEmbedder(model_name, device=device)
+
     text_cache = LFUCache()  # 短文本 → embedding LRU 缓存 (跨日期复用)
     total_new = 0
 
@@ -684,20 +694,10 @@ def main():
         if len(my_cids) == 0:
             if rank == 0:
                 print(f"    All cached, skipping")
-            # 所有 rank 需要同步，避免有些 rank 有数据有些没有导致 barrier 死锁
+            # 所有 rank 需要同步, 与有数据路径末尾的 barrier 对齐
             if world_size > 1:
                 dist.barrier()
             continue
-
-        # 惰性加载模型 (第一次遇到有数据时)
-        if embedder is None:
-            download_model_if_needed(model_name, rank, world_size, is_vl=is_vl)
-            print(f"  [Rank {rank}] Loading model on {device}...")
-            if is_vl:
-                embedder = Qwen3VLEmbedder(
-                    model_name, device=device, max_pixels=args.max_pixels)
-            else:
-                embedder = Qwen3TextEmbedder(model_name, device=device)
 
         # 编码
         if is_vl:
