@@ -19,7 +19,7 @@
 
 **总计: 93 ideas (0 P0 活跃 / ~57 P1 / 29 P2 / 8 已完成或关闭)**
 
-**已完成/关闭**: sid-0 ❌, sid-1 ❌, onemall-0 ❌, onemall-4 ✅, onemall-5 ✅, forge-0 ✅, oneloc-4 部分✅, feat-0/1/2 ✅, rpo-0 ✅(验证), spot-0 ✅(验证), uni-0 ❌
+**已完成/关闭**: sid-0 ❌, sid-1 ❌, onemall-0 ❌(EXP-022), onemall-4 ✅, onemall-5 ✅, forge-0 ✅, oneloc-4 部分✅, feat-0/1/2 ✅(EXP-036), rpo-0 ✅(验证), spot-0 ✅(验证), uni-0 ❌, mtgr-0 ✅(train_packed), lac-0 ✅(EXP-025/036), onerec-3 暂缓P2
 
 ## 全局演进图
 
