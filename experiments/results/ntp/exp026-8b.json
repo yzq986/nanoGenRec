@@ -1,0 +1,41 @@
+{
+  "name": "exp026-8b",
+  "model_type": "s-tier",
+  "n_params": 45781504,
+  "n_active_params": 17469952,
+  "total_tokens": 134016096,
+  "total_flops": 14047528586084352,
+  "sid_cache": "experiments/sid_cache/exp026-8b-14d",
+  "eval": {
+    "ppl": 26.1323,
+    "layer_ppl": [
+      292.6262,
+      12.3044,
+      5.0269
+    ],
+    "avg_loss": 3.26317,
+    "depth_hit@10": [
+      0.2122,
+      0.183,
+      0.1786
+    ],
+    "depth_hit@10_indep": [
+      0.2114,
+      0.814,
+      0.8394
+    ],
+    "depth_acc_beam": [
+      0.024,
+      0.013,
+      0.013
+    ],
+    "target_sid_found_rate": 0.611,
+    "n_eval_positions": 148053,
+    "n_eval_items": 49159,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.096,
+    "item_recall@50": 0.265,
+    "item_recall@100": 0.366,
+    "item_recall@500": 0.601
+  }
+}
