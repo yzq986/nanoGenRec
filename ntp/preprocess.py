@@ -48,6 +48,9 @@ def parse_args():
                         help='Local behavior cache dir or "auto" (S3)')
     parser.add_argument('--entp_weight', type=float, default=0.0,
                         help='If > 0, load exposure data and build neg_l0 for ENTP loss')
+    parser.add_argument('--exposure_neg_path', type=str, default=None,
+                        help='Local dir for exposure neg parquet (skips S3). '
+                             'e.g. /mnt/workspace/gr-demo-exposure-neg/2026-03-01_2026-03-31')
     parser.add_argument('--entp_k', type=int, default=5,
                         help='Max negative L0 tokens per position for ENTP')
     parser.add_argument('--shift_features', action='store_true', default=False,
@@ -247,7 +250,8 @@ def main():
         print("\nStep 2: Loading ENTP negative data")
         from eval.batch import load_exposure_neg_data
         exposure_neg_data = load_exposure_neg_data(
-            date_start=args.date_start, date_end=args.date_end)
+            date_start=args.date_start, date_end=args.date_end,
+            local_path=args.exposure_neg_path)
         print(f"  Positives with negatives: {len(exposure_neg_data['uid']):,}")
 
         # Filter out negatives that share L0 with their positive (gradient conflict).

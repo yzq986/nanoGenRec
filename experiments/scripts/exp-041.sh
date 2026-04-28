@@ -31,6 +31,7 @@ CKPT_DIR="experiments/ntp_checkpoints"
 NTP_DATA_ENTP="experiments/ntp_data/exp041-entp-features"
 DATE_START="2026-03-18"
 DATE_END="2026-03-31"
+EXPOSURE_NEG_PATH="/mnt/workspace/gr-demo-exposure-neg/2026-03-01_2026-03-31"
 
 FORCE=false
 SKIP_SMOKE=false
@@ -63,7 +64,7 @@ fi
 if [ ! -f "${NTP_DATA_ENTP}/meta.json" ] || [ "${FORCE}" == true ]; then
     echo ""
     echo ">>> Step 1: Preprocessing NTP data with ENTP negatives (K=5)..."
-    echo "    (This requires S3 access for exposure neg data)"
+    echo "    exposure_neg_path: ${EXPOSURE_NEG_PATH}"
     torchrun --nproc_per_node="${N_GPUS}" run.py preprocess-ntp \
         --sid_cache "${SID_CACHE}" \
         --output_dir "${NTP_DATA_ENTP}" \
@@ -72,7 +73,8 @@ if [ ! -f "${NTP_DATA_ENTP}/meta.json" ] || [ "${FORCE}" == true ]; then
         --date_end "${DATE_END}" \
         --shift_features \
         --entp_weight 0.1 \
-        --entp_k 5
+        --entp_k 5 \
+        --exposure_neg_path "${EXPOSURE_NEG_PATH}"
     echo "  Preprocessing complete."
     python3 -c "
 import json

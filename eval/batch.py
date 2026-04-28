@@ -191,42 +191,59 @@ def resolve_exposure_files(date_start: str = None, date_end: str = None) -> List
     return files
 
 
-def load_exposure_neg_data(date_start: str = None, date_end: str = None) -> Dict:
+def load_exposure_neg_data(date_start: str = None, date_end: str = None,
+                           local_path: str = None) -> Dict:
     """Load compact ENTP negative-sample parquet (PySpark 产出).
 
     Schema: uid STRING, iid STRING, first_ts LONG, neg_iids ARRAY<STRING>
-    ~30M rows (only positives with attached negatives).
+
+    Args:
+        local_path: 本地目录路径（优先），如 /mnt/workspace/gr-demo-exposure-neg/2026-03-01_2026-03-31
+                    为 None 时走 S3（需要 s3fs 权限）。
 
     Returns:
         dict with uid, iid, first_ts (np arrays) and neg_iids (list of lists).
     """
+    import glob as glob_module
     import pandas as pd
-    import s3fs
 
-    from config import S3_USER_BEHAVIOR
     from config import DEFAULT_DATE_START, DEFAULT_DATE_END
 
     ds = date_start or DEFAULT_DATE_START
     de = date_end or DEFAULT_DATE_END
 
-    s3_neg_base = S3_USER_BEHAVIOR.rsplit("/", 1)[0] + "/feed_user_exposure_neg"
-    neg_path = f"{s3_neg_base}/{ds}_{de}".replace('s3://', '')
-
     print(f"\n{'='*60}")
     print("Loading ENTP Negative Data")
     print(f"{'='*60}")
-    print(f"  Path: {neg_path}")
 
-    fs = s3fs.S3FileSystem()
-    files = fs.glob(f"{neg_path}/*.parquet")
-    print(f"  Found {len(files)} parquet files")
-
-    dfs = []
-    for i, f in enumerate(files):
-        with fs.open(f, 'rb') as fh:
-            dfs.append(pd.read_parquet(fh))
-        if (i + 1) % 5 == 0:
-            print(f"  Loaded {i + 1}/{len(files)}")
+    if local_path is not None:
+        # 本地路径模式
+        files = sorted(glob_module.glob(f"{local_path}/*.parquet"))
+        print(f"  Local path: {local_path}")
+        print(f"  Found {len(files)} parquet files")
+        if not files:
+            raise FileNotFoundError(f"No parquet files found at {local_path}")
+        dfs = []
+        for i, f in enumerate(files):
+            dfs.append(pd.read_parquet(f))
+            if (i + 1) % 5 == 0:
+                print(f"  Loaded {i + 1}/{len(files)}")
+    else:
+        # S3 模式（fallback）
+        import s3fs
+        from config import S3_USER_BEHAVIOR
+        s3_neg_base = S3_USER_BEHAVIOR.rsplit("/", 1)[0] + "/feed_user_exposure_neg"
+        neg_path = f"{s3_neg_base}/{ds}_{de}".replace('s3://', '')
+        print(f"  S3 path: {neg_path}")
+        fs = s3fs.S3FileSystem()
+        files = fs.glob(f"{neg_path}/*.parquet")
+        print(f"  Found {len(files)} parquet files")
+        dfs = []
+        for i, f in enumerate(files):
+            with fs.open(f, 'rb') as fh:
+                dfs.append(pd.read_parquet(fh))
+            if (i + 1) % 5 == 0:
+                print(f"  Loaded {i + 1}/{len(files)}")
 
     df = pd.concat(dfs, ignore_index=True)
     print(f"  Total: {len(df):,} positive interactions with negatives")
