@@ -1,0 +1,81 @@
+{
+  "n_train": 1709380,
+  "n_eval": 49456,
+  "n_clusters_per_layer": [
+    4096,
+    4096,
+    4096
+  ],
+  "n_layers": 3,
+  "n_items": 10,
+  "n_params": 45700096,
+  "train_loss": 2.761833,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "preprocessed_dir": "experiments/ntp_data/exp023-14d-features",
+  "timestamp": "2026-04-28 14:46:19",
+  "train": {
+    "n_params": 45700096,
+    "avg_ntp_loss": 2.76037,
+    "avg_grpo_loss": 0.048768,
+    "avg_total_loss": 2.761833,
+    "grpo_weight": 0.03,
+    "eps": 0.2,
+    "delta": 0.1,
+    "algo": "ECPO",
+    "group_size": 64,
+    "rl_data_ratio": 1.0,
+    "total_tokens": 66296928,
+    "wall_time_s": 1065.4,
+    "batch_size": 522,
+    "grpo_batch_size": 4,
+    "world_size": 4,
+    "n_steps": 409,
+    "n_grpo_steps": 409,
+    "context_pool_size": 213642,
+    "avg_advantage_mean": -0.0004,
+    "avg_advantage_std": 0.5953,
+    "avg_clip_fraction": 0.9475,
+    "avg_reward_mean": 0.3518,
+    "avg_reward_std": 1.5687,
+    "avg_early_clip_fraction": 0.3454,
+    "avg_reward/behavior_mean": 0.3628,
+    "avg_reward/behavior_coverage": 0.8919,
+    "avg_reward/format_mean": 0.0238,
+    "avg_reward/format_legal_rate": 1.0,
+    "avg_reward/total_mean": 0.3747,
+    "name": "exp035-sampling-t1",
+    "sft_checkpoint": "experiments/ntp_checkpoints/exp025-beam-passes"
+  },
+  "eval": {
+    "ppl": 24.4935,
+    "layer_ppl": [
+      338.9027,
+      9.9311,
+      4.4428
+    ],
+    "avg_loss": 3.198406,
+    "depth_hit@10": [
+      0.1963,
+      0.1752,
+      0.1741
+    ],
+    "depth_hit@10_indep": [
+      0.1955,
+      0.8206,
+      0.862
+    ],
+    "depth_acc_beam": [
+      0.033,
+      0.021,
+      0.021
+    ],
+    "target_sid_found_rate": 0.62,
+    "n_eval_positions": 79702,
+    "n_eval_items": 26450,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.102,
+    "item_recall@50": 0.268,
+    "item_recall@100": 0.376,
+    "item_recall@500": 0.615
+  }
+}
