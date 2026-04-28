@@ -1,17 +1,23 @@
 """torchrun 多卡编码 — 8-shard 存储，逐日期处理。
 
 用法:
-    # 8 卡并行 (默认日期范围)
-    torchrun --nproc_per_node=8 -m gr_demo.data.encode_distributed --model qwen3-0.6b
+    # 纯文本 (默认日期范围)
+    torchrun --nproc_per_node=8 -m data.encode_distributed --model qwen3-0.6b
+
+    # 图文 VL (qwen3-vl-2b)
+    torchrun --nproc_per_node=8 -m data.encode_distributed --model qwen3-vl-2b
 
     # 指定日期范围
-    torchrun --nproc_per_node=8 -m gr_demo.data.encode_distributed \
+    torchrun --nproc_per_node=8 -m data.encode_distributed \
         --model qwen3-0.6b --date_start 2026-01-01 --date_end 2026-04-15
 
 逐日期从新到旧处理。每个日期内:
   1. 逐文件读 content_id，按 ID 级别判断是否已缓存，跳过已缓存的 cid
   2. sha256(content_id) % world_size 分配到对应 rank
   3. 编码后每个 rank 追加到自己的 shard_{rank}.npy
+
+VL 模型额外加载 parquet 的 images 列 (ARRAY<STRING>)，每条最多取
+VL_MAX_IMAGES 张；下载失败的 URL 会重试 VL_IMAGE_RETRIES 次。
 """
 
 import os
@@ -22,11 +28,22 @@ import torch
 import torch.distributed as dist
 from transformers import AutoModel, AutoTokenizer
 
-from model.embedders import Qwen3TextEmbedder
-from config import S3_CONTENT_TEXT_EXPOSED, EFS_EMBEDDING_CACHE
+from model.embedders import Qwen3TextEmbedder, Qwen3VLEmbedder
+from config import S3_CONTENT_TEXT_EXPOSED, EFS_EMBEDDING_CACHE, EFS_IMAGE_CACHE
 from config import DEFAULT_DATE_START, DEFAULT_DATE_END
 
 NUM_SHARDS = 8  # 固定 shard 数，与 8xA100 对齐
+
+# VL 编码默认参数
+# QWEN_MAX_LENGTH=8192 是整个序列 (text+vision) 的 budget。
+# 1:1 split → vision 4096 tokens + text 4096 tokens。
+# vision tokens = pixels / IMAGE_FACTOR² (=1024)
+# max_images=1 → per-image 4096 tokens → max_pixels = 4096 * 1024 = 4,194,304
+VL_MAX_IMAGES = 1
+VL_MAX_PIXELS = 4_194_304  # ≈ 2048x2048, 4096 vision tokens 上限
+VL_IMAGE_TIMEOUT = 3
+VL_IMAGE_RETRIES = 2
+VL_IMAGE_WORKERS = 16
 
 
 def cid_to_shard(cid, n_shards=NUM_SHARDS) -> int:
@@ -44,12 +61,18 @@ def cid_to_shard(cid, n_shards=NUM_SHARDS) -> int:
 # ============================================================
 
 def setup_distributed():
-    """初始化分布式环境"""
+    """初始化分布式环境。
+
+    NCCL watchdog 默认 10min 超时会在 rank 0 慢操作 (下模型/读大量 parquet)
+    时把其他 rank 炸掉，放宽到 30min。
+    """
+    from datetime import timedelta
+
     if 'RANK' in os.environ:
         rank = int(os.environ['RANK'])
         world_size = int(os.environ['WORLD_SIZE'])
         local_rank = int(os.environ['LOCAL_RANK'])
-        dist.init_process_group('nccl')
+        dist.init_process_group('nccl', timeout=timedelta(minutes=30))
     else:
         rank = 0
         world_size = 1
@@ -68,16 +91,85 @@ def cleanup_distributed():
 # Model Download
 # ============================================================
 
-def download_model_if_needed(model_name: str, rank: int, world_size: int):
+def download_model_if_needed(model_name: str, rank: int, world_size: int, is_vl: bool = False):
     """Rank 0 先下载模型，其他 rank 等待"""
     if rank == 0:
         print(f"[Rank 0] Downloading model {model_name}...")
-        AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        AutoModel.from_pretrained(model_name, trust_remote_code=True)
+        if is_vl:
+            from huggingface_hub import snapshot_download
+            snapshot_download(model_name)
+        else:
+            AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+            AutoModel.from_pretrained(model_name, trust_remote_code=True)
         print(f"[Rank 0] Model downloaded")
 
     if world_size > 1:
         dist.barrier()
+
+
+# ============================================================
+# 图片下载 (带重试)
+# ============================================================
+
+def _download_one_image(url: str, timeout: int, cache_dir: str):
+    """下载单张图片，带磁盘缓存。失败返回 None。"""
+    import hashlib
+    import requests
+    from io import BytesIO
+    from PIL import Image
+
+    url_hash = hashlib.md5(url.encode()).hexdigest()
+    cache_path = os.path.join(cache_dir, f"{url_hash}.jpg")
+    if os.path.exists(cache_path):
+        try:
+            return Image.open(cache_path).convert('RGB')
+        except Exception:
+            pass
+
+    try:
+        resp = requests.get(url, timeout=(timeout, timeout))
+        resp.raise_for_status()
+        img = Image.open(BytesIO(resp.content)).convert('RGB')
+        try:
+            img.save(cache_path, 'JPEG', quality=85)
+        except Exception:
+            pass
+        return img
+    except Exception:
+        return None
+
+
+def download_images_with_retry(
+    urls,
+    cache_dir: str,
+    max_workers: int = VL_IMAGE_WORKERS,
+    timeout: int = VL_IMAGE_TIMEOUT,
+    max_retries: int = VL_IMAGE_RETRIES,
+):
+    """并发下载 URL 列表，失败的 URL 在后续 attempt 中重试。"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    os.makedirs(cache_dir, exist_ok=True)
+    results = [None] * len(urls)
+    pending = [i for i, u in enumerate(urls) if u]
+
+    for attempt in range(max_retries + 1):
+        if not pending:
+            break
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(pending))) as pool:
+            futures = {pool.submit(_download_one_image, urls[i], timeout, cache_dir): i
+                       for i in pending}
+            for fut in as_completed(futures):
+                i = futures[fut]
+                try:
+                    img = fut.result()
+                except Exception:
+                    img = None
+                if img is not None:
+                    results[i] = img
+        pending = [i for i in pending if results[i] is None]
+
+    return results
 
 
 # ============================================================
@@ -129,12 +221,14 @@ def save_cached_ids(output_dir: str, cached_ids: set):
 # 单日期数据加载
 # ============================================================
 
-def load_date_data(date_path, rank, world_size, cached_ids):
-    """加载单个日期的数据，返回本 rank 需要编码的 (content_ids, texts)。
+def load_date_data(date_path, rank, world_size, cached_ids, load_images: bool = False):
+    """加载单个日期的数据，返回本 rank 需要编码的 (content_ids, texts, images)。
 
     逐文件读取，按 content_id 级别去重 + 缓存判断:
     - cid 已在 cached_ids 中 → 跳过
     - cid 不属于本 rank (hash % world_size != rank) → 跳过
+
+    load_images=True 时同时返回 images (List[List[str]])，否则为空列表。
     """
     import pandas as pd
     import s3fs
@@ -144,10 +238,11 @@ def load_date_data(date_path, rank, world_size, cached_ids):
     files = sorted(fs.glob(f"{path_clean}/*.parquet"))
 
     if not files:
-        return np.array([]), []
+        return np.array([]), [], []
 
     my_content_ids = []
     my_texts = []
+    my_images = []
     total_rows = 0
     n_cached = 0
 
@@ -164,13 +259,24 @@ def load_date_data(date_path, rank, world_size, cached_ids):
         if text_col is None:
             raise ValueError(f"No text column found. Available: {list(df.columns)}")
 
-        for cid, text in zip(df['content_id'].values, df[text_col].fillna('').values):
+        has_images = load_images and 'images' in df.columns
+        images_iter = df['images'].values if has_images else [None] * len(df)
+
+        for cid, text, imgs in zip(df['content_id'].values,
+                                   df[text_col].fillna('').values,
+                                   images_iter):
             if str(cid) in cached_ids:
                 n_cached += 1
                 continue
             if cid_to_shard(cid) % world_size == rank:
                 my_content_ids.append(cid)
                 my_texts.append(text)
+                if load_images:
+                    # numpy array / list / None → 统一为 list[str]
+                    if imgs is None:
+                        my_images.append([])
+                    else:
+                        my_images.append([u for u in list(imgs) if u])
 
     n_new = len(my_content_ids)
     if rank == 0:
@@ -180,9 +286,9 @@ def load_date_data(date_path, rank, world_size, cached_ids):
         print(f"    [Rank {rank}] {n_new:,} items to encode")
 
     if not my_content_ids:
-        return np.array([]), []
+        return np.array([]), [], []
 
-    return np.array(my_content_ids), my_texts
+    return np.array(my_content_ids), my_texts, my_images
 
 
 # ============================================================
@@ -326,10 +432,98 @@ def encode_batch(embedder, content_ids, texts, batch_size, rank, text_cache=None
 # ============================================================
 
 DISTRIBUTED_MODEL_CONFIGS = {
-    "qwen3-0.6b": ("Qwen/Qwen3-Embedding-0.6B", 1024, 64),
-    "qwen3-4b": ("Qwen/Qwen3-Embedding-4B", 2560, 32),
-    "qwen3-8b": ("Qwen/Qwen3-Embedding-8B", 4096, 16),
+    # (hf_name, dim, default_batch_size, is_vl)
+    "qwen3-0.6b":   ("Qwen/Qwen3-Embedding-0.6B", 1024, 64, False),
+    "qwen3-4b":     ("Qwen/Qwen3-Embedding-4B",   2560, 32, False),
+    "qwen3-8b":     ("Qwen/Qwen3-Embedding-8B",   4096, 16, False),
+    "qwen3-vl-2b":  ("Qwen/Qwen3-VL-Embedding-2B", 2048, 8, True),
 }
+
+
+def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
+                    max_images: int = VL_MAX_IMAGES):
+    """VL 编码: 下载图片 (带重试) → 构造 {text,image} inputs → embedder.process()。"""
+    new_embeddings = {}
+    start_time = time.time()
+
+    total = len(content_ids)
+    batch_idx = 0
+    while batch_idx < total:
+        batch_cids = content_ids[batch_idx:batch_idx + batch_size]
+        batch_texts = texts[batch_idx:batch_idx + batch_size]
+        batch_imgs = images[batch_idx:batch_idx + batch_size]
+
+        # 收集本 batch 所有 URL (cap max_images)
+        all_urls = []
+        for si, urls in enumerate(batch_imgs):
+            if not urls or max_images <= 0:
+                continue
+            for ii, u in enumerate(urls[:max_images]):
+                if u:
+                    all_urls.append((si, ii, u))
+
+        t_dl0 = time.time()
+        downloaded = {}
+        n_ok = 0
+        if all_urls:
+            urls_only = [u[2] for u in all_urls]
+            pil_imgs = download_images_with_retry(urls_only, cache_dir=EFS_IMAGE_CACHE)
+            for (si, ii, _), img in zip(all_urls, pil_imgs):
+                if img is not None:
+                    downloaded[(si, ii)] = img
+                    n_ok += 1
+        t_dl = time.time() - t_dl0
+
+        # 构造输入
+        inputs = []
+        for si, (text, urls) in enumerate(zip(batch_texts, batch_imgs)):
+            item = {"text": text or ""}
+            if urls and max_images > 0:
+                imgs = [downloaded.get((si, ii)) for ii in range(min(len(urls), max_images))]
+                imgs = [p for p in imgs if p is not None]
+                if imgs:
+                    item["image"] = imgs
+            inputs.append(item)
+
+        # 推理 + OOM retry: chunk_size 减半；到 1 仍 OOM 时只 skip 那 1 条
+        n = len(inputs)
+        chunk_size = n
+        i = 0
+        n_skipped = 0
+        while i < n:
+            end = min(i + chunk_size, n)
+            sub_cids = batch_cids[i:end]
+            sub_inputs = inputs[i:end]
+            try:
+                emb = embedder.process(sub_inputs).cpu().float().numpy()
+                for cid, e in zip(sub_cids, emb):
+                    new_embeddings[cid] = e
+                i = end
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                if chunk_size == 1:
+                    # 单条还 OOM, 跳过这一条 (记录 cid 便于排查)
+                    print(f"    [Rank {rank}] Skip cid={sub_cids[0]} (OOM at size=1)")
+                    n_skipped += 1
+                    i += 1
+                else:
+                    chunk_size = max(1, chunk_size // 2)
+                    print(f"    [Rank {rank}] OOM, chunk_size -> {chunk_size}")
+
+        if n_skipped:
+            print(f"    [Rank {rank}] batch@{batch_idx}: skipped {n_skipped}/{n}")
+
+        batch_idx += batch_size
+        batch_num = batch_idx // batch_size
+        if batch_num % 5 == 0 or batch_idx >= total:
+            elapsed = time.time() - start_time
+            done = min(batch_idx, total)
+            speed = done / elapsed if elapsed > 0 else 0
+            eta = (total - done) / speed if speed > 0 else 0
+            print(f"    [Rank {rank}] {done:,}/{total:,} | dl: {t_dl:.1f}s "
+                  f"({n_ok}/{len(all_urls)}) | {speed:.1f}/s | ETA: {eta/60:.1f}min")
+
+    return new_embeddings
 
 
 # ============================================================
@@ -360,13 +554,17 @@ def main():
                         help=f'Content date range end (default: {DEFAULT_DATE_END})')
     parser.add_argument('--output_dir', type=str, default=EFS_EMBEDDING_CACHE)
     parser.add_argument('--batch_size', type=int, default=None)
+    parser.add_argument('--max_images', type=int, default=VL_MAX_IMAGES,
+                        help='(VL) max images per content')
+    parser.add_argument('--max_pixels', type=int, default=VL_MAX_PIXELS,
+                        help='(VL) per-image pixel cap; each IMAGE_FACTOR² (=1024) pixels → 1 vision token')
     args = parser.parse_args()
 
     # 分布式设置
     rank, world_size, local_rank = setup_distributed()
     device = f'cuda:{local_rank}'
 
-    model_name, embedding_dim, default_batch_size = DISTRIBUTED_MODEL_CONFIGS[args.model]
+    model_name, embedding_dim, default_batch_size, is_vl = DISTRIBUTED_MODEL_CONFIGS[args.model]
     batch_size = args.batch_size or default_batch_size
 
     output_dir = f"{args.output_dir}/{args.model}"
@@ -385,6 +583,9 @@ def main():
         print(f"Dates: {dates[0]} ~ {dates[-1]} ({len(dates)} days, newest first)")
         print(f"World size: {world_size}, shards per rank: {NUM_SHARDS // world_size}")
         print(f"Batch size per GPU: {batch_size}")
+        if is_vl:
+            print(f"VL: max_images={args.max_images}, max_pixels={args.max_pixels:,} "
+                  f"(~{args.max_pixels // 1024} vision tokens/image)")
         print(f"Output: {output_dir}")
         print("=" * 60)
 
@@ -453,8 +654,9 @@ def main():
         if rank == 0:
             print(f"[{di+1}/{len(dates)}] {date_str}")
 
-        # 加载本日期数据
-        my_cids, my_texts = load_date_data(date_path, rank, world_size, cached_ids)
+        # 加载本日期数据 (VL 模式额外加载 images 列)
+        my_cids, my_texts, my_images = load_date_data(
+            date_path, rank, world_size, cached_ids, load_images=is_vl)
 
         if len(my_cids) == 0:
             if rank == 0:
@@ -466,13 +668,22 @@ def main():
 
         # 惰性加载模型 (第一次遇到有数据时)
         if embedder is None:
-            download_model_if_needed(model_name, rank, world_size)
+            download_model_if_needed(model_name, rank, world_size, is_vl=is_vl)
             print(f"  [Rank {rank}] Loading model on {device}...")
-            embedder = Qwen3TextEmbedder(model_name, device=device)
+            if is_vl:
+                embedder = Qwen3VLEmbedder(
+                    model_name, device=device, max_pixels=args.max_pixels)
+            else:
+                embedder = Qwen3TextEmbedder(model_name, device=device)
 
-        # 编码 (text_cache 跨日期复用，相同短文本不重复过模型)
-        new_embeddings = encode_batch(
-            embedder, my_cids, my_texts, batch_size, rank, text_cache=text_cache)
+        # 编码
+        if is_vl:
+            new_embeddings = encode_batch_vl(
+                embedder, my_cids, my_texts, my_images, batch_size, rank,
+                max_images=args.max_images)
+        else:
+            new_embeddings = encode_batch(
+                embedder, my_cids, my_texts, batch_size, rank, text_cache=text_cache)
 
         # 按 cid_to_shard 分配到对应 shard
         for cid, emb in new_embeddings.items():
@@ -493,7 +704,7 @@ def main():
 
     # ── 最终汇总 ──
     total_lookups = text_cache.hits + total_new  # hits + misses (encoded)
-    if total_lookups > 0:
+    if not is_vl and total_lookups > 0:
         hit_rate = text_cache.hits / total_lookups
         print(f"\n[Rank {rank}] Text cache: {text_cache.hits:,} hits / "
               f"{total_lookups:,} lookups ({hit_rate:.1%}), "

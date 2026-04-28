@@ -88,11 +88,14 @@ def main():
     elif command == 'migrate-shards':
         from data.migrate_shards import main as migrate_main
         migrate_main()
+    elif command == 'download-model':
+        from data.download_model import main as download_model_main
+        download_model_main()
     else:
         print(f"Unknown command: {command}")
         print("Available commands: train, eval, eval-all, compare, hyperparam, "
               "preprocess-sid, preprocess-ntp, train-ntp, sp-dpo-prepare, rf-dpo-prepare, "
-              "sp-dpo-train, grpo-train, eval-ntp, alignment-eval, pack, migrate-shards")
+              "sp-dpo-train, grpo-train, eval-ntp, alignment-eval, pack, migrate-shards, download-model")
         sys.exit(1)
 
 

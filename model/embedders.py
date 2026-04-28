@@ -113,6 +113,7 @@ class Qwen3VLEmbedder:
     def __init__(
         self,
         model_name_or_path: str,
+        device: Optional[str] = None,
         max_length: int = QWEN_MAX_LENGTH,
         min_pixels: int = MIN_PIXELS,
         max_pixels: int = MAX_PIXELS,
@@ -125,8 +126,6 @@ class Qwen3VLEmbedder:
     ):
         from transformers.models.qwen3_vl import Qwen3VLForConditionalGeneration, Qwen3VLProcessor
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
         self.max_length = max_length
         self.min_pixels = min_pixels
         self.max_pixels = max_pixels
@@ -137,20 +136,30 @@ class Qwen3VLEmbedder:
         self.default_instruction = default_instruction
 
         print(f"Loading {model_name_or_path}...")
-        # 使用 device_map="auto" 自动分布到多 GPU
-        base_model = Qwen3VLForConditionalGeneration.from_pretrained(
-            model_name_or_path,
-            trust_remote_code=True,
-            device_map="auto",  # 自动分布到多 GPU
-            **kwargs
-        )
+        if device is not None:
+            # 分布式模式：显式放置到指定 GPU (torchrun per-rank)
+            base_model = Qwen3VLForConditionalGeneration.from_pretrained(
+                model_name_or_path,
+                trust_remote_code=True,
+                **kwargs
+            ).to(device)
+            self._device = torch.device(device)
+            print(f"Model loaded on {self._device}")
+        else:
+            # 单进程多卡模式：device_map="auto"
+            base_model = Qwen3VLForConditionalGeneration.from_pretrained(
+                model_name_or_path,
+                trust_remote_code=True,
+                device_map="auto",
+                **kwargs
+            )
+            self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            print(f"Model loaded with device_map=auto")
         self.model = Qwen3VLForEmbedding(base_model)
         self.processor = Qwen3VLProcessor.from_pretrained(
             model_name_or_path, padding_side='right'
         )
         self.model.eval()
-        self._device = device  # 保存 device 引用
-        print(f"Model loaded with device_map=auto")
 
     @torch.no_grad()
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
@@ -273,9 +282,6 @@ class Qwen3VLEmbedder:
             truncation=True, max_length=self.max_length, padding=True,
             do_resize=False, return_tensors='pt', **video_kwargs
         )
-        t3 = _time.time()
-
-        print(f"      [_preprocess] chat_template: {t1-t0:.2f}s, process_vision: {t2-t1:.2f}s, processor: {t3-t2:.2f}s")
 
         # 恢复原来的超时设置
         socket.setdefaulttimeout(old_timeout)
@@ -301,10 +307,6 @@ class Qwen3VLEmbedder:
         Returns:
             embeddings: torch.Tensor of shape (N, 4096)
         """
-        import time as _time
-
-        # Step 1: 格式化输入
-        t0 = _time.time()
         conversations = [self.format_model_input(
             text=ele.get('text'),
             image=ele.get('image'),
@@ -313,21 +315,12 @@ class Qwen3VLEmbedder:
             fps=ele.get('fps'),
             max_frames=ele.get('max_frames')
         ) for ele in inputs]
-        t1 = _time.time()
 
-        # Step 2: 预处理（包括图片下载）
         processed_inputs = self._preprocess_inputs(conversations)
         processed_inputs = {k: v.to(self.model.device) for k, v in processed_inputs.items()}
-        t2 = _time.time()
 
-        # Step 3: 模型推理
         outputs = self.forward(processed_inputs)
         embeddings = self._pooling_last(outputs['last_hidden_state'], outputs['attention_mask'])
-        t3 = _time.time()
-
-        # 打印耗时
-        total = t3 - t0
-        print(f"    [Timing] preprocess: {t2-t1:.2f}s, inference: {t3-t2:.2f}s, total: {total:.2f}s")
 
         if normalize:
             embeddings = F.normalize(embeddings, p=2, dim=-1)
