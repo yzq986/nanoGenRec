@@ -9,58 +9,71 @@
   "n_layers": 3,
   "n_items": 10,
   "n_params": 45700096,
-  "train_loss": 2.897699,
+  "train_loss": 2.976769,
   "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
   "preprocessed_dir": "experiments/ntp_data/exp023-14d-features",
-  "timestamp": "2026-04-28 18:34:41",
+  "timestamp": "2026-04-28 19:05:56",
   "train": {
     "n_params": 45700096,
-    "avg_ntp_loss": 2.897699,
-    "avg_dpo_loss": 0.0,
-    "avg_total_loss": 2.897699,
-    "dpo_weight": 0.0,
+    "avg_ntp_loss": 2.899542,
+    "avg_dpo_loss": 2.574239,
+    "avg_total_loss": 2.976769,
+    "dpo_weight": 0.03,
     "dpo_beta": 0.1,
     "difficulty": "hard",
     "pure_dpo": false,
     "dpo_epochs": 0,
-    "total_tokens": 66311088,
-    "wall_time_s": 357.5,
+    "total_tokens": 66309180,
+    "wall_time_s": 1181.4,
     "batch_size": 526,
     "dpo_batch_size": 16,
     "world_size": 4,
     "n_steps": 406,
-    "n_dpo_pairs": 0
+    "n_dpo_pairs": 4312,
+    "avg_chosen_reward": 0.3818,
+    "avg_rejected_reward": -3.0614,
+    "avg_reward_margin": 3.4432,
+    "avg_preference_acc": 0.369
   },
   "eval": {
-    "ppl": 27.3446,
+    "ppl": 25.6757,
     "layer_ppl": [
-      349.1296,
-      10.9593,
-      5.4349
+      324.1237,
+      10.2534,
+      5.1796
     ],
-    "avg_loss": 3.30852,
+    "avg_loss": 3.245544,
     "depth_hit@10": [
-      0.1914,
-      0.1617,
-      0.1566
+      0.1988,
+      0.1698,
+      0.1645
     ],
     "depth_hit@10_indep": [
-      0.1906,
-      0.8084,
-      0.8453
+      0.198,
+      0.8165,
+      0.8514
     ],
     "depth_acc_beam": [
-      0.026,
-      0.012,
-      0.012
+      0.031,
+      0.017,
+      0.017
     ],
-    "target_sid_found_rate": 0.573,
+    "target_sid_found_rate": 0.597,
     "n_eval_positions": 79702,
     "n_eval_items": 26450,
     "n_recall_samples": 1000,
-    "item_recall@10": 0.094,
-    "item_recall@50": 0.237,
-    "item_recall@100": 0.33,
-    "item_recall@500": 0.572
+    "item_recall@10": 0.109,
+    "item_recall@50": 0.249,
+    "item_recall@100": 0.344,
+    "item_recall@500": 0.596
+  },
+  "alignment_eval": {
+    "chosen_reward": -0.2821,
+    "rejected_reward": -5.6808,
+    "reward_margin": 5.3987,
+    "preference_acc": 0.5301,
+    "n_pairs": 4312,
+    "difficulty": "hard",
+    "dpo_beta": 0.1
   }
 }
