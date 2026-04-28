@@ -463,50 +463,68 @@ DISTRIBUTED_MODEL_CONFIGS = {
 }
 
 
+def _prepare_vl_batch(content_ids, texts, images, batch_idx, batch_size, max_images):
+    """CPU-side: download images + build inputs dict. Runs in prefetch thread."""
+    batch_cids = content_ids[batch_idx:batch_idx + batch_size]
+    batch_texts = texts[batch_idx:batch_idx + batch_size]
+    batch_imgs = images[batch_idx:batch_idx + batch_size]
+
+    all_urls = []
+    for si, urls in enumerate(batch_imgs):
+        if not urls or max_images <= 0:
+            continue
+        for ii, u in enumerate(urls[:max_images]):
+            if u:
+                all_urls.append((si, ii, u))
+
+    t_dl0 = time.time()
+    downloaded = {}
+    n_ok = 0
+    if all_urls:
+        urls_only = [u[2] for u in all_urls]
+        pil_imgs = download_images_with_retry(urls_only, cache_dir=EFS_IMAGE_CACHE)
+        for (si, ii, _), img in zip(all_urls, pil_imgs):
+            if img is not None:
+                downloaded[(si, ii)] = img
+                n_ok += 1
+    t_dl = time.time() - t_dl0
+
+    inputs = []
+    for si, (text, urls) in enumerate(zip(batch_texts, batch_imgs)):
+        item = {"text": text or ""}
+        if urls and max_images > 0:
+            imgs = [downloaded.get((si, ii)) for ii in range(min(len(urls), max_images))]
+            imgs = [p for p in imgs if p is not None]
+            if imgs:
+                item["image"] = imgs
+        inputs.append(item)
+
+    return batch_cids, inputs, t_dl, n_ok, len(all_urls)
+
+
 def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
                     max_images: int = VL_MAX_IMAGES):
-    """VL 编码: 下载图片 (带重试) → 构造 {text,image} inputs → embedder.process()。"""
+    """VL 编码: prefetch 下一个 batch 的图片下载 + 输入构造，与 GPU 推理重叠。"""
+    from concurrent.futures import ThreadPoolExecutor
+
     new_embeddings = {}
     start_time = time.time()
-
     total = len(content_ids)
+
+    prefetch = ThreadPoolExecutor(max_workers=1)
+    # kick off first batch preparation
+    future = prefetch.submit(_prepare_vl_batch,
+                             content_ids, texts, images, 0, batch_size, max_images)
+
     batch_idx = 0
     while batch_idx < total:
-        batch_cids = content_ids[batch_idx:batch_idx + batch_size]
-        batch_texts = texts[batch_idx:batch_idx + batch_size]
-        batch_imgs = images[batch_idx:batch_idx + batch_size]
+        batch_cids, inputs, t_dl, n_ok, n_urls = future.result()
 
-        # 收集本 batch 所有 URL (cap max_images)
-        all_urls = []
-        for si, urls in enumerate(batch_imgs):
-            if not urls or max_images <= 0:
-                continue
-            for ii, u in enumerate(urls[:max_images]):
-                if u:
-                    all_urls.append((si, ii, u))
-
-        t_dl0 = time.time()
-        downloaded = {}
-        n_ok = 0
-        if all_urls:
-            urls_only = [u[2] for u in all_urls]
-            pil_imgs = download_images_with_retry(urls_only, cache_dir=EFS_IMAGE_CACHE)
-            for (si, ii, _), img in zip(all_urls, pil_imgs):
-                if img is not None:
-                    downloaded[(si, ii)] = img
-                    n_ok += 1
-        t_dl = time.time() - t_dl0
-
-        # 构造输入
-        inputs = []
-        for si, (text, urls) in enumerate(zip(batch_texts, batch_imgs)):
-            item = {"text": text or ""}
-            if urls and max_images > 0:
-                imgs = [downloaded.get((si, ii)) for ii in range(min(len(urls), max_images))]
-                imgs = [p for p in imgs if p is not None]
-                if imgs:
-                    item["image"] = imgs
-            inputs.append(item)
+        # prefetch next batch while GPU works
+        next_idx = batch_idx + batch_size
+        if next_idx < total:
+            future = prefetch.submit(_prepare_vl_batch,
+                                     content_ids, texts, images, next_idx, batch_size, max_images)
 
         # 推理 + OOM retry: chunk_size 减半；到 1 仍 OOM 时只 skip 那 1 条
         n = len(inputs)
@@ -529,7 +547,6 @@ def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
                 if chunk_size == 1:
-                    # 单条还 OOM, 打印 text 长度 + 显存情况, 然后 skip
                     bad_cid = sub_cids[0]
                     bad_text = texts[batch_idx + i] if (batch_idx + i) < len(texts) else ""
                     bad_imgs = images[batch_idx + i] if (batch_idx + i) < len(images) else []
@@ -556,8 +573,9 @@ def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
             speed = done / elapsed if elapsed > 0 else 0
             eta = (total - done) / speed if speed > 0 else 0
             print(f"    [Rank {rank}] {done:,}/{total:,} | dl: {t_dl:.1f}s "
-                  f"({n_ok}/{len(all_urls)}) | {speed:.1f}/s | ETA: {eta/60:.1f}min")
+                  f"({n_ok}/{n_urls}) | {speed:.1f}/s | ETA: {eta/60:.1f}min")
 
+    prefetch.shutdown(wait=False)
     return new_embeddings
 
 
