@@ -61,11 +61,11 @@ Three remotes are configured:
 | `origin` | `git@github.com:yzq986/gr_demo.git` | Alibaba Cloud GitHub |
 
 - **Push**: `./push.sh` handles all remotes (rewrites author for company/origin). Never push manually.
-- **Pull experiment data**: Experiments run on company GPU machines and results are pushed to `company`. To pull updated experiment data:
+- **Pull experiment data**: Experiments run on the GPU box and results are pushed to `origin` (Alibaba Cloud GitHub). To pull updated experiment data:
   ```bash
-  git pull company master --rebase
+  git pull origin master --rebase
   ```
-  Use `--rebase` to avoid merge commits when local and origin/master have diverged.
+  Use `--rebase` to avoid merge commits when local and origin/master have diverged. `company` is a legacy mirror; prefer `origin` for experiment sync.
 
 ## 分布式代码陷阱
 
