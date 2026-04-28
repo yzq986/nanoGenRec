@@ -39,6 +39,54 @@
 
 ---
 
+## EXP-033: Features 修复验证 — EXP-031A Rerun with Correct Feature Injection
+
+**Date**: 2026-04-28
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+EXP-031 Config A（features 模型 exp025 起点 + full RL stack）出现严重退化：clip=0.964（vs 正常 0.924），R@500=61.8%（vs baseline 66.2%）。
+
+分析发现代码中存在三处 features 注入 bug（在本 session 中修复）：
+1. `constrained_beam_search` 调用未传 `ctx_time_gaps/ctx_action_levels` → beam search 候选基于无特征 embedding，与训练分布不一致
+2. `compute_sid_logprobs` 直接调 `_embed_tokens` + 手动拼接，绕过统一入口 → policy_lp 和 ref_lp 的 embedding 路径与训练路径不一致
+3. `context_pool` 只存 token 列表，丢弃了 time_gaps/action_levels → GRPO 步中所有 context 均无特征
+
+上述 bug 导致 features 模型的 train-infer 不一致：训练时有特征，RL 步的 forward 无特征，分布偏差导致 clip 率异常升高。
+
+修复方案：
+- `ntp/model.py` 新增 `embed_with_features()` 统一入口
+- `rl/dpo.py:compute_sid_logprobs` 改用 `embed_with_features`
+- `rl/trainer.py:context_pool` 存 `(tokens, tg, al)` 三元组；`_grpo_step` 传特征给 beam search + logprobs；carry-forward `gen_action_level = ctx_al[-1]`
+
+### Hypothesis
+
+features bug 是 EXP-031 Config A clip 率升高（0.964 vs 0.924）的主要原因。修复后重跑应该：
+- clip 率回落到 ~0.924（与 exp029/031-B 对齐）
+- R@500 从 61.8% 提升，可能超越 66.2% baseline（features 提供更好的 reward 区分度）
+
+### Design
+- **Variable**: features 修复后重跑 EXP-031 Config A（其余参数完全相同）
+- **Fixed**: sft_checkpoint=exp025-beam-passes，ECPO δ=0.1 ε=0.2，G=512，batch=4，grpo_weight=0.03，ratio=1.0，lr=1e-4，full reward stack（WeightedBehaviorReward + FormatReward + A2PO + NLL + HEPO）
+- **Metric**: R@10, R@500（full eval n_recall=1000），clip 率，adv_std
+- **Data**: exp023-14d-features
+
+### Run
+`bash experiments/scripts/exp-033.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-032: GRPO Group Size vs Context Diversity — G × batch_size Sweep
 
 **Date**: 2026-04-28
