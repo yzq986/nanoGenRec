@@ -20,6 +20,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd "${REPO_ROOT}"
 
 N_GPUS="${N_GPUS:-$(python -c 'import torch; print(max(1, torch.cuda.device_count()))')}"
+GRPO_BATCH="${GRPO_BATCH:-${N_GPUS}}"   # 1 batch/GPU by default
 SFT_CKPT="experiments/ntp_checkpoints/exp038b-hard-lam03-3ep-ep1"   # RF-DPO ep1 (best: R@500=62.1%, matches ref)
 NTP_DATA="experiments/ntp_data/exp023-14d-features"
 SID_CACHE="experiments/sid_cache/exp013-4096x3-12d-binary"
@@ -71,7 +72,7 @@ if [ "${SKIP_SMOKE}" == false ]; then
         --eps 0.2 --delta 0.1 \
         --grpo_weight 0.03 \
         --group_size 16 \
-        --grpo_batch_size 4 \
+        --grpo_batch_size "${GRPO_BATCH}" \
         --rl_data_ratio 1.0 \
         --lr 1e-4 \
         --reward_behavior --behavior_weight 1.0 \
@@ -104,7 +105,7 @@ else
         --eps 0.2 --delta 0.1 \
         --grpo_weight 0.03 \
         --group_size 512 \
-        --grpo_batch_size 8 \
+        --grpo_batch_size "${GRPO_BATCH}" \
         --rl_data_ratio 1.0 \
         --lr 1e-4 \
         --reward_behavior --behavior_weight 1.0 \
