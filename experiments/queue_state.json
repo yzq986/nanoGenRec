@@ -2,8 +2,9 @@
   "current": "exp-039b.sh",
   "log": "/tmp/exp039b.log",
   "done_string": "EXP-039B complete!",
-  "status": "pending_gpu",
-  "note": "需要在GPU机器上手动启动: nohup bash experiments/scripts/exp-039b.sh --no-smoke > /tmp/exp039b.log 2>&1 &",
+  "status": "running",
+  "started_at": "2026-04-28 22:28",
+  "pid": 12201,
   "prev": {
     "exp": "exp-038b.sh",
     "status": "completed",
