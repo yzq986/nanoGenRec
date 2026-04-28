@@ -1,0 +1,27 @@
+{
+  "n_train": 213672,
+  "n_eval": 0,
+  "n_clusters_per_layer": [
+    4096,
+    4096,
+    4096
+  ],
+  "n_layers": 3,
+  "n_items": 10,
+  "n_params": 45700096,
+  "train_loss": 2.969884,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "preprocessed_dir": "experiments/ntp_data/exp023-14d-features",
+  "timestamp": "2026-04-28 20:44:06",
+  "train": {
+    "n_params": 45700096,
+    "avg_ntp_loss": 2.89413,
+    "avg_dpo_loss": 2.525137,
+    "avg_total_loss": 2.969884,
+    "dpo_weight": 0.03,
+    "dpo_beta": 0.1,
+    "ntp_epochs": 3,
+    "mid_epoch": 1,
+    "n_steps": 406
+  }
+}
