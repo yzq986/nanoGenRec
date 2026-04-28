@@ -39,6 +39,49 @@
 
 ---
 
+## EXP-034: Ref Model Alignment — exp025 as ref_checkpoint
+
+**Date**: 2026-04-28
+**Status**: planned
+**Results**: TBD
+
+### Background
+
+EXP-033 证伪了 features bug 假设：修复三处 features 注入 bug 后，clip 率从 96.4% 变为 96.2%，几乎没有变化。真正根因是 ref model（exp020）与 policy 起点（exp025）不对齐。
+
+PPO clip 条件是 ρ = exp(policy_lp - ref_lp) 超出 [1-ε, 1+ε]。exp025 在 exp020 上做了 beam-passes SFT，两者对同一 token 的 log-prob 系统性不同。从 exp025 出发时第一步就大量触发 clip，不是因为更新过大，而是初始 KL 就很大。
+
+| 实验 | policy 起点 | ref model | clip 率 |
+|------|------------|-----------|---------|
+| exp031-baseline | exp020 | exp020 | 92.4% ✅ |
+| exp031-features | exp025 | exp020 | 96.4% ❌ |
+| exp033 | exp025 | exp020 | 96.2% ❌ |
+| **EXP-034** | **exp025** | **exp025** | **预期 ~92%** |
+
+### Hypothesis
+
+ref model = policy 起点 = exp025 → RL 开始时 KL≈0 → clip 率回落至 ~92%（与 exp031-baseline 对齐）。features 模型（R@500=63.6% SFT）经过正确 RL 对齐后应超越 exp020 路线（67.8%），因为 features 提供更好的 beam search 区分度。
+
+### Design
+- **Variable**: ref_checkpoint = exp025（而非 exp020），其余参数与 exp031-baseline 完全一致
+- **Fixed**: ECPO δ=0.1, ε=0.2, G=512, grpo_batch=4, grpo_weight=0.03, ratio=1.0, lr=1e-4, on_policy, rank_norm, A2PO(α=1.0), NLL(0.01), HEPO(0.1,0.5)
+- **Metric**: R@10, R@500（full eval n_recall=1000），clip 率
+- **Data**: exp023-14d-features，WeightedBehaviorReward + FormatReward
+
+### Run
+`bash experiments/scripts/exp-034.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-033: Features 修复验证 — EXP-031A Rerun with Correct Feature Injection
 
 **Date**: 2026-04-28

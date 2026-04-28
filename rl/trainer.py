@@ -742,6 +742,7 @@ def train_grpo(
     nll_reg=0.0,            # NLL regularization weight: add -nll_reg * log p(best) per group
     time_gaps_list=None,    # side features: list of int lists (same len as tokens)
     action_levels_list=None,
+    ref_checkpoint=None,    # if set, load ref model from here instead of sft_checkpoint
     max_steps=None,
     wandb_run=None,
 ):
@@ -777,8 +778,9 @@ def train_grpo(
     n_params = sum(p.numel() for p in policy_model.parameters())
     log(is_main, f"  Policy: {model_type}, {n_params / 1e6:.1f}M params")
 
-    log(is_main, f"  Loading reference model (frozen)...")
-    ref_model, _ = load_model_from_checkpoint(sft_checkpoint, device)
+    _ref_ckpt = ref_checkpoint if ref_checkpoint else sft_checkpoint
+    log(is_main, f"  Loading reference model (frozen) from {_ref_ckpt}...")
+    ref_model, _ = load_model_from_checkpoint(_ref_ckpt, device)
     ref_model.eval()
     for p in ref_model.parameters():
         p.requires_grad = False
@@ -1843,6 +1845,8 @@ def grpo_parse_args():
     parser = argparse.ArgumentParser(description='GRPO/ECPO Joint NTP Training')
     parser.add_argument('--sft_checkpoint', type=str, required=True,
                         help='Path to SFT (or RF-DPO) checkpoint directory')
+    parser.add_argument('--ref_checkpoint', type=str, default=None,
+                        help='Ref model checkpoint (frozen); defaults to sft_checkpoint')
     parser.add_argument('--preprocessed_dir', type=str, required=True,
                         help='Path to preprocessed NTP data shards')
     parser.add_argument('--output_dir', type=str, required=True,
@@ -2175,6 +2179,7 @@ def grpo_main():
         nll_reg=getattr(args, 'nll_reg', 0.0),
         time_gaps_list=time_gaps_list,
         action_levels_list=action_levels_list,
+        ref_checkpoint=getattr(args, 'ref_checkpoint', None),
         max_steps=max_steps,
         wandb_run=wandb_run,
     )
