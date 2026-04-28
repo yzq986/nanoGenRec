@@ -102,9 +102,9 @@ L = L_NTP + 0.5 * L_GRPO + α * L_contrastive
 
 ## IDEA-oneloc-2: DPO 对齐 + 双目标奖励函数
 
-**优先级**: P1
+**优先级**: ~~P1~~ → 已被 align3-0 覆盖
 **来源**: OneLoc §2.5 Reinforcement Learning
-**状态**: 待讨论
+**状态**: 已被 IDEA-align3-0 完全覆盖 — align3-0 的 SP-DPO + RF-DPO 链路即为本 IDEA 的超集。EXP-017/018/019/020 已完整验证 DPO 对齐框架；EXP-037 正在 features 链路上复现。oneloc-2 的"双目标奖励"概念可在 RF-DPO 阶段的 reward 设计中参考，不需要单独实验。
 
 ### 核心思想
 

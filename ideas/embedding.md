@@ -25,9 +25,9 @@ Qwen3 纯文本 embedding (1024D, 当前 baseline)
 
 ## IDEA-sid-1: 协同信号增强 Embedding
 
-**优先级**: P1
+**优先级**: ~~P1~~ → ❌ 关闭
 **来源**: 3.1.1 (OneRec-V1 技术报告)
-**状态**: 待讨论
+**状态**: ❌ 关闭 — EXP-007 全量 fine-tune + LoRA 多种 lr/τ 全部失败 (HR@50 卡在 ~0.02)；EXP-009 冻结底座 + QFormer 同样 HR@50=0.0216 几乎无改善。根因：I2I contrastive 信号不足以弥补 semantic embedding 与行为空间的 gap。embedding fine-tune 路线关闭。
 
 ### 核心思想
 
@@ -338,5 +338,5 @@ Output = CrossAttn(Q, K, V)    (M × D)
 | P1 | IDEA-onerec-0 | Caption Loss (联合训练) | 已实现 `--cap_loss_weight`, 与 QFormer 配合使用 |
 | P1 | IDEA-onemall-3 | Tokenizer 属性增强 Contrastive | OneMall +1.5% HR，可在 QFormer 基础上叠加 |
 | P1 | IDEA-oneloc-3 | Side-info 融合量化输入 | QFormer 输入端可融合 side-info |
-| ~~P1~~ | ~~IDEA-sid-1~~ | ~~直接 fine-tune 协同信号~~ | ~~EXP-007 已验证无效 (full/LoRA, 多种 lr/τ)~~ |
+| ~~P1~~ ❌ | ~~IDEA-sid-1~~ | ~~直接 fine-tune 协同信号~~ | ❌ EXP-007 full/LoRA + EXP-009 QFormer 全败，HR@50 卡在 0.02 |
 | P2 | IDEA-sid-3 | 多模态语义 ID (ESANS) | 需要多模态 embedding 基建 |

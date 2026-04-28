@@ -13,13 +13,13 @@
 | [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale/CascadedSparseDene) | 24 | — |
 | [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum/LAC/OneLive-BOS/CF-SoftLabel) | 20 | ~~onemall-0~~ ❌ (EXP-022 负结果) |
 | [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR/RPO/ElasticTether) | 12 | — |
-| [inference.md](inference.md) | 推理优化 (Dynamic Beam/CSR约束/Register压缩/PRM-Beam/GRC/FP8-PTQ) | 7 | — |
+| [inference.md](inference.md) | 推理优化 (Dynamic Beam/~~CSR约束~~/Register压缩/PRM-Beam/GRC/FP8-PTQ) | 7 | ~~static-0~~ ❌(SIDTrie已有) |
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | ~~oneloc-4~~ 部分完成 |
 | [ntp-features.md](ntp-features.md) | NTP 特征注入 (TimeGap/ActionType/SegmentEmb/Category/UserProfile/ContTime) | 6 | ~~feat-0/1/2~~ ✅ (EXP-036 全部验证) |
 
-**总计: 92 ideas (0 P0 活跃 / ~56 P1 / 28 P2 / 8 已完成或关闭)**
+**总计: 92 ideas (0 P0 活跃 / ~53 P1 / 28 P2 / 11 已完成或关闭)**
 
-**已完成/关闭**: sid-0 ❌, sid-1 ❌, onemall-0 ❌(EXP-022), onemall-4 ✅, onemall-5 ✅, forge-0 ✅, oneloc-4 部分✅, feat-0/1/2 ✅(EXP-036), rpo-0 ✅(验证), spot-0 ✅(验证), uni-0 ❌, mtgr-0 ✅(train_packed), lac-0 ✅(EXP-025/036), onerec-3 暂缓P2
+**已完成/关闭**: sid-0 ❌, sid-1(emb) ❌(EXP-007/009), onemall-0 ❌(EXP-022), onemall-4 ✅, onemall-5 ✅, forge-0 ✅, oneloc-4 部分✅, oneloc-2 已被align3-0覆盖, feat-0/1/2 ✅(EXP-036), rpo-0 ✅(理论验证), spot-0 ✅(理论验证), uni-0 ❌(无搜索场景), mtgr-0 ✅(train_packed), lac-0 ✅(EXP-025/036), onerec-3 暂缓P2, static-0 ❌(SIDTrie已实现)
 
 ## 全局演进图
 
