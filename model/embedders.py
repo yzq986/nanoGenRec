@@ -65,7 +65,10 @@ class Qwen3VLForEmbedding(torch.nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Qwen3VLForEmbeddingOutput:
-        outputs = self.model(
+        # 跳过 LM head, 直接调内层 model → 只返回 last_hidden_state
+        # 比 output_hidden_states=True 省掉所有中间层 (30层 × batch × seq × hidden)
+        inner = getattr(self.model, 'model', self.model)
+        outputs = inner(
             input_ids=input_ids,
             pixel_values=pixel_values,
             pixel_values_videos=pixel_values_videos,
@@ -76,11 +79,10 @@ class Qwen3VLForEmbedding(torch.nn.Module):
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             cache_position=cache_position,
-            output_hidden_states=True,
             **kwargs,
         )
         return Qwen3VLForEmbeddingOutput(
-            last_hidden_state=outputs.hidden_states[-1],
+            last_hidden_state=outputs.last_hidden_state,
             attention_mask=attention_mask,
         )
 
