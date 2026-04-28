@@ -1,14 +1,10 @@
 {
-  "current": "exp-041.sh",
-  "log": "/tmp/exp041.log",
-  "done_string": "EXP-041 complete!",
-  "status": "running",
-  "started_at": "2026-04-29 02:56",
-  "pid": 94917,
+  "current": null,
+  "status": "done",
+  "note": "Queue empty. EXP-041 complete but invalid (ENTP data design issue). Awaiting new experiments.",
   "prev": {
-    "exp": "exp-039b.sh",
+    "exp": "exp-041.sh",
     "status": "completed",
-    "ckpt": "exp039b-ecpo-from-spdpo",
-    "r500": 0.657
+    "note": "R@500=39-40% (invalid: exposure data used instead of behavior+neg join)"
   }
 }

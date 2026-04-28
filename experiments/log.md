@@ -41,10 +41,10 @@
 
 ## EXP-041: ENTP-Loss — Exposure-Aware Hard Negatives for L0 (with Features)
 
-**Date**: 2026-04-28
-**Status**: planned
+**Date**: 2026-04-29
+**Status**: completed (结论: 无效，需重设计)
 **IDEA**: IDEA-dualgr-0
-**Results**: TBD
+**Results**: experiments/ntp_checkpoints/exp041-entp{005,01,02}/
 
 ### Background
 
@@ -62,16 +62,32 @@ ENTP α=0.1 使 L0 PPL 下降 >10%（从 ~362 降至 ~320），R@500 提升 +2~4
 - **Data**: 14d behavior (2026-03-18~03-31) + exposure neg (same period, S3)
 
 ### Run
-`bash experiments/scripts/exp-041.sh`
+`bash experiments/scripts/exp-041.sh --no-smoke`
 
 ### Results
-TBD
+
+| Config | R@10 | R@500 | PPL | L0 PPL | Wall |
+|--------|------|-------|-----|--------|------|
+| exp036-full-features (α=0, baseline) | 10.9% | 59.0% | 27.3 | 362.9 | 7min |
+| exp041-entp005 (α=0.05) | 6.5% | 39.2% | 68.1 | 434.5 | 2min |
+| exp041-entp01 (α=0.1) | 7.5% | 39.7% | 69.1 | - | 2min |
+| exp041-entp02 (α=0.2) | 7.2% | 40.3% | 69.3 | - | 2min |
 
 ### Analysis
-TBD
+
+**结论：ENTP 实验无效，数据设计有根本性问题。**
+
+1. **ENTP 数据用户集合不同**：`exposure_neg` 数据来自 `feed_user_exposure`（曝光记录），用户池比 `behavior` 数据大得多（n_seqs=307万 vs 170万），但 p50 仅 6 items。曝光数据包含大量冷用户（只看过几个 item），这些用户的历史序列极短，无法提供有效的序列学习信号。
+
+2. **序列质量差**：behavior 数据过滤了 <2 items 的用户（有明确行为），而 exposure 数据仅要求有曝光记录。大量 1-2 item 短序列稀释了训练信号，导致 PPL 从 27 暴增至 68。
+
+3. **正确做法**：ENTP 应该在 **behavior 数据的基础上** 附加 neg_l0（即同一用户的曝光负样本），而不是用 exposure 数据替换 behavior 数据。需要按 uid join：保留所有 behavior 正样本序列，仅在有对应曝光负样本的 position 上加 ENTP loss。
+
+4. **α 值影响微小**：三个 alpha 结果几乎相同（39.2% / 39.7% / 40.3%），说明问题不在 alpha 选择，而在数据设计本身。
 
 ### Next Steps
-TBD
+- 修改 `build_unified_sequences`：以 behavior 数据为主，按 uid+iid 从 exposure_neg_data join neg_l0，保持原有 behavior 序列不变
+- 重跑 EXP-041 以正确方式验证 ENTP 效果
 
 ---
 
