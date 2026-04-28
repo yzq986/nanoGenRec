@@ -583,8 +583,8 @@ def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
 # Main
 # ============================================================
 
-def _resolve_dates(date_start, date_end):
-    """Resolve date range to list of date strings, newest first."""
+def _resolve_dates(date_start, date_end, oldest_first=False):
+    """Resolve date range to list of date strings."""
     from datetime import datetime, timedelta
     ds = date_start or DEFAULT_DATE_START
     de = date_end or DEFAULT_DATE_END
@@ -594,7 +594,8 @@ def _resolve_dates(date_start, date_end):
     while d <= end:
         dates.append(d.strftime("%Y-%m-%d"))
         d += timedelta(days=1)
-    dates.reverse()  # 新日期优先
+    if not oldest_first:
+        dates.reverse()
     return dates
 
 
@@ -611,6 +612,8 @@ def main():
                         help='(VL) max images per content')
     parser.add_argument('--max_pixels', type=int, default=VL_MAX_PIXELS,
                         help='(VL) per-image pixel cap; each IMAGE_FACTOR² (=1024) pixels → 1 vision token')
+    parser.add_argument('--oldest_first', action='store_true',
+                        help='Process dates oldest→newest (default: newest first)')
     args = parser.parse_args()
 
     # 分布式设置
@@ -626,7 +629,7 @@ def main():
     my_shard_ids = [i for i in range(NUM_SHARDS) if i % world_size == rank]
 
     # Resolve dates (newest first)
-    dates = _resolve_dates(args.date_start, args.date_end)
+    dates = _resolve_dates(args.date_start, args.date_end, args.oldest_first)
 
     if rank == 0:
         print("=" * 60)
