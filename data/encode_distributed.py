@@ -502,29 +502,38 @@ def _prepare_vl_batch(content_ids, texts, images, batch_idx, batch_size, max_ima
     return batch_cids, inputs, t_dl, n_ok, len(all_urls)
 
 
+PREFETCH_DEPTH = 3
+
+
 def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
                     max_images: int = VL_MAX_IMAGES):
-    """VL 编码: prefetch 下一个 batch 的图片下载 + 输入构造，与 GPU 推理重叠。"""
+    """VL 编码: prefetch 多个 batch 的图片下载 + 输入构造，与 GPU 推理重叠。"""
+    from collections import deque
     from concurrent.futures import ThreadPoolExecutor
 
     new_embeddings = {}
     start_time = time.time()
     total = len(content_ids)
 
-    prefetch = ThreadPoolExecutor(max_workers=1)
-    # kick off first batch preparation
-    future = prefetch.submit(_prepare_vl_batch,
-                             content_ids, texts, images, 0, batch_size, max_images)
+    prefetch = ThreadPoolExecutor(max_workers=PREFETCH_DEPTH)
+    queue = deque()
+    # seed the prefetch queue
+    for k in range(PREFETCH_DEPTH):
+        idx = k * batch_size
+        if idx < total:
+            queue.append((idx, prefetch.submit(
+                _prepare_vl_batch, content_ids, texts, images, idx, batch_size, max_images)))
 
     batch_idx = 0
     while batch_idx < total:
+        _, future = queue.popleft()
         batch_cids, inputs, t_dl, n_ok, n_urls = future.result()
 
-        # prefetch next batch while GPU works
-        next_idx = batch_idx + batch_size
+        # enqueue next batch
+        next_idx = batch_idx + PREFETCH_DEPTH * batch_size
         if next_idx < total:
-            future = prefetch.submit(_prepare_vl_batch,
-                                     content_ids, texts, images, next_idx, batch_size, max_images)
+            queue.append((next_idx, prefetch.submit(
+                _prepare_vl_batch, content_ids, texts, images, next_idx, batch_size, max_images)))
 
         # 推理 + OOM retry: chunk_size 减半；到 1 仍 OOM 时只 skip 那 1 条
         n = len(inputs)
