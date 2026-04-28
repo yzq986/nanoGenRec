@@ -25,6 +25,7 @@ CKPT_DIR="experiments/ntp_checkpoints"
 DATA_BASE="experiments/ntp_data"
 DATE_START="2026-03-18"
 DATE_END="2026-03-31"
+BEHAVIOR_CACHE="/mnt/workspace/gr-demo-behavior-cache"
 
 FORCE=false
 SKIP_SMOKE=false
@@ -77,7 +78,8 @@ run_rsft_config() {
             --date_start "${DATE_START}" \
             --date_end "${DATE_END}" \
             --shift_features \
-            --min_action_level "${MIN_LEVEL}"
+            --min_action_level "${MIN_LEVEL}" \
+            --behavior_path "${BEHAVIOR_CACHE}"
         echo "  Preprocessing complete."
     else
         echo "  [data] Already exists at ${DATA_DIR}, skipping preprocessing."
@@ -136,7 +138,8 @@ if [ "${SKIP_SMOKE}" == false ]; then
             --date_start "${DATE_END}" \
             --date_end "${DATE_END}" \
             --shift_features \
-            --min_action_level 2
+            --min_action_level 2 \
+            --behavior_path "${BEHAVIOR_CACHE}"
     fi
     torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
         --preprocessed_dir "${SMOKE_DATA}" \
