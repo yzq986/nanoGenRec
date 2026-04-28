@@ -77,6 +77,7 @@ Three remotes are configured:
 - 本地没有 GPU，代码推到远端才能测。写 CUDA 相关代码要格外小心。
 - **实现优化不能破坏数学语义**：当为了性能/显存把一个公式拆成多步实现时（如 split backward、分块计算），原本由框架隐式保证的数学性质（权重缩放、归一化、梯度累加比例等）会变成需要手动维护的不变量。写完优化后，回到原始公式逐项核对：公式里的每个系数是否都反映在了实际计算路径上，而不仅仅出现在日志和 config 里。
 - **只改 eval 代码不需要重训**：如果改动只影响推理/评测路径（如 beam search 传参修复），而训练数据和模型结构不变，应该直接用已有 checkpoint re-eval（参考 `exp-023-reeval.sh`），不要浪费 GPU 重训一遍相同模型。写实验脚本前先判断：这个 config 的训练数据+flags 是否与已有 checkpoint 完全相同？
+- **禁止在新实验中重跑已有 config 作对照**：设计多 config 对比实验时，如果某个 config 的参数与已有 checkpoint 完全一致，**直接引用已有结果，不要重训**。在 log.md 里写 `参考 EXP-NNN：R@500=xx.x%` 即可。例：EXP-031B（exp020+full stack）≡ EXP-029，EXP-032A（G=512,b=4）≡ EXP-029，均为浪费。新实验只跑真正新的 config。
 
 ## Eval 对齐规则
 
