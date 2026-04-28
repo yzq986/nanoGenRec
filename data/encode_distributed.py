@@ -111,10 +111,9 @@ def download_model_if_needed(model_name: str, rank: int, world_size: int, is_vl:
 # 图片下载 (带重试)
 # ============================================================
 
-def _download_one_image(url: str, timeout: int, cache_dir: str):
-    """下载单张图片，带磁盘缓存。失败返回 None。"""
+def _download_one_image(url: str, timeout: int, cache_dir: str, s3_client=None):
+    """下载单张图片，带磁盘缓存。支持 s3:// 和 http(s):// 两种路径。"""
     import hashlib
-    import requests
     from io import BytesIO
     from PIL import Image
 
@@ -127,9 +126,18 @@ def _download_one_image(url: str, timeout: int, cache_dir: str):
             pass
 
     try:
-        resp = requests.get(url, timeout=(timeout, timeout))
-        resp.raise_for_status()
-        img = Image.open(BytesIO(resp.content)).convert('RGB')
+        if url.startswith('s3://'):
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            client = s3_client or __import__('boto3').client('s3')
+            resp = client.get_object(Bucket=parsed.netloc, Key=parsed.path.lstrip('/'))
+            data = resp['Body'].read()
+        else:
+            import requests
+            resp = requests.get(url, timeout=(timeout, timeout))
+            resp.raise_for_status()
+            data = resp.content
+        img = Image.open(BytesIO(data)).convert('RGB')
         try:
             img.save(cache_path, 'JPEG', quality=85)
         except Exception:
@@ -153,11 +161,15 @@ def download_images_with_retry(
     results = [None] * len(urls)
     pending = [i for i, u in enumerate(urls) if u]
 
+    # boto3 low-level client is thread-safe
+    has_s3 = any(u and u.startswith('s3://') for u in urls)
+    s3_client = __import__('boto3').client('s3') if has_s3 else None
+
     for attempt in range(max_retries + 1):
         if not pending:
             break
         with ThreadPoolExecutor(max_workers=min(max_workers, len(pending))) as pool:
-            futures = {pool.submit(_download_one_image, urls[i], timeout, cache_dir): i
+            futures = {pool.submit(_download_one_image, urls[i], timeout, cache_dir, s3_client): i
                        for i in pending}
             for fut in as_completed(futures):
                 i = futures[fut]
@@ -259,10 +271,10 @@ def load_date_data(date_path, rank, world_size, cached_ids, load_images: bool = 
         if text_col is None:
             raise ValueError(f"No text column found. Available: {list(df.columns)}")
 
-        # image column: 'images' (array) 或 'image' (单 URL string) 或没有
+        # image column: 优先 image_s3_path (S3 缓存), 回退原始 URL
         image_col = None
         if load_images:
-            for col in ['images', 'image', 'image_url', 'image_urls']:
+            for col in ['image_s3_path', 'images', 'image', 'image_url', 'image_urls']:
                 if col in df.columns:
                     image_col = col
                     break
