@@ -42,8 +42,8 @@
 ## EXP-033: Features 修复验证 — EXP-031A Rerun with Correct Feature Injection
 
 **Date**: 2026-04-28
-**Status**: planned
-**Results**: TBD
+**Status**: completed
+**Results**: [experiments/ntp_checkpoints/exp033-features-fix/](experiments/ntp_checkpoints/exp033-features-fix/)
 
 ### Background
 
@@ -77,13 +77,37 @@ features bug 是 EXP-031 Config A clip 率升高（0.964 vs 0.924）的主要原
 `bash experiments/scripts/exp-033.sh`
 
 ### Results
-TBD
+
+训练 86min（409 steps，4×A100）。全量 eval n_recall=1000：
+
+| 指标 | EXP-033（features fix） | EXP-031A（features bug） | baseline exp020 |
+|------|------------------------|------------------------|-----------------|
+| R@10 | **10.3%** | 10.5% | 14.1% |
+| R@500 | **61.0%** | 61.8% | 66.2% |
+| clip 率 | **96.2%** | 96.4% | — |
+| PPL | **24.62** | — | 16.3 |
+| adv_std | 0.580 | — | — |
+| wall_time | 86min | — | — |
 
 ### Analysis
-TBD
+
+**假设被证伪**：features bug 不是 clip 率异常的原因。修复后 clip 率从 0.964 变为 0.962，几乎没有变化，全程稳定在 96%。
+
+核心发现：
+1. **clip 率 96% 是这组配置（ECPO δ=0.1 + behavior reward + G=512）的固有特性**，与 features 注入无关。EXP-029（无 features）也出现类似问题，说明高 clip 是 reward 分布稀疏导致的结构性问题，而非 train-infer 不一致。
+2. **R@500 61.0% vs 61.8%**：修复后略低于 EXP-031A，差距在 inline eval 随机性范围内，features fix 对 recall 无显著影响（正面或负面）。
+3. **相比 baseline（66.2%）的退化是实质性的**：当前 ECPO 配置在 exp025 SFT 起点上没有带来 recall 提升，反而略有下降。高 clip 率意味着大多数候选被截断，RL 的有效更新极少。
+
+根本原因推测：behavior reward 覆盖率 ~99%（几乎所有 SID 都有 reward），但 reward_std=1.696 + adv_std=0.580，导致所有候选的 advantage 归一化后差异很小，policy 更新方向不明确，clip 率居高不下。
 
 ### Next Steps
-TBD
+
+高 clip 率（96%）问题需要从 reward 设计或 group 构造入手：
+1. **降低 reward 稠密度**：behavior reward 覆盖率 99% 导致 within-group reward variance 极低，考虑用更 discriminative 的 reward（如 rank-based 或 contrastive reward）
+2. **增大 eps**：eps=0.2 可能偏小，对 δ=0.1 ECPO 来说 early clip 更激进，考虑 eps=0.3~0.5
+3. **换 GRPO（δ=0）**：排除 ECPO early clip 的影响，先确认 plain GRPO 的 clip 率是否正常
+
+features 修复本身是正确的（保证 train-infer 一致性），应该保留；只是它不是 clip 问题的根源。
 
 ---
 
