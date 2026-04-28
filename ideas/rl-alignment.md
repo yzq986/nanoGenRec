@@ -29,8 +29,10 @@ NTP 纯监督学习 (当前 baseline)
 ├── IDEA-gr4ad-3: RSPO (GR4AD 方案)
 │   └── list-wise Lambda-weighted, NDCG-inspired
 │   └── 最强但前置依赖最重
-└── IDEA-sgrec-0: A2PO + Personalized Semantic Judge (S-GRec, 腾讯)
-    └── 语义-业务不对称门控, GMV +1.19%
+├── IDEA-sgrec-0: A2PO + Personalized Semantic Judge (S-GRec, 腾讯)
+│   └── 语义-业务不对称门控, GMV +1.19%
+└── IDEA-recast-0: Repair-then-Contrast Signal (Huawei, Apr 2026)
+    └── 稀疏 reward 下: rollout 修复 all-zero 组 + O(1) boundary 更新, Pass@1 +9~36%
 ```
 
 ---
@@ -582,3 +584,131 @@ SPoT 揭示了 DPO reward 公式 `r(x,y) = β log(π/π_ref)` 自带的 **Elasti
 1. SPoT 的实验是在 LLM (Qwen3-8B) 上做的, 推荐模型 (45.8M) 行为可能不同
 2. Elastic Tether 是对单步梯度的分析, 807 步的累积效应可能不同
 3. 与 RPO (IDEA-rpo-0) 互补: RPO 加 SFT loss 修正方向, Elastic Tether 解释 β 的 scale 控制作用
+
+---
+
+## IDEA-recast-0: ReCast — Repair-then-Contrast Signal for Sparse-Hit GRPO
+
+**优先级**: P1
+**来源**: ReCast (Huawei, arxiv 2604.22169, Apr 2026)
+**状态**: 待讨论 — 直接针对 EXP-026 踩过的 "reward std≈0, 96% 零 reward 样本" 问题
+
+### 核心思想
+
+ReCast 观察到通用 group-based RL (GRPO 系) 在**稀疏命中 (sparse-hit) 生成式推荐**下的根本问题不是 reward assignment，而是 **"many sampled groups never become learnable at all"**。在 OpenOneRec 的代表性 RL 设置里：
+- **85% 的 rollout group 是 all-zero** (group 内所有候选都没命中 GT)
+- 另 13% 是 single-hit (一个偶然命中主导更新, 噪声大)
+- 只有 2% 是多命中 group
+- 样本级 96% 是 zero reward
+
+标准 GRPO normalize 这种 group 会产生：reward std ≈ 0 → advantage 爆炸 / 梯度不稳定。这正是我们 EXP-026 踩的坑 (要靠 `std < 1e-6` group skip + `adv.clamp(-5, 5)` + `log_rho.clamp(-10, 10)` 硬约束来缓解)。ReCast 从 **signal construction** 层面根本修复：
+
+**1. Rollout Repair (注入 GT 作为 positive anchor)**
+
+对 all-zero group, 从 ground-truth 构造一个合法正例 `R_anc` 替换组内"信息量最低"的响应 (按 structural score 排序取 arg min)。这让所有原本浪费的 rollout 变成可学习单元。已有 positive 的 group 不改动。
+
+**2. Structural Score φ (层级 SID prefix 匹配)**
+
+对 3-token SID `p = (pa, pb, pc)` 和 GT `t = (ta, tb, tc)`:
+```
+φ(p,t) = 1.0   if p == t               # 完全匹配
+         0.1   if (pa,pb) == (ta,tb)   # 前 2 层匹配
+         0.01  if pa == ta             # 只第 1 层匹配
+         0     otherwise
+```
+structural score 只用于 **within-group ranking**（选 hardest negative 和 repair 时的 arg min），不改外部 reward。**这正是我们 BehaviorReward prefix cascade 的对称表达** — 我们是把 L0/L1/L2 用作 reward 本身，ReCast 是把它用作候选排序 key。
+
+**3. Boundary Contrastive Update (O(1) 更新支持)**
+
+对 repair 后的 group：
+- `i+ = argmax_i ri` (最高 reward 的正例)
+- `i- = argmax_{ri=0} ui` (structural score 最高的未命中样本，即"最接近但没对上")
+- advantage = +w / -w / 0 (其余全 0)
+
+把 full-group normalization 替换成 **只更新这一对**。搜索宽度 G 保持，actor 更新宽度从 O(G) 降到 O(1)。Rollout budget 继续探索罕见正例，但 actor 不再为无信息量的中间样本付学习开销。
+
+**4. Search–Update Decoupling 的系统收益**
+
+Wsearch = G, Wupdate = O(1) 带来：
+- actor-side update time **16.60× 加速**
+- peak memory **-16.5%**
+- actor MFU **+14.2%**
+- Pass@1 **+9.1% ~ +36.6%** (5 个任务，Qwen3-1.7B baseline)
+- matched-budget 优势: ReCast 用 **4.1% rollout budget** 达到 baseline 全量性能
+- 优势随模型规模扩大 (Qwen3-14B 更受益)
+
+### 与当前项目的关联
+
+**这是对 EXP-026 踩坑最直接的补丁。** 我们的 `rl/trainer.py::_grpo_step` 当前路径是：
+```python
+# 每个 context 的 768 candidates → BehaviorReward (SID exact + prefix cascade)
+# → normalized advantage → clip → loss
+```
+现存问题：
+- 85% 全零 group 被 `std < 1e-6` skip 掉 — 这些 rollout 的 GPU 时间全部浪费
+- 少数非零 group 主导梯度，训练信号不稳
+- step log 里 `reward metric` 经常全 0，难以诊断
+
+ReCast 对我们的映射：
+
+| ReCast 机制 | 对应我们的实现位置 | 改造成本 |
+|-------------|-------------------|--------|
+| Rollout repair (inject GT) | `rl/trainer.py::_grpo_step`，在 BehaviorReward 计算后、advantage 计算前 | 低 — 从 context 的 ground-truth SID 直接构造一条响应替换组内最低 structural score |
+| Structural score φ | 已存在 — prefix cascade L0/L1/L2 match 函数在 `rl/reward.py::BehaviorReward` 中 | 0 — 直接复用 |
+| Boundary contrastive update | 替换 `rl/grpo.py` 里的 normalized advantage 计算 | 中 — 单独分支，保留原 GRPO 作为 ablation |
+| Search-update decoupling | 物理过滤非 (i+, i-) 样本，跳过 old_log_prob / ref_log_prob / update_actor | 中 — 需要改 log_prob 计算路径 |
+
+**与现有 RL ideas 的差异化**：
+- vs IDEA-onemall-2 (GRPO baseline): ReCast 是 GRPO 的 signal layer 插件，不改外部 objective
+- vs IDEA-onerec-3 (ECPO): ECPO 改 clip 边界，ReCast 改候选选取 — **正交，可组合**
+- vs IDEA-sgrec-0 (A2PO): A2PO 给负例加 semantic gating；ReCast 直接只保留一个"最硬"负例 — 更极端，系统收益更大
+- vs IDEA-gpr-0 (HEPO): HEPO 用层级 reward，ReCast 用层级 structural ranking — 都利用 SID 层级但作用点不同
+
+### 实验设计草案
+
+**前置**: EXP-037/EXP-038 (SP-DPO, RF-DPO) 稳定后，EXP-039 (ECPO) 或新 EXP-040 (ReCast) 二选一
+
+**EXP-040 — ReCast on top of EXP-026 GRPO pipeline** (本地 8 GPU):
+
+**配置**:
+- Checkpoint: exp020-hard-lam03 (R@500=66.2% baseline)
+- Rollout size G = 64 (保持 EXP-026 设置)
+- Structural score: 直接用 `BehaviorReward` 的 prefix match (L0=0.01, L1=0.1, L2=1.0)
+- Repair: 从 context 的 ground-truth next-item 取其 SID, 用该 SID 构造一条生成输出替换组内 `ui` 最低者
+- Boundary pair: `i+` = 最高 reward; `i-` = 未命中中 structural score 最高者
+
+**对比**:
+| Config | Rollout 利用率 | Pass@1 / R@10 | actor update time | notes |
+|--------|--------------|---------------|------------------|-------|
+| A. EXP-026 GRPO (baseline) | ~15% (85% skip) | ? | T0 | 已有结果 |
+| B. + rollout repair only | 100% | ? | T0 | 隔离 repair 贡献 |
+| C. + boundary contrast only | ~15% | ? | T0/60 | 隔离 contrast 贡献 |
+| D. Full ReCast (B+C) | 100% | ? | T0/60 | 完整方案 |
+| E. ReCast + ECPO | 100% | ? | T0/60 | 叠加 IDEA-onerec-3 |
+
+**关键实验问题**:
+- 预期 D 相对 A: R@500 +0.5~2.0pp, 且训练曲线更稳 (`reward std` 分布变宽)
+- C 单独是否负收益？(去掉 repair 但只用 boundary 可能退化)
+- Repair 引入 GT 可能产生 **目标泄漏** — 要检查是否只在 RL advantage 计算中使用，NTP joint loss 里不能直接把 repaired rollout 当 positive sample
+
+**Phase 1 (代码改动)**:
+1. 在 `rl/grpo.py` 新增 `compute_boundary_advantages(rewards, structural_scores)` 函数
+2. 在 `rl/trainer.py::_grpo_step` 加 `--rl_strategy {grpo, recast, recast_no_repair, recast_no_contrast}` 开关
+3. 复用 `BehaviorReward.prefix_match` 作为 structural score
+4. 物理过滤 (跳过 old_log_prob / ref_log_prob 计算) — 验证 system-level 加速 (Huawei 报告 16.60×)
+
+### 关键问题
+
+1. **GT 注入是否构成作弊？** Rollout repair 用 GT 构造正例，严格讲没有用 ground-truth 作为 label (外部 reward 仍是 exact match)，但 rollout 分布被人为污染。需要和 IDEA-align3-0 (SP-DPO/RF-DPO) 路线对比：SP-DPO 的 self-play 也会偏向高 reward 方向，本质类似
+2. **与现有 BehaviorReward prefix cascade 的关系**: 我们已经在 reward 层做了 prefix cascade fallback，ReCast 是在 advantage 层再做一次。两者叠加会不会过度补偿？建议 ablation：`BehaviorReward exact only` + ReCast structural ranking vs `BehaviorReward prefix cascade` + ReCast structural ranking
+3. **contrast weight w 的选择**: 论文默认 w=1，但在我们稀疏场景下可能需要更大 (e.g. w=2~5) 以补偿只有 2 个样本带来的梯度方差
+4. **对已经稳定的 group 是否还需要 boundary contrast？** 论文里所有 group 都走 boundary，但直觉上 multi-hit group (有丰富信号) 用 full-group normalization 可能更好。可以加个 `k_hit ≥ threshold` 的分支
+5. **重现性**: 本文实验跑在 Qwen3-1.7B/8B/14B + Ascend NPU，我们是 ~45M NTP + L20X/H100。模型规模差 2 个量级，论文强调收益随规模增加，小模型收益可能有限 — 需要小规模 ablation
+
+### 相关 idea
+
+- IDEA-onemall-2 (GRPO baseline): ReCast 在其之上插入 signal layer
+- IDEA-onerec-3 (ECPO): 正交改进, 可组合
+- IDEA-sgrec-0 (A2PO): 思路相似 (负例加权)，ReCast 更激进 (只留一个负例)
+- IDEA-gpr-0 (HEPO): 层级 reward，ReCast 层级 ranking
+- EXP-026 GRPO/ECPO 踩坑记录 (CLAUDE.md 中已记): 本 idea 是对该场景的系统性修复

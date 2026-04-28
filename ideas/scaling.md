@@ -19,8 +19,10 @@ S-tier (39.5M params, 当前唯一实现)
 │   └── 重要性提升: tokenizer 瓶颈突破后成为 scale up 关键
 ├── IDEA-hstu-0: Sparse Self-Attention Co-design (Meta)
 │   └── 5x 训练 / 21x 推理 scaling, 保留 self-attention 表达力
-└── IDEA-mtgenrec-0: 分布式 GR 训练系统 (Meituan)
-    └── Dynamic Hash Embedding + Sequence Batching + ID Dedup, 2.4x throughput
+├── IDEA-mtgenrec-0: 分布式 GR 训练系统 (Meituan)
+│   └── Dynamic Hash Embedding + Sequence Batching + ID Dedup, 2.4x throughput
+└── IDEA-freescale-0: Sequence Load Balancing + SM-Free 通信 (Meta, MLSys 2026)
+    └── 长序列 UIH straggler 缓解 + 优先级 embedding 更新 + CPU-RDMA 零 SM 占用
 ```
 
 ---
@@ -246,3 +248,78 @@ MTGenRec 是美团基于 TorchRec 构建的 GR 专用分布式训练系统，解
 | P1 | IDEA-kunlun-0 | Rec Scaling Laws (MFU + GDPA) | Meta Ads 部署验证; tokenizer 瓶颈突破后成 scale up 关键 |
 | P1 | IDEA-hstu-0 | Sparse Self-Attention Co-design | 21x inference scaling, 对比 Query-Former 路线 |
 | P2 | IDEA-mtgenrec-0 | 分布式 GR 训练系统 | 美团部署, 100+ GPU scaling, dynamic batch 可先行参考 |
+| P2 | IDEA-freescale-0 | Meta FreeScale: Load Balancing + SM-Free 通信 | 256×H100 验证, 90% 通信气泡削减; 当前 8 GPU 受益有限, 未来多节点扩展时核心参考 |
+
+---
+
+## IDEA-freescale-0: FreeScale — Sequence Load Balancing + SM-Free 通信
+
+**优先级**: P2
+**来源**: FreeScale (Meta, arxiv 2604.24073, MLSys 2026)
+**状态**: 待讨论 (远期参考, 当前 4-8 GPU 单节点受益有限)
+
+### 核心思想
+
+FreeScale 是 Meta 为 DLRM/sequence recommendation 设计的分布式训练系统，针对三个在大规模 (100+ GPU) 训练中占主导的效率瓶颈提供系统性解决方案。在 256×H100 production 集群上实现 **90.3% exposed communication 降低**，且离线 normalized entropy 与 baseline 完全一致（不损失精度）。
+
+**1. Sequence Load Balancing (缓解 Straggler)**
+
+UIH (user interaction history) 长度异质性巨大：同 batch 内 2k vs 21k 样本并存，导致 rank 间计算量差异 > 20%，快 rank 空等慢 rank。FreeScale 在每次 iteration 前用三阶段 AllGather 收集 world UIH lens + candidate lens，再用 `FBS` (First-Fit-Decreasing by sequence size) 或 `VBS` (可变块) partition 算法重分发样本。关键点：
+- **不能按长度预先排序**（推荐场景里 temporal ordering 对模型质量敏感）
+- **在 trainer 内部做 runtime partition**（不能依赖静态数据布局，因 dynamic resource allocation）
+- 21k UIH + 64 GPU 下 straggler% 从 22% 降到 2.4%
+
+**2. Prioritized Embedding Updates**
+
+Vanilla TorchRec 每 iteration 做两次 blocking AllToAll（IDs→lookup, result→rank）。简单 prefetch 会读到 stale embedding（下一 iter 的 lookup 在本 iter backward 之前）。FreeScale 的 insight: **真实 collision rate 仅 ~12%**（P99 = 14%），所以:
+- Prefetch **所有非冲突行** → 和 forward 完全 overlap
+- 只阻塞等待 collision 行 — exposed communication 变成 O(collision rate × volume)
+- 结果: 8k UIH 下 TorchRec exposed comm 111 ms → FreeScale 13 ms
+
+**3. SM-Free Communication**
+
+GPU 上通信和计算同时发生时，NCCL 会占用 SM，导致实际 overlap 受 SM 抢占影响（10% throughput loss 即使调大 NCCL_MAX_NCHANNEL）。FreeScale 走 **CPU-RDMA**: 把 embedding 搬回 CPU 做集合通信，完全让出 GPU SM。对 sequence models (d=128, seq=8192) 观察到稳定 10% speedup，且 speedup 不随 NCCL tuning 变化。
+
+**4. Staged Training Pipeline (不依赖 full graph trace)**
+
+不像 CUDA Graph / `torch.compile` 那样做全图追踪（会禁用 dynamic branching / 第三方 op），FreeScale 把 train step 分为 data loading / forward / backward / opt step / metrics 五个阶段，用 PyTorch module hooks 插桩 (`named_modules()` 枚举 embedding tables)。保留模型迭代灵活性同时引入优化。
+
+### 与当前项目的关联
+
+- **当前不受益**: 我们的 `torchrun` 训练在 4-8 GPU 单节点，UIH 长度 ~170 items (远 < Meta 的 21k)，straggler 不是主要瓶颈
+- **序列长度 scaling 验证时受益**: IDEA-oneloc-4 Phase 2 要推 max_seq_len 512→2048+，届时长尾 UIH 会出现 straggler，本方案 Phase 1 (load balancing) 可直接采纳
+- **与 IDEA-mtgenrec-0 (MTGenRec) 对比**:
+  - MTGenRec 的 "Sequence Batching" ≈ FreeScale 的 "FBS partition"，思路一致
+  - MTGenRec 没有 "prefetch + collision-only wait" 机制
+  - MTGenRec 基于 TensorFlow 生态，FreeScale 基于 PyTorch/TorchRec + Triton — 后者更贴合我们技术栈
+  - **优先参考 FreeScale 而非 MTGenRec**（如果未来做分布式优化）
+- **Triton kernel**: FreeScale 用 custom Triton kernel 实现 variable-length attention，我们 `ntp/model.py` 若推长序列也会需要类似优化
+
+### 实验设计草案
+
+**当前阶段不执行。** 等 IDEA-oneloc-4 (序列长度 scaling) 推进到 8k+ UIH 且多节点训练时再评估。届时可做：
+
+**Phase 1 — Load Balancing (可独立实现, 风险低)**:
+- 在 `ntp/data.py` 或 `data/distributed_sampler.py` 里实现 FBS partition
+- 在每个 iteration 开始前 AllGather 各 rank 的 batch lengths，按 First-Fit-Decreasing 重分发样本
+- 评估: rank 间 idle 时间、iteration time 方差、端到端 QPS
+- **预期**: 长 UIH (>5k) + 8 GPU 场景收益显著；短 UIH 场景可能是负收益（overhead 超过 straggler）
+
+**Phase 2 — Prioritized Embedding Updates**:
+- 依赖 embedding 表足够大 + multi-node 训练，当前不适用
+
+**Phase 3 — SM-Free Communication**:
+- 依赖 CPU-RDMA 硬件支持 + NCCL 替换，工程复杂，延后
+
+### 关键问题
+
+1. 当前 DDP + 短 UIH 下 straggler 到底多大？需 profiling 确认，若 <5% 就别折腾
+2. FBS partition 改变了每 rank 的实际 batch size → DDP gradient reduce 需要 weighted average (和 MTGenRec 一样的坑)
+3. SM-Free 通信需要高速 CPU-NIC 带宽（FreeScale 实验用 8×200 Gb/s InfiniBand），我们云上环境未必匹配
+4. Triton kernel 替换标准 PyTorch ops 会影响 `torch.compile`/autocast 兼容性
+
+### 相关 idea
+
+- IDEA-mtgenrec-0 (MTGenRec): Meituan 的同类系统, 技术重叠但 FreeScale 更成熟
+- IDEA-oneloc-4: 序列长度 scaling, 是启动 FreeScale 的前置依赖
+- IDEA-hstu-0: Sparse attention co-design, 减少 compute 需求 → 降低 FreeScale 必要性

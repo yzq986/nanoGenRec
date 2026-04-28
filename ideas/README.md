@@ -12,12 +12,12 @@
 | [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性/Caption) | 6 | — |
 | [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale/CascadedSparseDense/SummaryAttn/VISTA-UIH/SIF-Mixer) | 27 | — |
 | [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum/LAC/OneLive-BOS/CF-SoftLabel) | 20 | ~~onemall-0~~ ❌ (EXP-022 负结果) |
-| [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR/RPO/ElasticTether) | 12 | — |
-| [inference.md](inference.md) | 推理优化 (Dynamic Beam/~~CSR约束~~/Register压缩/PRM-Beam/GRC/FP8-PTQ/SelfDraftSD) | 8 | ~~static-0~~ ❌(SIDTrie已有) |
-| [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn/DistTraining) | 4 | ~~oneloc-4~~ 部分完成 |
+| [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR/RPO/ElasticTether/ReCast) | 13 | — |
+| [inference.md](inference.md) | 推理优化 (Dynamic Beam/~~CSR约束~~/Register压缩/PRM-Beam/GRC/FP8-PTQ/SelfDraftSD/SnapMap) | 9 | ~~static-0~~ ❌(SIDTrie已有) |
+| [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn/DistTraining/FreeScale) | 5 | ~~oneloc-4~~ 部分完成 |
 | [ntp-features.md](ntp-features.md) | NTP 特征注入 (TimeGap/ActionType/SegmentEmb/Category/UserProfile/ContTime) | 6 | ~~feat-0/1/2~~ ✅ (EXP-036 全部验证) |
 
-**总计: 100 ideas (0 P0 活跃 / ~57 P1 / 33 P2 / 11 已完成或关闭)**
+**总计: 103 ideas (0 P0 活跃 / ~58 P1 / 34 P2 / 11 已完成或关闭)**
 
 **已完成/关闭**: sid-0 ❌, sid-1(emb) ❌(EXP-007/009), onemall-0 ❌(EXP-022), onemall-4 ✅, onemall-5 ✅, forge-0 ✅, oneloc-4 部分✅, oneloc-2 已被align3-0覆盖, feat-0/1/2 ✅(EXP-036), rpo-0 ✅(理论验证), spot-0 ✅(理论验证), uni-0 ❌(无搜索场景), mtgr-0 ✅(train_packed), lac-0 ✅(EXP-025/036), onerec-3 暂缓P2, static-0 ❌(SIDTrie已实现)
 
@@ -234,6 +234,9 @@ graph LR
 | `vista` | VISTA (Meta, arxiv 2510.22049, ICLR 2026) | Two-Stage UIH Summarization + QLA O(N) attention |
 | `mtgenrec` | MTGenRec (Meituan + Wuhan Univ, arxiv 2505.12663) | 分布式 GR 训练系统 (Dynamic Embedding + Sequence Batching) |
 | `sif` | SIF (Meituan, arxiv 2604.15650) | Sample-Level Tokenization + SIF-Mixer (HGAQ + Factored Attention) |
+| `snap` | Snapchat SIDs (arxiv 2604.03949, SIGIR 2026 Industry Track) | 相关性引导桶内消歧 + Depth>Breadth 检索 + RQ-VAE STE 反坍缩 |
+| `freescale` | FreeScale (Meta, arxiv 2604.24073, MLSys 2026) | Sequence Load Balancing + 优先级 embedding 更新 + SM-Free 通信 (256×H100, 90% 通信削减) |
+| `recast` | ReCast (Huawei, arxiv 2604.22169) | Repair-then-Contrast — 稀疏 reward GRPO 的 rollout 修复 + O(1) boundary 更新 |
 
 ## 核心设计原则
 
@@ -394,6 +397,8 @@ Text → [Qwen3-0.6B] → 1024D → [MLP-FSQ h=64] → 3-token SID → [NTP S-ti
 | IDEA-ksa-0 | Architecture | Summary Attention — O(n/k) KV cache (快手 OneRec, 开源) |
 | IDEA-nezha-0 | Inference | Self-Drafting Speculative Decoding (淘宝 +1.2% revenue, 10x speedup) |
 | IDEA-vista-0 | Architecture | Two-Stage UIH Summarization + QLA (Meta C-Task +0.5%, 94% GPU reduction) |
+| IDEA-snap-0 | Inference | SID→Item 相关性引导桶内消歧 + Depth>Breadth (Snapchat shares +4.39% A/B) |
+| IDEA-recast-0 | RL | ReCast — Repair-then-Contrast 稀疏 GRPO 信号修复 (直接修 EXP-026 痛点) |
 
 ### P2 — 有前置依赖 / NTP 后再看
 
@@ -432,3 +437,4 @@ Text → [Qwen3-0.6B] → 1024D → [MLP-FSQ h=64] → 3-token SID → [NTP S-ti
 | IDEA-cobra-0 | Architecture | Cascaded Sparse-Dense 生成 (Baidu 200M+ DAU) |
 | IDEA-mtgenrec-0 | Scaling | 分布式 GR 训练系统 (Meituan +1.22% orders, 2.4x throughput) |
 | IDEA-sif-0 | Architecture | Sample-Level Tokenization + SIF-Mixer (Meituan CTR +2.03%) |
+| IDEA-freescale-0 | Scaling | FreeScale — Load Balancing + SM-Free 通信 (Meta, 256×H100, 90% 通信削减; 当前 8 GPU 受益有限) |

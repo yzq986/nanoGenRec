@@ -34,3 +34,6 @@
 | 2603.00632 | QuaSID: Qualification-Aware Semantic ID Learning at Industrial Scale | Zheng Hu et al. (Kuaishou) | 2026-02-28 | [pdf](2603.00632.pdf) | [txt](2603.00632.txt) | IDEA-quasid-0 |
 | 2505.12663 | MTGenRec: Efficient Distributed Training System for GR at Meituan | Yuxiang Wang et al. (Meituan + Wuhan Univ) | 2025-05-19 | [pdf](2505.12663.pdf) | [txt](2505.12663.txt) | IDEA-mtgenrec-0 |
 | 2604.15650 | SIF: Sample Is Feature — Sample-Level Tokens for Unified Large Recommender Models | Shuli Wang et al. (Meituan) | 2026-04-17 | [pdf](2604.15650.pdf) | [txt](2604.15650.txt) | IDEA-sif-0 |
+| 2604.03949 | Semantic IDs for Recommender Systems at Snapchat: Use Cases, Technical Challenges, and Design Choices | Clark Mingxuan Ju et al. (Snap Inc.) | 2026-04-05 | [pdf](2604.03949.pdf) | [txt](2604.03949.txt) | IDEA-snap-0 |
+| 2604.24073 | FreeScale: Distributed Training for Sequence Recommendation Models with Minimal Scaling Cost | Chenhao Feng et al. (Meta, MLSys 2026) | 2026-04-27 | [pdf](2604.24073.pdf) | [txt](2604.24073.txt) | IDEA-freescale-0 |
+| 2604.22169 | ReCast: Recasting Learning Signals for Reinforcement Learning in Generative Recommendation | Peiyan Zhang et al. (Huawei) | 2026-04-24 | [pdf](2604.22169.pdf) | [txt](2604.22169.txt) | IDEA-recast-0 |

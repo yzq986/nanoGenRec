@@ -396,3 +396,90 @@ NEZHA 将 speculative decoding 引入 GR，解决 beam search 解码延迟瓶颈
 2. Draft head 的 RNN transition vs 我们可用 MLP/GRU 的选择
 3. Placeholder tokens 需要额外 vocab entries — 影响 tokenizer
 4. 与 KV-cache 推理 (`forward_cached`) 的集成: NEZHA 不需要 KV-cache 的逐步更新，改为 single prefill + draft head
+
+---
+
+## IDEA-snap-0: SID-to-Item 相关性引导消歧 + Depth>Breadth 检索
+
+**优先级**: P1
+**来源**: Snapchat SIDs 工业报告 (arxiv 2604.03949, SIGIR 2026 Industry Track)
+**状态**: 待讨论
+
+### 核心思想
+
+Snapchat 报告了 SID 作为直接检索源 (Generative Retrieval) 上线的两个关键工程决策，在 short-form video A/B 中把 video shares 从 +0.13% 提升到 +4.39%：
+
+**1. 相关性引导的 intra-bucket disambiguation**
+
+SID 的 cardinality 远小于 item 数，同一 SID 桶内通常有多个 item。当 GR 模型 beam search 输出 top-N SIDs 后，如何把每个 SID 展开成实际 item 列表决定了最终质量：
+- **Random mapping**: 桶内随机挑 — 线上收益微弱 (+0.13% views)
+- **Relevance-guided mapping**: 用 item-level 启发式（累计观看时长、freshness、CTR 历史等）在桶内二次排序 — 线上 **+0.57% views / +2.54% sends / +3.55% re-posts / +4.39% shares**
+
+本质：让生成模型负责"语义类别选择"，轻量 heuristic 负责"桶内 item 筛选"，两阶段解耦。
+
+**2. Depth > Breadth 检索分配**
+
+固定 retrieval budget (比如 1000 items) 下：
+- **Breadth**: 每 SID 取 10 个，覆盖 100 个 SID → neutral
+- **Depth**: 每 SID 取 100 个，只用 top-10 SID → +0.57% views
+
+说明模型在 top-rank SID 上的置信度很高，把预算集中到少数高置信桶比分散到大量低置信桶更优。
+
+**3. Meta 观察：Uniqueness 不是 SID 质量的金标准**
+
+通过 Amazon Beauty 实验（表 5）和 Snap 内部数据，uniqueness 超过 ~70% 后 Recall@10 饱和，继续追求 90%+ uniqueness 没有收益。对我们评估 tokenizer 有指导意义：已有的 MLP-FSQ (collision 10.7%, uniqueness 89%) 已经处在"足够高"的区间，不必在 collision 上卷。
+
+### 与当前项目的关联
+
+- **`metrics/sid_prediction.py` 直接相关**: 当前 beam search 输出 top-N SID 后，用 `SIDTrie` 或 `semantic_ids.npy` 做 SID→item 映射。如果一个 SID 对应多 item，我们当前策略是"全取" (prefix cascade reward) 或"按 id 顺序"，没有业务侧排序。
+- **prefix cascade 语义对齐**: EXP-026 的 BehaviorReward L0/L1/L2 prefix cascade 本质上就是 Snapchat 说的 "depth" 思想 — 当全 SID 匹配为 0 时退一级 prefix，这和 "更少 SID × 更多 item" 等价
+- **无业务侧特征**: 我们目前没有 item-level popularity/freshness/CTR 特征，但可以用:
+  - `recency`: 最后交互时间 (从 NTP 训练数据可导出)
+  - `popularity`: 出现频次 (item count)
+  - `SID frequency`: 桶内 item 在训练集中的出现比例
+- **与 IDEA-gr4ad-4 (Dynamic Beam) 协同**: DBW 控制 beam 宽度，本 idea 控制展开后的 item 分配策略 — 正交
+
+### 实验设计草案
+
+**Phase 1 — Relevance-guided intra-bucket mapping (eval only)**:
+
+1. 在 `metrics/sid_prediction.py` 的 beam-search-to-item 展开阶段引入排序 key:
+   ```python
+   bucket_items = sid_to_items[sid]  # List[item_id]
+   bucket_items.sort(key=lambda iid: item_priority[iid], reverse=True)
+   ```
+   其中 `item_priority[iid]` 选项：
+   - `popularity`: 训练集 interaction 频次 (log-scaled)
+   - `recency`: `max(timestamp)` 归一化
+   - `pop × recency`: 组合
+2. 在 EXP-020 baseline checkpoint 上做 re-eval（无需重训），对比:
+   | Config | R@10 | R@100 | R@500 |
+   |--------|------|-------|-------|
+   | random mapping (baseline) | ? | ? | 66.2% |
+   | popularity | ? | ? | ? |
+   | recency | ? | ? | ? |
+   | pop × recency | ? | ? | ? |
+
+**Phase 2 — Depth vs Breadth budget allocation**:
+
+固定总 retrieval budget = 1000，扫描 (top-K SID, per-SID items) 组合：
+- (50, 20), (100, 10), (200, 5), (500, 2), (1000, 1) — breadth-first
+- (10, 100), (20, 50), (5, 200) — depth-first
+
+报告 Recall@1000 和 Recall@100。Snapchat 的发现预测 (10, 100) 或 (20, 50) 最优。
+
+**Phase 3 — 监督式可学习 scorer (可选)**:
+
+若 heuristic 饱和，训练一个轻量 MLP 在 (sid, item_feats) 上做桶内排序，用 NTP log 里的点击/观看作为 label。
+
+### 关键问题
+
+1. 当前 eval 用 `semantic_ids.npy` 做 SID→item 映射，实际 beam search 是否真的有桶冲突？先统计当前训练/eval 集中每个 SID 桶的平均 item 数
+2. popularity / recency 特征是否与 prefix cascade L0/L1 fallback 冗余？需要在 prefix cascade eval 与"完整 SID 匹配 + 桶内排序" eval 两条路径分别验证
+3. SID uniqueness 70% 阈值结论不一定通用 — 我们 32-bit SID + 1.09M items 的 collision 分布与 Amazon Beauty 不同，可补充内部验证
+
+### 相关 idea
+
+- IDEA-gr4ad-4 (Dynamic Beam): 调整 beam 宽度 → 本 idea 调整展开策略，正交
+- IDEA-adasid-0 (Adaptive Collision): 从 tokenizer 端降低 collision → 本 idea 不触碰 tokenizer，纯 eval 端优化
+- IDEA-r3vae-0 / FORGE proxy metrics: Snapchat 的 "uniqueness 不是金标准" 是这条线的新旁证

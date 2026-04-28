@@ -1,0 +1,682 @@
+Semantic IDs for Recommender Systems at Snapchat:
+Use Cases, Technical Challenges, and Design Choices
+Clark Mingxuan Ju∗, Tong Zhao∗, Leonardo Neves, Liam Collins, Bhuvesh Kumar, Jiwen Ren, Lili
+Zhang, Wenfeng Zhuo, Vincent Zhang, Xiao Bai, Jinchao Li, Karthik Iyer, Zihao Fan, Yilun Xu,
+Yiwen Chen, Peicheng Yu, Manish Malik, Neil Shah
+{mju,tong,nshah}@snap.com
+Snap Inc.
+Santa Monica, CA, USA
+Abstract
+Effective item identifiers (IDs) are an important component for rec-
+ommender systems (RecSys) in practice, and are commonly adopted
+in many use cases such as retrieval and ranking. IDs can encode
+collaborative filtering signals within training data, such that Rec-
+Sys models can extrapolate during the inference and personalize
+the prediction based on users’ behavioral histories. Recently, Se-
+mantic IDs (SIDs) have become a trending paradigm for RecSys. In
+comparison to the conventional atomic ID, an SID is an ordered
+list of codes, derived from tokenizers such as residual quantization,
+applied to semantic representations commonly extracted from foun-
+dation models or collaborative signals. SIDs have drastically smaller
+cardinality than the atomic counterpart, and induce semantic clus-
+tering in the ID space. At Snapchat, we apply SIDs as auxiliary
+features for ranking models, and also explore SIDs as additional
+retrieval sources in different ML applications. In this paper, we dis-
+cuss practical technical challenges we encountered while applying
+SIDs, experiments we have conducted, and design choices we have
+iterated to mitigate these challenges. Backed by promising offline
+results on both internal data and academic benchmarks as well as
+online A/B studies, SID variants have been launched in multiple
+production models with positive metrics impact.
+1
+Introduction
+The success of modern social media ecosystems hinges on recom-
+mendation systems (RecSys) [8, 22, 25, 30], which are pivotal in per-
+sonalizing users’ interactions across various applications, ranging
+from short-form video feeds [5, 9, 11–13, 28] and friend recommen-
+dation [16, 26, 29] and e-commerce platforms [2, 10, 25, 31]. RecSys
+models are usually trained with user historical interaction data (e.g.
+videos watched, merchandise purchased, friends made, etc.) so that
+they can predict user’s future intents to facilitate better personal-
+ization [15, 24]. Albeit different RecSys model architectures, one
+important ingredient that broadly exists in these models is the use
+of sparse identifiers (IDs), due to their strong capabilities in encod-
+ing the historical interactions among users and items [4, 28, 32, 35].
+Specifically, each user or item is assigned with an ID which serves
+as a unique discrete token that is mapped to a learnable dense em-
+bedding vector, compressing sparse interactions into continuous
+latent embeddings capturing preferences or properties.
+While effective, the reliance on per-user/item atomic IDs intro-
+duces significant challenges. First, the sheer magnitude of users
+∗Equal contributions.
+Code is publicly available at https://github.com/snap-research/GRID.
+and items leads to an explosion in parameter size, as massive em-
+bedding tables are required to store distinct vectors for every en-
+tity [24, 32, 36]. Second, ID-based approaches lack inductive support,
+leaving the model unable to generate representations for new users
+or items (the cold-start problem) that lack a pre-existing entry in
+the embedding table [27, 37]. Third, these models struggle with
+generalization due to the long-tail distribution of data; popular
+IDs receive the vast majority of gradient updates, resulting in ro-
+bust embeddings, while the representations for tail entities remain
+under-trained and sub-optimal due to sparse supervision [14, 28].
+To address these challenges, Rajput et al. [23] and Singh et al.
+[28] proposed replacing conventional atomic IDs with Semantic
+IDs (SIDs) – a strategy subsequently validated by practitioners
+for its promising recommendation performance [3, 5, 11, 18, 19,
+34]. Each SID consists of an ordered sequence of discrete tokens,
+where the cardinality at each index is significantly lower than that
+of traditional user or item IDs. This paradigm usually employs a
+semantic or modality encoder (e.g., LLMs or VLM) paired with a
+residual quantization tokenizer – such as RQ-VAE [17], VQ-VAE [6],
+or Residual K-means [5] – to transform raw modality features (e.g.
+image, text, audio) into discrete SIDs. Intuitively, SIDs function as a
+semantic hashing mechanism that map semantically similar items
+or users to discrete codes sharing common prefixes.
+Given the potential of SIDs, we conducted extensive experiments
+at Snapchat [11], exploring and identifying integration opportu-
+nities as auxiliary features into ranking and retrieval stacks to
+improve recommendation performance across diverse surfaces (e.g.,
+ads, content, and growth). This approach enables RecSys models to
+incorporate rich semantic signals without incurring the prohibitive
+computational costs associated with high-dimensional dense em-
+beddings. Furthermore, it promotes robust model generalization by
+mitigating cold-start challenges and maximizing parameter utiliza-
+tion, as the shared hierarchical structure of SIDs ensures that token
+embeddings receive frequent gradient updates across the entire
+item catalog. Beyond feature representation, we expanded our ex-
+ploration to generative retrieval (GR) [11, 20, 23, 38], using SIDs as
+the primary retrieval target in our content recommendation. Specif-
+ically, we replaced atomic IDs in user behavior sequences with SIDs
+and trained a sequential recommender to generate the SID token
+sequences of future items based on historical interactions.
+However, utilizing SIDs at an industrial scale presented technical
+hurdles. First, we encountered severe codebook collapse during
+the training of the RQ-VAE tokenizer, where the model utilized
+only a fraction of the available codebook, severely limiting the se-
+mantic expressiveness of the generated IDs. Second, utilizing SIDs
+arXiv:2604.03949v1  [cs.IR]  5 Apr 2026
+
+
+Conference’17, July 2017, Washington, DC, USA
+Clark Mingxuan Ju and Tong Zhao et al.
+as a retrieval source introduced complex SID-to-Item resolution
+challenges, particularly in handling collisions and ensuring valid
+decoding. In this work, we conduct extensive experiments on inter-
+nal data at Snap and detail the specific architectural modifications
+we implemented in RQ-VAE to effectively mitigate codebook col-
+lapse. Furthermore, we present a comprehensive analysis of the
+strategies and heuristics we developed for SID-to-Item resolution.
+Our contributions are summarized as follows:
+• Industrial-scale Evaluation: We present a large-scale appli-
+cation of SIDs at Snapchat, demonstrating their efficacy across
+diverse surfaces (e.g., ads, content, growth, and search), reporting
+significant gains in both offline and offline metrics.
+• Technical Improvements: We propose novel architectural mod-
+ifications to the RQ-VAE tokenizer that effectively mitigate code-
+book collapse. Additionally, we provide a detailed analysis of
+SID-to-Item resolution strategies, offering practical heuristics to
+ensure valid and accurate decoding during retrieval.
+• Open-source Contribution: To facilitate reproducibility and fu-
+ture research, we open-source our optimized model architecture
+and training implementations for the broader community.
+2
+Preliminaries
+This section introduces the notation for SIDs and details the formu-
+lation of RQ-VAE [17], a widely adopted tokenizer for SID gener-
+ation [9, 19, 21, 23]. We focus on RQ-VAE due to its differentiable
+nature, which seamlessly supports customized extensions like multi-
+embedding fusion, though we recognize that non-differentiable
+approaches like RQ-Kmeans [5, 11] are also highly effective. Given
+an item or user 𝑖with semantic features 𝑥𝑖, we use a modality
+encoder 𝜙(·) : 𝑥→R𝑑(e.g., LLM, VLM, etc) to transform the
+semantic feature into the hidden representation h𝑖∈R𝑑, where 𝑑
+refers to the output dimension of 𝜙(·). RQ-VAE can be denoted as
+RQ-VAE(·;𝜃) : R𝑑→{0, 1, . . . , 𝐾−1}𝐿, where 𝐾refers to the num-
+ber of IDs in each layer, 𝐿refers to the total number of codebooks,
+and 𝜃refers to model parameters including an encoder, a decoder,
+and 𝐿codebooks. The encoder Enc(·) : R𝑑→R𝑛transforms h𝑖
+into the intermediate embedding h0
+𝑖(i.e., 0-th residual before the
+residual quantization), where 𝑛refers to the hidden dimension of
+RQ-VAE. Then, h0
+𝑖is used to calculate the first SID code sid0 with
+the first codebook C0 ∈R𝐾×𝑛, formulated as:
+sid0 =
+arg max
+𝑐∈{0,1,...,𝐾−1}
+h0
+𝑖· C0[𝑐]
+
+F ,with h0
+𝑖= Enc 𝜙(𝑥𝑖),
+(1)
+where || · ||F is Frobenius norm and [·] is the indexing operation.
+Following Equation (1), the later SID codes sid𝑙where 𝑙≥1, they
+can be acquired by residual quantization as:
+sid𝑙=
+arg max
+𝑐∈{0,1,...,𝐾−1}
+h𝑙
+𝑖· C𝑙[𝑐]
+
+F,
+(2)
+where h𝑙
+𝑖= h𝑙−1
+𝑖
+−C𝑙−1[sid𝑙−1]. Once all SID codes are derived, their
+corresponding centroids are aggregated and fed into the decoder
+for reconstruction, as the following:
+ˆh𝑖= Dec
+
+∑︁
+𝑙∈{0,...,𝐿−1}
+C𝑙[sid𝑙]
+
+,
+(3)
+where Dec(·) : R𝑛→R𝑑is the decoder and ˆh𝑖∈R𝑑is the recon-
+structed representation. RQ-VAE is supervised jointly by a recon-
+struction loss and a commitment loss [17]; the former trains the
+model to faithfully reconstruct the input data , and the latter pre-
+vents codebooks from growing boundlessly and causing collapse.
+3
+Technical Challenges in Applying SIDs
+While SID presents a promising paradigm for RecSys, application
+in practice is non-trivial and entails multiple key challenges. Specif-
+ically, these hurdles emerge both during the initial training of the
+RQ-VAE tokenizer to create robust SIDs, and during the subsequent
+application of these SIDs within downstream GR frameworks.
+Challenge 1: Codebook Collapse. The first significant challenge
+we encountered occurred during the training of the RQ-VAE tok-
+enizer, manifesting as severe codebook collapse. In this scenario, the
+model utilized only a fraction of the available codebook, assigning
+items to only a few codes. This under-utilization severely limits
+the semantic expressiveness of the generated IDs. Following the
+quantization process formulated in Equation (1), the intermediate
+hidden representations ℎ𝑙
+𝑖are expected to map across a diverse
+set of centroids within the codebook 𝐶𝑙. However, due to the im-
+balanced training dynamics often observed in standard RQ-VAE
+implementations [19, 39], a small subset of popular centroids re-
+ceive the vast majority of gradient updates. Meanwhile, remaining
+centroids are effectively “dead”. Because SIDs act as a semantic
+hashing mechanism, an impoverished codebook limits the granular-
+ity of the hashing, bottlenecking the model’s ability to accurately
+differentiate between fine-grained item features.
+We identified two design choices to mitigate collapse. Firstly,
+we backpropagate through the entire codebook using the straight-
+through estimator (STE) [1]. In the standard RQ-VAE formulation,
+codebook optimization is inherently discrete due to the arg max
+operation in Equation (1). As a result, during backprop, gradient
+updates are exclusively applied to the specific codebook rows (cen-
+troids) that are actively selected by the input representations. This
+sparse update mechanism causes training to rely heavily on the
+initial codebook state; poor initialization frequently leads to many
+unselected, “dead” centroids which never receive gradient updates.
+To address this, we apply STE to approximate the gradients through
+quantization. Specifically, Equation (3) is modified as the following:
+ˆh𝑖= Dec
+
+∑︁
+𝑙∈{0,...,𝐿−1}
+C𝑙[sid𝑙]+sim(h𝑙
+𝑖, C𝑙)·C𝑙−sg[sim(h𝑙
+𝑖, C𝑙)·C𝑙]
+
+,
+where sim(h𝑙
+𝑖, C𝑙) ∈R𝐾refers to the cosine similarities between
+the residual at layer 𝑙and the entire codebook at layer 𝑙, and sg(·)
+refers to the stop-gradient operation, which prevents encompassed
+variables from contributing to the backprop graph. By utilizing
+STE, the loss can backprop through the assignment mechanism,
+effectively involving the entire codebook in updates. This promotes
+continuous update of all codes and promotes more uniform utiliza-
+tion of available codes, significantly reducing collapse risk.
+The second choice we adopted to mitigate collapse is to learn
+SIDs conditioned on multiple embedding sources. In industrial RecSys,
+items rarely exist as single-modality entities; rather, they are charac-
+terized by rich, heterogeneous features such as textual descriptions,
+visual content, categorical metadata, etc. We observed relying on
+a single embedding source (e.g. text) yields a more homogeneous
+input distribution. This lack of variance exacerbates collapse, as
+the RQ-VAE requires fewer centroids to adequately encode and re-
+construct the input. Instead, we rely on an embedding input fusion
+approach – specifically, we aggregate disparate pre-trained embed-
+dings into a unified continuous representation before feeding them
+into the tokenizer. Using a summation aggregation, the encoding
+
+
+Semantic IDs for Recommender Systems at Snapchat: Use Cases, Technical Challenges, and Design Choices
+Conference’17, July 2017, Washington, DC, USA
+and decoding processes for an item 𝑖are formulated as:
+h𝑖=
+∑︁
+𝑚∈𝑀
+Enc𝑚(𝑥𝑚) and
+ˆ
+h𝑖,𝑚= Dec𝑚
+
+∑︁
+𝑙∈{0,...,𝐿−1}
+C𝑙[sid𝑙]
+
+.
+By integrating multi-modal signals, the resulting input space ex-
+hibits significantly higher variance and topological complexity. This
+richer input distribution forces the quantization process to span a
+wider manifold to minimize reconstruction loss.
+Challenge 2: SID-to-Item Resolution. A second hurdle in prac-
+tical SID use is the challenge of grounding in the context of GR,
+which amounts to directly resolving a single item from a SID. Since
+SIDs map semantically similar items or users to discrete codes with
+common prefixes, where the cardinality of each codebook layer is
+vastly smaller than atomic IDs, similar items often map to the exact
+same discrete token sequence (collision). Resolving these collisions
+and determining which specific item(s) within a shared code should
+be retrieved or ranked requires additional disambiguation.
+We found two helpful choices in managing this resolution prob-
+lem. Firstly, we adopt a heuristic-based intra-code disambiguation.
+Specifically, if a generated SID has multiple associated items, we
+employ a secondary ranking mechanism based on domain-specific
+heuristics. Instead of treating all items mapping to the SID as equally
+relevant, we resolve an item by incorporating additional item-level
+metadata during the retrieval phase. For example, in a video re-
+trieval setting, we may leverage historical relevance metrics or
+temporal features, e.g. cumulative view time or content freshness,
+to prioritize higher-quality or more business-metric-relevant items.
+This two-stage approach allows the generative model to identify
+the correct semantic category (SID) while relying on lightweight
+heuristics to pinpoint the most relevant items.
+Secondly, we found it useful to prioritize retrieval depth over
+breadth. During inference, an GR model outputs a set of candidate
+SIDs via beam search or sampling. This introduces a practical trade-
+off given a fixed retrieval budget: fetching a few items across many
+different candidate SIDs (breadth) versus fetching many items from
+a few top-ranked SIDs (depth). Through empirical evaluation, we
+discovered that maximizing item yield from the top-ranked SIDs sig-
+nificantly outperforms distributing the item budget across a larger
+number of lower-ranked SIDs. This indicates that the model pos-
+sesses high confidence and accuracy in its top-ranked predictions.
+4
+Experiments
+To comprehensively evaluate the efficacy of SIDs for RecSys, we
+conduct a series of offline and online experiments.
+4.1
+SID as Auxiliary Features
+In this set of experiments, we investigate the performance of SIDs by
+incorporating them as auxiliary categorical features within standard
+ranking and retrieval architectures. The objective is to determine
+whether the hierarchical, multimodal semantic priors captured by
+SIDs can improve model generalization. Specifically, we applied
+SIDs to multiple RecSys models at Snapchat, as the following:
+• Ads Ranking. Ads are typically accompanied by textual meta-
+data, such as descriptive titles, brand names, and category labels.
+We utilize the Qwen-Embedding model [33] to encode these text
+into embeddings, which are subsequently converted into SIDs.
+Table 1: Offline improvements to AUCs when we SIDs are
+incorporated as auxiliary input features to different rankers,
+where a 0.01% gain is considered significant.
+Metrics
+Improvements
+Ads Ranking
+Swipe up (goal-based bidding)
++0.028%
+Landing page view (goal-based bidding)
++0.035%
+Dynamic Product Ads Ranking
+Add to cart
++0.67%
+Average improv. cross all heads
++0.24%
+Table 2: Online improvements of launching GraphHash SID
+as auxiliary feature in different rankers.
+Ranker Models
+metrics
+online improv.
+Find Friends
+relevance
++1.77%, +4.90%
+Friending Registration
+neg. action
+-5.13%, -3.17%
+Display Name Search
+feature use
++1.55%, +12.43%
+This approach allows the ranking model to leverage rich semantic
+information without the large overhead of logging and training
+with raw, high-dimensional embeddings. As shown in Table 1,
+adding SIDs improved the Swipe Up and Landing Page View
+metrics (goal-based bidding) by 0.028% and 0.035%, respectively.
+• Dynamic Product Ads (DPA) Ranking. DPA models encounter
+a special challenge of rapid item ID churn due to constantly
+updating advertiser catalogs. Following a similar pipeline, we use
+an LLM to encode product metadata into embeddings, which are
+then converted into SIDs. Demonstrated in Table 1, SIDs provided
+even more substantial gains in this high-churn environment,
+driving a +0.67% improvement in Add to Cart predictions and a
++0.24% average improvement across all heads.
+• Friending and Search Ranking. In the context of user friend
+recommendation and search, we deploy GraphHash [32] as a
+unique form of SID learned directly from graph semantics, where
+the underlying network topology is defined by friending user
+interactions. By hierarchically clustering users into structural
+communities, GraphHash compresses over 900M raw user IDs
+into a condensed set of SIDs. As auxiliary features, GraphHash
+SIDs enable the model to extrapolate collaborative filtering sig-
+nals more effectively. Consequently, adding GraphHash SIDs has
+yielded strong online improvements, as Table 2 shows, driving
+meaningful gains in product metrics (e.g., Creator subscribe, re-
+ciprocation rate, etc) and materially reducing negative friending
+actions (e.g., friending blocks/deletes).
+4.2
+SIDs in Generative Retrieval
+We also explore their efficacy as the primary target space for GR
+within our content recommendation stack. In this paradigm, we
+replace conventional atomic IDs in user behavior sequences with
+SIDs and train a sequential recommender to autoregressively gen-
+erate the SID sequences [11, 23]. We evaluate the performance
+of this GR framework in our content retrieval stack and discuss
+the practical design choices including heuristic-based intra-bucket
+disambiguation and depth-prioritized fetching required to enable
+collision resolution and higher-quality recommendations. Detailed
+model architecture is described in our previous work [11].
+
+
+Conference’17, July 2017, Washington, DC, USA
+Clark Mingxuan Ju and Tong Zhao et al.
+Table 3: Offline ranking-based metrics (R/N refer to re-
+call/NDCG) when SIDs are used as direct retrieval in gen-
+erative retrieval for short-form video recommendation.
+Model Variant
+R@5
+R@10
+N@5
+N@10
+Seq. Length = 120
+Baseline
+Seq. Length = 240
++13.7%
++8.3%
++8.2%
++6.5%
+Seq. Length = 480
++31.5%
++16.7%
++26.5%
++22.2%
+Table 4: Online improvements in A/B testing for short-form
+video recommendation when SIDs are used as direct retrieval
+sources with sequence length equal of 480.
+Metrics
+Improvements (%)
+Random Item Mapping (10 per SID) from Top 100 SIDs
+Short-form video view
+Neutral
+Random Item Mapping (100 per SID) from Top 10 SIDs
+Short-form video view
++0.13%
+Relevance-guided Mapping (100 per SID) from Top 10 SIDs
+Short-form video view
++0.57%
+Short-form video send
++2.54%
+Short-form video share
++4.39%
+Short-form video re-post
++3.55%
+Table 5: Uniqueness of SIDs as well as their GR performance
+on Amazon beauty dataset. A deduplicate token is appended
+to ensure fair comparison across codebook shapes [23].
+Codebook Shape
+Uniqueness
+Recall@10
+1024 × 1024 × 1024
+92.95%
+6.1
+512 × 512 × 512
+91.79%
+6.2
+256 × 256 × 256
+81.65%
+6.1
+128 × 128 × 128
+70.58%
+6.0
+64 × 64 × 64
+65.40%
+5.8
+As shown in Table 3, providing the sequential recommender
+with longer user behavior sequences substantially boosts retrieval
+accuracy (e.g., increasing the sequence length from a 120 baseline
+to 480 yielded massive gains of +31.5% for R@5 and +26.5% for
+N@5). Balancing infrastructure constraints, we stop at 480 and use
+this variant as the launch candidate. Validated by promising offline
+evaluation, we conducted A/B studies, as shown in Table 4. On-
+line experiments in short-form video recommendations highlight
+the critical importance of intra-bucket disambiguation strategies.
+While random mapping from the top SIDs yielded marginal gains
+(e.g., +0.13% for video views), utilizing an relevance-guided map-
+ping strategy from the top 10 SIDs drove substantial increases in
+high-intent user actions. Specifically, this heuristic-based approach
+resulted in a +0.57% increase in views, a +2.54% increase in sends,
+a +3.55% increase in re-posts, and a remarkable +4.39% increase in
+short-form video shares in an online experiment.
+4.3
+SID Quality Evaluation: Is Uniqueness the
+Golden Standard?
+During the iterative development of SIDs, a significant challenge lies
+in identifying a reliable, lightweight proxy to evaluate SID quality
+Table 6: Uniqueness of SIDs on internal data when SIDs are
+generated with different treatments.
+Treatment
+Uniqueness Improvement
+Clip embedding with RQ-VAE
+Baseline
++ RQ-VAE with STE
++ 83.4%
++ Multi-modal embedding
++ 23.7%
++ Audio embedding
++ 11.2%
++ Transcript embedding
++ 4.7%
+prior to executing computationally expensive offline training and
+online A/B testing. In existing literature, uniqueness – typically
+defined as the ratio of unique used SIDs to the total number of items,
+which inversely reflects the collision rate – is widely adopted as the
+de facto golden standard for SID evaluation. Uniqueness inversely
+reflects the collision rate; therefore, a collapsed codebook inherently
+suffers from near-zero uniqueness. While our interventions are
+necessary to rescue the model from this collapsed state by driving
+uniqueness into a healthy range, we ask the question:
+Is maximizing uniqueness indefinitely always beneficial?
+To investigate this assumption, we analyzed the correlation be-
+tween SID uniqueness and GR performance on the Amazon Beauty
+dataset [7]. Our empirical findings reveal a nuanced, non-linear
+relationship rather than a strict monotonic correlation. As shown
+in Table 5, when SID uniqueness is very low, there is indeed a
+strong positive correlation – resolving severe item collisions (tend-
+ing towards collapse) directly aids the autoregressive model in
+accurately distinguishing target items. However, once uniqueness
+surpasses a certain threshold (empirically 70% for this experiment),
+this correlation plateaus. Beyond this saturation point, aggressively
+chasing higher uniqueness yields negligible additional performance
+boosts. These results suggest a necessary re-evaluation of how we
+measure SID quality. Uniqueness should not be evaluated as a gold
+standard, but rather as a foundational sanity check against collapse
+and baseline item distinguishability. Developing a highly predictive,
+offline metric that accurately quantifies the optimal balance be-
+tween semantic richness and item distinctiveness for downstream
+applications remains an open question.
+5
+Conclusion
+In this work, we detailed the large-scale deployment of SIDs across
+Snapchat’s recommendation systems, demonstrating their success
+as both auxiliary features and primary retrieval sources. To over-
+come critical technical hurdles, we introduced architectural im-
+provements to the RQ-VAE tokenizer – such as STE optimization
+and multi-modal embedding fusion – to the mitigate codebook
+collapse. Additionally, we addressed SID-to-item collisions during
+inference using heuristic-based intra-bucket disambiguation. Sup-
+ported by extensive offline and online A/B testing, these design
+choices drove significant improvements in core business metrics.
+Finally, our evaluation revealed that SID uniqueness should not be
+viewed as the definitive golden standard for quality, underscoring
+the need for future research into better offline metrics that better bal-
+ance semantic richness with item distinctiveness. We open-sourced
+our optimized model architectures, aiming to foster a continued
+innovation within the broader recommender systems community.
+
+
+Semantic IDs for Recommender Systems at Snapchat: Use Cases, Technical Challenges, and Design Choices
+Conference’17, July 2017, Washington, DC, USA
+6
+Presenter Bio
+Tong Zhao is a research scientist at Snap Inc. He obtained his Ph.D.
+degree in Computer Science and Engineering at University of Notre
+Dame and published at top-tier conferences in machine learning,
+artificial intelligence, data mining, and natural language processing.
+References
+[1] Yoshua Bengio. 2013. Estimating or propagating gradients through stochastic
+neurons. arXiv preprint arXiv:1305.2982 (2013).
+[2] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong Xiao,
+Bowen Xue, Xuxin Zhang, Ying Yang, et al. 2025. Onesearch: A preliminary
+exploration of the unified end-to-end generative framework for e-commerce
+search. arXiv preprint arXiv:2509.03236 (2025).
+[3] Runjin Chen, Mingxuan Ju, Ngoc Bui, Dimosthenis Antypas, Stanley Cai, Xi-
+aopeng Wu, Leonardo Neves, Zhangyang Wang, Neil Shah, and Tong Zhao.
+2024. Enhancing item tokenization for generative recommendation through
+self-improvement. arXiv preprint arXiv:2412.17171 (2024).
+[4] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra,
+Hrishi Aradhye, Glen Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, et al.
+2016. Wide & deep learning for recommender systems. In Proceedings of the 1st
+workshop on deep learning for recommender systems. 7–10.
+[5] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[6] Patrick Esser, Robin Rombach, and Bjorn Ommer. 2021. Taming transformers
+for high-resolution image synthesis. In Proceedings of the IEEE/CVF conference on
+computer vision and pattern recognition. 12873–12883.
+[7] Shijie Geng, Shuchang Liu, Zuohui Fu, Yingqiang Ge, and Yongfeng Zhang. 2022.
+Recommendation as language processing (rlp): A unified pretrain, personalized
+prompt & predict paradigm (p5). In Proceedings of the 16th ACM Conference on
+Recommender Systems. 299–315.
+[8] Carlos A Gomez-Uribe and Neil Hunt. 2015. The netflix recommender system:
+Algorithms, business value, and innovation. ACM Transactions on Management
+Information Systems (TMIS) (2015).
+[9] Ruining He, Lukasz Heldt, Lichan Hong, Raghunandan Keshavan, Shifan Mao,
+Nikhil Mehta, Zhengyang Su, Alicia Tsai, Yueqi Wang, Shao-Chuan Wang, et al.
+2025. Plum: Adapting pre-trained language models for industrial-scale generative
+recommendations. arXiv preprint arXiv:2510.07784 (2025).
+[10] Yupeng Hou, Jiacheng Li, Zhankui He, An Yan, Xiusi Chen, and Julian McAuley.
+2024. Bridging Language and Items for Retrieval and Recommendation. arXiv
+preprint arXiv:2403.03952 (2024).
+[11] Clark Mingxuan Ju, Liam Collins, Leonardo Neves, Bhuvesh Kumar, Louis Yufeng
+Wang, Tong Zhao, and Neil Shah. 2025. Generative Recommendation with Seman-
+tic IDs: A Practitioner’s Handbook. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management. 6420–6425.
+[12] Clark Mingxuan Ju, Leonardo Neves, Bhuvesh Kumar, Liam Collins, Tong Zhao,
+Yuwei Qiu, Ching Dou, Sohail Nizam, Sen Yang, and Neil Shah. 2025. Revisiting
+Self-Attention for Cross-Domain Sequential Recommendation. arXiv preprint
+arXiv:YYYY.NNNNN (2025).
+[13] Clark Mingxuan Ju, Leonardo Neves, Bhuvesh Kumar, Liam Collins, Tong Zhao,
+Yuwei Qiu, Qing Dou, Yang Zhou, Sohail Nizam, Rengim Aykan Ozturk, et al.
+2025. Learning universal user representations leveraging cross-domain user
+intent at snapchat. In Proceedings of the 48th International ACM SIGIR Conference
+on Research and Development in Information Retrieval. 4345–4349.
+[14] Mingxuan Ju, William Shiao, Zhichun Guo, Yanfang Ye, Yozen Liu, Neil Shah, and
+Tong Zhao. 2024. How does message passing improve collaborative filtering?
+Advances in neural information processing systems 37 (2024), 8760–8784.
+[15] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[16] Matthew Kolodner, Mingxuan Ju, Zihao Fan, Tong Zhao, Elham Ghazizadeh,
+Yan Wu, Neil Shah, and Yozen Liu. 2024. Robust Training Objectives Improve
+Embedding-based Retrieval in Industrial Recommendation Systems. RobustRecSys
+Workshop at RecSys (2024).
+[17] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive image generation using residual quantization. In Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition. 11523–11532.
+[18] Geon Lee, Bhuvesh Kumar, Mingxuan Ju, Tong Zhao, Kijung Shin, Neil Shah,
+and Liam Collins. 2026. Sequential Data Augmentation for Generative Recom-
+mendation. In Proceedings of the Nineteenth ACM International Conference on Web
+Search and Data Mining. 303–312.
+[19] Mingfu Liang, Yufei Li, Jay Xu, Kavosh Asadi, Xi Liu, Shuo Gu, Kaushik Rangadu-
+rai, Frank Shyu, Shuaiwen Wang, Song Yang, et al. 2026. Generative Reasoning
+Re-ranker. arXiv preprint arXiv:2602.07774 (2026).
+[20] Jingzhe Liu, Liam Collins, Jiliang Tang, Tong Zhao, Neil Shah, and Clark Mingx-
+uan Ju. 2025. Understanding generative recommendation with semantic ids from
+a model-scaling view. arXiv preprint arXiv:2509.25522 (2025).
+[21] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, et al. 2025. Qarm: Quantitative
+alignment multi-modal recommendation at kuaishou. In Proceedings of the 34th
+ACM International Conference on Information and Knowledge Management. 5915–
+5922.
+[22] Aditya Pal, Chantat Eksombatchai, Yitong Zhou, Bo Zhao, Charles Rosenberg,
+and Jure Leskovec. 2020. Pinnersage: Multi-modal user embedding framework
+for recommendations at pinterest. In Procs. of SIGKDD.
+[23] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[24] Steffen Rendle, Christoph Freudenthaler, Zeno Gantner, and Lars Schmidt-Thieme.
+2009. BPR: Bayesian personalized ranking from implicit feedback. In UAI.
+[25] J Ben Schafer, Joseph Konstan, and John Riedl. 1999. Recommender systems in
+e-commerce. In Procs. of ACM conference on Electronic commerce.
+[26] Jiahui Shi, Vivek Chaurasiya, Yozen Liu, Shubham Vij, Yan Wu, Satya Kanduri,
+Neil Shah, Peicheng Yu, Nik Srivastava, Lei Shi, et al. 2023. Embedding Based
+Retrieval in Friend Recommendation. In Proceedings of the 46th International
+ACM SIGIR Conference on Research and Development in Information Retrieval.
+3330–3334.
+[27] William Shiao, Mingxuan Ju, Zhichun Guo, Xin Chen, Evangelos E Papalexakis,
+Tong Zhao, Neil Shah, and Yozen Liu. 2025. Improving Out-of-Vocabulary Hashing
+in Recommendation Systems. In Companion Proceedings of the ACM on Web
+Conference 2025. 2521–2530.
+[28] Anima Singh, Trung Vu, Nikhil Mehta, Raghunandan Keshavan, Maheswaran
+Sathiamoorthy, Yilin Zheng, Lichan Hong, Lukasz Heldt, Li Wei, Devansh Tandon,
+et al. 2024. Better generalization with semantic ids: A case study in ranking for
+recommendations. In Proceedings of the 18th ACM Conference on Recommender
+Systems. 1039–1044.
+[29] Xianfeng Tang, Yozen Liu, Xinran He, Suhang Wang, and Neil Shah. 2022. Friend
+story ranking with edge-contextual local graph convolutions. In Proceedings
+of the Fifteenth ACM International Conference on Web Search and Data Mining.
+1007–1015.
+[30] Aaron Van den Oord, Sander Dieleman, and Benjamin Schrauwen. 2013. Deep
+content-based music recommendation. In Procs. of NeurIPS.
+[31] Ruoxi Wang, Rakesh Shivanna, Derek Cheng, Sagar Jain, Dong Lin, Lichan Hong,
+and Ed Chi. 2021. Dcn v2: Improved deep & cross network and practical lessons
+for web-scale learning to rank systems. In Procs. of WWW.
+[32] Xinyi Wu, Donald Loveland, Runjin Chen, Yozen Liu, Xin Chen, Leonardo Neves,
+Ali Jadbabaie, Mingxuan Ju, Neil Shah, and Tong Zhao. 2025. GraphHash: Graph
+Clustering Enables Parameter Efficiency in Recommender Systems. In Proceedings
+of the ACM on Web Conference 2025. 357–369.
+[33] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng,
+Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. 2025. Qwen3 technical
+report. arXiv preprint arXiv:2505.09388 (2025).
+[34] Liu Yang, Fabian Paischer, Kaveh Hassani, Jiacheng Li, Shuai Shao, Zhang Gabriel
+Li, Yun He, Xue Feng, Nima Noorshams, Sem Park, et al. 2024. Unifying Gen-
+erative and Dense Retrieval for Sequential Recommendation. arXiv preprint
+arXiv:2411.18814 (2024).
+[35] Zheng Yuan, Fajie Yuan, Yu Song, Youhua Li, Junchen Fu, Fei Yang, Yunzhu
+Pan, and Yongxin Ni. 2023. Where to go next for recommender systems? id-
+vs. modality-based recommender models revisited. In Proceedings of the 46th
+International ACM SIGIR Conference on Research and Development in Information
+Retrieval. 2639–2649.
+[36] Caojin Zhang, Yicun Liu, Yuanpu Xie, Sofia Ira Ktena, Alykhan Tejani, Akshay
+Gupta, Pranay Kumar Myana, Deepak Dilipkumar, Suvadip Paul, Ikuhiro Ihara,
+et al. 2020. Model size reduction using frequency based double hashing for
+recommender systems. In Proceedings of the 14th ACM Conference on Recommender
+Systems. 521–526.
+[37] Xiangyu Zhao, Maolin Wang, Xinjian Zhao, Jiansheng Li, Shucheng Zhou, Dawei
+Yin, Qing Li, Jiliang Tang, and Ruocheng Guo. 2023. Embedding in recommender
+systems: A survey. arXiv preprint arXiv:2310.18608 (2023).
+[38] Jing Zhu, Mingxuan Ju, Yozen Liu, Danai Koutra, Neil Shah, and Tong Zhao. 2025.
+Beyond unimodal boundaries: Generative recommendation with multimodal
+semantics. arXiv preprint arXiv:2503.23333 (2025).
+[39] Lei Zhu, Fangyun Wei, Yanye Lu, and Dong Chen. 2024. Scaling the codebook size
+of vq-gan to 100,000 with a utilization rate of 99%. Advances in Neural Information
+Processing Systems 37 (2024), 12612–12635.

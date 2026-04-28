@@ -1,0 +1,1257 @@
+ReCast: Recasting Learning Signals for Reinforcement
+Learning in Generative Recommendation
+Peiyan Zhang1, Hanmo Liu1, Chengxuan Tong1, Yuxia Wu1, Wei Guo1 and Yong Liu1
+1Huawei Technologies Co., Ltd.
+{zhangpeiyan2, wuyuxia6}@h-partners.com
+{liu.hanmo, tong.chengxuan, guowei67, liu.yong6}@huawei.com
+Abstract
+Generic group-based RL assumes that sampled rollout groups are already usable learning signals.
+We show that this assumption breaks down in sparse-hit generative recommendation, where many
+sampled groups never become learnable at all. We propose ReCast, a repair-then-contrast learning-
+signal framework that first restores minimal learnability for all-zero groups and then replaces full-group
+reward normalization with a boundary-focused contrastive update on the strongest positive and the
+hardest negative. ReCast leaves the outer RL framework unchanged, modifies only within-group signal
+construction, and partially decouples rollout search width from actor-side update width.
+Across multiple generative recommendation tasks, ReCast consistently outperforms OpenOneRec-
+RL, achieving up to 36.6% relative improvement in Pass@1. Its matched-budget advantage is substan-
+tially larger: ReCast reaches the baseline’s target performance with only 4.1% of the rollout budget, and
+this advantage widens with model scale. The same design also yields direct system-level gains, reducing
+actor-side update time by 16.60×, lowering peak allocated memory by 16.5%, and improving actor
+MFU by 14.2%. Mechanism analysis shows that ReCast mitigates the persistent all-zero / single-hit
+regime, restores learnability when natural positives are scarce, and converts otherwise wasted rollout
+budget into more stable policy updates. These results suggest that, for generative recommendation, the
+decisive RL problem is not only how to assign rewards, but how to construct learnable optimization
+events from sparse, structured supervision.
+1
+Introduction
+0
+20
+40
+60
+80
+100
+Percentage (%)
+85%
+13%
+2%
+All-zero groups
+Single-hit groups
+Multi-hit groups
+(a) Group composition.
+0
+20
+40
+60
+80
+100
+Percentage (%)
+96%
+4%
+Zero-reward
+Non-zero-reward
+(b) Sample reward composition.
+Figure 1: Signal degeneracy in the RL stage of OpenOneRec under a representative sparse-hit setting.
+Generative recommendation replaces candidate scoring with direct item generation (Geng et al., 2022;
+Cui et al., 2022; Bao et al., 2023; Liao et al., 2024; Rajput et al., 2023; Zheng et al., 2024; Wang et al., 2024a,c;
+Hong et al., 2025a; Xiao et al., 2025; Wang et al., 2024b), and RL-style post-training is increasingly adopted
+to optimize hit-oriented metrics such as Pass@K (Wang et al., 2025). Existing methods largely inherit
+generic group-based RL (Jiang et al., 2026; Zhang et al., 2026): sample a group of outputs, score them,
+and update the policy from group-level rewards (Lin et al., 2026; Zhou et al., 2025a). This assumes that a
+sampled and scored group already constitutes a usable learning unit. Under sparse-hit recommendation,
+that assumption often fails. The issue is not reward sparsity alone, but that many sampled groups never
+become trainable learning units in the first place.
+1
+arXiv:2604.22169v1  [cs.LG]  24 Apr 2026
+
+
+This mismatch is most severe in sparse-hit, single-target recommendation, where natural positives
+are rare and three failure modes dominate. All-zero groups are unlearnable because they contain no
+positive-negative boundary. Single-hit groups are trainable but fragile, with updates dominated by one
+accidental hit and noisy group statistics. Binary supervision further collapses structured near misses into
+the same zero-reward class as fully irrelevant outputs (Ding et al., 2026; Xie et al., 2026). Figure 1 shows
+that this is not a corner case. In a representative sparse-hit OpenOneRec (Zhou et al., 2025a) RL setting,
+about 85% of sampled groups remain all-zero after 20K steps, another 13% are single-hit, and only 2%
+exhibit richer reward structure; at the sample level, about 96% of responses still receive zero reward.
+Much of the rollout budget therefore remains trapped in unlearnable or weakly learnable groups rather
+than producing reliable policy improvement.
+Building on these observations, we propose ReCast, a repair-then-contrast learning-signal framework
+that modifies only within-group signal construction in generative recommendation. ReCast addresses
+two sequential questions: whether a sampled group is learnable at all, and how it should be updated
+once learning becomes possible. It first performs rollout repair, which restores minimal learnability for
+all-zero groups by injecting a valid positive anchor. It then applies a boundary contrastive update that
+updates only the strongest positive and the hardest negative, replacing full-group reward normalization
+with a local decision-boundary update. The rollout process and outer RL objective remain unchanged.
+ReCast also changes the update path of group-based RL. Conventional methods (Zhou et al., 2025b;
+Liu et al., 2025b) backpropagate through the full sampled group, so actor-side update cost grows with
+group width. ReCast instead updates only a constant-size active subset defined by the local positive-
+negative boundary. It therefore preserves rollout search width while avoiding full-group actor-side
+updates, partially decoupling search from update. This makes ReCast a lightweight drop-in replacement
+whose advantage becomes more pronounced at larger scales and under sparser-hit regimes.
+Experiments show that ReCast improves not only final recommendation quality, but also the scaling
+efficiency of RL post-training. Under the same rollout budget, ReCast consistently outperforms the
+baseline across multiple generative recommendation tasks, with up to 36.6% relative improvement
+in Pass@1. Its matched-budget advantage is substantially larger: ReCast reaches the baseline’s target
+performance with only 4.1% of the rollout budget. This advantage widens with model scale and search
+width, and materializes directly in system measurements: ReCast reduces actor-side update time by
+16.60×, lowers peak allocated memory by 16.5%, and improves actor MFU by 14.2%.
+Contributions.
+• Learnability restoration for sparse-hit recommendation RL. We identify a mismatch between generic
+group-based RL and sparse-hit generative recommendation: sampled groups are easy to obtain, but
+many never become usable learning units. We address this mismatch with ReCast, a repair-then-
+contrast signal design that restores minimal learnability for all-zero groups and refines the most
+informative local positive–negative boundary once learning becomes possible.
+• Constant-size boundary-focused updating. ReCast leaves the rollout process and outer RL objective
+unchanged, but reduces actor-side update width from O(G) to O(1), where G is the rollout group size,
+by updating only a constant-size subset. This partially decouples rollout search width from actor-side
+optimization cost, turning wider search into a more favorable scaling knob for recommendation RL.
+• Comprehensive evaluation and analysis. Across multiple generative recommendation tasks, ReCast
+improves final recommendation quality, enters the useful-learning regime substantially earlier than the
+baseline, and shows widening matched-budget advantages with model scale. System measurements
+further show that the constant-size update design translates into lower actor-side cost, faster training,
+reduced memory footprint, and higher hardware utilization.
+2
+Motivation
+Notation. We consider offline generative recommendation in the single-target next-item setting. Given a
+prompt q ∈Q, the policy generates a response
+R = (y1, . . . , yT ) ∼πθ(· | q),
+and the ground-truth target item is denoted by s ∈S. RL is applied on top of a post-SFT backbone to
+optimize hit-oriented recommendation metrics.
+2
+
+
+2.1
+Default Group-Based RL Assumes Learnable Groups
+A common default view of recommendation RL is to optimize over sampled groups. For each prompt q,
+a rollout policy πold samples a group of G candidate responses
+G(q) = {R1, . . . , RG},
+Ri ∼πold(· | q).
+Each response Ri receives a scalar reward
+ri = r(Ri; q, s),
+which measures its quality with respect to the target item s.
+In the single-target setting studied here, we focus on sparse binary hit rewards, i.e., ri ∈{0, 1}, where
+ri = 1 indicates that the target item s is successfully generated. A representative default choice is a
+GRPO-style group-based update (Shao et al., 2024; Zheng et al., 2025), which constructs within-group
+advantages by reward normalization:
+µq = 1
+G
+G
+X
+i=1
+ri,
+σq =
+v
+u
+u
+t 1
+G
+G
+X
+i=1
+(ri −µq)2,
+ˆAi = ri −µq
+σq + ϵ ,
+where ϵ > 0 is a small constant for numerical stability. The resulting policy objective is
+LGRPO(θ) = Eq∼D, G(q)∼πold
+"
+1
+G
+G
+X
+i=1
+ˆAi log πθ(Ri | q)
+#
+−β KL(πθ(· | q) ∥πref(· | q)) ,
+where πref is a reference policy and β > 0 controls KL regularization.
+The key assumption behind this default view is that a sampled and scored group already constitutes
+a usable learning unit.
+2.2
+Sparse-Hit Supervision Breaks This Assumption
+We focus on sparse binary hit rewards, where ri ∈{0, 1} and ri = 1 indicates a successful hit on the
+target item. Let
+K(q) =
+G
+X
+i=1
+ri
+denote the number of hits in a sampled group. Under sparse-hit supervision, three failure modes
+dominate.
+• All-zero groups. When K(q) = 0, the sampled group contains no positive–negative boundary at all.
+All responses receive zero reward, so the group is unlearnable as a policy-improvement unit.
+• Single-hit groups. When K(q) = 1, learning becomes possible but fragile. The update is determined
+by one accidental positive together with group statistics, making it highly sensitive to sampling noise
+and group composition.
+• Near-miss collapse. Binary rewards flatten structurally or semantically close responses into the same
+zero-reward class as fully irrelevant negatives. As a result, potentially informative recommendation
+structure is discarded rather than used to refine the decision boundary.
+These failures show that, under sparse-hit supervision, group rollout does not automatically yield a
+reliable learning signal. What becomes scarce is not rollout budget alone, but usable learning units.
+2.3
+Design Requirements
+These failure modes suggest that the central design problem is not only how to optimize a sampled
+signal, but how to construct one that is learnable first and informative next. We have three requirements
+follow.
+1. Learning should not depend on lucky hits: all-zero groups should be recoverable rather than wasted.
+2. Once a group becomes learnable, the update should focus on the local decision boundary rather than
+coarse group statistics.
+3. Recommendation structure should be used rather than collapsed, so that the target and structured
+near misses can help define more informative within-group contrasts.
+This directly motivates a two-step signal design: restore learnability first, then refine the boundary.
+3
+
+
+Rollout
+OpenOneRec-RL
+ReCast
+Structural Score Calculation
+1
+0.1
+0.01
+0
+Input
+Sequence
+Rollout
+Result
+Ground-truth
+Task Reward Calculation
+Anchor
+Injection
+Hardest Negative Sample
+Easiest
+Negative
+Sample
+Figure 2: Comparison between OpenOneRec-RL and ReCast. OpenOneRec-RL updates from group-
+relative reward normalization over the sampled rollout group, whereas ReCast first repairs all-zero
+groups to restore minimal learnability and then applies a boundary-focused update on the strongest
+positive and the hardest negative. The outer RL framework remains unchanged.
+3
+ReCast: Repair-then-Contrast Signal Design
+ReCast leaves rollout sampling and the outer RL objective unchanged, and modifies only within-group
+signal construction. The method has two steps. It first restores minimal learnability for all-zero groups
+through rollout repair, and then refines the strongest local positive–negative boundary through a
+constant-size contrastive update. Figure 2 summarizes the full signal path.
+3.1
+Task Reward and Structural Score
+For a sampled response Ri and ground-truth output R⋆, let
+Pi = Set(Ri),
+T = Set(R⋆)
+denote the extracted target-ID sets from the prediction and the ground truth, respectively. Although
+we study single-target next-item recommendation, a generated response may still contain zero, one, or
+multiple valid IDs after parsing, so we write both signals in set form.
+Task reward.
+We define the task reward as
+ri =
+
+
+
+
+
+0,
+if Pi = ∅or T = ∅,
+|Pi ∩T|
+|Pi|
+,
+otherwise.
+In the single-target single-prediction case, this reduces to the standard binary hit reward.
+Structural score.
+To expose recommendation structure beyond exact hits, we define a structural score
+used only for within-group signal construction. For two target IDs
+p = (pa, pb, pc),
+t = (ta, tb, tc),
+4
+
+
+let
+ϕ(p, t) =
+
+
+
+
+
+
+
+
+
+1,
+if p = t,
+0.1,
+if (pa, pb) = (ta, tb) and pc ̸= tc,
+0.01,
+if pa = ta and pb ̸= tb,
+0,
+otherwise.
+The structural score of response Ri is then
+ui =
+
+
+
+
+
+0,
+if Pi = ∅or T = ∅,
+1
+|Pi|
+P
+p∈Pi maxt∈T ϕ(p, t),
+otherwise.
+The key distinction is that ri defines task success, whereas ui is used only to rank structural proximity
+within the sampled group. Thus, ReCast leaves the outer reward unchanged and uses ui only for
+within-group signal construction.
+3.2
+Rollout Repair
+Rollout repair is invoked only when a sampled group contains no positive at all. Formally, given
+G(q) = {R1, . . . , RG},
+repair is applied only if
+G
+X
+i=1
+ri = 0.
+In that case, ReCast constructs a valid positive anchor response Ranc such that
+r(Ranc; q, s) > 0.
+In practice, Ranc can be derived from the ground-truth output R⋆. This restores minimal learnability
+without changing the outer objective.
+To keep the intervention minimal, ReCast replaces the least informative response in the group:
+jrep = arg min
+1≤i≤G ui,
+yielding the repaired group
+eG(q) =
+ G(q) \ {Rjrep}
+
+∪{Ranc}.
+Since ui ranks structural proximity to the target, this replacement preserves the more informative
+negatives whenever possible.
+After repair, ReCast recomputes {ri, ui} on eG(q) and proceeds to the boundary update step. If the
+sampled group already contains at least one positive, no repair is applied.
+3.3
+Boundary Contrastive Update
+Given a repaired or already trainable group eG(q), ReCast updates only a local positive–negative boundary.
+We select
+i+ = arg max
+i: ri>0 ri,
+i−= arg max
+i: ri=0 ui.
+Thus, the positive is chosen by task success, while the negative is chosen by structural proximity to the
+target.
+ReCast then assigns learning signal only to this pair:
+AReCast
+i
+=
+
+
+
+
+
++w,
+i = i+,
+−w,
+i = i−,
+0,
+otherwise,
+(1)
+5
+
+
+where w > 0 is a fixed contrastive weight (default w = 1). This replaces full-group reward normalization
+with a constant-size active subset update. Once the boundary pair has been selected, the objective is to
+move probability mass from the hardest non-hit toward the strongest positive rather than to redistribute
+credit across the full group.1
+3.4
+Outer Objective
+ReCast leaves the outer RL framework unchanged and modifies only how within-group advantages are
+constructed. For each prompt q, a rollout group G(q) is first sampled from πold. If the group is all-zero,
+rollout repair produces a trainable group eG(q); otherwise, we let eG(q) = G(q). The ReCast advantage
+vector AReCast
+i
+is then computed on eG(q) by the boundary contrastive update in Eq. (1).
+The resulting objective is
+LReCast(θ) = Eq∼D, G(q)∼πold
+"
+1
+G
+G
+X
+i=1
+AReCast
+i
+log πθ(Ri | q)
+#
+−β KL(πθ(· | q) ∥πref(· | q)) ,
+where πref is a reference policy and β > 0 controls KL regularization. Thus, ReCast changes only the
+within-group signal path before the standard KL-regularized policy update.
+4
+Search–Update Decoupling
+Conventional group-based RL ties rollout width and actor-side update width to the same variable G.
+Under sparse-hit generative recommendation, this is inefficient: broader rollout is useful to expose rare
+positives, but actor learning need not scale with the full sampled group. ReCast breaks this coupling by
+keeping search wide and updates local.
+4.1
+From Coupled Group Width to Boundary-Supported Updates
+In conventional group-based RL, the group size G controls two quantities at once. It sets the search
+width by determining how many candidates are sampled per prompt, and it sets the update width by
+determining how many samples enter actor-side forward–backward optimization. Under sparse-hit
+recommendation, these two roles favor different operating points: search benefits from larger G, since
+natural positives are rare, whereas actor-side learning need only depend on the small subset that defines
+the local decision boundary.
+This difference appears directly at the level of update support. Under full-group updating, all
+sampled responses support actor learning:
+Wsearch = G,
+W base
+update = G.
+ReCast changes only the second quantity. Repair restores minimal learnability when needed, and
+boundary contrast reduces actor-side learning to one positive and one negative:
+Wsearch = G,
+W ReCast
+update = O(1).
+The sampled group therefore changes role. Under conventional group-based RL, it is both the search
+object and the full actor-side optimization burden. Under ReCast, it is primarily a search pool: rollout
+remains broad enough to expose rare positives and informative negatives, while actor-side learning
+depends only on the extracted local boundary.
+Let croll denote the rollout cost of one sampled response and cupd the actor-side update cost of one
+response. The per-group cost is then
+Cbase = G croll + G cupd,
+CReCast = G croll + O(1) cupd.
+ReCast thus preserves search width while removing the linear dependence of actor-side learning on G.
+1If no valid non-hit response exists in an otherwise trainable group, we skip the contrastive update for definitional completeness.
+This case is negligible in our sparse-hit settings.
+6
+
+
+4.2
+Implications for Scaling
+This decoupling changes the scaling regime of group-based RL.
+• Model scale. The advantage of ReCast should grow with model size, since actor-side optimization
+becomes more expensive for larger backbones while update support remains constant.
+• Search width. Increasing G should be more favorable under ReCast. Larger rollout still improves
+candidate coverage, but no longer expands actor-side learning cost in proportion to group width.
+• System efficiency. By keeping actor-side learning on a constant-size active subset, ReCast directly
+reduce wall-clock time, memory footprint, and actor-side workload relative to full-group updating.
+5
+Experiments
+We evaluate ReCast through the following three questions:
+• Q1: Under the same training budget, does ReCast improve final recommendation quality and enter
+the useful-learning regime earlier than baseline methods?
+• Q2: Why does ReCast help? In particular, does it mitigate the persistent degenerate signal regime in
+the baseline, and what roles do repair and boundary-focused updating play?
+• Q3: Does the search–update decoupling view translate into scaling behavior and system-level effi-
+ciency, e.g., scaling with model size, scaling with rollout width, and lower training cost?
+5.1
+Experimental Setup
+Benchmarks.
+We evaluate ReCast under the OpenOneRec benchmark setting on RecIF-Bench (Zhou
+et al., 2025a), covering five generative recommendation tasks: Ad Recommendation, Product Recom-
+mendation, Short Video Recommendation, Interactive Recommendation, and Label-Conditional
+Recommendation. We follow the original task definitions, data preprocessing, and evaluation protocol.
+Controlled comparison.
+All methods are built on the same OpenOneRec generative recommendation
+pipeline and initialized from the same post-SFT checkpoint. Unless otherwise specified, all RL variants
+share the same rollout temperature, group size, batch size, optimizer settings, KL coefficient, maximum
+generation length, and total RL budget. Our main baseline is the original OpenOneRec-RL pipeline
+(Zhou et al., 2025a), whose RL stage applies GRPO-style within-group reward normalization. The
+comparison therefore isolates the effect of RL-stage signal construction.
+Backbone scales.
+Unless otherwise specified, all experiments use Qwen3-1.7B. The model-scaling
+study in Section 5.4.1 uses Qwen3-1.7B, Qwen3-8B, and Qwen3-14B. The search-width scaling study in
+Section 5.4.2 and the system-efficiency results in Section 5.5 use Qwen3-8B, where the effect of actor-side
+workload reduction is more clearly exposed.
+Execution and implementation.
+Training is conducted on an Ascend/NPU cluster with 64 NPUs in
+total. All compared methods use the same hardware configuration within each controlled experiment. For
+ReCast runs, inactive samples are physically filtered before actor-side old_log_prob, ref_log_prob,
+and update_actor, so the reported system-efficiency gains reflect realized workload reduction rather
+than post-hoc masking.
+Metrics.
+We report final offline recommendation quality using Pass@1, Pass@32, and Recall@32. To
+evaluate learning efficiency and scaling behavior, we additionally report matched-budget comparisons
+and scaling and system-efficiency results under the same comparison protocol.
+5.2
+Main Results (for Q1)
+Table 1 shows that ReCast consistently outperforms OpenOneRec-RL across all five generative recom-
+mendation tasks under the same RL budget. The largest gains appear on Pass@1, where ReCast improves
+first-hit quality by 9.1% to 36.6%. The gains also extend to Pass@32 and Recall@32, indicating that
+ReCast improves not only the top-ranked hit, but also the overall accessibility of the target item within
+generated outputs.
+7
+
+
+Table 1: Main results on RecIF-Bench.
+Task
+Metric
+OpenOneRec-RL
+ReCast
+Rel. Improv.
+Short Video Rec
+Pass@1
+0.0285
+0.0311
+9.12%↑
+Pass@32
+0.1088
+0.1140
+4.78%↑
+Recall@32
+0.0150
+0.0158
+5.33%↑
+Ad Rec
+Pass@1
+0.0138
+0.0160
+15.90%↑
+Pass@32
+0.1689
+0.1782
+5.50%↑
+Recall@32
+0.0558
+0.0602
+7.90%↑
+Product Rec
+Pass@1
+0.0230
+0.0252
+9.60%↑
+Pass@32
+0.1694
+0.1882
+11.10%↑
+Recall@32
+0.0420
+0.0465
+10.70%↑
+Label-Cond. Rec
+Pass@1
+0.0041
+0.0056
+36.60%↑
+Pass@32
+0.0289
+0.0292
+1.00%↑
+Recall@32
+0.0116
+0.0120
+3.40%↑
+Interactive Rec
+Pass@1
+0.0860
+0.0970
+12.80%↑
+Pass@32
+0.4310
+0.4390
+1.86%↑
+Recall@32
+0.2865
+0.2973
+3.80%↑
+The advantage is not limited to final quality. Figure 3 shows that ReCast enters the useful-learning
+regime substantially earlier. Across the evaluated tasks, ReCast at 1K steps already surpasses OpenOneRec-
+RL at 20K steps. On Label-Conditional Recommendation, for example, ReCast reaches Pass@1 = 0.0053
+at 1K steps, exceeding the 0.0050 achieved by OpenOneRec-RL at 20K steps. Since 20K steps still lie
+well within the first epoch in our setting, this gap reflects genuinely earlier useful learning rather than
+late-stage degradation of the baseline.
+0
+2500
+5000
+7500
+10000
+12500
+15000
+17500
+20000
+Training steps
+0.0048
+0.0049
+0.0050
+0.0051
+0.0052
+0.0053
+Pass@1
+ReCast @ 1k
+0.0053
+OpenOneRec
+ReCast
+0
+200
+400
+600
+800
+1000
+1200
+0.0048
+0.0049
+0.0050
+0.0051
+0.0052
+0.0053
+Zoom: first 1.2k steps
+(a) Label-Cond. Recommendation.
+0
+2500
+5000
+7500
+10000
+12500
+15000
+17500
+20000
+Training steps
+0.0280
+0.0285
+0.0290
+0.0295
+0.0300
+0.0305
+0.0310
+Pass@1
+ReCast @ 1k
+0.0310
+OpenOneRec
+ReCast
+0
+200
+400
+600
+800
+1000
+1200
+0.0285
+0.0290
+0.0295
+0.0300
+0.0305
+0.0310
+Zoom: first 1.2k steps
+(b) Short Video Recommendation.
+0
+2500
+5000
+7500
+10000
+12500
+15000
+17500
+20000
+Training steps
+0.022
+0.023
+0.024
+0.025
+0.026
+Pass@1
+ReCast @ 1k
+0.0266
+OpenOneRec
+ReCast
+0
+200
+400
+600
+800
+1000
+1200
+0.023
+0.024
+0.025
+0.026
+Zoom: first 1.2k steps
+(c) Product Recommendation.
+Figure 3: Early-stage learning efficiency on three representative tasks.
+5.3
+Mechanism Analysis (for Q2)
+The previous results show that ReCast improves both final quality and early learning efficiency. We now
+ask why. The analysis below isolates four pieces of the mechanism: persistent signal degeneracy in the
+baseline, learnability restoration by repair, optimization stability from boundary-focused updating, and
+the regime-dependent roles of the two components.
+5.3.1
+Persistent Signal Degeneracy
+Table 2 shows that under sparse-hit supervision, OpenOneRec-RL does not escape the all-zero / single-hit
+regime after a brief early phase. The same pattern persists throughout training. From 1K to 40K steps,
+the all-zero group ratio changes only from 88% to 85%, the single-hit group ratio from 10% to 13%, and
+the zero-reward sample ratio from 97.2% to 96.0%. Much of the rollout budget therefore still fails to
+become reliable policy-improvement signal. The bottleneck is not only sparse reward at the sample level,
+but persistent degeneracy at the group level: many sampled groups never become informative learning
+units in the first place.
+8
+
+
+Table 2: Persistent signal degeneracy under OpenOneRec-RL.
+Metric
+1K
+20K
+40K
+∆(40K–1K)
+All-zero group ratio
+88%
+85%
+85%
+-3%
+Single-hit group ratio
+10%
+13%
+13%
++3%
+Zero-reward sample ratio
+97.2%
+96.3%
+96.0%
+-1.2%
+5.3.2
+Repair Restores Learnability
+Table 3 summarizes the role of repair. It first restores learnability immediately, lifting the valid trainable-
+group ratio from 13% to 100%. It then becomes progressively less necessary: the repair trigger ratio
+declines from 88% at 1K steps to 61% at 10K and 44% at 20K, while the naturally trainable-group ratio
+rises from 12% to 39% and 56%, respectively. Repair therefore matters most when natural positives are
+scarce, and recedes once the policy begins to produce trainable groups on its own.
+Table 3: Repair first restores learnability, and then becomes less necessary as training progresses.
+Immediate effect of repair
+Metric
+Value
+Before repair
+13%
+After repair
+100%
+Repair recedes over training
+Metric
+1K
+10K
+20K
+Repair trigger ratio
+88%
+61%
+44%
+Naturally trainable-group ratio
+12%
+39%
+56%
+5.3.3
+Boundary-Focused Stability
+Figure 4 compares training dynamics between ReCast and OpenOneRec-RL using three standard indica-
+tors of update stability: KL loss, which tracks how strongly the current policy is pulled away from the
+reference policy; PPO-KL, which measures the effective step size of policy updates; and gradient norm,
+which reflects the magnitude and volatility of the optimization signal. Across all three metrics, ReCast
+exhibits smaller fluctuations, fewer spikes, and earlier stabilization.
+This pattern is consistent with the signal path of ReCast. OpenOneRec-RL distributes credit through
+within-group reward statistics, so the update depends strongly on accidental group composition under
+sparse-hit supervision. ReCast instead concentrates learning on the local boundary defined by the
+strongest positive and the hardest negative. Policy updates therefore depend less on incidental group
+statistics and more on a stable boundary-supported signal, yielding smoother optimization.
+0
+50
+100
+150
+200
+250
+300
+350
+Training step
+0.0
+0.5
+1.0
+1.5
+2.0
+KL divergence
+ReCast
+OpenOneRec-RL
+(a) KL loss.
+0
+200
+400
+600
+800
+1000
+Training step
+0.4
+0.6
+0.8
+1.0
+Gradient norm
+ReCast
+OpenOneRec-RL
+(b) Gradient norm.
+0
+50
+100
+150
+200
+250
+300
+350
+Training step
+0.100
+0.075
+0.050
+0.025
+0.000
+0.025
+0.050
+0.075
+PPO KL
+ReCast
+OpenOneRec-RL
+(c) ppo-kl.
+Figure 4: Boundary-focused updating stabilizes optimization.
+5.3.4
+Ablation Study
+To separate the roles of the two components, we compare four variants: OpenOneRec-RL, Repair-
+only, Boundary-only, and Full ReCast. Figure 5 reveals a clear regime-dependent pattern. In the
+weaker regime (1.7B), Repair-only contributes more than Boundary-only, indicating that the dominant
+bottleneck is still learnability itself: natural positives are scarce, and many sampled groups have not yet
+become trainable learning events.
+9
+
+
+1.7B
+8B
+14B
+Model size
+5
+0
+5
+10
+15
+20
+25
+Task-median rel. Pass@1 gain (%)
+6.28
+-0.93
+-2.94
+2.42
+9.52
+14.75
+12.79
+7.31
+8.72
+Weaker Regime
+Mid Regime
+Stronger Regime
+Repair-only
+Boundary-only
+Full ReCast
+Figure 5: Regime-dependent roles of repair and
+boundary-focused update.
+As the regime becomes stronger (8B and 14B),
+this relationship reverses sharply. Boundary-only
+becomes the stronger single-component variant,
+while Repair-only can turn mildly negative. This
+suggests that once the policy can already produce
+naturally trainable groups more reliably, the main
+difficulty is no longer making learning possible,
+but making existing learning signals more precise.
+In this setting, forced anchor injection may no
+longer align with the model’s natural sampled
+boundary and can instead introduce bias into the
+update.
+This ablation should therefore be read primar-
+ily as evidence of component roles, rather than as
+a claim that any fixed recipe remains uniformly
+optimal across all backbones. What it shows is a
+regime-dependent tradeoff within ReCast: repair is most useful when learnability is scarce, whereas
+boundary-focused updating carries more of the benefit once natural trainability improves.
+5.4
+Scaling Under Search–Update Decoupling (for Q3)
+ReCast changes the scaling regime of group-based RL. Once actor-side learning no longer expands with
+the full rollout group, both larger backbones and broader rollout become more favorable under ReCast
+than under full-group updating.
+5.4.1
+Scaling with Model Size
+We compare ReCast against OpenOneRec-RL at 1.7B, 8B, and 14B under the same RL comparison
+protocol. For each scale, we define the matched-performance budget ratio as
+Budget Ratio = steps for ReCast to match OpenOneRec-RL@20K
+20000
+.
+Figure 6 shows a clear scaling trend. As model size increases, ReCast yields both larger fixed-budget
+gains and smaller matched-performance budget ratios. Averaged across tasks, the budget ratio decreases
+from 0.041 at 1.7B to 0.033 at 8B and further to 0.026 at 14B. In other words, ReCast needs only about 4.1%,
+3.3%, and 2.6% of the 20K-step baseline budget at these three scales to reach the same target performance.
+Larger models therefore strengthen, rather than weaken, the case for ReCast. As actor-side optimization
+becomes more expensive with scale, keeping update support constant becomes increasingly valuable.
+1.7B
+8B
+14B
+Model size
+0
+10
+20
+30
+40
+50
+Relative Pass@1 gain (%)
+16.80
+20.53
+24.54
+Short Video Rec
+Ad Rec
+Product Rec
+Label-Cond. Rec
+Interactive Rec
+Task average
+(a) Relative Pass@1 gain vs. model size (log scale).
+1.7B
+8B
+14B
+Model size
+0.015
+0.020
+0.025
+0.030
+0.035
+0.040
+0.045
+0.050
+0.055
+Matched-performance budget ratio
+0.041
+0.033
+0.026
+Short Video Rec
+Ad Rec
+Product Rec
+Label-Cond. Rec
+Interactive Rec
+Task average
+(b) Matched-performance budget ratio vs. model size
+(log scale).
+Figure 6: Scaling with model size. Thin lines denote individual tasks and thick line denotes the average.
+10
+
+
+4
+8
+16
+32
+64
+Group size G
+0.00
+0.02
+0.04
+0.06
+0.08
+Matched-performance budget ratio
+0.076
+0.062
+0.0516
+0.041
+0.0286
+Short Video Rec
+Ad Rec
+Product Rec
+Label-Cond. Rec
+Interactive Rec
+Task average
+(a) Matched-performance budget ratio vs. group size G.
+4
+8
+16
+32
+64
+Group size G
+0
+100
+200
+300
+400
+Actor-side update time (s)
+26.4
+52.8
+106
+211
+422
+4.1 ×
+16.6 ×
+32.5 ×
+Measured actor-update cost per token:
+OpenOneRec-RL: 0.0305 ms/token
+ReCast: 0.0271 ms/token
+OpenOneRec-RL
+ReCast
+(b) Normalized actor-side update cost vs. group size G.
+Figure 7: Scaling with search width at fixed model size.
+5.4.2
+Scaling with Search Width
+We next fix the training setting and vary the rollout group size G. Figure 7 shows a clear divergence
+between the two methods. As G increases, ReCast achieves smaller matched-performance budget ratios,
+while its actor-side update cost grows much more slowly than that of OpenOneRec-RL. At G=32, for
+example, ReCast reduces actor-side update time from 211.0s to 12.7s, corresponding to a 16.6× speedup.
+This difference follows directly from search–update decoupling. Under full-group updating, in-
+creasing G broadens search but also expands actor-side learning in the same proportion. Under ReCast,
+increasing G still improves candidate coverage, but actor-side learning remains supported by a constant-
+size local boundary. Search width therefore becomes a more favorable scaling knob: broader rollout
+improves exploration without forcing proportionally broader actor updates.
+5.5
+System-Level Efficiency
+The benefit of ReCast also appears directly in the training system. Table 4 reports end-to-end results
+under a fixed setting with G=32.
+• 4.82× faster step time: 371.54s →77.00s
+• 16.60× faster actor update: 211.04s →12.71s
+• 16.5% lower peak allocated memory: 43.89 GB →36.65 GB
+• 14.2% higher actor MFU: 0.0763 →0.0872
+Table 4: System-level efficiency at fixed G=32.
+Metric
+OpenOneRec-RL
+ReCast
+Improvement
+Step time (timing_s/step)
+371.54 s
+77.00 s
+4.82× faster
+Actor update (update_actor_s)
+211.04 s
+12.71 s
+16.60× faster
+Old log-prob (old_log_prob_s)
+56.27 s
+4.13 s
+13.63× faster
+Reference forward (ref_s)
+47.63 s
+3.12 s
+15.25× faster
+Actor-side effective tokens / step
+6.93M
+0.47M
+14.78× fewer
+Peak allocated memory
+43.89 GB
+36.65 GB
+16.5% lower
+Actor MFU
+0.0763
+0.0872
++14.2%
+Actor update cost
+0.0305 ms/token
+0.0271 ms/token
+11.0% lower
+These gains are not confined to a single stage. In addition to the large reduction in actor update time,
+old_log_prob and reference forward are accelerated by 13.63× and 15.25×, respectively. The benefit
+of ReCast therefore comes from shrinking actor-side active support throughout the entire pipeline.
+The source of the gain is equally clear. ReCast reduces actor-side effective tokens per step from 6.93M
+to 0.47M, while the actor update cost per token does not increase and instead drops slightly from 0.0305
+ms/token to 0.0271 ms/token. Its wall-clock improvement therefore comes primarily from reducing actor-
+side active workload. At the same time, memory usage decreases and actor MFU improves, showing
+that the gain is reflected not only in speed, but also in memory efficiency and hardware utilization.
+11
+
+
+6
+Discussion and Limitations
+6.1
+Recommendation RL Exhibits a Regime Shift
+Optimization events are scarce.
+Sparse-hit generative recommendation is not generic preference
+alignment with a different reward. In many training steps, the sampled rollout is not yet a meaningful
+optimization event. The challenge is therefore not only how to optimize a learning signal, but when such
+a signal exists at all.
+The bottleneck shifts with regime.
+Our results suggest that this bottleneck changes across regimes. In
+weaker regimes, the main problem is learnability: many sampled groups never become trainable events.
+In stronger regimes, sampled groups are more often naturally learnable, and the bottleneck shifts from
+making learning possible to preserving and refining already usable signals.
+Efficiency can amplify mismatch.
+This also explains why more efficient RL updates do not always
+improve outcomes. ReCast increases effective gradient density, but efficiency amplifies whatever
+direction the gradient points. When learnability is the main bottleneck, this yields direct gains. Once
+a fixed sparse-reward RL objective drifts away from the backbone’s structured decision boundary,
+however, more efficient updates can magnify that mismatch faster. The negative turn of repair in
+stronger backbones is one sign of this effect: once the model already forms trainable boundaries naturally,
+externally injected anchors may no longer align with them and can instead introduce bias.
+A regime-dependent view of recommendation RL.
+The broader lesson is not that repair should always
+be used, but that recommendation-aware RL is not a fixed recipe. It is a regime-dependent problem:
+weaker regimes require explicit learnability restoration, whereas stronger regimes increasingly require
+signal refinement without destroying backbone structure.
+6.2
+Limitations
+• Scope of validation. Our study is limited to offline post-training for single-target next-item recom-
+mendation. This regime-shift view has so far been established only in this relatively clean sparse-hit
+setting. In longer-horizon, multi-objective, or delayed-feedback settings, the challenge will be not only
+to determine whether a sampled unit is learnable, but also when intervention begins to distort the
+model’s natural learning boundary.
+• Unmeasured structural erosion. We identify the phenomenon and its likely mechanism, but do
+not yet directly measure which SFT-induced structures are being eroded under stronger backbones.
+Repair can turn negative, and more efficient updates can amplify mismatch, but we do not yet know
+whether the main losses come from template structure, SID semantic alignment, candidate-constrained
+calibration, or broader representation drift.
+• Static repair within a fixed paradigm. Repair remains static and rule-based. While useful in weaker
+regimes, it can become unnecessary or mildly harmful once the backbone already produces trainable
+groups naturally. This points to a more important future direction than a better fixed rule: adaptive
+repair, and more broadly, an adaptive RL-to-SFT interface that decides when to restore learnability,
+when to weaken intervention, and when to shift toward structure preservation.
+• The narrow reward interface beyond repair. More broadly, the deeper issue may not be the current
+repair rule alone, but the sparse-scalar-reward interface itself. Strong SFT backbones carry structured
+behaviors along many dimensions, yet RL sees only the projection exposed by a single scalar reward.
+A more radical direction is therefore to move beyond single-scalar reward optimization toward denser
+multi-event targets, for example through world-model-based or multi-head event prediction that
+makes richer behavioral dimensions directly visible to RL optimization.
+We therefore do not regard the current repair rule or boundary definition as final. They are better
+viewed as one concrete instance of a broader regime-aware signal-design perspective. The deeper open
+question is whether recommendation RL can learn, as the backbone and policy mature, not only when to
+transition from restoring learning events to preserving and refining usable ones, but also when a richer
+optimization interface is needed altogether.
+12
+
+
+7
+Related Work
+Driven by rapid advances in frontier large language models (OpenAI, 2026; Google DeepMind, 2026;
+Qwen Team, 2026; DeepSeek-AI, 2025; Anthropic, 2026; Liu et al., 2025a), generative recommendation
+has rapidly evolved into an increasingly capable LLM-based paradigm. It has progressed from early
+text-centric and instruction-following formulations (Geng et al., 2022; Cui et al., 2022; Bao et al., 2023;
+Liao et al., 2024) to structured generation over semantic or discrete item IDs (Rajput et al., 2023; Zheng
+et al., 2024; Wang et al., 2024a,c; Hong et al., 2025a; Xiao et al., 2025; Wang et al., 2024b; Zhou et al.,
+2025b; Liu et al., 2025b). More recent work has further strengthened this paradigm through improved
+item–text alignment and mixed-domain pre-training (Zhou et al., 2025a; Hao et al., 2025), stronger
+SID–language grounding during supervised fine-tuning (Zheng et al., 2024; Feng et al., 2026; He et al.,
+2026), and post-training objectives for exploration, stability, and value-aware learning under sparse
+feedback (Shao et al., 2024; Zheng et al., 2025; Jiang et al., 2026; Zhang et al., 2026; Wang et al., 2025).
+Within this broader landscape, ReCast focuses on a more specific bottleneck: before improving reward
+shaping or optimization stability, a sampled group must first be learnable at all.
+7.1
+RL for Generative Recommendation
+Existing generative recommendation RL methods mostly optimize learning signals after sampled rollouts
+have already been accepted as learning objects. OpenOneRec-RL (Zhou et al., 2025a) adopts GRPO-style
+within-group updates for recommendation generation, while OxygenRec (Hao et al., 2025), ECPO (Zhou
+et al., 2025b), and GBPO (Zhou et al., 2025c) improve recommendation RL through denser reward
+shaping, more conservative clipping, or gradient reshaping.
+More recent work expands this design space along other axes. (Xie et al., 2026) studies sequence-level
+and multi-objective optimization under sparse and rejection-dominated feedback, while V-STAR (Jiang
+et al., 2026) improves decoding-time exploration and within-group credit assignment through value-
+guided search and sibling-relative comparison. A related line introduces stronger reasoning or alignment
+machinery into recommendation RL, for example through reasoning-oriented optimization over Semantic
+IDs (He et al., 2026) or joint reasoning-and-alignment training pipelines (Hong et al., 2025b). RISER (Ding
+et al., 2026) is the closest in spirit to our work: it also identifies low sample utilization and instability
+in recommendation RL, but addresses them by converting failed rollouts into pairwise preference data
+together with additional diversification and token-level stabilization. Overall, these methods improve
+reward shaping, objective stabilization, and even auxiliary supervision after rollout. By contrast, ReCast
+asks an earlier question: whether the sampled group is learnable in the first place.
+7.2
+Alternative Training Paradigms and Semantic Foundations
+A separate line of work changes the supervision object or the semantic substrate rather than the within-
+group RL signal. GFlowGR (Wang et al., 2025) formulates generative recommendation as a multi-step
+generation problem and applies GFlowNets to provide value-aware supervision over item trajectories.
+TS-Rec (Feng et al., 2026) instead strengthens the representation substrate itself through semantic-aware
+SID initialization and token-level alignment. These methods are complementary to ReCast: they redesign
+what is supervised or how item tokens are represented, whereas ReCast studies sparse-hit group-based
+RL and focuses on restoring group-level learnability before refining the local positive–negative boundary.
+8
+Conclusion
+We identify a mismatch between generic group-based RL and sparse-hit generative recommendation:
+sampled groups are easy to obtain, but usable learning units are not. ReCast addresses this mismatch
+by restoring minimal learnability for all-zero groups and concentrating updates on the strongest local
+positive–negative boundary through a constant-size active subset. Across multiple generative recom-
+mendation tasks, ReCast consistently improves over the baseline, reaches useful learning substantially
+earlier, and exhibits a widening matched-budget advantage with model scale. More broadly, our results
+suggest that, for generative recommendation, the decisive RL problem is not only how to assign rewards,
+but how to construct learning signals from sparse, structured supervision.
+13
+
+
+References
+Anthropic.
+Introducing claude opus 4.6, 2026.
+URL https://www.anthropic.com/news/
+claude-opus-4-6.
+K. Bao, J. Zhang, Y. Zhang, W. Wang, F. Feng, and X. He. Tallrec: An effective and efficient tuning
+framework to align large language model with recommendation. In Proceedings of the 17th ACM
+Conference on Recommender Systems, RecSys ’23, page 1007–1014, New York, NY, USA, 2023. Association
+for Computing Machinery. ISBN 9798400702419. doi: 10.1145/3604915.3608857. URL https://doi.
+org/10.1145/3604915.3608857.
+Z. Cui, J. Ma, C. Zhou, J. Zhou, and H. Yang. M6-rec: Generative pretrained language models are
+open-ended recommender systems, 2022. URL https://arxiv.org/abs/2205.08084.
+DeepSeek-AI. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning, 2025.
+URL https://arxiv.org/abs/2501.12948.
+H. Ding, K. Bao, J. Zhang, Y. Fang, W. Xu, F. Feng, and X. He. Towards sample-efficient and stable
+reinforcement learning for llm-based recommendation. arXiv preprint arXiv:2602.00632, 2026.
+J. Feng, X. Kong, L. Sheng, B. Wu, C. Yi, F. Yang, X.-R. Sheng, H. Zhu, X. Wang, J. Wu, and X. He.
+Fine-grained semantics integration for large language model-based recommendation, 2026. URL
+https://arxiv.org/abs/2602.22632.
+S. Geng, S. Liu, Z. Fu, Y. Ge, and Y. Zhang. Recommendation as language processing (rlp): A unified
+pretrain, personalized prompt & predict paradigm (p5). RecSys ’22, New York, NY, USA, 2022.
+Association for Computing Machinery. ISBN 9781450392785. doi: 10.1145/3523227.3546767. URL
+https://doi.org/10.1145/3523227.3546767.
+Google DeepMind. Gemini 3, 2026. URL https://deepmind.google/models/gemini/.
+X. Hao, M. Zhang, A. Li, X. Qian, Z. Ma, Y. Zang, S. Yang, Z. Han, X. Ma, J. Liu, et al. Oxygenrec:
+An instruction-following generative framework for e-commerce recommendation. arXiv preprint
+arXiv:2512.22386, 2025.
+Y. He, Y. Sun, J. Tan, Y. Chen, X. Kong, C. Shen, X. Wang, A. Zhang, and T.-S. Chua. Reasoning over
+semantic ids enhances generative recommendation, 2026. URL https://arxiv.org/abs/2603.
+23183.
+M. Hong, Y. Xia, Z. Wang, J. Zhu, Y. Wang, S. Cai, X. Yang, Q. Dai, Z. Dong, Z. Zhang, and Z. Zhao.
+Eager-llm: Enhancing large language models as recommenders through exogenous behavior-semantic
+integration. In Proceedings of the ACM on Web Conference 2025, WWW ’25, page 2754–2762, New York,
+NY, USA, 2025a. Association for Computing Machinery. ISBN 9798400712746. doi: 10.1145/3696410.
+3714933. URL https://doi.org/10.1145/3696410.3714933.
+M. Hong, Z. Zhou, Z. Guo, Z. Zhang, R. Hu, W. Gan, J. Zhu, and Z. Zhao. Generative reasoning
+recommendation via llms, 2025b. URL https://arxiv.org/abs/2510.20815.
+J. Jiang, Y. Huang, Z. Wang, C. Wang, Y. Xiong, J. Zhang, and H. Yu. Spend search where it pays:
+Value-guided structured sampling and optimization for generative recommendation, 2026. URL
+https://arxiv.org/abs/2602.10699.
+J. Liao, S. Li, Z. Yang, J. Wu, Y. Yuan, X. Wang, and X. He. Llara: Large language-recommendation
+assistant. In Proceedings of the 47th International ACM SIGIR Conference on Research and Development in
+Information Retrieval, SIGIR ’24, page 1785–1795, New York, NY, USA, 2024. Association for Computing
+Machinery. ISBN 9798400704314. doi: 10.1145/3626772.3657690. URL https://doi.org/10.1145/
+3626772.3657690.
+J. Lin, T. Wang, and K. Qian. Rec-r1: Bridging generative large language models and user-centric
+recommendation systems via reinforcement learning, 2026. URL https://arxiv.org/abs/2503.
+24289.
+B. Liu, X. Li, J. Zhang, J. Wang, T. He, S. Hong, H. Liu, S. Zhang, K. Song, K. Zhu, et al. Advances and
+challenges in foundation agents: From brain-inspired intelligence to evolutionary, collaborative, and
+safe systems. arXiv preprint arXiv:2504.01990, 2025a.
+Z. Liu, S. Wang, X. Wang, R. Zhang, J. Deng, H. Bao, J. Zhang, W. Li, P. Zheng, X. Wu, Y. Hu, Q. Hu,
+14
+
+
+X. Luo, L. Ren, Z. Zhang, Q. Wang, K. Cai, Y. Wu, H. Cheng, Z. Cheng, L. Ren, H. Wang, Y. Su, R. Tang,
+K. Gai, and G. Zhou. Onerec-think: In-text reasoning for generative recommendation, 2025b. URL
+https://arxiv.org/abs/2510.11639.
+OpenAI. Gpt-5 is here, 2026. URL https://openai.com/gpt-5/.
+Qwen Team. Qwen3.5: Towards native multimodal agents, February 2026. URL https://qwen.ai/
+blog?id=qwen3.5.
+S. Rajput, N. Mehta, A. Singh, R. H. Keshavan, T. Vu, L. Heldt, L. Hong, Y. Tay, V. Q. Tran, J. Samost,
+M. Kula, E. H. Chi, and M. Sathiamoorthy. Recommender systems with generative retrieval. In
+Thirty-seventh Conference on Neural Information Processing Systems, 2023. URL https://openreview.
+net/forum?id=BJ0fQUU32w.
+Z. Shao, P. Wang, Q. Zhu, R. Xu, J. Song, X. Bi, H. Zhang, M. Zhang, Y. Li, Y. Wu, et al. Deepseekmath:
+Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300,
+2024.
+W. Wang, H. Bao, X. Lin, J. Zhang, Y. Li, F. Feng, S.-K. Ng, and T.-S. Chua. Learnable item tokenization
+for generative recommendation. In Proceedings of the 33rd ACM International Conference on Information
+and Knowledge Management, CIKM ’24, page 2400–2409, New York, NY, USA, 2024a. Association for
+Computing Machinery. ISBN 9798400704369. doi: 10.1145/3627673.3679569. URL https://doi.
+org/10.1145/3627673.3679569.
+Y. Wang, Z. Ren, W. Sun, J. Yang, Z. Liang, X. Chen, R. Xie, S. Yan, X. Zhang, P. Ren, Z. Chen, and
+X. Xin. Content-based collaborative generation for recommender systems. In Proceedings of the 33rd
+ACM International Conference on Information and Knowledge Management, CIKM ’24, page 2420–2430,
+New York, NY, USA, 2024b. Association for Computing Machinery.
+ISBN 9798400704369.
+doi:
+10.1145/3627673.3679692. URL https://doi.org/10.1145/3627673.3679692.
+Y. Wang, J. Xun, M. Hong, J. Zhu, T. Jin, W. Lin, H. Li, L. Li, Y. Xia, Z. Zhao, and Z. Dong. Eager:
+Two-stream generative recommender with behavior-semantic collaboration. In Proceedings of the 30th
+ACM SIGKDD Conference on Knowledge Discovery and Data Mining, KDD ’24, page 3245–3254, New
+York, NY, USA, 2024c. Association for Computing Machinery. ISBN 9798400704901. doi: 10.1145/
+3637528.3671775. URL https://doi.org/10.1145/3637528.3671775.
+Y. Wang, S. Zhou, J. Lu, Q. Liu, X. Li, W. Zhang, F. Li, P. Wang, J. Xu, B. Zheng, et al. Gflowgr:
+Fine-tuning generative recommendation frameworks with generative flow networks. arXiv preprint
+arXiv:2506.16114, 2025.
+L. Xiao, H. Wang, C. Wang, L. Ji, Y. Wang, J. Zhu, Z. Dong, R. Zhang, and R. Li. Unger: Generative
+recommendation with a unified code via semantic and collaborative integration. ACM Trans. Inf.
+Syst., 44(2), Dec. 2025. ISSN 1046-8188. doi: 10.1145/3773771. URL https://doi.org/10.1145/
+3773771.
+Y. Xie, X. K. Ren, Y. Qi, and H. Yao. Sage: Sequence-level adaptive gradient evolution for generative
+recommendation, 2026. URL https://arxiv.org/abs/2601.21452.
+Y. Zhang, W. Xu, X. Zhao, W. Wang, F. Feng, X. He, and T.-S. Chua. Reinforced latent reasoning for
+LLM-based recommendation. In The Fourteenth International Conference on Learning Representations,
+2026. URL https://openreview.net/forum?id=eUtIZT2ONS.
+B. Zheng, Y. Hou, H. Lu, Y. Chen, W. X. Zhao, M. Chen, and J.-R. Wen. Adapting large language models
+by integrating collaborative semantics for recommendation. In 2024 IEEE 40th International Conference
+on Data Engineering (ICDE), pages 1435–1448, 2024. doi: 10.1109/ICDE60146.2024.00118.
+C. Zheng, S. Liu, M. Li, X.-H. Chen, B. Yu, C. Gao, K. Dang, Y. Liu, R. Men, A. Yang, J. Zhou, and J. Lin.
+Group sequence policy optimization, 2025. URL https://arxiv.org/abs/2507.18071.
+G. Zhou, H. Bao, J. Huang, J. Deng, J. Zhang, J. She, K. Cai, L. Ren, L. Ren, Q. Luo, et al. Openonerec
+technical report. arXiv preprint arXiv:2512.24762, 2025a.
+G. Zhou, J. Deng, J. Zhang, K. Cai, L. Ren, Q. Luo, Q. Wang, Q. Hu, R. Huang, S. Wang, et al. Onerec
+technical report. arXiv preprint arXiv:2506.13695, 2025b.
+G. Zhou, H. Hu, H. Cheng, H. Wang, J. Deng, J. Zhang, K. Cai, L. Ren, L. Ren, L. Yu, et al. Onerec-v2
+technical report. arXiv preprint arXiv:2508.20900, 2025c.
+15
