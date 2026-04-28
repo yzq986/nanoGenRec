@@ -65,35 +65,34 @@ def constrained_beam_search(
     ctx_action_levels: torch.Tensor = None,
     gen_time_gap: int = None,
     gen_action_level: int = None,
+    sampling_temperature: float = 0.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, list]:
-    """Trie-constrained beam search with KV cache — every beam is a real SID.
+    """Trie-constrained beam search / sampling with KV cache.
 
-    At each decoding step, masks out tokens not in the trie given the
-    current beam prefix. This guarantees every output beam corresponds
-    to an actual item in the corpus.
-
-    Optimized for B=1 (eval processes one sample at a time).
+    Every returned candidate is a real SID (guaranteed by SIDTrie masking).
 
     Args:
         model: NTPModel with forward_cached() for KV-cached inference.
         input_tokens: (B, T) context tokens
         trie: SIDTrie built from sid_to_items
-        beam_size: number of beams to keep
-        prefix: (B, P) optional fixed prefix tokens. Beam search starts from
-                layer P instead of 0. Use to lock L0 (P=1) or L0+L1 (P=2)
-                for targeted Medium/Hard candidate generation.
-        ctx_kv_caches: pre-computed KV caches for the context. If None,
-                the context is encoded from input_tokens.
+        beam_size: number of candidates to return
+        prefix: (B, P) optional fixed prefix tokens.
+        ctx_kv_caches: pre-computed KV caches for the context.
         initial_logits: (B, C) logits from the last context position.
-                Required when ctx_kv_caches is provided and prefix is None.
         ctx_time_gaps: (B, T) time gap buckets for context tokens.
         ctx_action_levels: (B, T) action levels for context tokens.
-        gen_time_gap: scalar int, time_gap bucket for generated tokens (target item).
-        gen_action_level: scalar int, action_level for generated tokens (target item).
+        gen_time_gap: scalar int, time_gap bucket for generated tokens.
+        gen_action_level: scalar int, action_level for generated tokens.
+        sampling_temperature: if > 0, use constrained sampling instead of
+            beam search. Each of the beam_size candidates is drawn
+            independently from the trie-masked policy distribution at
+            temperature T. T=1.0 = policy distribution, T<1 = sharper,
+            T>1 = more uniform. sampling_temperature=0 (default) keeps
+            the original beam search behaviour.
 
     Returns:
         beams: (B, actual_beams, n_layers) — token indices
-        scores: (B, actual_beams) — log-probabilities
+        scores: (B, actual_beams) — cumulative log-probabilities
         ctx_kv_caches: context KV caches (for reuse across passes/items)
     """
     B = input_tokens.size(0)
@@ -221,6 +220,157 @@ def constrained_beam_search(
             scores = scores[:, :n_keep]
             for li in range(len(step_kv)):
                 step_kv[li] = step_kv[li][:B * n_keep]
+
+    return beams, scores, ctx_kv_caches
+
+
+@torch.no_grad()
+def constrained_sampling(
+    model,
+    input_tokens: torch.Tensor,
+    trie: SIDTrie,
+    n_samples: int = 64,
+    ctx_kv_caches=None,
+    initial_logits: torch.Tensor = None,
+    ctx_time_gaps: torch.Tensor = None,
+    ctx_action_levels: torch.Tensor = None,
+    gen_time_gap: int = None,
+    gen_action_level: int = None,
+    temperature: float = 1.0,
+) -> Tuple[torch.Tensor, torch.Tensor, list]:
+    """Trie-constrained ancestral sampling — every candidate is a real SID.
+
+    Generates n_samples independent paths by sampling token-by-token from
+    the trie-masked policy distribution. Unlike beam search, each path is
+    sampled independently, so importance ratio ρ = π_θ/π_ref ≈ 1 when used
+    with an on-policy ref model. This eliminates GRPO clip waste.
+
+    Assumes B=1 (one context at a time, same as constrained_beam_search).
+
+    Args:
+        model:          NTPModel with forward_cached().
+        input_tokens:   (1, T) context tokens.
+        trie:           SIDTrie for validity masking.
+        n_samples:      number of independent candidates to draw.
+        ctx_kv_caches:  pre-computed context KV caches (or None to encode).
+        initial_logits: (1, C) logits at last context position.
+        ctx_time_gaps:  (1, T) time gap buckets for context tokens.
+        ctx_action_levels: (1, T) action levels for context tokens.
+        gen_time_gap:   scalar int, time_gap for generated tokens.
+        gen_action_level: scalar int, action_level for generated tokens.
+        temperature:    softmax temperature. 1.0 = policy distribution,
+                        <1 = sharper (less explore), >1 = more uniform.
+
+    Returns:
+        beams:  (1, n_unique, n_layers) — deduplicated sampled SIDs
+        scores: (1, n_unique) — cumulative log-probs under policy
+        ctx_kv_caches: context KV caches for reuse
+    """
+    device = input_tokens.device
+    L = trie.n_layers
+
+    # ── Encode context (or reuse cached) ──
+    if ctx_kv_caches is None:
+        initial_logits, ctx_kv_caches = model.forward_cached(
+            input_tokens, ctx_time_gaps=ctx_time_gaps,
+            ctx_action_levels=ctx_action_levels)
+
+    _has_tg = gen_time_gap is not None and hasattr(model, 'time_gap_emb')
+    _has_al = gen_action_level is not None and hasattr(model, 'action_emb')
+
+    def _feat(n):
+        stg = torch.full((n, 1), gen_time_gap, dtype=torch.long,
+                         device=device) if _has_tg else None
+        sal = torch.full((n, 1), gen_action_level, dtype=torch.long,
+                         device=device) if _has_al else None
+        return stg, sal
+
+    # ── Sample n_samples paths independently ──
+    # paths[i] = list of token indices, one per layer
+    # We batch all n_samples through the model together for efficiency.
+    # At each layer, every sample has its own KV cache state (copied from ctx).
+
+    # Expand context KV cache to n_samples copies
+    # step_kv: list of (n_samples, T_ctx, D)
+    step_kv = [c.expand(n_samples, -1, -1).clone() for c in ctx_kv_caches]
+
+    # current_logits: (n_samples, C) — broadcast initial logits
+    cur_logits = initial_logits.expand(n_samples, -1)  # (n_samples, C)
+
+    sampled_tokens = []   # list of (n_samples,) tensors, one per layer
+    log_prob_sum = torch.zeros(n_samples, device=device)
+
+    for step in range(L):
+        if step > 0:
+            last_tok = sampled_tokens[-1].unsqueeze(1)  # (n_samples, 1)
+            stg, sal = _feat(n_samples)
+            cur_logits, step_kv = model.forward_cached(
+                generated_tokens=last_tok, kv_caches=step_kv,
+                step_time_gap=stg, step_action_level=sal)
+            # cur_logits: (n_samples, C)
+
+        C = cur_logits.size(-1)
+
+        # Build per-sample trie mask
+        # At step 0 all samples share the same prefix (), so one lookup suffices.
+        # At step > 0 samples may diverge, so we look up each individually.
+        if step == 0:
+            valid_list = list(trie.valid_tokens(step, ()))
+            if not valid_list:
+                # No valid tokens — return empty
+                empty = torch.zeros(1, 0, L, dtype=torch.long, device=device)
+                empty_s = torch.zeros(1, 0, device=device)
+                return empty, empty_s, ctx_kv_caches
+            mask = torch.zeros(n_samples, C, dtype=torch.bool, device=device)
+            mask[:, valid_list] = True
+        else:
+            prev = torch.stack(sampled_tokens, dim=1).cpu()  # (n_samples, step)
+            mask = torch.zeros(n_samples, C, dtype=torch.bool, device=device)
+            for i in range(n_samples):
+                pfx = tuple(prev[i].tolist())
+                vl = list(trie.valid_tokens(step, pfx))
+                if vl:
+                    mask[i, vl] = True
+
+        # Masked logits → temperature softmax → sample
+        masked_logits = cur_logits.masked_fill(~mask, float('-inf'))
+        probs = F.softmax(masked_logits / temperature, dim=-1)
+
+        # Handle any all-masked row (dead path) — sample 0 as placeholder
+        dead = ~mask.any(dim=1)
+        if dead.any():
+            probs[dead] = 0.0
+            probs[dead, 0] = 1.0  # placeholder, will be filtered later
+
+        tok = torch.multinomial(probs, num_samples=1).squeeze(1)  # (n_samples,)
+        tok_lp = torch.log(probs.gather(1, tok.unsqueeze(1)).squeeze(1) + 1e-40)
+        log_prob_sum = log_prob_sum + tok_lp
+        log_prob_sum[dead] = float('-inf')   # mark dead paths
+        sampled_tokens.append(tok)
+
+    # ── Assemble & deduplicate ──
+    paths = torch.stack(sampled_tokens, dim=1)   # (n_samples, L)
+    alive = log_prob_sum > float('-inf')
+    paths = paths[alive]
+    lps   = log_prob_sum[alive]
+
+    if paths.size(0) == 0:
+        empty = torch.zeros(1, 0, L, dtype=torch.long, device=device)
+        empty_s = torch.zeros(1, 0, device=device)
+        return empty, empty_s, ctx_kv_caches
+
+    # Deduplicate identical paths (can occur when T is low)
+    unique_paths, inv = torch.unique(paths, dim=0, return_inverse=True)
+    # For duplicates keep the log-prob of the first occurrence
+    n_unique = unique_paths.size(0)
+    unique_lps = torch.full((n_unique,), float('-inf'), device=device)
+    for i in range(paths.size(0)):
+        uid = inv[i].item()
+        if lps[i] > unique_lps[uid]:
+            unique_lps[uid] = lps[i]
+
+    beams  = unique_paths.unsqueeze(0)   # (1, n_unique, L)
+    scores = unique_lps.unsqueeze(0)     # (1, n_unique)
 
     return beams, scores, ctx_kv_caches
 

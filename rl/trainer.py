@@ -736,6 +736,7 @@ def train_grpo(
     delta=0.0,              # 0.0 → GRPO, 0.1 → ECPO
     rl_data_ratio=0.02,     # Bernoulli p of running a GRPO step per NTP step
     on_policy_beam=False,   # True → use policy model for beam search (on-policy)
+    sampling_temperature=0.0,  # >0 → constrained sampling instead of beam search
     rank_norm=False,        # True → rank-based advantage in [-1,1] (robust to log-scale rewards)
     a2po=False,             # True → A2PO: amplify neg-adv penalty for hard negatives
     a2po_alpha=1.0,         # A2PO gate scale
@@ -769,7 +770,7 @@ def train_grpo(
     Returns:
         (policy_model, avg_total_loss, n_params, train_log, train_summary)
     """
-    from ntp.model import constrained_beam_search
+    from ntp.model import constrained_beam_search, constrained_sampling
 
     # ── Load models ──
     log(is_main, f"  Loading policy model from {sft_checkpoint}...")
@@ -944,9 +945,10 @@ def train_grpo(
             # 1. Online beam search for each context
             # on_policy_beam=True  → policy model generates candidates (on-policy GRPO)
             # on_policy_beam=False → ref model generates candidates (off-policy, cheaper)
-            beam_model = raw_policy if on_policy_beam else ref_model
-            if on_policy_beam:
-                beam_model.eval()  # temporarily switch policy to eval for beam search
+            use_sampling = sampling_temperature > 0.0
+            beam_model = raw_policy if (on_policy_beam or use_sampling) else ref_model
+            if on_policy_beam or use_sampling:
+                beam_model.eval()  # temporarily switch policy to eval for generation
             for ctx_tokens, ctx_tg, ctx_al in sampled_contexts:
                 ctx_t = torch.tensor(ctx_tokens, dtype=torch.long,
                                      device=device).unsqueeze(0)  # (1, T)
@@ -957,18 +959,25 @@ def train_grpo(
                 # carry-forward: gen_action_level = last context item's action_level
                 gen_al = int(ctx_al[-1]) if ctx_al is not None else 0
                 with torch.no_grad():
-                    beams, _scores, _ = constrained_beam_search(
-                        beam_model, ctx_t, sid_trie, beam_size=group_size,
-                        ctx_time_gaps=tg_t, ctx_action_levels=al_t,
-                        gen_time_gap=0, gen_action_level=gen_al)
+                    if use_sampling:
+                        beams, _scores, _ = constrained_sampling(
+                            beam_model, ctx_t, sid_trie, n_samples=group_size,
+                            ctx_time_gaps=tg_t, ctx_action_levels=al_t,
+                            gen_time_gap=0, gen_action_level=gen_al,
+                            temperature=sampling_temperature)
+                    else:
+                        beams, _scores, _ = constrained_beam_search(
+                            beam_model, ctx_t, sid_trie, beam_size=group_size,
+                            ctx_time_gaps=tg_t, ctx_action_levels=al_t,
+                            gen_time_gap=0, gen_action_level=gen_al)
                 # beams: (1, actual_beams, n_layers)
                 cands = beams[0]   # (actual_beams, n_layers)
                 if is_main and n_grpo_steps == 0 and len(all_sids_list) == 0:
                     log(is_main, f"  [debug] beam shape={beams.shape} cands={cands.size(0)}")
                 all_sids_list.append(cands)
                 group_offsets_list.append(group_offsets_list[-1] + cands.size(0))
-            if on_policy_beam:
-                beam_model.train()  # restore training mode after all beam searches
+            if on_policy_beam or use_sampling:
+                beam_model.train()  # restore training mode after all candidate generation
 
             all_sids_t = torch.cat(all_sids_list, dim=0)   # (N_total, n_layers)
             group_offsets_t = torch.tensor(group_offsets_list,
@@ -1887,6 +1896,10 @@ def grpo_parse_args():
                              'instead of binary BehaviorReward. Expects subdirs YYYY-MM-DD/.')
     parser.add_argument('--behavior_cache_eval_date', type=str, default=None,
                         help='Reference date for freshness decay (YYYY-MM-DD). Defaults to latest date in cache.')
+    parser.add_argument('--sampling_temperature', type=float, default=0.0,
+                        help='If > 0, use constrained sampling instead of beam search '
+                             '(T=1.0=policy dist, <1=sharper, >1=more uniform). '
+                             'Reduces clip rate by keeping ρ≈1. Default 0=beam search.')
     parser.add_argument('--on_policy_beam', action='store_true',
                         help='Use policy model (not ref model) for beam search — true on-policy GRPO')
     parser.add_argument('--rank_norm', action='store_true',
@@ -2173,6 +2186,7 @@ def grpo_main():
         delta=args.delta,
         rl_data_ratio=args.rl_data_ratio,
         on_policy_beam=getattr(args, 'on_policy_beam', False),
+        sampling_temperature=getattr(args, 'sampling_temperature', 0.0),
         rank_norm=getattr(args, 'rank_norm', False),
         a2po=getattr(args, 'a2po', False),
         a2po_alpha=getattr(args, 'a2po_alpha', 1.0),
