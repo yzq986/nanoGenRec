@@ -39,6 +39,53 @@
 
 ---
 
+## EXP-035: Constrained Sampling — Replace Beam Search with T=1.0 Sampling
+
+**Date**: 2026-04-28
+**Status**: running
+**Results**: TBD
+
+### Background
+
+EXP-034 验证了 ref/policy 对齐只是部分改善（clip=95%，仍然很高）。真正根因是 beam search 的结构性问题：
+
+- beam search 总是选取 policy 最自信的候选 → ρ = π_θ/π_ref >> 1 → clip 率结构性偏高
+- 候选集中在 policy 峰值 → reward 方差极小 → advantage ≈ 0 → 梯度退化
+- EXP-034 日志显示 `adv=-0.00`，模型实际上几乎没在学习
+
+**解法**：用 `constrained_sampling(T=1.0)` 替换 beam search：
+- 候选直接从 policy 分布采样 → ρ ≈ 1 by construction
+- 采样覆盖多样路径（好/坏/中等）→ advantage 有真正对比信号
+- G: 512→64（多样性由 T 保证，不需要大 G），显存节省
+
+### Hypothesis
+
+| 指标 | EXP-034 (beam G=512) | EXP-035 (sampling T=1.0 G=64) |
+|------|---------------------|-------------------------------|
+| clip 率 | ~95% | 预期 10~40% |
+| adv_std | ≈0 | 预期 >0（真正对比信号）|
+| R@500 | TBD | 预期 ≥ EXP-034 |
+
+### Design
+- **Variable**: `--sampling_temperature 1.0`，`--group_size 64`（beam→sampling）
+- **Fixed**: ref=exp025, policy=exp025, 其余参数同 EXP-034（rank_norm, a2po, nll_reg, hepo）
+- **Metric**: clip 率、adv_std、R@10、R@500
+- **Data**: exp023-14d-features
+
+### Run
+`bash experiments/scripts/exp-035.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
 ## EXP-034: Ref Model Alignment — exp025 as ref_checkpoint
 
 **Date**: 2026-04-28
