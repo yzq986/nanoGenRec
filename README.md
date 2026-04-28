@@ -372,8 +372,8 @@ flowchart TD
         E022["❌ EXP-022\nInfoNCE 对比学习 → 全失败"]
         E024["❌ EXP-024\ntime_gap+action 训练侧修复\n推理侧仍泄漏"]
         M25["📦 exp025\nBeam Feature Passing\nR@500=63.6%"]
-        M036A["🔄 exp036-A\nClean NTP, no feat"]
-        M036B["🔄 exp036-B\nClean NTP + all feat"]
+        M036A["📦 exp036-A\nClean NTP, no feat\nR@500=55.3%"]
+        M036B["📦 exp036-B\nClean NTP + all feat\nR@500=59.0% ✅ features有效"]
 
         M23 -->|"用对比学习拉开 SID 语义距离"| E022
         M23 -->|"加时效/行为信号，但推理时 features 未传入"| E024
@@ -421,7 +421,8 @@ flowchart TD
     class M16,M17,M23,M25,M031B checkpoint
     class M20,M029 sota
     class E18,E022,E024,E028,E031A,E033 failed
-    class M036A,M036B running
+    class M036A checkpoint
+    class M036B sota
     class E027,E034 warn
 ```
 
@@ -470,7 +471,7 @@ flowchart TD
 | exp025-beam-passes | features SFT (beam-passes) | 25.22 | 10.4% | 63.6% | features 起点（待替换） |
 
 **当前进行中**：
-- **EXP-036**（running）：Clean Features NTP from scratch，验证 features 是否真正有效
+- **EXP-036**（completed）：Config B(features) R@500=59.0% vs Config A(no feat) 55.3%，+3.7pp ✅ features 有效，exp036-full-features 作为新 RL 起点
 
 ---
 
