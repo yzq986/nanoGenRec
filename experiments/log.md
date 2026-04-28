@@ -93,21 +93,26 @@ features bug 是 EXP-031 Config A clip 率升高（0.964 vs 0.924）的主要原
 
 **假设被证伪**：features bug 不是 clip 率异常的原因。修复后 clip 率从 0.964 变为 0.962，几乎没有变化，全程稳定在 96%。
 
-核心发现：
-1. **clip 率 96% 是这组配置（ECPO δ=0.1 + behavior reward + G=512）的固有特性**，与 features 注入无关。EXP-029（无 features）也出现类似问题，说明高 clip 是 reward 分布稀疏导致的结构性问题，而非 train-infer 不一致。
-2. **R@500 61.0% vs 61.8%**：修复后略低于 EXP-031A，差距在 inline eval 随机性范围内，features fix 对 recall 无显著影响（正面或负面）。
-3. **相比 baseline（66.2%）的退化是实质性的**：当前 ECPO 配置在 exp025 SFT 起点上没有带来 recall 提升，反而略有下降。高 clip 率意味着大多数候选被截断，RL 的有效更新极少。
+**真正根因确认：ref model 与 policy 起点不对齐（EXP-034 待验证）**
 
-根本原因推测：behavior reward 覆盖率 ~99%（几乎所有 SID 都有 reward），但 reward_std=1.696 + adv_std=0.580，导致所有候选的 advantage 归一化后差异很小，policy 更新方向不明确，clip 率居高不下。
+对比三个实验的关键数据：
+
+| 实验 | policy 起点 | ref model | KL(policy‖ref) 初始值 | clip 率 |
+|------|------------|-----------|----------------------|---------|
+| exp031-baseline | exp020 | exp020 | ≈ 0 | **92.4%** ✅ |
+| exp031-features | exp025 | exp020 | 大 | **96.4%** ❌ |
+| exp033 | exp025 | exp020 | 大 | **96.2%** ❌ |
+
+PPO clip 的触发条件是 ρ = exp(policy_lp - ref_lp) 超出 [1-ε, 1+ε]。exp025 是在 exp020 上做了 beam-passes SFT，两者对同一 token 的 log-prob 系统性不同。从 exp025 出发做 RL 时，**第一步就已经大量触发 clip**，不是因为更新太大，而是 policy 和 ref 本来就不在同一分布。ε=0.2 的 clip 窗口对于这个跨模型 KL 来说太窄。
+
+adv_std 和 reward_std 在三个实验里几乎完全相同（~0.58, ~1.68），排除了 reward 设计的嫌疑。
+
+**修法：ref_model = policy 起点 = exp025**，这样 RL 开始时 KL=0，clip 只在真正更新过大时才触发。
 
 ### Next Steps
 
-高 clip 率（96%）问题需要从 reward 设计或 group 构造入手：
-1. **降低 reward 稠密度**：behavior reward 覆盖率 99% 导致 within-group reward variance 极低，考虑用更 discriminative 的 reward（如 rank-based 或 contrastive reward）
-2. **增大 eps**：eps=0.2 可能偏小，对 δ=0.1 ECPO 来说 early clip 更激进，考虑 eps=0.3~0.5
-3. **换 GRPO（δ=0）**：排除 ECPO early clip 的影响，先确认 plain GRPO 的 clip 率是否正常
-
-features 修复本身是正确的（保证 train-infer 一致性），应该保留；只是它不是 clip 问题的根源。
+1. **EXP-034（待做）**：用 exp025 作为 ref model（而非 exp020），其余参数与 exp031-baseline 完全一致。预期 clip 率应回落到 ~92%，R@500 应超过 baseline 66.2%。这是验证上述根因的关键实验。
+2. features 修复本身正确（保证 train-infer 一致性），应保留，与 ref model 对齐问题独立。
 
 ---
 
