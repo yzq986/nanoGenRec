@@ -51,6 +51,7 @@ RKMeans 3×1024 (EXP-001 baseline, collision=1.75%)
 ├── IDEA-pit-0: Co-generative 动态 Tokenizer → P2 (NTP 后)
 ├── IDEA-quasid-0: Hamming Repulsion → P2 (NTP 后)
 ├── IDEA-adasid-0: Adaptive Collision Regulation → P2 (NTP 后, extends quasid-0)
+├── IDEA-dos-0: Dual-Flow Orthogonal RQ (上下文感知 SID + 正交量化) → P2 (NTP 后)
 ├── IDEA-r3vae-0: Reference Vector SID → P2 (NTP 后)
 ├── IDEA-geogr-0: 地理感知 SID (Co-visited Contrastive) → P2 (需泛化)
 ├── IDEA-onevision-0: VRQ 视觉对齐 RQ + 动态剪枝 → P2 (需视觉模态)
@@ -772,3 +773,79 @@ AdaSID 将 SID 碰撞调控建模为 **两阶段自适应过程**:
 1. 我们用 RQ-KMeans (离线 KMeans fit)，不是端到端训练 → AdaSID 的 loss 需要在 embedding 空间施加（先 fine-tune embedding，再重新跑 KMeans）
 2. collision 10.7% 对行为质量是否真的有害? EXP-008 已证明高 collision 不等于低质量，需要先做 Phase 1
 3. 在线效果 (GMV +0.98%) 虽然显著，但 QuaSID 的 GMV +2.38% 更大 — 可能因为 baseline 不同
+
+---
+
+## IDEA-dos-0: 双流正交残差量化 (Dual-Flow Orthogonal RQ)
+
+**优先级**: P2 (NTP 后)
+**来源**: DOS (Meituan, arxiv 2602.04460, WWW 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+DOS 针对 SID 学习的两个基本问题: (1) **Codebook-Generation Gap** — 现有方法 task-agnostic 学 SID (纯重建/聚类)，与下游生成任务脱节; (2) **量化语义损失** — 标准 RQ 的固定坐标系不适配 LLM 语义结构。
+
+**Dual-Flow Integration (DFI)**:
+- 用 **user-item 双塔** 在量化时同时编码用户行为序列和目标 item
+- User 塔: Transformer Encoder 编码 click sequence 的 LLM embedding
+- Item 塔: 编码 target item 的 LLM embedding
+- **共享码本**: 两塔共享同一个 codebook → user interest 和 item 被映射到统一语义空间
+- 训练目标: BCE (user-item 匹配) + VQ loss + Recon loss + Orth loss
+- 关键: SID 码本不再是孤立学习，而是感知生成任务的上下文
+
+**Orthogonal Residual Quantization (ORQ)**:
+- 每层量化前先用可学习正交矩阵 W_orth 旋转输入 (约束 W·W^T = I)
+- MLP 生成 dimension-wise weight score → **top-k masking** 选出 primary features (task-relevant)
+- Primary features 做码本量化; secondary features + residual 传给下一层
+- L_Mutual: 最大化 primary features 与 task label Y 的互信息
+- 保证 X_pri ⊥ X_sec (正交分解)，不丢失信息
+
+### 实验数据
+
+**离线** (Meituan 生产数据, 24M items, 180M interactions):
+
+| 方法 | AUC | F1-Score |
+|------|-----|---------|
+| RQ-KMeans | 0.8363 | 0.7641 |
+| RQ-VAE | 0.8526 | 0.7739 |
+| DAS | 0.8539 | 0.7869 |
+| **DOS** | **0.8763** | **0.8057** |
+
+**NTP 下游** (HSTU framework, Hit@10):
+
+| 方法 | All | Busi_A | Busi_B | Busi_C | Busi_D |
+|------|-----|--------|--------|--------|--------|
+| HSTU-RQ-KMeans | 0.0410 | 0.0252 | 0.0554 | 0.0398 | 0.0421 |
+| HSTU-DAS | 0.0511 | 0.0325 | 0.0672 | 0.0502 | 0.0541 |
+| **HSTU-DOS** | **0.0676** | **0.0457** | **0.0797** | **0.0730** | **0.0718** |
+
+**在线 A/B** (Meituan 生产流量 30%, 一周): **+1.15% revenue**
+
+消融: MLP 替代 Encoder → AUC 降至 0.8462; 不共享码本 → 0.8671; 加 Decoder → 0.8626 (重建目标与 task-relevant 选择冲突)
+
+### 与当前项目的关联
+
+- 当前 SID 学习是 task-agnostic (RKMeans 聚类 Qwen3 embedding)，DOS 指出这导致 codebook-generation gap
+- **IDEA-sid-1 失败的启示**: EXP-007/009 尝试注入协同信号到 embedding 失败; DOS 采用不同策略 — 不改 embedding，而是在量化阶段引入 user behavior context
+- DFI 的共享码本思想与 IDEA-flexcode-0 (FlexCode dual codebook) 互补: FlexCode 分 CF/Semantic 两个码本，DOS 用共享码本统一 user-item 空间
+- ORQ 的正交旋转与 IDEA-sid-0 (OPQ) 思想一致，但 OPQ 是静态预处理，ORQ 是端到端可学习
+- **decoder 无效的发现很重要**: 重建目标与 task relevance 冲突 → 支持 "不要追求完美重建" 的直觉
+
+### 实验设计草案
+
+**Phase 1 — Task-Aware 量化分析**:
+- 在现有 MLP-FSQ 量化后的 SID 上，测量: user click sequence 中前 N 个 item 的 SID 是否能预测 target item 的 SID (简单 BCE 模型)
+- 如果预测性差 → 证实 codebook-generation gap 存在，DOS 有价值
+
+**Phase 2 — ORQ 模块移植**:
+- 在 MLP-FSQ 的 MLP head 之前加 ORQ 层 (正交旋转 + dimension masking)
+- 保持 FSQ 后端不变，只改输入空间
+- 评估: semantic_neighbor_HR, collision_rate, 下游 NTP Recall
+
+### 关键问题
+
+1. 我们用 MLP-FSQ (非 RQ-VAE)，ORQ 中的 residual 量化不直接适用; 需要适配 FSQ 的 straight-through 路径
+2. 论文只有 4 页 (industry track)，技术细节有限 — 特别是 L_Mutual 的计算方式和正交约束的训练稳定性
+3. 共享码本要求同时有 user sequence 和 target item — 离线 batch tokenization 时没有 "target item"，需要改为采样正例
+4. 当前 tokenizer 已确认 (MLP-FSQ h=64)，改量化方案需要重训全链路 — 成本高，需要先验证 Phase 1

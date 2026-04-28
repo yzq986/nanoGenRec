@@ -1,0 +1,546 @@
+DOS: Dual-Flow Orthogonal Semantic IDs for Recommendation
+in Meituan
+Junwei Yin∗
+Meituan
+Chengdu, China
+yinjunwei03@meituan.com
+Senjie Kou∗
+Meituan
+Chengdu, China
+kousenjie@meituan.com
+Changhao Li
+Meituan
+Chengdu, China
+lichanghao@meituan.com
+Shuli Wang†
+Meituan
+Chengdu, China
+wangshuli03@meituan.com
+Xue Wei
+Meituan
+Chengdu, China
+weixue06@meituan.com
+Yinqiu Huang
+Meituan
+Chengdu, China
+huangyinqiu@meituan.com
+Yinhua Zhu
+Meituan
+Chengdu, China
+zhuyinhua@meituan.com
+Haitao Wang
+Meituan
+Chengdu, China
+wanghaitao13@meituan.com
+Xingxing Wang
+Meituan
+Beijing, China
+wangxingxing04@meituan.com
+Abstract
+Semantic IDs serve as a key component in generative recommen-
+dation systems. They not only incorporate open-world knowledge
+from large language models (LLMs) but also compress the semantic
+space to reduce generation difficulty. However, existing methods
+suffer from two major limitations: (1) the lack of contextual aware-
+ness in generation tasks leads to a gap between the Semantic ID
+codebook space and the generation space, resulting in suboptimal
+recommendations; and (2) suboptimal quantization methods exac-
+erbate semantic loss in LLMs. To address these issues, we propose
+Dual-Flow Orthogonal Semantic IDs (DOS) method. Specifically,
+DOS employs a user–item dual-flow framework that leverages col-
+laborative signals to align the Semantic ID codebook space with
+the generation space. Furthermore, we introduce an orthogonal
+residual quantization scheme that rotates the semantic space to an
+appropriate orientation, thereby maximizing semantic preservation.
+Extensive offline experiments and online A/B testing demonstrate
+the effectiveness of DOS. The proposed method has been success-
+fully deployed in Meituan’s mobile application, serving hundreds
+of millions of users.
+CCS Concepts
+• Information systems →Recommender systems; Computa-
+tional advertising.
+∗Both authors contributed equally to this research.
+† Corresponding author.
+This work is licensed under a Creative Commons Attribution-NonCommercial-
+NoDerivatives 4.0 International License.
+WWW ’26, Dubai, United Arab Emirates
+© 2025 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2307-0/2026/04
+https://doi.org/10.1145/3774904.3792845
+Keywords
+Recommender Systems, Generative Recommendation, Semantic
+IDs
+ACM Reference Format:
+Junwei Yin, Senjie Kou, Changhao Li, Shuli Wang, Xue Wei, Yinqiu Huang,
+Yinhua Zhu, Haitao Wang, and Xingxing Wang. 2025. DOS: Dual-Flow
+Orthogonal Semantic IDs for Recommendation in Meituan . In Proceedings of
+the ACM Web Conference 2026 (WWW ’26), April 13–17, 2026, Dubai, United
+Arab Emirates. ACM, New York, NY, USA, 4 pages. https://doi.org/10.1145/
+3774904.3792845
+1
+Introduction
+Personalized recommendation in industrial settings involves select-
+ing items from a candidate set of hundreds of millions. Traditional
+systems based on large-scale item-ID vocabularies pose a fundamen-
+tal challenge to recommendation efficiency and parameter scaling.
+In contrast, the emerging paradigm of Generative Recommenda-
+tion (GR), which utilizes Semantic IDs (SID), shows considerable
+promise for streamlining the recommendation pipeline and advanc-
+ing scaling laws[2]. Semantic IDs serve as a critical module within
+this framework, notable for their ability to integrate the open-world
+knowledge from LLMs while simultaneously compressing the se-
+mantic space [1] to alleviate the complexity of generation.
+Despite their promise, current approaches to learning Semantic
+IDs remain suboptimal, primarily due to two inherent limitations.
+First, the Codebook-Generation Gap: Most existing methods
+learn Semantic IDs in a task-agnostic manner[1, 4], often relying
+solely on reconstruction objectives. This approach overlooks the
+critical contextual information of the final generation task. Conse-
+quently, a significant gap emerges between the obtained Semantic
+ID codebook space and the generation space of the downstream
+task. This misalignment forces the generative model to operate
+with a suboptimal representation, ultimately leading to degraded
+recommendation quality. Second, Semantic Loss in Quantiza-
+tion: The quantization of continuous semantic representations into
+discrete tokens inevitably incurs information loss. While effective
+in other domains, prevailing quantization methods are not tailored
+arXiv:2602.04460v1  [cs.IR]  4 Feb 2026
+
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Junwei Yin et al.
+to preserve the nuanced semantic structures essential for LLM com-
+prehension, as they are primarily designed for clustering items [6]
+or user-item interactions [7]. This unsuitable quantization method
+exacerbates semantic distortion, hindering the LLM’s ability to
+accurately interpret the intended meaning of the Semantic IDs.
+To overcome these challenges, we propose a novel framework
+named Dual-Flow Orthogonal Semantic IDs (DOS). Our approach is
+designed to explicitly align the learning of SIDs with the objective
+of generative recommendation. Specifically, DOS introduces a user-
+item dual-tower architecture that leverages collaborative signals
+from an explicitly and implicit perspective. This design ensures
+that the learned SID codebook space is inherently aligned with the
+generative space of the LLM, effectively bridging the gap left by
+task-agnostic methods. This novel quantization method strategi-
+cally rotates the semantic space to an orientation that minimizes
+information loss during discretization, thereby maximally preserv-
+ing the semantic fidelity of the original representations. The main
+contributions of our DOS are summarized as follows:
+• We propose a Dual-Flow Integration (DFI) architecture that ex-
+plicitly models user-item interactions and implicitly aligns their
+semantic spaces via a shared codebook.
+• We devise an Orthogonal Residual Quantization (ORQ) module
+that iteratively extracts task-relevant semantics across layers to
+minimize information loss.
+• Extensive offline experiments and online A/B tests on large-scale
+datasets from Meituan’s platform demonstrate that DOS signifi-
+cantly outperforms state-of-the-art baselines.
+2
+Approach
+To bridge the gap between SID codebook space and generation
+space, we propose DOS, a novel model that performs orthogonal
+residual quantization within a dual-flow architecture (Figure 1). This
+architecture integrates user and item information through a two-
+fold process: modeling their direct interactions and aligning their
+representations via a shared codebook into a unified semantic space.
+Within this process, the ORQ module progressively quantizes the
+most task-relevant semantics for effective downstream prediction.
+2.1
+Dual-Flow Integration (DFI)
+In this process, DOS leverages a dual-flow architecture to integrate
+collaborative information from the user’s click sequence and target
+item directly into the quantization operation.
+Semantic Embedding Generation. We generate comprehen-
+sive semantic item representations by designing a structured prompt
+template that directs an LLM (Qwen3-0.6B-embedding) to produce
+embeddings as follows.
+{Item name} is a {second category} restaurant specializing in
+{third category}. Reservations are not accepted / are accepted. The
+minimum order amount is {min price} yuan, and the minimum
+delivery fee is {min shipping fee} yuan. Featured dishes include
+{dish 1, dish 2, ..., dish n}.
+These representations are stored as a set E𝑠𝑒𝑚𝑎𝑛𝑡𝑖𝑐= {𝑒1,𝑒2, · · · ,
+𝑒𝑁} ∈R𝑁×𝑑for subsequent use, where 𝑁indicates the total number
+of items and 𝑑is the embedding dimension.
+User-Item Information Integration. We integrate user-item
+collaborative information in two folds: explicitly modeling each
+user’s behavioral sequence and implicitly leveraging a shared code-
+book that encodes global collaborative patterns.
+Explicitly, to alleviate the gap between item quantification and
+generation tasks, we directly model the relationship between the
+user’s click sequence and the target item during quantization. This
+is achieved by first retrieving the semantic embeddings of both
+from the precomputed set Esemantic and then encoding them with a
+one-layer Transformer encoder.
+X𝑢𝑠𝑒𝑟= Encoder𝑢𝑠𝑒𝑟(X𝑠𝑒𝑞),
+X𝑖𝑡𝑒𝑚= Encoder𝑖𝑡𝑒𝑚(X𝑡𝑎𝑟𝑔𝑒𝑡), (1)
+where X𝑢𝑠𝑒𝑟= [𝑒𝑚,𝑒𝑛, · · · ,𝑒𝑝] ∈R𝑆×𝑑and X𝑖𝑡𝑒𝑚= [𝑒𝑡,𝑒𝑡, . . . ,𝑒𝑡] ∈
+R𝑆×𝑑are the representations obtained by the encoders. Here,𝑚,𝑛, 𝑝,
+𝑡∈1, 2, · · · , 𝑁are item indices and 𝑆denotes the sequence length.
+X𝑢𝑠𝑒𝑟and X𝑖𝑡𝑒𝑚are then processed by the ORQ module to extract
+task-relevant semantics at three hierarchical levels:
+C𝑢𝑠𝑒𝑟= ORQ𝑢𝑠𝑒𝑟(X𝑢𝑠𝑒𝑟),
+C𝑖𝑡𝑒𝑚= ORQ𝑖𝑡𝑒𝑚(X𝑖𝑡𝑒𝑚),
+(2)
+where C𝑢𝑠𝑒𝑟and C𝑖𝑡𝑒𝑚are quantified semantic representations.
+Finally, the three-level quantized representations are aggregated
+into final embeddings, which are then concatenated for the down-
+stream prediction:
+E𝑢𝑠𝑒𝑟= Aggre𝑢𝑠𝑒𝑟(C𝑢𝑠𝑒𝑟),
+E𝑖𝑡𝑒𝑚= Aggre𝑖𝑡𝑒𝑚(C𝑖𝑡𝑒𝑚),
+(3)
+ˆY = MLP𝑝𝑟𝑒𝑑(E𝑢𝑠𝑒𝑟⊕E𝑖𝑡𝑒𝑚),
+(4)
+L𝐵𝐶𝐸= −
+𝑍
+∑︁
+𝑖=1
+[𝑦𝑖𝑙𝑜𝑔( ˆ𝑦𝑖) + (1 −𝑦𝑖)𝑙𝑜𝑔(1 −ˆ𝑦𝑖)],
+(5)
+where𝑦𝑖∈Y and ˆ𝑦𝑖∈ˆY indicate the ground-truth and the predicted
+labels, respectively.
+Implicitly, we leverage a shared codebook to integrate the re-
+lationship between the user’s behavior sequence and the target
+item. This approach is effective due to the homogeneous nature of
+their representations: both are derived from items. By quantizing
+them with the same codebook, we project both the user’s interest
+(inferred from the sequence) and the target item into a unified se-
+mantic space. Consequently, during downstream prediction, this
+shared coding scheme ensures that their representations enable
+effective comparison, facilitating accurate matching.
+2.2
+Orthogonal Residual Quantization (ORQ)
+Although LLMs produce semantically rich representations, they are
+often generic and noisy for specific tasks. To distill task-relevant
+features, we propose an Orthogonal Residual Quantization (ORQ)
+module. ORQ operates layer-wise: at each stage, it quantizes pri-
+mary features for the current granularity, while passing secondary
+features and residuals to the next layer. This iterative process effec-
+tively distills relevant information at the appropriate level while
+preserving finer-grained signals. Here we take 𝑂𝑅𝑄𝑙𝑎𝑦𝑒𝑟1 as an
+example to elaborate its realization, as illustrated in Figure 1 (b).
+Feature Orthogonality. The input X is transformed by an or-
+thogonal matrix to an optimal orientation, preserving its full se-
+mantic content.
+X𝑜𝑟𝑡ℎ= W𝑜𝑟𝑡ℎX,
+L𝑂𝑟𝑡ℎ=
+W𝑜𝑟𝑡ℎW𝑇
+𝑜𝑟𝑡ℎ−I
+2 ,
+(6)
+
+
+DOS: Dual-Flow Orthogonal Semantic IDs for Recommendation in Meituan
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+a_4
+Target Item
+Shared
+Codebook
+a_5
+b_2
+c_6
+template
+Item_name, ..., min_price,
+min_shipping_fee, food_list
+LLM
+Transformer
+Encoder x1
+Transformer 
+Encoder x1
+Item Semantic Embedding Set
+Aggregation
+Aggregation
+c_6
+(a) Overall Dual-Tower Architecture
+(b) Orthogonal Residual Quantization (ORQ)
+Predictor
+Item Seq
+Item1
+Item2
+Itemn
+b_3
+top-k
+1
+3 4
+2
+6
+Codebook a
+—
+=
+5
++
++
+=
+Quantized
+Embedding
+5
+2
+6
+Figure 1: Overview of DOS. The left part (a) depicts the overall dual-flow architecture for processing the user’s click sequence and the target
+item. The right part (b) illustrates the ORQ module, which leverages X𝑜𝑟𝑡ℎand W𝑚𝑎𝑠𝑘to disentangle primary (X𝑝𝑟𝑖) and secondary (X𝑠𝑒𝑐)
+semantic features through the joint optimization of L𝑂𝑟𝑡ℎand L𝑀𝑢𝑡𝑢𝑎𝑙, enabling progressive selection of task-relevant semantics.
+where X𝑜𝑟𝑡ℎrepresents the rotated X and L𝑜𝑟𝑡ℎdenotes the orthog-
+onal loss used to constrain the rotation angle. W𝑜𝑟𝑡ℎindicates the
+orthogonal matrix and I is an identity matrix.
+Meanwhile, to justify the dimensions that benefit for downstream
+task, we introduce a two layer MLP (MLP𝑤) to generate a weight
+score (W𝑠𝑐𝑜𝑟𝑒) for each dimension. Then, we select top-𝑘salient
+dimension as the primary feature X𝑝𝑟𝑖and the left as the secondary
+feature X𝑠𝑒𝑐as follows:
+W𝑠𝑐𝑜𝑟𝑒= Sigmoid(MLP𝑤(X)), W𝑚𝑎𝑠𝑘(𝑖) =
+(
+1,
+if 𝑖∈Itop-𝑘
+0,
+otherwise,
+(7)
+where Itop-𝑘is the set of indices corresponding to the 𝑘largest
+weight scores, and W𝑚𝑎𝑠𝑘indicates the mask matrix used to select
+primary features:
+X𝑝𝑟𝑖= W𝑚𝑎𝑠𝑘X𝑜𝑟𝑡ℎ,
+X𝑠𝑒𝑐= (1 −W𝑚𝑎𝑠𝑘)X𝑜𝑟𝑡ℎ,
+(8)
+L𝑀𝑢𝑡𝑢𝑎𝑙= −
+∑︁
+X𝑝𝑟𝑖,Y
+P(X𝑝𝑟𝑖, Y)𝑙𝑜𝑔
+P(X𝑝𝑟𝑖, Y)
+P(X𝑝𝑟𝑖), P(Y) ,
+(9)
+where X𝑝𝑟𝑖is orthogonal to X𝑠𝑒𝑐since X𝑝𝑟𝑖· X𝑠𝑒𝑐= 0, which
+guarantees all the primary feature be keeped. To ensure the primary
+features are task-relevant, we use mutual information to measure
+its relevance to the task label Y.
+Residual Quantization. We perform residual quantization on
+the selected primary features, and then we concatenate residual
+feature and secondary feature as the input of next layer (𝑋𝑛𝑒𝑥𝑡):
+X𝑟𝑒𝑠𝑖= X𝑝𝑟𝑖−C𝑖,
+X𝑛𝑒𝑥𝑡= X𝑠𝑒𝑐⊕X𝑟𝑒𝑠𝑖,
+(10)
+where X𝑟𝑒𝑠𝑖indicates the residual embedding after quantization
+and C𝑖is the 𝑖-th codebook vector that most similar with X𝑝𝑟𝑖.
+Finally, we train DOS by jointly minimizing the losses as follows.
+
+
+L = LBCE + 𝛼(LOrth + L𝑀𝑢𝑡𝑢𝑎𝑙) + LRecon + LVQ, where
+LRecon = ∥E −ˆE∥2
+LVQ = Í𝐿
+𝑖=1
+𝑠𝑔
+
+X𝑟𝑒𝑠𝑖𝑙−1
+
+−C𝑖𝑙
+2 + 𝛽
+X𝑟𝑒𝑠𝑖𝑙−1 −𝑠𝑔
+
+C𝑖𝑙
+2 ,
+(11)
+where 𝛼and 𝛽are hyperparameters used for balancing and 𝑠𝑔
+means stop-gradient operation.
+3
+Experiments
+3.1
+Experiment Settings
+3.1.1
+Datasets and Baselines. To ensure alignment with our online
+objectives, we followed prior methods [7],[5] by constructing the
+evaluation dataset solely from production data, forgoing incompat-
+ible public datasets.
+Quantization Dataset: To ensure comprehensive coverage of
+business items, we collected user behavior records from the past
+year, encompassing 24 million unique items. For model training, we
+constructed 50-length user click sequences. The item immediately
+following each sequence (the 51st) was treated as a positive sample
+(label=1), while negative samples (label=0) were generated through
+random sampling. Offline Training Dataset: We used 60 days of
+online data, reserving the most recent 3 days for validation and the
+preceding 57 days for training, totaling 180 million interactions. We
+select rq-vae [8], rq-kmeans[3], DAS[7], and HSTU[9] as baselines
+for comparison.
+3.1.2
+Implementation Details. The quantization dataset is split into
+training, validation, and test sets in an 8:1:1 ratio. The parameters
+are configured as follows: the hyperparameters are set to 𝛼= 0.1
+and 𝛽= 0.25, semantic embedding dimension 𝑑= 1024, codebook
+layers 𝐿= 3, the codebook size for each layer is 1024, and batch
+size is 1024. Training employs early stopping with a patience of 5.
+For evaluation, we use the F1 score and AUC for the quantization
+task, and the Hit@10 for the generation task.
+3.2
+Performance Comparison
+We evaluate DOS on generative and downstream tasks. For a fair
+comparison, the baseline methods RQ-KMeans and RQ-VAE are
+fine-tuned with the application metrics, as they lack this alignment.
+The input to these baselines is the user’s click history concatenated
+with the target item.
+3.2.1
+Downstream Task Comparison. As illustrated in Table 1, our
+DOS achieves the best downstream task performance. RQ-KMeans
+performs the worst because it relies on a static clustering mech-
+anism, which lacks a learnable component. In contrast, RQ-VAE
+
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Junwei Yin et al.
+improves upon this by employing an encoder-decoder architecture
+to learn the quantization. DAS achieves inferior performance com-
+pared to our proposed DOS. This is because DAS aligns the user
+and item quantization processes indirectly through a collaborative
+information module, as opposed to the more integrated approach in
+DOS that directly models user behavior sequences with the target
+item. The relative indirectness of DAS’s alignment may introduce
+semantic space deviation. Our DOS achieves even greater perfor-
+mance by utilizing an encoder coupled with an ORQ module, which
+proactively selects the most task-relevant semantic information.
+The rationale for not incorporating a decoder in DOS is elaborated
+upon in the ablation study (Section 3.3).
+Table 1: Performance Comparison with Respect to Downstream Task
+Metrics (AUC and F1-Score).
+Model
+RQ-KMeans
+RQ-VAE
+DAS
+DOS
+AUC
+0.8363
+0.8526
+0.8539
+0.8763
+F1-Score
+0.7641
+0.7739
+0.7869
+0.8057
+3.2.2
+Downstream Next Token Prediction Performance. The quality
+of the SID generated by our DOS method is ascertained through
+evaluation within the HSTU framework. Model performance is
+benchmarked against the Hit@10 metric on both the overall dataset
+and four distinct business types (Busi_A to Busi_D). The results,
+summarized in Table 2, indicate that HSTU-DOS achieves signifi-
+cantly superior performance over HSTU-RQ-KMeans and HSTU-
+DAS. This finding is consistent with the downstream task results
+in Table 1, providing strong evidence for the enhanced efficacy of
+DOS in producing high-quality SID.
+Table 2: Hit@10 Performance by Business Category.
+Model
+All
+Busi_A
+Busi_B
+Busi_C
+Busi_D
+HSTU-RQ-KMeans
+0.0410
+0.0252
+0.0554
+0.0398
+0.0421
+HSTU-DAS
+0.0511
+0.0325
+0.0672
+0.0502
+0.0541
+HSTU-DOS
+0.0676
+0.0457
+0.0797
+0.0730
+0.0718
+3.3
+Ablation Study
+To validate the design choices of our proposed DOS framework,
+we conducted comprehensive ablation studies. We evaluated three
+variants: “-w MLP-Encoder” (replacing the Transformer encoder
+with a two-layer MLP), “-w/o Share” (not sharing codebook), and
+“-w Decoder” (adding a decoder for reconstruction). As detailed in
+Table 3, all modifications lead to performance degradation. The
+MLP encoder fails to model sequence-item relationships effectively,
+while removing the shared codebook misaligns the semantic spaces
+of user behaviors and the target item. The performance drop from
+the added decoder stems from a conflict between its reconstruction
+objective and the goal of selecting task-relevant information.
+Table 3: Ablation Study Results on AUC and F1-Score.
+Metric
+-w MLP-Encoder
+-w/o Share
+-w Decoder
+DOS
+AUC
+0.8462
+0.8671
+0.8626
+0.8763
+F1-Score
+0.7645
+0.7950
+0.7862
+0.8057
+3.4
+Online Experiment Results
+To quantify the incremental gain from the SID generated by our
+DOS framework in a live environment, we conducted a one-week
+online A/B test using 30% of Meituan’s production traffic. The
+experiment was designed to compare the original baseline model
+against a variant where SID were directly incorporated without
+any other architectural modifications.
+The online A/B test demonstrated the effectiveness of our DOS-
+generated Semantic ID (SID), which directly contributed to a 1.15%
+increase in online revenue. This result provides strong validation
+that the SID effectively captures task-relevant semantic information,
+leading to tangible business improvements.
+4
+Conclusion
+In this paper, we propose Dual-flow Orthogonal Semantic IDs (DOS),
+a network devised to enhance generative recommendation by learn-
+ing context-aware and semantically-rich compact representations.
+DOS models user–item interactions within a dual-flow integration
+framework (DFI) that aligns the Semantic ID codebook space with
+the generative space using collaborative signals. Specifically, we in-
+troduce an orthogonal residual quantization (ORQ) module, which
+rotates the semantic space to an optimal orientation to minimize
+information loss during quantization. Moreover, the orthogonal
+decomposition separates primary and residual semantic compo-
+nents, thereby maximizing semantic preservation and improving
+alignment for recommendation tasks. Extensive experiments on
+large-scale online A/B tests within Meituan’s platform demonstrate
+the superiority of DOS in generative recommendation.
+References
+[1] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating long
+semantic IDs in parallel for recommendation. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V. 2. 956–966.
+[2] Yupeng Hou, Jianmo Ni, Zhankui He, Noveen Sachdeva, Wang-Cheng Kang, Ed H
+Chi, Julian McAuley, and Derek Zhiyuan Cheng. 2025. ActionPiece: Contextually
+Tokenizing Action Sequences for Generative Recommendation. arXiv preprint
+arXiv:2502.13581 (2025).
+[3] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, et al. 2025. Qarm: Quantitative
+alignment multi-modal recommendation at kuaishou. In Proceedings of the 34th
+ACM International Conference on Information and Knowledge Management. 5915–
+5922.
+[4] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al. 2023.
+Recommender systems with generative retrieval. Advances in Neural Information
+Processing Systems 36 (2023), 10299–10315.
+[5] Bin Tan, Wangyao Ge, Yidi Wang, Xin Liu, Jeff Burtoft, Hao Fan, and Hui Wang.
+2025. PCR-CA: Parallel Codebook Representations with Contrastive Alignment
+for Multiple-Category App Recommendation. arXiv preprint arXiv:2508.18166
+(2025).
+[6] Yining Yao, Ziwei Li, Shuwen Xiao, Boya Du, Jialin Zhu, Junjun Zheng, Xiangheng
+Kong, and Yuning Jiang. 2025. SaviorRec: Semantic-Behavior Alignment for Cold-
+Start Recommendation. arXiv preprint arXiv:2508.01375 (2025).
+[7] Wencai Ye, Mingjie Sun, Shaoyun Shi, Peng Wang, Wenjin Wu, and Peng Jiang.
+2025. DAS: Dual-Aligned Semantic IDs Empowered Industrial Recommender
+System. In Proceedings of the 34th ACM International Conference on Information
+and Knowledge Management. 6217–6224.
+[8] Neil Zeghidour, Alejandro Luebs, Ahmed Omran, Jan Skoglund, and Marco
+Tagliasacchi. 2021. Soundstream: An end-to-end neural audio codec. IEEE/ACM
+Transactions on Audio, Speech, and Language Processing 30 (2021), 495–507.
+[9] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Michael He, et al. 2024. Actions speak louder than
+words: Trillion-parameter sequential transducers for generative recommendations.
+arXiv preprint arXiv:2402.17152 (2024).
