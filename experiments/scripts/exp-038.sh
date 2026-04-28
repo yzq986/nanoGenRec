@@ -22,16 +22,18 @@ N_GPUS="${N_GPUS:-$(python -c 'import torch; print(max(1, torch.cuda.device_coun
 SFT_CKPT="experiments/ntp_checkpoints/exp037-medium"   # SP-DPO output from EXP-037
 NTP_DATA="experiments/ntp_data/exp023-14d-features"
 SID_CACHE="experiments/sid_cache/exp013-4096x3-12d-binary"
-PREF_DIR="experiments/rf_dpo_data/exp018"              # Reuse EXP-018 real feedback data
+PREF_DIR="experiments/rf_dpo_data/exp018/hard"         # Reuse EXP-018 real feedback data (hard pairs)
 CKPT_DIR="experiments/ntp_checkpoints"
 DATE_START="2026-03-18"
 DATE_END="2026-03-31"
 
 FORCE=false
+FORCE_PREF=false
 SKIP_SMOKE=false
 for arg in "$@"; do
     case "$arg" in
         --force) FORCE=true ;;
+        --force-pref) FORCE_PREF=true ;;
         --no-smoke) SKIP_SMOKE=true ;;
     esac
 done
@@ -58,11 +60,11 @@ if [ ! -f "${NTP_DATA}/meta.json" ]; then
 fi
 
 # ── Generate RF-DPO preference pairs if not already done ──────
-if [ ! -f "${PREF_DIR}/hard/meta.json" ] || [ "${FORCE}" == true ]; then
+if [ ! -f "${PREF_DIR}/meta.json" ] || [ "${FORCE_PREF}" == true ]; then
     echo ">>> Generating RF-DPO preference pairs (date: ${DATE_START}~${DATE_END})..."
     python run.py rf-dpo-prepare \
         --sid_cache "${SID_CACHE}" \
-        --output_dir "${PREF_DIR}" \
+        --output_dir "experiments/rf_dpo_data/exp018" \
         --date_start "${DATE_START}" \
         --date_end "${DATE_END}" \
         --n_rejected 20 \
