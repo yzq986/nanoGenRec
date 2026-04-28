@@ -15,3 +15,4 @@ trade-offs matter.
 | [003-sp-dpo-training-engineering.md](003-sp-dpo-training-engineering.md) | SP-DPO training engineering: OOM, DDP, joint optimization | 2026-04-18 |
 | [004-prefix-locked-vs-paper-beam-search.md](004-prefix-locked-vs-paper-beam-search.md) | Prefix-locked vs paper beam search: candidate generation tradeoffs | 2026-04-19 |
 | [005-beam-search-kv-cache.md](005-beam-search-kv-cache.md) | KV cache for beam search: 3-level compute reuse optimization | 2026-04-19 |
+| [006-why-grpo-needs-on-policy-but-dpo-doesnt.md](006-why-grpo-needs-on-policy-but-dpo-doesnt.md) | Why GRPO needs on-policy candidates but DPO doesn't | 2026-04-28 |
