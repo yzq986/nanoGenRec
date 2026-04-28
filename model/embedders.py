@@ -135,12 +135,17 @@ class Qwen3VLEmbedder:
         self.max_frames = max_frames
         self.default_instruction = default_instruction
 
-        print(f"Loading {model_name_or_path}...")
+        # Qwen3-VL-Embedding config 是 bf16，显式传一下；不传 HF 会 fallback 到 fp32
+        # 导致权重 + activations 都双倍显存 (2B 模型轻松吃满 40GB)
+        torch_dtype = kwargs.pop('torch_dtype', torch.bfloat16)
+
+        print(f"Loading {model_name_or_path} ({torch_dtype})...")
         if device is not None:
             # 分布式模式：显式放置到指定 GPU (torchrun per-rank)
             base_model = Qwen3VLForConditionalGeneration.from_pretrained(
                 model_name_or_path,
                 trust_remote_code=True,
+                torch_dtype=torch_dtype,
                 **kwargs
             ).to(device)
             self._device = torch.device(device)
@@ -150,6 +155,7 @@ class Qwen3VLEmbedder:
             base_model = Qwen3VLForConditionalGeneration.from_pretrained(
                 model_name_or_path,
                 trust_remote_code=True,
+                torch_dtype=torch_dtype,
                 device_map="auto",
                 **kwargs
             )
