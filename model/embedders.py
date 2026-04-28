@@ -304,17 +304,8 @@ class Qwen3VLEmbedder:
         row = torch.arange(hidden_state.shape[0], device=hidden_state.device)
         return hidden_state[row, col]
 
-    def process(self, inputs: List[Dict[str, Any]], normalize: bool = True) -> torch.Tensor:
-        """Process inputs and generate normalized embeddings
-
-        Args:
-            inputs: List of dicts with keys 'text', 'image', 'video', 'instruction'
-                   Example: [{"text": "hello"}, {"text": "world", "image": "url"}]
-            normalize: Whether to L2-normalize embeddings
-
-        Returns:
-            embeddings: torch.Tensor of shape (N, 4096)
-        """
+    def preprocess(self, inputs: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        """CPU-only: format + tokenize + image resize. Thread-safe (no GPU ops)."""
         conversations = [self.format_model_input(
             text=ele.get('text'),
             image=ele.get('image'),
@@ -323,17 +314,20 @@ class Qwen3VLEmbedder:
             fps=ele.get('fps'),
             max_frames=ele.get('max_frames')
         ) for ele in inputs]
+        return self._preprocess_inputs(conversations)
 
-        processed_inputs = self._preprocess_inputs(conversations)
+    def encode(self, processed_inputs: Dict[str, torch.Tensor], normalize: bool = True) -> torch.Tensor:
+        """GPU-only: forward pass + pooling on already-preprocessed tensors."""
         processed_inputs = {k: v.to(self.model.device) for k, v in processed_inputs.items()}
-
         outputs = self.forward(processed_inputs)
         embeddings = self._pooling_last(outputs['last_hidden_state'], outputs['attention_mask'])
-
         if normalize:
             embeddings = F.normalize(embeddings, p=2, dim=-1)
-
         return embeddings
+
+    def process(self, inputs: List[Dict[str, Any]], normalize: bool = True) -> torch.Tensor:
+        """Convenience: preprocess + encode in one call."""
+        return self.encode(self.preprocess(inputs), normalize=normalize)
 
 
 class Qwen3TextEmbedder:

@@ -463,8 +463,9 @@ DISTRIBUTED_MODEL_CONFIGS = {
 }
 
 
-def _prepare_vl_batch(content_ids, texts, images, batch_idx, batch_size, max_images):
-    """CPU-side: download images + build inputs dict. Runs in prefetch thread."""
+def _prepare_vl_batch(content_ids, texts, images, batch_idx, batch_size, max_images,
+                      embedder=None):
+    """CPU-side: download images + build inputs + preprocess tensors. Runs in prefetch thread."""
     batch_cids = content_ids[batch_idx:batch_idx + batch_size]
     batch_texts = texts[batch_idx:batch_idx + batch_size]
     batch_imgs = images[batch_idx:batch_idx + batch_size]
@@ -499,7 +500,10 @@ def _prepare_vl_batch(content_ids, texts, images, batch_idx, batch_size, max_ima
                 item["image"] = imgs
         inputs.append(item)
 
-    return batch_cids, inputs, t_dl, n_ok, len(all_urls)
+    # CPU preprocess (tokenize, image resize/patch) — the expensive part
+    preprocessed = embedder.preprocess(inputs) if embedder is not None else None
+
+    return batch_cids, inputs, preprocessed, t_dl, n_ok, len(all_urls)
 
 
 def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
@@ -512,61 +516,75 @@ def encode_batch_vl(embedder, content_ids, texts, images, batch_size, rank,
     start_time = time.time()
     total = len(content_ids)
 
-    prefetch = ThreadPoolExecutor(max_workers=prefetch_depth)
+    # max_workers=1: preprocess involves tokenizer + image processor which share state;
+    # single worker avoids thread-safety issues while still overlapping CPU with GPU
+    prefetch = ThreadPoolExecutor(max_workers=1)
     queue = deque()
-    # seed the prefetch queue
+    # seed the prefetch queue — includes CPU preprocess (tokenize + image resize)
     for k in range(prefetch_depth):
         idx = k * batch_size
         if idx < total:
             queue.append((idx, prefetch.submit(
-                _prepare_vl_batch, content_ids, texts, images, idx, batch_size, max_images)))
+                _prepare_vl_batch, content_ids, texts, images, idx, batch_size, max_images,
+                embedder=embedder)))
 
     batch_idx = 0
     while batch_idx < total:
         _, future = queue.popleft()
-        batch_cids, inputs, t_dl, n_ok, n_urls = future.result()
+        batch_cids, inputs, preprocessed, t_dl, n_ok, n_urls = future.result()
 
         # enqueue next batch
         next_idx = batch_idx + prefetch_depth * batch_size
         if next_idx < total:
             queue.append((next_idx, prefetch.submit(
-                _prepare_vl_batch, content_ids, texts, images, next_idx, batch_size, max_images)))
+                _prepare_vl_batch, content_ids, texts, images, next_idx, batch_size, max_images,
+                embedder=embedder)))
 
-        # 推理 + OOM retry: chunk_size 减半；到 1 仍 OOM 时只 skip 那 1 条
+        # GPU 推理 + OOM retry
         n = len(inputs)
-        chunk_size = n
-        i = 0
         n_skipped = 0
-        while i < n:
-            end = min(i + chunk_size, n)
-            sub_cids = batch_cids[i:end]
-            sub_inputs = inputs[i:end]
-            try:
-                emb = embedder.process(sub_inputs).cpu().float().numpy()
-                for cid, e in zip(sub_cids, emb):
-                    new_embeddings[cid] = e
-                i = end
-            except torch.cuda.OutOfMemoryError:
-                import gc
-                del sub_inputs
-                gc.collect()
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-                if chunk_size == 1:
-                    bad_cid = sub_cids[0]
-                    bad_text = texts[batch_idx + i] if (batch_idx + i) < len(texts) else ""
-                    bad_imgs = images[batch_idx + i] if (batch_idx + i) < len(images) else []
-                    mem_alloc = torch.cuda.memory_allocated() / 1e9
-                    mem_reserved = torch.cuda.memory_reserved() / 1e9
-                    mem_total = torch.cuda.get_device_properties(0).total_memory / 1e9
-                    print(f"    [Rank {rank}] Skip cid={bad_cid} "
-                          f"(text_len={len(bad_text)}, n_imgs={len(bad_imgs) if bad_imgs else 0}, "
-                          f"mem={mem_alloc:.1f}/{mem_reserved:.1f}/{mem_total:.1f}GB alloc/reserved/total)")
-                    n_skipped += 1
-                    i += 1
-                else:
-                    chunk_size = max(1, chunk_size // 2)
-                    print(f"    [Rank {rank}] OOM, chunk_size -> {chunk_size}")
+        try:
+            emb = embedder.encode(preprocessed).cpu().float().numpy()
+            for cid, e in zip(batch_cids, emb):
+                new_embeddings[cid] = e
+        except torch.cuda.OutOfMemoryError:
+            # OOM fallback: re-process in smaller chunks (can't slice preprocessed tensors cleanly)
+            import gc
+            del preprocessed
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            chunk_size = max(1, n // 2)
+            i = 0
+            while i < n:
+                end = min(i + chunk_size, n)
+                sub_cids = batch_cids[i:end]
+                sub_inputs = inputs[i:end]
+                try:
+                    emb = embedder.process(sub_inputs).cpu().float().numpy()
+                    for cid, e in zip(sub_cids, emb):
+                        new_embeddings[cid] = e
+                    i = end
+                except torch.cuda.OutOfMemoryError:
+                    del sub_inputs
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    if chunk_size == 1:
+                        bad_cid = sub_cids[0]
+                        bad_text = texts[batch_idx + i] if (batch_idx + i) < len(texts) else ""
+                        bad_imgs = images[batch_idx + i] if (batch_idx + i) < len(images) else []
+                        mem_alloc = torch.cuda.memory_allocated() / 1e9
+                        mem_reserved = torch.cuda.memory_reserved() / 1e9
+                        mem_total = torch.cuda.get_device_properties(0).total_memory / 1e9
+                        print(f"    [Rank {rank}] Skip cid={bad_cid} "
+                              f"(text_len={len(bad_text)}, n_imgs={len(bad_imgs) if bad_imgs else 0}, "
+                              f"mem={mem_alloc:.1f}/{mem_reserved:.1f}/{mem_total:.1f}GB alloc/reserved/total)")
+                        n_skipped += 1
+                        i += 1
+                    else:
+                        chunk_size = max(1, chunk_size // 2)
+                        print(f"    [Rank {rank}] OOM, chunk_size -> {chunk_size}")
 
         if n_skipped:
             print(f"    [Rank {rank}] batch@{batch_idx}: skipped {n_skipped}/{n}")
