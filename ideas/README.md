@@ -14,10 +14,10 @@
 | [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum/LAC/OneLive-BOS/CF-SoftLabel) | 20 | ~~onemall-0~~ ❌ (EXP-022 负结果) |
 | [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR/RPO/ElasticTether) | 12 | — |
 | [inference.md](inference.md) | 推理优化 (Dynamic Beam/~~CSR约束~~/Register压缩/PRM-Beam/GRC/FP8-PTQ/SelfDraftSD) | 8 | ~~static-0~~ ❌(SIDTrie已有) |
-| [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn) | 3 | ~~oneloc-4~~ 部分完成 |
+| [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn/DistTraining) | 4 | ~~oneloc-4~~ 部分完成 |
 | [ntp-features.md](ntp-features.md) | NTP 特征注入 (TimeGap/ActionType/SegmentEmb/Category/UserProfile/ContTime) | 6 | ~~feat-0/1/2~~ ✅ (EXP-036 全部验证) |
 
-**总计: 98 ideas (0 P0 活跃 / ~57 P1 / 31 P2 / 11 已完成或关闭)**
+**总计: 99 ideas (0 P0 活跃 / ~57 P1 / 32 P2 / 11 已完成或关闭)**
 
 **已完成/关闭**: sid-0 ❌, sid-1(emb) ❌(EXP-007/009), onemall-0 ❌(EXP-022), onemall-4 ✅, onemall-5 ✅, forge-0 ✅, oneloc-4 部分✅, oneloc-2 已被align3-0覆盖, feat-0/1/2 ✅(EXP-036), rpo-0 ✅(理论验证), spot-0 ✅(理论验证), uni-0 ❌(无搜索场景), mtgr-0 ✅(train_packed), lac-0 ✅(EXP-025/036), onerec-3 暂缓P2, static-0 ❌(SIDTrie已实现)
 
@@ -105,6 +105,7 @@ graph LR
         GENREC2("genrec-2 GRPO-SR Hybrid Reward"):::p1
         ORECV2("orecv2-0 FP8 PTQ"):::p1
         NEZHA0("nezha-0 Self-Draft SD"):::p1
+        MTGENREC0("mtgenrec-0 分布式训练系统"):::p2
         P2_RL("gr4ad-3, oneloc-2, uni-0, flame-0, gpr-0, mbgr-0 &nbsp;(6 P2)"):::p2
     end
 
@@ -158,6 +159,7 @@ graph LR
     KSA0 --> VISTA0
     GR4 --> NEZHA0
     GENREC0 --> RCLREC0
+    OL4 --> MTGENREC0
 ```
 
 ## ID 来源追溯
@@ -228,6 +230,7 @@ graph LR
 | `nezha` | NEZHA (Alibaba + CityU HK, arxiv 2511.18793, WWW 2026) | Self-Drafting Speculative Decoding — hash-set 验证 |
 | `rqgmm` | RQ-GMM (Tencent + Fudan, arxiv 2602.12593) | GMM 残差量化 — 概率建模提升码本利用率 |
 | `vista` | VISTA (Meta, arxiv 2510.22049, ICLR 2026) | Two-Stage UIH Summarization + QLA O(N) attention |
+| `mtgenrec` | MTGenRec (Meituan + Wuhan Univ, arxiv 2505.12663) | 分布式 GR 训练系统 (Dynamic Embedding + Sequence Batching) |
 
 ## 核心设计原则
 
@@ -424,3 +427,4 @@ Text → [Qwen3-0.6B] → 1024D → [MLP-FSQ h=64] → 3-token SID → [NTP S-ti
 | IDEA-dos-0 | Tokenizer | Dual-Flow Orthogonal RQ — 上下文感知 SID (Meituan revenue +1.15%) |
 | IDEA-rqgmm-0 | Tokenizer | GMM Residual Quantization — 概率建模 (Tencent AV +1.502%) |
 | IDEA-cobra-0 | Architecture | Cascaded Sparse-Dense 生成 (Baidu 200M+ DAU) |
+| IDEA-mtgenrec-0 | Scaling | 分布式 GR 训练系统 (Meituan +1.22% orders, 2.4x throughput) |

@@ -17,8 +17,10 @@ S-tier (39.5M params, 当前唯一实现)
 ├── IDEA-kunlun-0: Rec Scaling Laws (Meta Ads)
 │   └── MFU 17%→37%, GDPA + CompSkip, power-law scaling
 │   └── 重要性提升: tokenizer 瓶颈突破后成为 scale up 关键
-└── IDEA-hstu-0: Sparse Self-Attention Co-design (Meta)
-    └── 5x 训练 / 21x 推理 scaling, 保留 self-attention 表达力
+├── IDEA-hstu-0: Sparse Self-Attention Co-design (Meta)
+│   └── 5x 训练 / 21x 推理 scaling, 保留 self-attention 表达力
+└── IDEA-mtgenrec-0: 分布式 GR 训练系统 (Meituan)
+    └── Dynamic Hash Embedding + Sequence Batching + ID Dedup, 2.4x throughput
 ```
 
 ---
@@ -179,6 +181,63 @@ ULTRA-HSTU 通过 **end-to-end model-system co-design** 实现:
 
 ---
 
+## IDEA-mtgenrec-0: 高效分布式 GR 训练系统 (Dynamic Embedding + Sequence Balancing)
+
+**优先级**: P2 — 生产部署基础设施，当前研究阶段不急需
+**来源**: MTGenRec (Meituan + Wuhan Univ, arxiv 2505.12663, May 2025)
+**状态**: 待讨论
+
+> **P2 原因**: 当前训练规模小 (8 GPU, 17.5M params, 14d 数据)，TorchRec/torchrun 的效率瓶颈尚未触及。当模型 scale up 或数据量扩大到需要 100+ GPU 时，MTGenRec 的技术直接适用。
+
+### 核心思想
+
+MTGenRec 是美团基于 TorchRec 构建的 GR 专用分布式训练系统，解决了 GR 训练中四个工程瓶颈:
+
+1. **Dynamic Hash Embedding Table**: 用 MurmurHash3 + grouped parallel probing 的动态哈希表替换 TorchRec 的静态 embedding table，支持实时 item 增删 (新商品上架/下架)。Key-Value 解耦存储 + chunk-based 分配，扩容时只迁移轻量 key 结构。吞吐提升 1.47-2.22x vs TorchRec MCH
+2. **Two-Stage ID Deduplication**: 用户序列中特征 ID 大量重复 (同一 user/item 出现多次)。Stage 1: 本地去重后再 all-to-all 通信; Stage 2: 收到远端 ID 后再次去重。减少 embedding 通信量，吞吐提升 53%
+3. **Dynamic Sequence Batching**: 用户序列长度呈长尾分布 (avg=600, max=3000)。固定 batch size → GPU 间负载严重不均 (最大差 25.8ms)。改为 target token count 模式: 二分搜索找最接近目标 token 数的 batch 切分点，GPU memory 利用率从 75%→90%。吞吐提升 26.5% (110G model, 64 GPU)
+4. **Automatic Table Merging**: FeatureConfig 接口自动合并相同维度的 embedding table，减少 lookup 算子数。动态表用 bit-shift offset 避免 ID 冲突
+
+### 关键数据
+
+| 指标 | 数值 |
+|------|------|
+| 训练数据 | 200M 序列/天, avg 600 tokens, max 3000 |
+| 模型规模 | GRM 4G (小) ~ 110G (大) GFLOPs |
+| GPU 配置 | 8~128 × A100 80GB SXM4, NVLink 600GB/s |
+| 吞吐提升 | 1.6x~2.4x vs TorchRec |
+| Scaling 效率 | 128 GPU 达到 62.75%~78.5% 理想线性加速 |
+| Online A/B (外卖) | +1.22% 用户下单量, +1.31% PV_CTR (vs 2 年迭代的 DRM) |
+| 用户规模 | 770M 年交易用户, 日峰 98M 订单 |
+
+### 与当前项目的关联
+
+- **Dynamic Sequence Batching** 最直接相关: 我们用 torchrun + packed sequences 训练，不同 rank 拿到的序列长度不同，可能存在相同的 GPU 负载不均问题。当前未做 dynamic batching — 值得在 scale up 时参考
+- **Dynamic Hash Embedding**: 当前不需要 (SID vocabulary 是固定的)，但如果引入 user embedding 或 item side features 作为 sparse embedding，会面临相同的动态增删问题
+- **Two-Stage ID Dedup**: 当前序列短 (~170 items/user)，重复 ID 不多。Scale 到长序列时重复率会增加
+- **Model Architecture**: 美团的 GRM 用 HSTU (SiLU attention) + MMoE，与我们的 CausalTransformer 不同但训练系统层面通用
+
+### 实验设计草案
+
+**Phase 1 — Dynamic Sequence Batching (可独立实现)**:
+- 在 `ntp/data.py` 或 `data/dataset.py` 中实现 token-count-based batch 构造
+- 目标: 每个 rank 的总 token 数 ≈ target_tokens (而非固定 batch_size)
+- 用 cumulative sum + binary search 找切分点
+- 需要修改 gradient averaging: 按各 rank 实际样本数加权 (weighted All-Reduce)
+- 评估: GPU 利用率、训练吞吐、收敛曲线是否一致
+
+**Phase 2 — 部署扩展 (远期)**:
+- Dynamic hash embedding: 如果引入实时 item 更新
+- ID dedup: 序列长度扩展到 1000+ 时
+
+### 关键问题
+
+1. 当前 8 GPU 训练，序列短 (max_seq_len=512)，GPU 间负载差异可能不大 — 需要先 profiling 确认
+2. Dynamic batching 改变了每个 rank 的 batch size → gradient 需要 weighted average，实现不能破坏 DDP 的 gradient sync 正确性
+3. 论文模型架构 (HSTU) 用了 SiLU attention 而非标准 softmax attention，O(n²) 的 scaling 行为可能不同
+
+---
+
 ## 优先级总结
 
 | 优先级 | ID | 实验 | 原因 |
@@ -186,3 +245,4 @@ ULTRA-HSTU 通过 **end-to-end model-system co-design** 实现:
 | ~~P0~~ 部分完成 | IDEA-oneloc-4 | Scaling Law: 序列长度 vs 模型大小 | 模型 scaling EXP-015 ✅ (~100M 趋平); 序列长度 scaling 待验证 |
 | P1 | IDEA-kunlun-0 | Rec Scaling Laws (MFU + GDPA) | Meta Ads 部署验证; tokenizer 瓶颈突破后成 scale up 关键 |
 | P1 | IDEA-hstu-0 | Sparse Self-Attention Co-design | 21x inference scaling, 对比 Query-Former 路线 |
+| P2 | IDEA-mtgenrec-0 | 分布式 GR 训练系统 | 美团部署, 100+ GPU scaling, dynamic batch 可先行参考 |
