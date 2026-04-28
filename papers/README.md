@@ -29,3 +29,6 @@
 | 2511.18793 | NEZHA: Zero-sacrifice Hyperspeed Decoding for GR | Yejing Wang et al. (Alibaba + CityU HK) | 2025-11-25 | [pdf](2511.18793.pdf) | [txt](2511.18793.txt) | IDEA-nezha-0 |
 | 2510.22049 | VISTA: Virtual Sequential Target Attention for Massive Memorization | Zhimin Chen et al. (Meta) | 2025-10-23 | [pdf](2510.22049.pdf) | [txt](2510.22049.txt) | IDEA-vista-0 |
 | 2410.06682 | mrDPO: Multi-Round DPO with Rebirth Tuning for Video Captioning | Changli Tang et al. (Tsinghua + ByteDance) | 2024-10-11 | [pdf](2410.06682.pdf) | [txt](2410.06682.txt) | — |
+| 2604.02684 | MBGR: Multi-Business Prediction for Generative Recommendation at Meituan | Changhao Li et al. (Meituan) | 2026-04-03 | [pdf](2604.02684.pdf) | [txt](2604.02684.txt) | IDEA-mbgr-0 |
+| 2604.11440 | R3-VAE: Reference Vector-Guided Rating Residual Quantization VAE for GR | Qiang Wan et al. (ByteDance/Toutiao) | 2026-04-13 | [pdf](2604.11440.pdf) | [txt](2604.11440.txt) | IDEA-r3vae-0 |
+| 2603.00632 | QuaSID: Qualification-Aware Semantic ID Learning at Industrial Scale | Zheng Hu et al. (Kuaishou) | 2026-02-28 | [pdf](2603.00632.pdf) | [txt](2603.00632.txt) | IDEA-quasid-0 |

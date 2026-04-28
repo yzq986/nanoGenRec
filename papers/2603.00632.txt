@@ -1,0 +1,1628 @@
+Stop Treating Collisions Equally: Qualification-Aware Semantic
+ID Learning for Recommendation at Industrial Scale
+Zheng Hu†
+University of Electronic
+Science and Technology of
+China
+Chengdu, China
+Yuxin Chen∗
+Kuaishou Technology
+Beijing, China
+chenyuxin06@kuaishou.com
+Yongsen Pan†
+University of Electronic
+Science and Technology of
+China
+Chengdu, China
+Xu Yuan
+Yuting Yin
+Daoyuan Wang
+Kuaishou Technology
+Beijing, China
+Boyang Xia
+Zefei Luo
+Kuaishou Technology
+Beijing, China
+Hongyang Wang
+Songhao Ni
+Kuaishou Technology
+Beijing, China
+Dongxu Liang
+Kuaishou Technology
+Beijing, China
+Jun Wang
+Kuaishou Technology
+Beijing, China
+Shimin Cai
+University of Electronic
+Science and Technology of
+China
+Chengdu, China
+Tao Zhou
+University of Electronic
+Science and Technology of
+China
+Chengdu, China
+Fuji Ren∗
+University of Electronic
+Science and Technology of
+China
+Chengdu, China
+renfuji@uestc.edu.cn
+Wenwu Ou
+Kuaishou Technology
+Beijing, China
+Abstract
+Semantic IDs (SIDs) are compact discrete representations derived
+from multimodal item features, serving as a unified abstraction
+for ID-based and generative recommendation. However, learn-
+ing high-quality SIDs remains challenging due to two issues. (1)
+Collision problem: the quantized token space is prone to colli-
+sions, in which semantically distinct items are assigned identical
+or overly similar SID compositions, resulting in semantic entan-
+glement. (2) Collision-signal heterogeneity: collisions are not
+uniformly harmful. Some reflect genuine conflicts between seman-
+tically unrelated items, while others stem from benign redundancy
+or systematic data effects. To address these challenges, we pro-
+pose Qualification-Aware Semantic ID Learning (QuaSID),
+an end-to-end framework that learns collision-qualified SIDs by
+selectively repelling qualified conflict pairs and scaling the repul-
+sion strength by collision severity. QuaSID consists of two mecha-
+nisms: Hamming-guided Margin Repulsion, which translates low-
+Hamming SID overlaps into explicit, severity-scaled geometric
+constraints on the encoder space; and Conflict-Aware Valid Pair
+Masking, which masks protocol-induced benign overlaps to de-
+noise repulsion supervision. In addition, QuaSID incorporates a
+dual-tower contrastive objective to inject collaborative signals into
+tokenization. Experiments on public benchmarks and industrial
+data validate QuaSID. On public datasets, QuaSID consistently out-
+performs strong baselines, improving top-K ranking quality by 5.9%
+over the best baseline while increasing SID composition diversity.
+In an online A/B test on Kuaishou e-commerce with a 5% traffic
+split, QuaSID increases ranking GMV-S2 by 2.38% and improves
+completed orders on cold-start retrieval by up to 6.42%. Finally,
+∗Corresponding authors.
+†Work done during internship at Kuaishou Technology.
+we show that the proposed repulsion loss is plug-and-play and
+enhances a range of SID learning frameworks across datasets.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Recommendation systems; semantic IDs; vector quantization; gen-
+erative recommendation
+1
+Introduction
+In modern recommendation systems, Semantic IDs (SIDs) have
+emerged as a promising mechanism for representing items using
+compact, discrete codes distilled from rich multimodal features
+such as text, images, audio, and structured metadata [1, 10, 17, 33].
+SIDs can enhance both traditional recommendation pipelines and
+emerging generative recommendation systems [12, 15]. Unlike con-
+ventional ID embeddings that depend on ever-growing embedding
+tables and ad-hoc hashing, SID-based recommendation represents
+each item as a fixed-length sequence of discrete semantic tokens
+[23]. This yields compact, reusable, and index-friendly identifiers
+that mitigate vocabulary explosion in both retrieval and genera-
+tion, while reducing hash-induced collision noise and stabilizing
+item identities under frequent item updates, re-indexing, and real-
+world life-cycle drift [34]. These properties make SIDs particularly
+valuable in large-scale industrial environments, where efficiency, in-
+terpretability, and cross-system consistency are essential. Moreover,
+as the field shifts from classical retrieval-and-ranking architectures
+toward generative recommendation systems (GRS), the importance
+of SIDs continues to grow [35, 36]. By providing a unified tokenized
+arXiv:2603.00632v1  [cs.IR]  28 Feb 2026
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zheng Hu, Yuxin Chen, Yongsen Pan, Xu Yuan, Yuting Yin, Daoyuan Wang, Boyang Xia, Zefei Luo, Hongyang Wang, Songhao Ni, Dongxu Liang, Jun Wang, Shimin Cai, Tao Zhou,
+Fuji Ren, and Wenwu Ou
+interface, SIDs allow items to be seamlessly incorporated into gen-
+erative models, enabling them to generate recommendations in the
+same manner as they generate language.
+Recent progress in discrete representation learning has estab-
+lished Residual Quantized Variational Autoencoders (RQ-VAE) [14]
+as the mainstream paradigm for mapping multimodal item features
+into SIDs. By hierarchically quantizing continuous representations
+into multiple codebooks, RQ-VAE-based methods achieve a favor-
+able balance between expressiveness and compactness, and have
+demonstrated strong performance across a range of recommenda-
+tion and generation tasks [16, 30, 33]. Despite their success, existing
+SID learning frameworks still exhibit two key limitations that re-
+strict their practical effectiveness [15]. Figure 1 summarizes the SID
+pipeline and the two challenges discussed above. First, SID learning
+suffers from a severe collision problem in the discrete space.
+When a large corpus of items is compressed into quantized codes,
+RQ-VAE models often exhibit uneven codebook utilization or cen-
+troid collapse during training, causing many semantically unrelated
+items to be mapped to identical or highly similar SID compositions.
+Such unintended collisions lead to semantic entanglement, making
+it difficult for downstream models to distinguish conceptually dis-
+tinct items. Second, collision signals observed during training
+are highly heterogeneous and require finer-grained qualifica-
+tion. Apparent SID collisions (i.e., identical or highly overlapping
+code compositions) may reflect genuinely harmful conflicts be-
+tween unrelated items, but they can also arise from benign factors
+such as repeated sampling of the same item or task-consistent re-
+lations intentionally introduced by the training pipeline. Without
+differentiating these cases, a one-size-fits-all collision suppression
+strategy may inadvertently push apart benign pairs and interfere
+with downstream alignment.
+To address these challenges, we propose Qualification-Aware
+Semantic ID Learning (QuaSID), an end-to-end SID learning
+framework that learns collision-qualified SIDs by applying repul-
+sion only to qualified conflict pairs and calibrating the repulsion
+strength by collision severity. QuaSID introduces Hamming-guided
+Margin Repulsion (HaMR), which converts unexpectedly low Ham-
+ming distances between SIDs observed during training into explicit
+geometric margin constraints on the encoder space. When seman-
+tically unrelated items exhibit overly small Hamming distances in
+their SID compositions, HaMR interprets such cases as insufficient
+separation in the learned representations and enforces adaptive sep-
+aration in the continuous embedding space, with penalty strength
+modulated by collision severity. To avoid repulsing benign overlaps
+or structurally biased pairs, QuaSID further employs Conflict-Aware
+Valid Pair Masking (CVPM), which excludes same-item duplicates
+and constructed collaborative positives from collision supervision,
+yielding a cleaner supervision set for repulsion-based learning.
+Finally, QuaSID integrates a dual-tower contrastive objective to in-
+ject collaborative signals into the tokenization process, which helps
+align SIDs with downstream recommendation objectives. We con-
+duct extensive offline and online experiments to validate QuaSID.
+On public benchmarks, QuaSID improves top-𝐾ranking quality by
+5.9% on average over the best baseline while also increasing SID
+composition diversity. In a 5-day online A/B test with 5% traffic
+on Kuaishou e-commerce, QuaSID-learned SIDs improve ranking
+GMV-S2 by 2.38% and bring particularly strong gains on cold-start
+Text
+Image
+Audio
+MULTIMODAL SIDE INFO.
+MULTIMODAL
+ENCODER
+VECTOR 
+QUANTIZATION
+Semantic IDs (SIDs)
+Generative
+Recommendation
+...
+Unified Discrete
+Interface
+Traditional
+Recommendation
+BACKGROUND
+PROBLEM 1: TOKEN 
+COLLISION
+PROBLEM 1: TOKEN 
+COLLISION
+PROBLEM 2: COLLISION-
+SIGNAL HETEROGENEITY
+PROBLEM 2: COLLISION-
+SIGNAL HETEROGENEITY
+PROBLEMS
+Figure 1: SID learning in large-scale recommendation: mul-
+timodal features are encoded and quantized into SIDs as
+a unified discrete interface for traditional and generative
+paradigms. Challenges: token collisions cause semantic en-
+tanglement, and overlap signals are heterogeneous (harmful
+vs. benign), so one-size-fits-all suppression is problematic.
+retrieval, with completed orders improving by up to 6.42% on the
+100vv cold-start segment. Moreover, we show that the HaMR repul-
+sion loss is plug-and-play and consistently enhances a wide range
+of SID learning frameworks across datasets. The main contributions
+of this work are as follows:
+• We propose QuaSID, a qualification-aware framework for
+learning collision-qualified SIDs, and introduce HaMR to
+translate low-Hamming SID overlaps into severity-aware
+geometric margin constraints in the encoder space.
+• We introduce CVPM to qualify collision supervision by mask-
+ing protocol-induced benign overlaps (e.g., duplicates and
+constructed positives), yielding a cleaner conflict set for
+repulsion-based learning.
+• We validate QuaSID through extensive offline experiments
+and large-scale online A/B tests, demonstrating consistent
+improvements in ranking quality, SID composition diversity,
+and business-critical metrics.
+2
+Related Work
+2.1
+Vector Quantization for Semantic
+Tokenization
+Vector quantization (VQ) maps continuous embeddings to a finite
+set of discrete codewords, typically trained with reconstruction
+objectives and commitment-style regularizers, and optimized via
+straight-through or relaxed estimators [24]. To expand capacity
+without inflating a single vocabulary, modern tokenizers often
+adopt compositional designs: residual vector quantization (RQ)
+
+
+Stop Treating Collisions Equally: Qualification-Aware Semantic ID Learning for Recommendation at Industrial Scale Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+stacks multiple codebooks to iteratively quantize residuals, achiev-
+ing strong expressiveness with small per-layer codebooks [14, 32].
+Grouped variants further reduce cross-dimension interference and
+can improve optimization stability and utilization [27]. Beyond ar-
+chitecture, a line of work improves assignment and normalization,
+refines gradient estimators, and explicitly diagnoses collapse and
+under-utilization [3, 19, 37]. More recently, Finite Scalar Quantiza-
+tion (FSQ) replaces explicit codebooks with per-dimension scalar
+quantization over fixed levels, inducing an implicit Cartesian-product
+codebook and simplifying training [20]. Overall, these advances
+primarily improve quantization capacity and code usage for generic
+embedding compression.
+While the above tokenizers substantially improve quantization
+capacity and code usage, they are largely developed under a recon-
+struction oriented paradigm. In Semantic ID construction, discrete
+codes serve as identifiers and indexing keys for retrieval and rank-
+ing, where the key failure mode is confusability between semanti-
+cally distinct items. Since reconstruction-dominated VQ objectives
+only weakly constrain such confusability, collision control is typi-
+cally indirect and can be misaligned with recommendation needs
+[6, 11]. This gap motivates incorporating recommendation-aligned
+supervision and discrete-space diagnostics to explicitly shape the
+encoder and reduce harmful collisions.
+2.2
+SID-based Recommendation
+SID-based recommendation represents each item as a fixed-length
+sequence of discrete semantic tokens, offering compact, reusable,
+and index-friendly item representations that avoid vocabulary ex-
+plosion [15]. This interface has been adopted in both discriminative
+[18, 23, 26, 30, 34] and generative recommendation systems [2, 8, 35],
+demonstrating broad applicability across paradigms.
+Early SID learning typically follows a projection–quantization–
+reconstruction pipeline built on VQ/RQ tokenizers [14, 24]. Recent
+methods make SID learning more task-aware by injecting collab-
+orative signals into code assignment and training objectives, in-
+cluding VQ-Rec [9], LC-Rec [33], RQ-KMeans [35], ETEGRec [16],
+and LMIndexer [13]. Several works further target collision or as-
+signment imbalance explicitly. SaviorRec [29] integrates Sinkhorn-
+based entropy-regularized optimal transport to encourage more
+uniform assignments (see [4] for the Sinkhorn algorithm); LET-
+TER constrains per-codebook 𝑘-means by limiting the maximum
+number of items per centroid [25]; HiD-VAE adds regularization to
+penalize excessive code overlap across distinct items [5]. Despite
+their effectiveness, most collision-aware strategies rely on coarse
+overlap signals and apply uniform suppression without qualify-
+ing what a discrete agreement represents. In large-scale pipelines,
+low-Hamming overlaps can be heterogeneous, reflecting harmful
+collisions between unrelated items or benign agreements induced by
+repeated sampling and task-consistent relations. Indiscriminate sup-
+pression can introduce spurious separation and destabilize training,
+highlighting the need for qualification-aware and severity-adaptive
+collision control that selects valid conflict pairs and scales repulsion
+by collision severity.
+Input 𝐱𝒊𝒕
+Reconstructionℒrec
+Shared Encoder 𝒇q
+Shared Decoder 𝒉F
+Item-to-Item Pair: (𝒊𝒕,  𝒊𝒑)
+Input 𝐱𝒊p
+Tokenizer Backbone
+L-layer RQ
+Encoded Embedding
+SIDs (L Tokens)
+Hamming-Distance
+Calculation
+Collaborative Dual-Tower Contrastive Learning
+Anchor
+Push Away
+(in-batch negative pairs)
+Pull Together
+(collaborative positive pairs)
+CONFLICT-AWARE VALID PAIR MASKING
+BENIGN
+OVERLAPS
+CONFLICT
+PAIRS
+HAMMING-GUIDED MARGIN REPULSION
+STRONG REPULSION
+(FULL COLLISION)
+MILD REPULSION
+(PARTIAL COLLISION)
+MASKING
+MECHANISM
+Figure 2: The overall framework of QuaSID.
+3
+Preliminaries
+Notations. Let U and I denote the user set and item set, with
+|U| = 𝑁𝑢and |I| = 𝑁𝑖. Each item 𝑖∈I is associated with a
+multimodal feature vector x𝑖∈R𝑑in, which may include visual,
+textual, and audio attributes. Let 𝑓𝜃(·) denote an encoder network
+that maps the multimodal item feature x𝑖into a continuous latent
+embedding, defined as:
+z𝑖= 𝑓𝜃(x𝑖) ∈R𝑑.
+(1)
+We adopt a residual vector quantization scheme with 𝐿code-
+books. The 𝑙-th codebook is denoted as C(𝑙) = {c(𝑙)
+𝑘}𝐾
+𝑘=1, where 𝐾is
+the codebook size. For each layer𝑙, a discrete index 𝑠(𝑙)
+𝑖
+∈{1, . . . , 𝐾}
+is selected, producing a quantized embedding q(𝑙)
+𝑖
+= c(𝑙)
+𝑠(𝑙)
+𝑖
+. The SID
+of item 𝑖is represented as a sequence of discrete tokens:
+s𝑖=
+
+𝑠(1)
+𝑖
+,𝑠(2)
+𝑖
+, . . . ,𝑠(𝐿)
+𝑖
+
+∈{1, . . . , 𝐾}𝐿.
+(2)
+Problem definition. Given a set of multimodal items I with their
+feature vectors {x𝑖| 𝑖∈I} and a set of observed collaborative
+item-item pairs P = {(𝑖𝑡,𝑖𝑝)} derived from user interaction logs,
+our goal is to learn a SID generator
+𝑔𝜃: x𝑖↦→s𝑖∈{1, . . . , 𝐾}𝐿.
+Formally, we aim to jointly learn the encoder 𝑓𝜃, the codebooks
+C(𝑙)𝐿
+𝑙=1, and the discrete assignment mechanism. The goal is to
+produce collision-qualified SIDs that remain compatible with col-
+laborative signals and can be deployed in both discriminative and
+generative recommendation systems.
+4
+Method
+4.1
+Overall Framework
+Tokenizer Backbone. As summarized in Figure 2, QuaSID is an
+end-to-end SID learner that grounds discrete codes in both multi-
+modal semantics and collaborative signals. Given a collaborative
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zheng Hu, Yuxin Chen, Yongsen Pan, Xu Yuan, Yuting Yin, Daoyuan Wang, Boyang Xia, Zefei Luo, Hongyang Wang, Songhao Ni, Dongxu Liang, Jun Wang, Shimin Cai, Tao Zhou,
+Fuji Ren, and Wenwu Ou
+SID Tokens
+(a) Partial Collision: Overlap 2/4
+1007
+756
+T3
+T4
+(b) Full Collision: Overlap 4/4
+SID Tokens
+237
+134
+67
+87
+slippers • footwear
+short drama • skit
+seat cushion • auto
+song clip • MV
+Figure 3: Representative in-batch collision cases in industrial
+SID training. (a) Partial collision with 2/4 token overlap. (b)
+Complete collision with identical 4-token SIDs between se-
+mantically dissimilar items.
+item-to-item pair, QuaSID first maps each multimodal input x into
+a continuous embedding via a shared encoder 𝑓𝜃. The embedding is
+then discretized by an 𝐿-layer residual vector quantizer to produce
+an 𝐿-token SID s𝑖together with its quantized representation ˆz𝑖. To
+preserve semantic fidelity under discretization, a decoder ℎ𝜙recon-
+structs the original feature from ˆz𝑖, yielding a reconstruction-based
+regularization of the discrete interface. QuaSID further introduces
+(i) masked hamming-guided margin repulsion to suppress harmful
+in-batch SID collisions, and (ii) collaborative dual-tower contrastive
+learning to align learned SIDs with downstream behavioral seman-
+tics. Concretely, we encode the trigger and target items with a
+shared encoder 𝑓𝜃as follows:
+z𝑖𝑡= 𝑓𝜃(x𝑖𝑡),
+z𝑖𝑝= 𝑓𝜃(x𝑖𝑝).
+(3)
+Here x𝑖𝑡, x𝑖𝑝∈R𝑑in are multimodal item features, z𝑖∈R𝑑denotes
+the continuous embedding. For each item 𝑖, we initialize r(0)
+𝑖
+= z𝑖
+and iteratively quantize the residual using 𝐿codebooks, yielding
+the quantized embedding ˆz𝑖and SID s𝑖:
+q(𝑙)
+𝑖
+= c(𝑙)
+𝑠(𝑙)
+𝑖
+,
+r(𝑙)
+𝑖
+= r(𝑙−1)
+𝑖
+−q(𝑙)
+𝑖,
+𝑙= 1, . . . , 𝐿,
+ˆz𝑖=
+𝐿
+∑︁
+𝑙=1
+q(𝑙)
+𝑖,
+s𝑖=
+
+𝑠(1)
+𝑖
+, . . . ,𝑠(𝐿)
+𝑖
+
+.
+(4)
+We reconstruct the multimodal input from ˆz𝑖using a decoder ℎ𝜙:
+ˆx𝑖= ℎ𝜙(ˆz𝑖). The backbone is trained with a reconstruction term
+and the standard residual-quantization objective:
+Lrec =
+1
+|B|
+∑︁
+𝑖∈B
+ℓrec(ˆx𝑖, x𝑖),
+(5a)
+Lrq =
+1
+|B|
+∑︁
+𝑖∈B
+𝐿
+∑︁
+𝑙=1
+
+∥sg[r(𝑙−1)
+𝑖
+] −q(𝑙)
+𝑖
+∥2
+2
++ 𝛽∥r(𝑙−1)
+𝑖
+−sg[q(𝑙)
+𝑖]∥2
+2
+
+,
+(5b)
+where ℓrec(·, ·) is instantiated as the 𝐿2 loss, sg[·] denotes stop-
+gradient, and 𝛽controls the commitment strength.
+Collaborative Dual-Tower Contrastive Alignment. Beyond recon-
+struction and quantization, QuaSID injects collaborative semantics
+into tokenization via a dual-tower contrastive objective defined
+on observed item–item co-engagement pairs (denoted as trigger–
+target pairs (𝑖𝑡,𝑖𝑝)). In this work, we adopt Swing [28] to construct
+such collaborative pairs, together with data cleaning and filtering
+strategies to ensure high-quality supervision.
+Given a batch of normalized encoded trigger embeddings {e𝑚
+𝑡}𝐵
+𝑚=1
+and target embeddings {e𝑛
+𝑝}𝐵
+𝑛=1, we compute the scaled similarities
+across the mini-batch:
+S𝑚,𝑛=
+(e𝑚
+𝑡)⊤e𝑛
+𝑝
+𝜏
+,
+(6)
+where 𝜏is a temperature hyperparameter. The contrastive learning
+objective follows the InfoNCE formulation:
+Lcl = −𝜆cl
+𝐵
+𝐵
+∑︁
+𝑚=1
+log
+exp(S𝑚,𝑚)
+Í𝐵
+𝑛=1 I[𝑀𝑚,𝑛= 1] exp(S𝑚,𝑛)
+,
+(7)
+where 𝜆cl is the contrastive loss weight and 𝑀𝑚,𝑛is a masking
+indicator. To reduce false-negative bias, we set 𝑀𝑚,𝑛= 0 for 𝑛≠𝑚
+when id(e𝑛
+𝑡) = id(e𝑚
+𝑡), and 𝑀𝑚,𝑛= 1 otherwise. This task-oriented
+signal complements semantic reconstruction by encouraging SIDs
+to preserve behaviorally meaningful proximity.
+4.2
+Hamming-guided Margin Repulsion with
+Conflict-Aware Masking
+A core component of QuaSID is HaMR, a mask-aware repulsion
+mechanism that converts in-batch low-Hamming SID overlaps into
+explicit geometric margin constraints on the encoder space. Under
+a well-utilized discrete space, it is statistically uncommon for two
+distinct instances in the same mini-batch to share many SID to-
+kens; hence unusually low Hamming distances within a mini-batch
+suggest insufficient separation in the learned representations. Fig-
+ure 3 presents representative collision cases observed in real-world
+training scenarios. However, mini-batches also contain overlaps
+that should not be repelled by design, such as duplicate occurrences
+of the same underlying item and the constructed item–item posi-
+tives used for the contrastive objective. Therefore, QuaSID employs
+Conflict-Aware Valid Pair Masking (CVPM) to address the hetero-
+geneity of apparent in-batch overlaps by masking these protocol-
+induced non-conflict pairs before applying repulsion, yielding a
+cleaner set of candidate conflict pairs for HaMR.
+4.2.1
+Conflict-Aware Valid Pair Masking (CVPM). We propose CVPM
+to qualify collision supervision by masking item–item pairs whose
+discrete overlaps are likely benign, thereby restricting repulsion to
+a cleaner and more informative subset of candidate conflict pairs.
+Let the mini-batch be formed by concatenating triggers and tar-
+gets, yielding 2𝐵instances indexed by 𝑖∈{1, . . . , 2𝐵}, and let id(𝑖)
+denote the underlying item ID of instance 𝑖.
+(1) Collaborative-positive mask: we exclude constructed collabo-
+rative positives (𝑖𝑡,𝑖𝑝) used by the contrastive objective from col-
+lision supervision; otherwise, repulsion would directly contradict
+task-aligned similarity:
+Mi2i
+𝑖𝑗=
+(
+0,
+(𝑖≤𝐵∧𝑗= 𝑖+ 𝐵) ∨(𝑗≤𝐵∧𝑖= 𝑗+ 𝐵),
+1,
+otherwise.
+(2) Same-item exclusion mask: we exclude pairs that correspond
+to the same underlying item ID, covering both self-pairs (𝑖= 𝑗) and
+
+
+Stop Treating Collisions Equally: Qualification-Aware Semantic ID Learning for Recommendation at Industrial Scale Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Encoder
+Decoder
+QuaSID
+Trigger/Target 
+Item IDs
+Semantic IDs
+Reconstruction
+Loss Calculation & Optimization
+Backpropagation (STE)
+ℒ= ℒrec + ℒrq + ℒham+ ℒcl
+Trained
+QuaSID
+Model
+Stage 1: Offline Periodic Training
+Stage 2: Application
+Inference
+Service
+(Model
+Deployment)
+Online Request
+(Item IDs)
+Discriminative 
+Paradigm
+Ranking 
+Stage
+Collaborative 
+Trigger-Target Pairs
+Retrieval 
+Stage
+Generative 
+Paradigm
+Generative 
+Model
+Figure 4: QuaSID deployment and application pipeline.
+duplicate occurrences caused by repeated sampling. This avoids
+treating repeated exposures as collisions:
+Mitem
+𝑖𝑗
+= I
+
+id(𝑖) ≠id(𝑗)
+
+.
+Combining the two masks yields a pairwise filter for collision
+supervision, retaining only the qualified in-batch pairs (𝑖, 𝑗):
+M = Mi2i ⊙Mitem,
+(8)
+where ⊙denotes the element-wise (Hadamard) product. We incor-
+porate M as a binary gate in the HaMR loss to mask out excluded
+in-batch pairs (𝑖, 𝑗) during repulsion computation.
+4.2.2
+Hamming-guided margin repulsion (HaMR). We view unex-
+pectedly low-Hamming SID agreements as conflict signals. Ac-
+cordingly, conditioned on the CVPM valid-pair mask M, we en-
+force a severity-aware cosine-distance margin between the nor-
+malized encoder embeddings to suppress harmful collisions. Let
+s𝑖∈{1, . . . , 𝐾}𝐿denote the SID and e𝑖= z𝑖/∥z𝑖∥2 the normal-
+ized embedding. We define the pairwise Hamming-distance matrix
+H ∈N2𝐵×2𝐵and the cosine-distance matrix D ∈R2𝐵×2𝐵by
+H𝑖𝑗= 𝑑𝐻(𝑖, 𝑗) =
+𝐿
+∑︁
+𝑙=1
+I[𝑠(𝑙)
+𝑖
+≠𝑠(𝑙)
+𝑗],
+(9)
+D𝑖𝑗= 𝑑𝑐(𝑖, 𝑗) = 1 −e⊤
+𝑖e𝑗.
+(10)
+Based on the Hamming distance, we distinguish between two
+types of collisions: full collision and partial collision. This distinction
+allows us to adaptively control the penalty strength according to
+the severity of the collision. Intuitively, a full collision represents a
+more problematic case and thus warrants a stronger penalty. Using
+the masks defined above, we partition candidate pairs into two sets:
+Ωfull =
+
+(𝑖, 𝑗) | H𝑖𝑗= 0 and M𝑖𝑗= 1
+	
+,
+Ωpartial =
+
+(𝑖, 𝑗) | 0 < H𝑖𝑗≤𝑅and M𝑖𝑗= 1
+	
+,
+where 𝑅is a hyperparameter that determines the Hamming radius
+for considering partial collisions. For each pair (𝑖, 𝑗) we penalize
+small cosine distances via margin-based hinge losses:
+Lfull(𝑖, 𝑗) = max  0,𝑚full −D𝑖𝑗
+,
+(11)
+Lpartial(𝑖, 𝑗) = max  0,𝑚partial −D𝑖𝑗
+,
+(12)
+Table 1: Dataset statistics used in the experiments.
+Dataset
+#Users
+#Items
+#Interactions
+Amazon-Beauty
+22,363
+12,101
+1,048,296
+Amazon-Toys
+19,412
+11,924
+905,253
+where 𝑚full and 𝑚partial are predefined margins with 𝑚full ≥𝑚partial.
+The masked hamming-guided margin is therefore computed as:
+LHaMR =
+𝜆full
+|Ωfull| + 𝜖
+∑︁
+(𝑖,𝑗)∈Ωfull
+Lfull(𝑖, 𝑗)
++
+𝜆partial
+|Ωpartial| + 𝜖
+∑︁
+(𝑖,𝑗)∈Ωpartial
+Lpartial(𝑖, 𝑗),
+(13)
+where 𝜆full and 𝜆partial are weighting coefficients and 𝜖> 0 is a
+small constant for numerical stability.
+Eq. (13) imposes geometric constraints on the encoder space for
+the selected pairs: for any (𝑖, 𝑗) ∈Ωfull (resp. Ωpartial), achieving
+zero hinge loss implies 𝑑𝑐(𝑖, 𝑗) ≥𝑚full (resp. 𝑑𝑐(𝑖, 𝑗) ≥𝑚partial).
+With CVPM filtering constructed positives and same-ID pairs, re-
+pulsion focuses on discretely similar item pairs that are unlikely
+to be benign artifacts, increasing their angular separation before
+quantization. Over training, such targeted separation reshapes the
+continuous embedding space and reduces collision frequency, with-
+out enforcing uniform repulsion across all item pairs.
+4.3
+System Deployment and Application
+QuaSID has been successfully deployed and applied on Kuaishou’s
+recommendation system, as illustrated in Figure 4. The deployment
+and application pipeline consists of the following key stages: (1)
+Offline periodic training: Based on the production speed of the
+trigger-target pair, we train our model periodically using the overall
+optimization objective:
+L = Lrec + Lrq + LHaMR + Lcl.
+(14)
+All components are trained end-to-end using backpropagation,
+where the discrete code assignments are optimized via the straight-
+through estimator (STE) to enable differentiable learning. (2) Appli-
+cation for retrieval and ranking stage: The trained QuaSID is de-
+ployed as an inference service to project item ids into SIDs. QuaSID-
+learned SIDs correspond to a new lookup table and are used in
+both retrieval and ranking stages. The retrieval stage including
+conventional retrieval and SID-based generative retrieval. At the
+ranking stage, SIDs are used to derive cross features and matching
+side features, serving as lightweight semantic signals that augment
+the existing feature set.
+5
+Experiment
+5.1
+Experimental Setup
+5.1.1
+Datasets. We use two public benchmarks for offline evalua-
+tion and an industrial dataset for online A/B tests, as detailed below.
+Public Datasets. For offline generative recommendation evalu-
+ation, we use the widely adopted Amazon 2018 review datasets1.
+1https://nijianmo.github.io/amazon/
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zheng Hu, Yuxin Chen, Yongsen Pan, Xu Yuan, Yuting Yin, Daoyuan Wang, Boyang Xia, Zefei Luo, Hongyang Wang, Songhao Ni, Dongxu Liang, Jun Wang, Shimin Cai, Tao Zhou,
+Fuji Ren, and Wenwu Ou
+Table 2: Performance comparison on Amazon-Beauty and Amazon-Toys. Bold denotes the best result, and underlined denotes
+the second-best result.
+Amazon-Beauty
+Amazon-Toys
+Tokenizer
+HR@5
+HR@10
+NDCG@5
+NDCG@10
+Entropy
+HR@5
+HR@10
+NDCG@5
+NDCG@10
+Entropy
+RQ-VAE
+0.0225
+0.0300
+0.0171
+0.0195
+9.3075
+0.0206
+0.0256
+0.0164
+0.0180
+9.3068
+Improved VQGAN
+0.0232
+0.0304
+0.0167
+0.0189
+9.3569
+0.0196
+0.0245
+0.0157
+0.0172
+9.3313
+GRVQ
+0.0222
+0.0302
+0.0161
+0.0187
+9.2755
+0.0195
+0.0242
+0.0158
+0.0173
+9.2101
+RQ-OPQ
+0.0205
+0.0271
+0.0159
+0.0180
+9.3368
+0.0228
+0.0278
+0.0179
+0.0195
+9.3521
+RQ-VAE-Rotation
+0.0236
+0.0308
+0.0175
+0.0198
+9.3455
+0.0203
+0.0257
+0.0167
+0.0187
+9.3290
+SimRQ
+0.0231
+0.0297
+0.0172
+0.0193
+9.3526
+0.0220
+0.0279
+0.0171
+0.0190
+9.3688
+RQ-Kmeans
+0.0254
+0.0379
+0.0171
+0.0211
+9.3793
+0.0260
+0.0347
+0.0190
+0.0213
+9.3460
+QuaSID
+0.0277
+0.0392
+0.0193
+0.0230
+9.3901
+0.0266
+0.0366
+0.0193
+0.0225
+9.3794
+Table 3: Effect of HaMR (LHaMR) on different semantic ID learning methods.
+Amazon-Beauty
+Amazon-Toys
+Tokenizer
+HR@5
+HR@10
+NDCG@5
+NDCG@10
+Entropy
+HR@5
+HR@10
+NDCG@5
+NDCG@10
+Entropy
+RQ-VAE
+0.0225
+0.0300
+0.0171
+0.0195
+9.3075
+0.0206
+0.0256
+0.0164
+0.0180
+9.3068
++ LHaMR
+0.0246↑9.3%
+0.0348↑16.0%
+0.0182↑6.4%
+0.0215↑10.3%
+9.3971↑1.0%
+0.0239↑16.0%
+0.0290↑13.3%
+0.0187↑14.0%
+0.0203↑12.8%
+9.3795↑0.8%
+Improved VQGAN 0.0232
+0.0304
+0.0167
+0.0189
+9.3569
+0.0196
+0.0245
+0.0157
+0.0172
+9.3313
++ LHaMR
+0.0257↑10.8%
+0.0340↑11.8%
+0.0192↑15.0%
+0.0218↑15.3%
+9.3974↑0.4%
+0.0239↑21.8%
+0.0301↑22.8%
+0.0187↑18.9%
+0.0207↑20.1%
+9.3797↑0.5%
+GRVQ
+0.0222
+0.0302
+0.0161
+0.0187
+9.2755
+0.0195
+0.0242
+0.0158
+0.0173
+9.2101
++ LHaMR
+0.0251↑13.1%
+0.0341↑12.9%
+0.0181↑12.4%
+0.0210↑12.3%
+9.3986↑1.3%
+0.0232↑19.0%
+0.0284↑17.4%
+0.0186↑17.7%
+0.0202↑16.8%
+9.3808↑1.9%
+RQ-OPQ
+0.0205
+0.0271
+0.0159
+0.0180
+9.3368
+0.0228
+0.0278
+0.0179
+0.0195
+9.3521
++ LHaMR
+0.0241↑17.6%
+0.0317↑17.0%
+0.0179↑12.5%
+0.0203↑12.5%
+9.3973↑0.6%
+0.0227↓0.4%
+0.0280↑0.7%
+0.0180↑0.6%
+0.0197↑1.0%
+9.3798↑0.3%
+RQ-VAE-Rotation
+0.0236
+0.0308
+0.0175
+0.0198
+9.3455
+0.0203
+0.0257
+0.0167
+0.0187
+9.3290
++ LHaMR
+0.0242↑2.5%
+0.0327↑6.2%
+0.0175
+0.0202↑2.0%
+9.3939↑0.5%
+0.0219↑7.9%
+0.0272↑5.8%
+0.0174↑3.9%
+0.0191↑2.0%
+9.3765↑0.5%
+SimRQ
+0.0231
+0.0297
+0.0172
+0.0193
+9.3526
+0.0220
+0.0279
+0.0171
+0.0190
+9.3688
++ LHaMR
+0.0238↑3.0%
+0.0323↑8.8%
+0.0174↑1.2%
+0.0201↑4.1%
+9.3977↑0.5%
+0.0227↑3.2%
+0.0283↑1.4%
+0.0182↑6.4%
+0.0200↑5.3%
+9.3793↑0.1%
+Specifically, we select the Beauty and Toys & Games subsets to eval-
+uate our method. Following prior work [7], we apply a standard
+5-core filtering procedure, discarding users and items with fewer
+than five interactions. We then adopt a leave-one-out strategy to
+split each dataset into training, validation, and test sets. Item textual
+fields include Title, Brand, Categories, and Price. We concatenate
+these fields and extract semantic item embeddings using Sentence-
+T5-XXL [21]. The dataset statistics are shown in Table 1. Industrial
+Dataset. On an industrial dataset from the Kuaishou platform, we
+perform online A/B tests to evaluate QuaSID in both generative
+retrieval and discriminative pipelines (including retrieval and rank-
+ing). Each item is associated with rich multimodal side information,
+including textual descriptions, automatic speech recognition (ASR)
+transcripts, and key-frame images. Multimodal item embeddings
+are extracted using multimodal large language models.
+5.1.2
+Baselines. For offline experiments, we compare QuaSID with
+strong VQ-based tokenizers, including RQ-VAE [14], GRVQ [27],
+Improved VQGAN [31], RQ-VAE-Rotation [6], SimRQ [37], RQ-
+OPQ [2], and RQ-Kmeans [18]. Due to space, detailed baseline
+descriptions are deferred to Appendix A.1.
+5.1.3
+Evaluation Metrics. For offline evaluation on public datasets,
+we report HitRate@𝐾and NDCG@𝐾with 𝐾∈{5, 10} as the rank-
+ing metrics. We additionally report the entropy of SID compositions
+to measure the diversity of discrete ID assignments. Let 𝑝(s) denote
+the empirical frequency of an SID sequence s over the item corpus;
+we compute ESID = −Í
+s 𝑝(s) log𝑝(s), where larger values indicate
+more diverse SIDs (i.e., fewer duplicated compositions). For online
+A/B tests on the industrial dataset, we report business metrics as
+described in Section 5.4.
+5.1.4
+Implementation Details. For offline experiments, we employ
+TIGER [22] as the generative recommendation backbone for all
+methods, and keep identical model configurations across QuaSID
+and baselines. For the codebook setting, we set 𝐿= 3 and 𝐾= 256
+in offline experiments, while in industrial experiments we use 𝐿= 4
+and 𝐾= 1024. All results are averaged over five random seeds.
+Additional training details and hyperparameter ranges are provided
+in Appendix A.2.
+5.2
+Overall Performance
+We compare QuaSID with multiple baselines on the public datasets
+under the offline generative recommendation setting. The results
+
+
+Stop Treating Collisions Equally: Qualification-Aware Semantic ID Learning for Recommendation at Industrial Scale Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 4: Online A/B test results on Kuaishou e-commerce.
+Relative uplifts (%) brought by integrating QuaSID-learned
+SIDs into retrieval and ranking.
+Setting
+Completed Orders
+GMV-S1
+GMV-S2
+Generative Retrieval
++0.21%
++1.03%
++0.55%
+Ranking
++0.20%
++1.44%
++2.38%
+Completed Orders
+GMV
+GPM
+Retrieval
++1.09%
++1.69%
++3.25%
+Retrieval100𝑣𝑣
++6.42%
++4.67%
++0.21%
+Retrieval600𝑣𝑣
++4.69%
++3.11%
++0.53%
+Ranking100𝑣𝑣
++1.77%
++4.10%
++2.99%
+Ranking600𝑣𝑣
++2.64%
++3.88%
++2.78%
+are shown in Table 2. All improvements are statistically significant
+(𝑝<0.05). Based on the results, we have the following observations:
+• As shown in Table 2, QuaSID consistently achieves the best
+performance on all ranking metrics (HR@𝐾and NDCG@𝐾)
+across both Amazon-Beauty and Amazon-Toys. The improve-
+ments are substantial and consistent compared to strong
+VQ-based baselines, indicating that collision-reduced and
+collaboration-aware SID learning translates into superior
+downstream recommendation quality.
+• QuaSID also attains the highest entropy on both datasets, in-
+dicating more diverse discrete ID assignments and better uti-
+lization of the discrete SID space. Together with the ranking
+improvements, this indicates that the proposed framework
+enhances task performance while maintaining a compact and
+efficient discrete interface; by integrating task-aligned super-
+vision with collision-aware regularization, QuaSID jointly
+improves SID discriminability, task alignment, and SID as-
+signment diversity within a single end-to-end learning ob-
+jective.
+Entropy–ranking quality relationship. ESID measures the diver-
+sity of SID compositions (i.e., how evenly the discrete space is
+utilized). Across tokenizers, higher ESID generally coincides with
+better ranking metrics, and the overall correlation is positive when
+aggregating Amazon-Beauty and Amazon-Toys (Pearson 𝑟around
+0.65, Spearman 𝜌around 0.72; statistically significant). However, en-
+tropy is not a sufficient predictor of ranking quality. A higher 𝐻SID
+mainly reflects fewer duplicated compositions, while HR/NDCG
+further depends on whether the discrete interface preserves task-
+relevant semantics. For example, on Amazon-Toys, SimRQ attains
+high entropy (9.3688, second-best) but underperforms RQ-Kmeans
+on NDCG@10 (0.0190 vs. 0.0213) despite RQ-Kmeans having lower
+entropy (9.3460).
+5.3
+Plug-and-Play Analysis of HaMR
+To evaluate the generalization ability of the proposed HaMR loss
+(LHaMR), we conduct a controlled study where all training settings
+and hyperparameters are kept identical, and we add the HaMR loss
+as an auxiliary objective to a diverse set of semantic ID learning
+baselines. The results are summarized in Table 3. Note that RQ-
+Kmeans is excluded from Table 3, as its tokenizer is not trained
+under the same end-to-end, gradient-based optimization framework
+as the tokenizers evaluated in this study. Based on the empirical
+evidence, we draw the following observations:
+• As shown in Table 3, adding the HaMR loss improves the
+downstream ranking metric NDCG@10 by up to 15.3% (Beauty)
+and 20.1% (Toys), while also increasing entropy by around
+0.1%–1.9%. This demonstrates that the proposed hamming-
+guided margin repulsion is model-agnostic and can be seam-
+lessly integrated as a plug-and-play component to enhance
+semantic ID discriminability, collision reduction, and SID
+assignment diversity simultaneously.
+• By comparing Table 3 with the overall performance of QuaSID
+in Table 2, we observe a contrast: while adding LHaMR to
+baselines often results in higher entropy than QuaSID, their
+ranking metrics remain consistently inferior to QuaSID. This
+suggests that although hamming-guided repulsion is highly
+effective in improving SID-composition diversity and SID
+structure, it alone is insufficient to fully optimize down-
+stream recommendation performance in the offline genera-
+tive setting. The additional gains achieved by QuaSID can
+be likely related to its task-aware training module, which
+aligns semantic IDs with recommendation objectives. To-
+gether, these results highlight that LHaMR and contrastive
+task supervision are complementary: the former improves
+discrete representation quality, while the latter ensures ef-
+fective downstream task alignment.
+5.4
+Online A/B Test
+We further evaluate QuaSID through large-scale online A/B testing
+in the e-commerce recommendation scenario of the Kuaishou plat-
+form. Approximately 5% of online traffic (covering over 20 million
+users) is randomly assigned to the treatment group for 5 days. We
+report Completed Orders (CO), GMV (including scenario-specific
+GMV, i.e., GMV-S1/GMV-S2), and GPM (GMV per mille exposures)
+in Table 4; 100𝑣𝑣and 600𝑣𝑣denote cold-start videos with fewer
+than 100 and 600 views, respectively, within the first 48 hours. All
+results are statistically significant.
+Retrieval. We evaluate both generative retrieval and the con-
+ventional discriminative retrieval pipeline, together with their
+cold-start subsets. As shown in Table 4, replacing the tokenizer with
+QuaSID-learned SIDs improves CO and GMV-related metrics across
+settings, with substantially larger gains under sparse feedback. In
+generative retrieval, QuaSID yields +0.21% CO and +1.03% / +0.55%
+GMV-S1/GMV-S2. The effect is amplified on cold-start traffic, where
+CO increases by +6.42% (100vv) and +4.69% (600vv). GPM follows
+the same trend.
+Ranking. QuaSID also delivers stable improvements when inte-
+grated into discriminative ranking models. We observe +2.38%
+GMV-S2, accompanied by +1.44% GMV-S1 and +0.20% CO. While
+the absolute uplifts are smaller than those in retrieval, the gains
+remain consistently positive across scenarios, and cold-start seg-
+ments still benefit noticeably. Overall, these results demonstrate
+that QuaSID-learned SIDs can be deployed in production ranking
+and retrieval stacks and translate into measurable business impact.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zheng Hu, Yuxin Chen, Yongsen Pan, Xu Yuan, Yuting Yin, Daoyuan Wang, Boyang Xia, Zefei Luo, Hongyang Wang, Songhao Ni, Dongxu Liang, Jun Wang, Shimin Cai, Tao Zhou,
+Fuji Ren, and Wenwu Ou
+0
+0.005
+0.01
+0.015
+0.02
+0.025
+0.03
+0.035
+0.04
+0.045
+0.016
+0.017
+0.018
+0.019
+0.02
+0.021
+0.022
+0.01
+0.05
+0.1
+0.5
+NDCG@5
+NDCG@10
+HR@5
+HR@10
+(a) 𝜆𝑐𝑙
+0
+0.005
+0.01
+0.015
+0.02
+0.025
+0.03
+0.035
+0.04
+0.045
+0.014
+0.015
+0.016
+0.017
+0.018
+0.019
+0.02
+0.021
+0.022
+0.05
+0.2
+0.5
+0.8
+NDCG@5
+NDCG@10
+HR@5
+HR@10
+(b) 𝜆𝑓𝑢𝑙𝑙
+0
+0.005
+0.01
+0.015
+0.02
+0.025
+0.03
+0.035
+0.04
+0.045
+0.014
+0.015
+0.016
+0.017
+0.018
+0.019
+0.02
+0.021
+0.022
+0.01
+0.1
+0.5
+0.8
+NDCG@5
+NDCG@10
+HR@5
+HR@10
+(c) 𝜆𝑝𝑎𝑟𝑡𝑖𝑎𝑙
+Figure 5: Hyperparameter sensitivity analysis of QuaSID on the Amazon-Beauty dataset. The bars indicate NDCG@K (left
+y-axis), while the curves denote HR@K (right y-axis). In each subfigure, one hyperparameter is varied while all others are fixed
+to their default values.
+Table 5: Ablation study results on Amazon-Beauty and
+Amazon-Toys datasets.
+Tokenizer
+Amazon-Beauty
+Amazon-Toys
+HR@5
+NDCG@5
+HR@5
+NDCG@5
+QuaSID
+0.0277
+0.0193
+0.0266
+0.0193
+w/o 𝐶𝑉𝑃𝑀
+0.0263
+0.0181
+0.0264
+0.0190
+w/o 𝐻𝑎𝑀𝑅
+0.0254
+0.0170
+0.0261
+0.0189
+5.5
+Ablation Study
+We conduct ablation studies on the Amazon-Beauty and Amazon-
+Toys datasets to examine the effectiveness of the key components
+in QuaSID. Specifically, we evaluate: (i) CVPM, which qualifies
+collision supervision by masking pairs that are likely to reflect
+benign overlaps; (ii) the hamming-guided margin repulsion loss
+L𝐻𝑎𝑀𝑅for collision suppression. Results are reported in Table 5.
+Effect of CVPM.. To assess whether valid-pair masking is neces-
+sary for reliable collision supervision, we remove CVPM while keep-
+ing the remaining objectives unchanged (denoted as w/o CVPM). As
+shown in Table 5, this variant consistently degrades performance
+on both datasets, with a more noticeable drop on Amazon-Beauty.
+This supports our motivation that apparent in-batch collisions are
+heterogeneous and require qualification. Without CVPM, benign
+overlaps can be mistakenly included in the repulsion set, intro-
+ducing spurious separation that pushes apart semantically aligned
+items and degrades downstream performance.
+Effect of HaMR.. To evaluate the role of collision reduction, we
+remove HaMR from QuaSID (denoted as w/o HaMR). As shown
+in Table 5, this variant consistently underperforms the full model
+across both datasets and evaluation metrics. These results indicate
+that explicitly penalizing unreasonable SID collisions is critical for
+preserving semantic discriminability in the discrete token space.
+5.6
+Hyperparameter Sensitivity Analysis
+We evaluate QuaSID’s sensitivity to key hyperparameters on Amazon-
+Beauty, focusing on the collaborative contrastive weight 𝜆𝑐𝑙and
+the repulsion weights for full and partial SID collisions, 𝜆full and
+𝜆partial. Each experiment varies one hyperparameter while keeping
+the others at default values. Figure 5 reports NDCG@K (bar plots,
+left y-axis) and HR@K (line plots, right y-axis).
+Effect of 𝜆𝑐𝑙. 𝜆𝑐𝑙controls the strength of collaborative supervi-
+sion that aligns SIDs with behavioral signals. Increasing 𝜆𝑐𝑙from
+0.01 to 0.1 consistently improves performance, with HR@10 and
+NDCG@10 peaking around 0.1, suggesting that moderate con-
+trastive regularization complements reconstruction/quantization
+by injecting collaborative semantics. Further increasing 𝜆𝑐𝑙to 0.5
+degrades performance, indicating that overly strong contrastive
+forces can dominate optimization and conflict with discretization
+and collision mitigation.
+Effect of 𝜆full. 𝜆full penalizes full SID collisions (zero Hamming
+distance), i.e., the most severe ambiguity. The best results occur at
+𝜆full = 0.2. Smaller values under-penalize full collisions and reduce
+ranking quality, while larger values also hurt performance, likely
+because excessive repulsion distorts the representation space and
+weakens semantic generalization.
+Effect of 𝜆partial. 𝜆partial weights penalties for near-collisions within
+a Hamming radius 𝑅= 1. Performance improves as 𝜆partial increases
+from 0.01 to 0.1, implying that mild near-collision repulsion allevi-
+ates local codebook overcrowding. However, larger values (0.5, 0.8)
+consistently reduce HR and NDCG, suggesting that over-penalizing
+partial collisions can unnecessarily separate semantically related
+items that naturally share some tokens.
+6
+Conclusion and Future Work
+We investigated SIDs for multimodal items and identified two key
+obstacles: token collisions and collision-signal heterogeneity during
+training, where discrete overlaps may conflate harmful conflicts
+with benign, task-consistent relations. We proposed QuaSID, in-
+tegrating HaMR for severity-aware margin repulsion, CVPM to
+filter same-item pairs and constructed collaborative positives from
+collision supervision, and an auxiliary dual-tower contrastive loss
+to inject collaboration signals into tokenization. Extensive offline
+benchmarks and large-scale online A/B tests show consistent gains
+across metrics. Future work will further study collision-signal het-
+erogeneity by automatically separating benign overlaps from true
+semantic conflicts and learning task-conditional qualification poli-
+cies for when (and how strongly) to repel collisions.
+
+
+Stop Treating Collisions Equally: Qualification-Aware Semantic ID Learning for Recommendation at Industrial Scale Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+References
+[1] Xingyan Bin, Jianfei Cui, Wujie Yan, Zhichen Zhao, Xintian Han, Chongyang
+Yan, Feng Zhang, Xun Zhou, Xiao Yang, and Zuotao Liu. 2025. Real-time Indexing
+for Large-scale Recommendation by Streaming Vector Quantization Retriever. In
+Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data
+Mining, V.2, KDD 2025, Toronto ON, Canada, August 3-7, 2025. ACM, 4273–4283.
+https://doi.org/10.1145/3711896.3737259
+[2] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong
+Xiao, Bowen Xue, Xuxin Zhang, Ying Yang, Huangyu Dai, Xing Xu, Tong Zhao,
+Mingcan Peng, Xiaoyang Zheng, Chao Wang, Qihang Zhao, Zhixin Zhai, Yang
+Zhao, Bochao Liu, Jingshan Lv, Xiao Liang, Yuqing Ding, Jing Chen, Chenyi
+Lei, Wenwu Ou, Han Li, and Kun Gai. 2025. OneSearch: A Preliminary Ex-
+ploration of the Unified End-to-End Generative Framework for E-commerce
+Search. CoRR abs/2509.03236 (2025). https://doi.org/10.48550/ARXIV.2509.03236
+arXiv:2509.03236
+[3] Chung-Cheng Chiu, James Qin, Yu Zhang, Jiahui Yu, and Yonghui Wu. 2022. Self-
+supervised learning with random-projection quantizer for speech recognition.
+In International Conference on Machine Learning, ICML 2022, 17-23 July 2022,
+Baltimore, Maryland, USA (Proceedings of Machine Learning Research, Vol. 162).
+PMLR, 3915–3924. https://proceedings.mlr.press/v162/chiu22a.html
+[4] Marco Cuturi. 2013. Sinkhorn Distances: Lightspeed Computation of Optimal
+Transport. In Advances in Neural Information Processing Systems 26: 27th Annual
+Conference on Neural Information Processing Systems 2013. Proceedings of a meeting
+held December 5-8, 2013, Lake Tahoe, Nevada, United States. 2292–2300.
+[5] Dengzhao Fang, Jingtong Gao, Chengcheng Zhu, Yu Li, Xiangyu Zhao, and Yi
+Chang. 2025. HiD-VAE: Interpretable Generative Recommendation via Hier-
+archical and Disentangled Semantic IDs. CoRR abs/2508.04618 (2025).
+https:
+//doi.org/10.48550/ARXIV.2508.04618 arXiv:2508.04618
+[6] Christopher Fifty, Ronald Guenther Junkins, Dennis Duan, Aniketh Iyengar,
+Jerry Weihong Liu, Ehsan Amid, Sebastian Thrun, and Christopher Ré. 2025.
+Restructuring Vector Quantization with the Rotation Trick. In The Thirteenth
+International Conference on Learning Representations, ICLR 2025, Singapore, April
+24-28, 2025. OpenReview.net. https://openreview.net/forum?id=GMwRl2e9Y1
+[7] Shijie Geng, Shuchang Liu, Zuohui Fu, Yingqiang Ge, and Yongfeng Zhang. 2022.
+Recommendation as Language Processing (RLP): A Unified Pretrain, Personalized
+Prompt & Predict Paradigm (P5). In RecSys ’22: Sixteenth ACM Conference on
+Recommender Systems, Seattle, WA, USA, September 18 - 23, 2022. ACM, 299–315.
+https://doi.org/10.1145/3523227.3546767
+[8] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, Yueming Han, MengLei Zhou,
+Lei Yu, Chuan Liu, and Wei Lin. 2025. MTGR: Industrial-Scale Generative Recom-
+mendation Framework in Meituan. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management, CIKM 2025, Seoul, Re-
+public of Korea, November 10-14, 2025. ACM, 5731–5738. https://doi.org/10.1145/
+3746252.3761565
+[9] Yupeng Hou, Zhankui He, Julian J. McAuley, and Wayne Xin Zhao. 2023. Learn-
+ing Vector-Quantized Item Representation for Transferable Sequential Recom-
+menders. In Proceedings of the ACM Web Conference 2023, WWW 2023, Austin,
+TX, USA, 30 April 2023 - 4 May 2023. ACM, 1162–1171. https://doi.org/10.1145/
+3543507.3583434
+[10] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian J. McAuley. 2025. Generating Long
+Semantic IDs in Parallel for Recommendation. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining, V.2, KDD 2025,
+Toronto ON, Canada, August 3-7, 2025. ACM, 956–966. https://doi.org/10.1145/
+3711896.3736979
+[11] Eric Jang, Shixiang Gu, and Ben Poole. 2017. Categorical Reparameterization
+with Gumbel-Softmax. In 5th International Conference on Learning Representa-
+tions, ICLR 2017, Toulon, France, April 24-26, 2017, Conference Track Proceedings.
+OpenReview.net. https://openreview.net/forum?id=rkE3y85ee
+[12] Jian Jia, Jingtong Gao, Ben Xue, Junhao Wang, Qingpeng Cai, Quan Chen, Xi-
+angyu Zhao, Peng Jiang, and Kun Gai. 2025. From Principles to Applications:
+A Comprehensive Survey of Discrete Tokenizers in Generation, Comprehen-
+sion, Recommendation, and Information Retrieval. CoRR abs/2502.12448 (2025).
+https://doi.org/10.48550/ARXIV.2502.12448 arXiv:2502.12448
+[13] Bowen Jin, Hansi Zeng, Guoyin Wang, Xiusi Chen, Tianxin Wei, Ruirui Li,
+Zhengyang Wang, Zheng Li, Yang Li, Hanqing Lu, Suhang Wang, Jiawei Han,
+and Xianfeng Tang. 2024. Language Models as Semantic Indexers. In Forty-first
+International Conference on Machine Learning, ICML 2024, Vienna, Austria, July
+21-27, 2024. OpenReview.net.
+[14] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive Image Generation using Residual Quantization. In IEEE/CVF
+Conference on Computer Vision and Pattern Recognition, CVPR 2022, New Orleans,
+LA, USA, June 18-24, 2022. IEEE, 11513–11522. https://doi.org/10.1109/CVPR52688.
+2022.01123
+[15] Xiaopeng Li, Bo Chen, Junda She, Shiteng Cao, You Wang, Qinlin Jia, Haiying He,
+Zheli Zhou, Zhao Liu, Ji Liu, et al. 2025. A Survey of Generative Recommendation
+from a Tri-Decoupled Perspective: Tokenization, Architecture, and Optimization.
+(2025).
+[16] Enze Liu, Bowen Zheng, Cheng Ling, Lantao Hu, Han Li, and Wayne Xin Zhao.
+2025. Generative Recommender with End-to-End Learnable Item Tokenization.
+In Proceedings of the 48th International ACM SIGIR Conference on Research and
+Development in Information Retrieval, SIGIR 2025, Padua, Italy, July 13-18, 2025.
+ACM, 729–739. https://doi.org/10.1145/3726302.3729989
+[17] Enze Liu, Bowen Zheng, Wayne Xin Zhao, and Ji-Rong Wen. 2025. Bridging
+Textual-Collaborative Gap through Semantic Codes for Sequential Recommenda-
+tion. In Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery
+and Data Mining, V.2, KDD 2025, Toronto ON, Canada, August 3-7, 2025. ACM,
+1788–1798. https://doi.org/10.1145/3711896.3736869
+[18] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, Changqing Qiu, Jiaqi Zhang, Xu
+Zhang, Zhiheng Yan, Jingming Zhang, Simin Zhang, Mingxing Wen, Zhaojie Liu,
+and Guorui Zhou. 2025. QARM: Quantitative Alignment Multi-Modal Recom-
+mendation at Kuaishou. In Proceedings of the 34th ACM International Conference
+on Information and Knowledge Management, CIKM 2025, Seoul, Republic of Korea,
+November 10-14, 2025. ACM, 5915–5922. https://doi.org/10.1145/3746252.3761502
+[19] Rayhane Mama, Marc S. Tyndel, Hashiam Kadhim, Cole Clifford, and Ragavan
+Thurairatnam. 2021. NWT: Towards natural audio-to-video generation with
+representation learning. CoRR abs/2106.04283 (2021). arXiv:2106.04283 https:
+//arxiv.org/abs/2106.04283
+[20] Fabian Mentzer, David Minnen, Eirikur Agustsson, and Michael Tschannen. 2024.
+Finite Scalar Quantization: VQ-VAE Made Simple. In The Twelfth International
+Conference on Learning Representations, ICLR 2024, Vienna, Austria, May 7-11,
+2024. OpenReview.net. https://openreview.net/forum?id=8ishA3LxN8
+[21] Jianmo Ni, Gustavo Hernández Ábrego, Noah Constant, Ji Ma, Keith B. Hall,
+Daniel Cer, and Yinfei Yang. 2022. Sentence-T5: Scalable Sentence Encoders from
+Pre-trained Text-to-Text Models. In Findings of the Association for Computational
+Linguistics: ACL 2022, Dublin, Ireland, May 22-27, 2022. Association for Compu-
+tational Linguistics, 1864–1874. https://doi.org/10.18653/V1/2022.FINDINGS-
+ACL.146
+[22] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah Samost, Maciej
+Kula, Ed H. Chi, and Mahesh Sathiamoorthy. 2023. Recommender Systems with
+Generative Retrieval. In Advances in Neural Information Processing Systems 36:
+Annual Conference on Neural Information Processing Systems 2023, NeurIPS 2023,
+New Orleans, LA, USA, December 10 - 16, 2023.
+[23] Anima Singh, Trung Vu, Nikhil Mehta, Raghunandan H. Keshavan, Maheswaran
+Sathiamoorthy, Yilin Zheng, Lichan Hong, Lukasz Heldt, Li Wei, Devansh Tandon,
+Ed H. Chi, and Xinyang Yi. 2024. Better Generalization with Semantic IDs: A
+Case Study in Ranking for Recommendations. In Proceedings of the 18th ACM
+Conference on Recommender Systems, RecSys 2024, Bari, Italy, October 14-18, 2024.
+ACM, 1039–1044. https://doi.org/10.1145/3640457.3688190
+[24] Aäron van den Oord, Oriol Vinyals, and Koray Kavukcuoglu. 2017. Neural
+Discrete Representation Learning. In Advances in Neural Information Processing
+Systems 30: Annual Conference on Neural Information Processing Systems 2017,
+December 4-9, 2017, Long Beach, CA, USA. 6306–6315.
+[25] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable Item Tokenization for Generative
+Recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management, CIKM 2024, Boise, ID, USA, October
+21-25, 2024. ACM, 2400–2409. https://doi.org/10.1145/3627673.3679569
+[26] Binrui Wu, Shisong Tang, Fan Li, Bing Han, Chang Meng, Jingyu Xiao, and
+Jiechao Gao. 2025. Aligning and Balancing ID and Multimodal Representations
+for Recommendation. In Proceedings of the 31st ACM SIGKDD Conference on
+Knowledge Discovery and Data Mining, V.2, KDD 2025, Toronto ON, Canada, August
+3-7, 2025. ACM, 5029–5038. https://doi.org/10.1145/3711896.3737275
+[27] Dongchao Yang, Songxiang Liu, Rongjie Huang, Jinchuan Tian, Chao Weng, and
+Yuexian Zou. 2023. HiFi-Codec: Group-residual Vector quantization for High
+Fidelity Audio Codec. CoRR abs/2305.02765 (2023).
+https://doi.org/10.48550/
+ARXIV.2305.02765 arXiv:2305.02765
+[28] Xiaoyong Yang, Yadong Zhu, Yi Zhang, Xiaobo Wang, and Quan Yuan. 2020.
+Large Scale Product Graph Construction for Recommendation in E-commerce.
+CoRR abs/2010.05525 (2020). arXiv:2010.05525 https://arxiv.org/abs/2010.05525
+[29] Yining Yao, Ziwei Li, Shuwen Xiao, Boya Du, Jialin Zhu, Junjun Zheng, Xiangheng
+Kong, and Yuning Jiang. 2025. SaviorRec: Semantic-Behavior Alignment for Cold-
+Start Recommendation. CoRR abs/2508.01375 (2025). https://doi.org/10.48550/
+ARXIV.2508.01375 arXiv:2508.01375
+[30] Wencai Ye, Mingjie Sun, Shaoyun Shi, Peng Wang, Wenjin Wu, and Peng Jiang.
+2025. DAS: Dual-Aligned Semantic IDs Empowered Industrial Recommender
+System. In Proceedings of the 34th ACM International Conference on Information
+and Knowledge Management, CIKM 2025, Seoul, Republic of Korea, November 10-14,
+2025. ACM, 6217–6224. https://doi.org/10.1145/3746252.3761529
+[31] Jiahui Yu, Xin Li, Jing Yu Koh, Han Zhang, Ruoming Pang, James Qin, Alexander
+Ku, Yuanzhong Xu, Jason Baldridge, and Yonghui Wu. 2022. Vector-quantized
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zheng Hu, Yuxin Chen, Yongsen Pan, Xu Yuan, Yuting Yin, Daoyuan Wang, Boyang Xia, Zefei Luo, Hongyang Wang, Songhao Ni, Dongxu Liang, Jun Wang, Shimin Cai, Tao Zhou,
+Fuji Ren, and Wenwu Ou
+Image Modeling with Improved VQGAN. In The Tenth International Conference
+on Learning Representations, ICLR 2022, Virtual Event, April 25-29, 2022. OpenRe-
+view.net. https://openreview.net/forum?id=pfNyExj7z2
+[32] Neil Zeghidour, Alejandro Luebs, Ahmed Omran, Jan Skoglund, and Marco
+Tagliasacchi. 2022. SoundStream: An End-to-End Neural Audio Codec. IEEE
+ACM Trans. Audio Speech Lang. Process. 30 (2022), 495–507. https://doi.org/10.
+1109/TASLP.2021.3129994
+[33] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming Chen,
+and Ji-Rong Wen. 2024. Adapting Large Language Models by Integrating Col-
+laborative Semantics for Recommendation. In 40th IEEE International Conference
+on Data Engineering, ICDE 2024, Utrecht, The Netherlands, May 13-16, 2024. IEEE,
+1435–1448. https://doi.org/10.1109/ICDE60146.2024.00118
+[34] Carolina Zheng, Minhui Huang, Dmitrii Pedchenko, Kaushik Rangadurai, Siyu
+Wang, Fan Xia, Gaby Nahum, Jie Lei, Yang Yang, Tao Liu, Zutian Luo, Xiaohan
+Wei, Dinesh Ramasamy, Jiyan Yang, Yiping Han, Lin Yang, Hangjun Xu, Rong
+Jin, and Shuang Yang. 2025. Enhancing Embedding Representation Stability in
+Recommendation Systems with Semantic ID. In Proceedings of the Nineteenth
+ACM Conference on Recommender Systems, RecSys 2025, Prague, Czech Republic,
+September 22-26, 2025. ACM, 954–957. https://doi.org/10.1145/3705328.3748123
+[35] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo,
+Qianqian Wang, Qigen Hu, Rui Huang, Shiyao Wang, Weifeng Ding, Wuchao Li,
+Xinchen Luo, Xingmei Wang, Zexuan Cheng, Zixing Zhang, Bin Zhang, Boxuan
+Wang, Chaoyi Ma, Chengru Song, Chenhui Wang, Di Wang, Dongxue Meng,
+Fan Yang, Fangyu Zhang, Feng Jiang, Fuxing Zhang, Gang Wang, Guowang
+Zhang, Han Li, Hengrui Hu, Hezheng Lin, Hongtao Cheng, Hongyang Cao,
+Huanjie Wang, Jiaming Huang, Jiapeng Chen, Jiaqiang Liu, Jinghui Jia, Kun
+Gai, Lantao Hu, Liang Zeng, Liao Yu, Qiang Wang, Qidong Zhou, Shengzhe
+Wang, Shihui He, Shuang Yang, Shujie Yang, Sui Huang, Tao Wu, Tiantian
+He, Tingting Gao, Wei Yuan, Xiao Liang, Xiaoxiao Xu, Xugang Liu, Yan Wang,
+Yi Wang, Yiwu Liu, Yue Song, Yufei Zhang, Yunfan Wu, Yunfeng Zhao, and
+Zhanyu Liu. 2025. OneRec Technical Report. CoRR abs/2506.13695 (2025). https:
+//doi.org/10.48550/ARXIV.2506.13695 arXiv:2506.13695
+[36] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jing-
+hao Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, Pengfei Zheng, Qiang Luo,
+Qianqian Wang, Qigen Hu, Rui Huang, Ruiming Tang, Shiyao Wang, Shujie
+Yang, Tao Wu, Wuchao Li, Xinchen Luo, Xingmei Wang, Yi Su, Yunfan Wu,
+Zexuan Cheng, Zhanyu Liu, Zixing Zhang, Bin Zhang, Boxuan Wang, Chaoyi
+Ma, Chengru Song, Chenhui Wang, Chenglong Chu, Di Wang, Dongxue Meng,
+Dunju Zang, Fan Yang, Fangyu Zhang, Feng Jiang, Fuxing Zhang, Gang Wang,
+Guowang Zhang, Han Li, Honghui Bao, Hongyang Cao, Jiaming Huang, Jiapeng
+Chen, Jiaqiang Liu, Jinghui Jia, Kun Gai, Lantao Hu, Liang Zeng, Qiang Wang, Qi-
+dong Zhou, Rongzhou Zhang, Shengzhe Wang, Shihui He, Shuang Yang, Siyang
+Mao, Sui Huang, Tiantian He, Tingting Gao, Wei Yuan, Xiao Liang, Xiaoxiao
+Xu, Xugang Liu, Yan Wang, Yang Zhou, Yi Wang, Yiwu Liu, Yue Song, Yufei
+Zhang, Yunfeng Zhao, Zhixin Ling, and Ziming Li. 2025. OneRec-V2 Technical
+Report. CoRR abs/2508.20900 (2025). https://doi.org/10.48550/ARXIV.2508.20900
+arXiv:2508.20900
+[37] Yongxin Zhu, Bocheng Li, Yifei Xin, Zhihua Xia, and Linli Xu. 2025. Addressing
+representation collapse in vector quantized models with one linear layer. In
+Proceedings of the IEEE/CVF International Conference on Computer Vision. 22968–
+22977.
+A
+Additional Experimental Details
+A.1
+Baselines
+We compare QuaSID with a set of strong vector-quantization-based
+baselines in our offline tokenizer evaluation. These methods differ in
+their quantization strategies, codebook optimization mechanisms,
+and gradient estimation techniques.
+• RQ-VAE [14] recursively quantizes the residuals of dense
+item embeddings using multiple stacked codebooks, enabling
+a coarse-to-fine discretization. It is one of the most commonly
+adopted frameworks for semantic ID construction.
+• GRVQ (Grouped Residual Vector Quantization) [27] par-
+titions the embedding space into multiple groups and ap-
+plies residual quantization independently within each group,
+aiming to reduce cross-dimension interference and improve
+codebook utilization.
+• Improved VQGAN [31] adopts a low-dimensional code-
+book and applies ℓ2-normalized to both codebook vectors
+and encoder outputs, effectively using cosine similarity for
+code assignment. This design encourages more uniform code
+utilization and improves reconstruction quality.
+• RQ-VAE-Rotation [6] replaces the STE in RQ-VAE with
+the rotation trick, which leads to more informative gradients
+and improved quantization stability.
+• SimRQ [37] freezes the codebooks and implicitly generates
+discrete codes via linear projections. This design mitigates
+codebook collapse and simplifies optimization, while pre-
+serving the hierarchical representation benefits of residual
+quantization.
+• RQ-OPQ [2] combines residual quantization with optimized
+product quantization.
+• RQ-Kmeans [18] is a two-stage semantic ID learning method
+that first aligns item representations based on item–item
+collaborative pairs, and then constructs residual quantiza-
+tion codebooks via a K-means-based mechanism to generate
+multi-layer discrete codes.
+All methods use the same backbone model, and differ only in the
+tokenizer used to construct SIDs.
+A.2
+Implementation Details
+We use TIGER [22] as the generative recommendation backbone for
+all methods and keep identical model configurations across QuaSID
+and baselines. All offline experiments are implemented in PyTorch
+based on the open-source RQ-VAE recommender framework2. We
+optimize all generative models with Adam (lr 3×10−4, weight decay
+1 × 10−5) and batch size 256. Early stopping is applied if NDCG@5
++ HitRate@5 does not improve for 10 consecutive validation checks.
+We adopt an 8-layer Transformer with 8 attention heads, embedding
+dimension 128, and MLP hidden dimension 512. All results are
+averaged over five random seeds.
+For offline semantic ID learning, we use batch size 256 for all
+methods; for online A/B tests, we use batch size 1024. In offline
+public-dataset experiments, we set the number of codebook layers to
+𝐿= 3 and the codebook size to 𝐾= 256 for a fair comparison across
+methods. In industrial experiments, we use 𝐿= 4 and 𝐾= 1024.
+Baseline hyperparameters follow the original papers and are further
+tuned on validation sets. For QuaSID, we set the Hamming radius
+to 𝑅= 1 for offline experiments and 𝑅= 2 for online A/B tests, with
+margins 𝑚full = 0.8 and 𝑚partial = 0.5. We tune 𝜆𝑐𝑙∈[0.01, 0.5],
+𝜆full ∈[0.05, 0.8], and 𝜆partial ∈[0.01, 0.8] on validation sets.
+2https://github.com/EdoardoBotta/RQ-VAE-Recommender

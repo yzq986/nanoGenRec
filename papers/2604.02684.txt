@@ -1,0 +1,1305 @@
+MBGR: Multi-Business Prediction for Generative
+Recommendation at Meituan
+Changhao Li∗
+Meituan
+Chengdu, China
+lichanghao@meituan.com
+Junwei Yin∗
+Meituan
+Chengdu, China
+yinjunwei03@meituan.com
+Zhilin Zeng
+Meituan
+Chengdu, China
+zengzhilin@meituan.com
+Senjie Kou
+Meituan
+Chengdu, China
+kousenjie@meituan.com
+Shuli Wang†
+Meituan
+Chengdu, China
+wangshuli03@meituan.com
+Wenshuai Chen
+Meituan
+Chengdu, China
+chenwenshuai@meituan.com
+Yinhua Zhu
+Meituan
+Chengdu, China
+zhuyinhua@meituan.com
+Haitao Wang
+Meituan
+Chengdu, China
+wanghaitao13@meituan.com
+Xingxing Wang
+Meituan
+Beijing, China
+wangxingxing04@meituan.com
+Abstract
+Generative recommendation (GR) has recently emerged as a promis-
+ing paradigm for industrial recommendations. GR leverages Seman-
+tic IDs (SIDs) to reduce the encoding-decoding space and employs
+the Next Token Prediction (NTP) framework to explore scaling
+laws. However, existing GR methods suffer from two critical issues:
+(1) a seesaw phenomenon in multi-business scenarios arises due
+to NTP’s inability to capture complex cross-business behavioral
+patterns; and (2) a unified SID space causes representation confu-
+sion by failing to distinguish distinct semantic information across
+businesses. To address these issues, we propose Multi-Business Gen-
+erative Recommendation (MBGR), the first GR framework tailored
+for multi-business scenarios. Our framework comprises three key
+components. First, we design a Business-aware semantic ID (BID)
+module that preserves semantic integrity via domain-aware tok-
+enization. Then, we introduce a Multi-Business Prediction (MBP)
+structure to provide business-specific prediction capabilities. Fur-
+thermore, we develop a Label Dynamic Routing (LDR) module that
+transforms sparse multi-business labels into dense labels to further
+enhance the multi-business generation capability. Extensive offline
+and online experiments on Meituan’s food delivery platform vali-
+date MBGR’s effectiveness, and we have successfully deployed it in
+production.
+∗Both authors contributed equally to this research.
+† Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference’17, Washington, DC, USA
+© 2025 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-x-xxxx-xxxx-x/YYYY/MM
+https://doi.org/10.1145/nnnnnnn.nnnnnnn
+CCS Concepts
+• Information systems →Retrieval models and ranking; Com-
+putational advertising.
+Keywords
+Recommender Systems, Generative recommendation, Multi-business
+ACM Reference Format:
+Changhao Li, Junwei Yin, Zhilin Zeng, Senjie Kou, Shuli Wang, Wenshuai
+Chen, Yinhua Zhu, Haitao Wang, and Xingxing Wang. 2025. MBGR: Multi-
+Business Prediction for Generative Recommendation at Meituan . In . ACM,
+New York, NY, USA, 9 pages. https://doi.org/10.1145/nnnnnnn.nnnnnnn
+1
+Introduction
+Internet technology has made online businesses like e-commerce
+platforms and social networks essential to daily life [3, 5, 10]. To-
+day’s major platforms provide diverse businesses - Meituan, for
+instance, spans food delivery, entertainment and healthcare. While
+multi-business modeling captures shared patterns, business hetero-
+geneity and varying user preferences pose challenges for personal-
+ized recommendations [11, 25, 26].
+The core challenge of multi-business modeling is balancing
+business-specific characteristics while learning shared represen-
+tations across businesses [2, 9]. Traditional approaches typically
+employ multiple expert towers [13, 15, 27]to model both business
+commonalities and unique features, with techniques like causal
+inference and LLM-enhanced fusion showing promising results.
+However, conventional recommendation systems face two persis-
+tent limitations: substantial storage requirements from item em-
+beddings and poor long-tail performance. The emerging generative
+recommendation paradigm addresses these by using compact se-
+mantic IDs to represent items, achieving both storage reduction
+and direct target generation. Specifically, it predicts users’ next
+interactions by generating semantic IDs from historical sequences,
+demonstrating superior training efficiency.
+arXiv:2604.02684v1  [cs.IR]  3 Apr 2026
+
+
+Conference’17, July 2017, Washington, DC, USA
+Changhao Li et al.
+However, current generative recommendation frameworks [4, 6,
+12, 20] are designed for a single business and lack multi-business op-
+timization. This results in separate deployments for each business,
+increasing model training and maintenance costs. Furthermore, it
+is difficult to leverage historical user data from other businesses to
+enhance the model. This raises a key question: how can we effec-
+tively integrate different businesses and achieve efficient generative
+recommendations? Designing a multi-business-specific generative
+recommendation framework is necessary, but it faces two key chal-
+lenges: First, the signals from multiple businesses are mixed and
+difficult to distinguish. In real-world scenarios, various businesses
+often influence each other, creating complex relationships. User
+behavior across different businesses can vary significantly, lead-
+ing to significant heterogeneity between businesses. Furthermore,
+the sheer volume of data across businesses makes it difficult to ex-
+tract commonalities and differences from the mixed signals. Second,
+multiple businesses share a common semantic codebook, making
+optimization difficult. Compressing heterogeneous data from mul-
+tiple businesses onto semantic IDs in the same semantic space
+results in gradient coupling during optimization, making it impos-
+sible to account for inter-business differences when generating
+semantic IDs for items, resulting in poor performance. These two
+challenges hinder the application of generative recommendations in
+multi-business scenarios and limit recommendation effectiveness,
+necessitating innovative solutions.
+To address the above challenges, we propose MBGR, a Genera-
+tive Recommendation framework specifically designed for Multi-
+business Prediction. MBGR consists of three core modules: the
+Business-aware semantic ID (BID) module, the Multi-Business Pre-
+diction (MBP) module, and the Label Dynamic Routing (LDR) mod-
+ule. The BID module addresses the gradient coupling problem
+caused by semantic IDs in the same semantic space by designing an
+encoder and decoder. It innovatively introduces a business encod-
+ing representing the business data context on top of the original
+semantic ID to achieve business adaptation. The encoder obtains
+business-related item representations, and the decoder reconstructs
+the semantic ID to minimize semantic information loss. The MBP
+module introduces a parameter-sharing Mixed Tower of Experts
+(MoE) architecture, performing weighted attention aggregation on
+each expert tower to obtain the final business-related representa-
+tion. The LDR module searches for the label of the next interaction
+with the same business from the user interaction sequence, which
+transforms sparse multi-business labels into dense labels to further
+enhance the multi-business generation capability.
+Our contributions can be summarized in three points:
+• Multi-business Generative Recommendation Framework:
+We propose the MBGR framework, which effectively com-
+bines generative and multi-business recommendation, signif-
+icantly reducing online item storage and model maintenance
+costs, and providing a new approach to multi-business learn-
+ing. To our knowledge, this is the first work to combine
+generative and multi-business recommendation.
+• Multi-business Signal Separation: We proposed a collabora-
+tive mechanism between the SID, MBP, and LDR modules to
+effectively separate the mixed multi-business signals from
+two dimensions: model structure (hybrid tower of experts)
+and label routing. This ensures knowledge sharing between
+businesses while maintaining the specificity of each business,
+providing a complete solution for generative recommenda-
+tion in multi-business scenarios.
+• Extensive Experimental Validation: We conducted extensive
+offline and online experiments and achieved a 3.98% improve-
+ment in CTCVR online, demonstrating the effectiveness of
+our proposed MBGR.
+2
+Related Work
+2.1
+Generative Recommendations
+Generative recommender systems aim to replace the traditional
+two-tower recall model by directly generating candidate items.
+They have garnered widespread attention in the industry in re-
+cent years. Early work primarily explored representing items as
+sequences of semantic IDs. TIGER [12] first proposed using RQ-VAE
+[19] residual quantization encoding to convert items into semantic
+IDs and using Transformer parameters as an index to directly gen-
+erate candidate sets, effectively alleviating sparsity and cold-start
+issues. HSTU [20] further extended generative ideas to the rank-
+ing stage, unifying heterogeneous feature spaces and redefining
+recall ranking as a generative task. This was the first demonstra-
+tion of the applicability of scaling laws in recommender systems.
+Subsequent work has focused on optimizing efficiency. OneRec
+[4] proposed an end-to-end architecture to replace the traditional
+cascade model. It improves tokenization by introducing collabora-
+tive prior knowledge and employs an encoder-decoder structure
+to enhance computing power utilization. COBRA [18] proposed
+a cascade representation method to address the information loss
+problem, combining sparse and dense representations to process
+semantic IDs and fine-grained information respectively. In terms
+of application expansion, LC-Rec [23] explored the integration of
+LLM and recommendation systems, allowing LLM to learn item col-
+laborative semantics through instruction fine-tuning; GenRank [8]
+systematically studied the influencing factors of generative ranking
+and verified the importance of sequence interaction methods and
+feature engineering. To address the issue of inference efficiency,
+RPG [7] proposed a parallel semantic ID generation framework,
+using product quantization to support the unordered parallel gen-
+eration of long semantic IDs. The latest work has begun to focus
+on commercial applications. EGA-V2 [24] extends the generative
+architecture to the advertising system, uniformly handling multiple
+links such as bidding and creative selection; PinRec [1] proposes a
+result-oriented generation method, meeting the needs of different
+business goals through conditional generation.
+2.2
+Multi-business recommendations
+Multi-business (scenario) recommendation systems aim to lever-
+age data from multiple scenarios to train a unified model to im-
+prove recommendation effectiveness. Early research, starting from
+a causal perspective, first proposed a causal-inspired intervention
+framework, CausalInt [16], addressing the multi-scenario modeling
+problem through invariant representation modeling and an inter-
+scenario transfer module. M-scan [28] further discovered that the
+direct influence of context on click behavior can lead to prediction
+
+
+MBGR: Multi-Business Prediction for Generative Recommendation at Meituan
+Conference’17, July 2017, Washington, DC, USA
+bias, and proposed a context-aware collaborative attention mecha-
+nism and a context bias eliminator to alleviate this problem. In terms
+of architectural design, M3OE [22] designed three hybrid expert
+modules to learn shared, context-specific, and task-specific user
+preferences, respectively, and proposed a two-level fusion mech-
+anism for precise control. SESRec [14] specifically targets joint
+search and recommendation modeling, designing a context-specific
+interest extraction layer and a global label space multi-task layer to
+effectively fuse search and recommendation information. Consider-
+ing the needs of industrial applications, IncMSR [21] proposed an
+incremental learning method that improves training efficiency and
+senses distribution changes by quantifying representation distances
+across different dimensions and applying fine-grained constraints.
+Recent research has begun exploring the power of large models.
+LLM4MSR [17] leverages large language models to capture cross-
+scenario relevance and personalized preferences, connecting the
+semantic space and the recommendation space through a hierar-
+chical meta-network.
+3
+Problem Formulation
+In this section, we formally define the multi-business generative
+sequential recommendation problem. Given a user 𝑢’s historical
+interaction sequence across multiple businesses:
+𝑆𝑢= {𝑠𝑢,1,𝑠𝑢,2, ...,𝑠𝑢,𝐿}
+(1)
+where each interaction 𝑠𝑢,𝑡= (𝑖𝑢,𝑡,𝑏𝑢,𝑡,𝑡𝑢,𝑡) consists of:
+• 𝑖𝑢,𝑡: item ID
+• 𝑏𝑢,𝑡: business type
+• 𝑡𝑢,𝑡: timestamp
+Our goal is to simultaneously generate the Semantic ID of the
+next possible item for each of the 𝐾business types 𝑏𝑘∈𝐵(𝑘=
+1, ..., 𝐾) using a generative approach.
+Formally, we aim to maximize the following conditional proba-
+bility:
+𝑃(𝑇(1:𝐾)
+𝑢
+|𝑆𝑢) =
+𝐾
+∑︁
+𝑘=1
+𝑃(𝑇(𝑘)
+𝑢
+|𝑆𝑢,𝑏𝑘)
+(2)
+where 𝑇(𝑘)
+𝑢
+= {𝑡(𝑘)
+1
+,𝑡(𝑘)
+2
+, ...,𝑡(𝑘)
+𝐿𝑘} represents the Semantic ID
+token sequence of the next item in business 𝑏𝑘, and 𝐿𝑘is the length
+of the Semantic ID for business 𝑏𝑘.
+4
+Proposed Method
+We propose an innovative multi-business generative recommenda-
+tion system architecture that consists of three core components: 1)
+Business-aware semantic ID (BID) module, 2)Multi-Business Predic-
+tion (MBP) module, and 3) Label Dynamic Routing (LDR) module.
+4.1
+Business-aware semantic ID (BID)
+The Business-aware semantic ID (BID) module is a novel dual-path
+representation learning framework designed to address two criti-
+cal challenges in multi-business recommendation: 1) incorporating
+business context into shared token representations, and 2) min-
+imizing semantic information loss during the encoding process.
+The module employs a business-aware autoencoder architecture
+that serves two complementary purposes during training: input
+representation learning and next-item prediction.
+The BID module consists of three core components:
+1. Business-Aware Encoder: The encoder processes input to-
+kens to learn business-aware item representations, while the de-
+coder reconstructs the original tokens to ensure semantic preser-
+vation.Transforms input token embeddings t𝑖= [t𝑖,1, t𝑖,2, ..., t𝑖,𝐾] ∈
+R𝐾·𝑑𝑡into business-aware item representations e𝑖∈R𝑑𝑒:
+e𝑒𝑛𝑐
+𝑖
+= FFN𝑒𝑛𝑐([t𝑖, b𝑖])
+(3)
+g𝑒𝑛𝑐
+𝑖
+= 𝜎(FFN𝑒𝑛𝑐
+𝑔𝑎𝑡𝑒([e𝑒𝑛𝑐
+𝑖
+, b𝑖]))
+(4)
+e𝑖= e𝑒𝑛𝑐
+𝑖
+⊙g𝑒𝑛𝑐
+𝑖
+(5)
+2. Business-Conditioned Decoder: Reconstructs token em-
+beddings from item representations and generates next-item token
+sequences:
+ˆt𝑑𝑒𝑐
+𝑖
+= FFN𝑑𝑒𝑐([e𝑖, b𝑖])
+(6)
+g𝑑𝑒𝑐
+𝑖
+= ReLU(FFN𝑑𝑒𝑐
+𝑔𝑎𝑡𝑒([ˆt𝑑𝑒𝑐
+𝑖
+, b𝑖]))
+(7)
+ˆt𝑖= ˆt𝑑𝑒𝑐
+𝑖
+⊙g𝑑𝑒𝑐
+𝑖
+(8)
+Key innovations of the BID module include:
+• Dual-Path Architecture: Simultaneously learns business-
+aware representations and predicts multi-business tokens
+• Semantic Preservation: The reconstruction objective en-
+sures minimal information loss during encoding
+• Business-Aware Encoding and Decoding: Both the en-
+coder and decoder incorporate business context through the
+business type embedding b𝑖
+• Parameter Sharing: The same decoder is used for both
+reconstruction and prediction, improving efficiency
+This design enables the BID module to effectively balance the
+competing requirements of business-specific adaptation and seman-
+tic consistency
+4.2
+Multi-Business Prediction (MBP)
+This architecture serves as the core generative engine that simulta-
+neously predicts next items across multiple business domains. Built
+upon a Transformer-based autoregressive framework, the architec-
+ture processes user interaction sequences 𝑆𝑢to generate Semantic
+ID token sequences for all business types in parallel.
+4.2.1
+Sequence Encoding. : The historical interaction sequence 𝑆𝑢
+is encoded by the BID-encoder module into item representations,
+where each event contains item ID 𝑖, business type𝑏, and timestamp
+𝑡.
+4.2.2
+Business-Aware Item Representation. : To bridge the gap be-
+tween universal item representations and business-specific require-
+ments, we propose a module that dynamically transforms shared
+embeddings into domain-specific representations. This module em-
+ploys a Mixture-of-Experts (MoE) architecture with shared parame-
+ters, enabling efficient adaptation of generic item features to diverse
+business contexts.
+Given a general item representation e ∈R𝑑𝑒, the MBP module
+generates business-specific representations e𝑏for each business
+domain 𝑏through a three-stage transformation process:
+
+
+Conference’17, July 2017, Washington, DC, USA
+Changhao Li et al.
+a_2
+B1
+b_4
+c_2
+Encoder
+a_2
+B1
+b_4
+c_6
+Encoder
+A1
+B1
+C1
+A2
+D2
+D1
+Decoder
+Decoder
+Decoder
+Decoder
+Export
+Export
+Export
+Export
+D
+B
+A
+C
+Label Dynamic Routing
+User sequence
+Label Dynamic Routing
+A1
+D1
+B1
+C1
+B2
+Business-aware semantic ID
+HSTU x L
+a_1
+B
+b_3
+c_5
+Encoder
+MBP
+Routing Labels
+Routing Labels
+Routing Labels
+Routing Labels
+A2
+D1
+B1
+C1
+A2
+D2
+B1
+C1
+A2
+D2
+B2
+C1
+A2
+D3
+B2
+C1
+A3
+D3
+B2
+C1
+A3
+D3
+B2
+C2
+...
+Natural Labels
+B
+a_1
+b_3
+c_5
+b_3
+a_1
+c_5
+Reconstruction Loss
+Figure 1: The overall architecture of MBGR.
+1. Contextual Fusion: Concatenate the item embedding with
+business context:
+z𝑏= [e, b] ∈R𝑑𝑒+𝑑𝑏
+(9)
+where b ∈R𝑑𝑏is the learnable business type embedding that en-
+codes domain-specific characteristics.
+2. Adaptive Gating: Compute business-specific attention weights:
+g𝑏= SiLu(FFN𝑔𝑎𝑡𝑒(z𝑏)) ∈R𝐾
+(10)
+where FFN𝑔𝑎𝑡𝑒is a shared gating network that learns to allocate
+expert resources based on both item content and business context.
+3. Expert Aggregation: Combine specialized transformations:
+e𝑏=
+𝐾
+∑︁
+𝑘=1
+𝑔𝑏
+𝑘· FFN𝑒𝑥𝑝
+𝑘
+(z𝑏) ∈R𝑑𝑒
+(11)
+where FFN𝑒𝑥𝑝
+𝑘
+are 𝐾shared expert networks that learn to extract
+business-relevant features from the fused representation z𝑏.
+4.2.3
+Business-Aware SID representation generation. : The business-
+specific item representations z𝑏are decoded into token representa-
+tions using the Business-Conditioned Decoder from BID.AS defined
+in Eqs.(6)-(8)
+For each business type 𝑏𝑘, after obtaining the business-specific item
+representation e𝑏, the decoder transforms it into Semantic ID token
+sequences:
+ˆ𝑇(𝑘)
+𝑢
+= Decode(e𝑏,𝑏𝑘)
+(12)
+4.3
+Label Dynamic Routing
+For each position t in the sequence and each business type 𝑏𝑘,
+the prediction target is determined by finding the nearest future
+interaction of the same business type:
+𝑖(𝑘)
+𝑢,𝑡+1 = 𝑖𝑢,𝑡′
+where
+𝑡′ = min{𝑡′′ > 𝑡|𝑏𝑢,𝑡′′ = 𝑏𝑘}
+(13)
+During training, if no future interaction exists for a particular
+business type (i.e., 𝑡′ > 𝑡where 𝑏𝑢,𝑡′ = 𝑏𝑘), we mask the loss for
+that business to avoid invalid predictions. This approach ensures
+the model learns to predict meaningful next items for all active
+business types at each sequence position.
+The architecture employs business-specific prediction heads that
+generate Semantic ID token sequences 𝑇(𝑘)
+𝑢
+= {𝑡(𝑘)
+1
+,𝑡(𝑘)
+2
+, ...,𝑡(𝑘)
+𝐿𝑘}
+for each business 𝑏𝑘in an autoregressive manner.
+The model is trained end-to-end using a multi-task objective
+that combines InfoNCE losses across all business domains, enabling
+simultaneous learning of business-specific patterns while maintain-
+ing shared representations.
+5
+Model Training
+Our multi-business generative recommendation system is trained
+end-to-end using a carefully designed multi-objective loss function
+that combines contrastive learning with semantic reconstruction.
+The training process simultaneously optimizes for both accurate
+multi-business prediction and semantic consistency across all busi-
+ness domains.
+
+
+MBGR: Multi-Business Prediction for Generative Recommendation at Meituan
+Conference’17, July 2017, Washington, DC, USA
+5.1
+Training Objective
+The overall training objective combines InfoNCE loss for multi-
+business prediction with reconstruction loss for semantic preserva-
+tion:
+L = LinfoNCE + 𝜆· Lrecon
+(14)
+where 𝜆is a hyperparameter controlling the trade-off between
+prediction accuracy and semantic consistency.
+5.2
+InfoNCE Loss for Multi-Business Prediction
+The InfoNCE loss is computed across all business domains and
+token positions to optimize the model’s ability to predict the next
+item’s Semantic ID tokens for different business:
+LinfoNCE = −
+𝐵
+∑︁
+𝑏=1
+𝑤𝑏· 𝑤𝑡
+𝑁
+∑︁
+𝑖=1
+𝐾
+∑︁
+𝑘=1
+log
+exp(sim(ˆt𝑏
+𝑖,𝑘, t𝑏
+𝑖,𝑘)/𝜏)
+Í|V𝑘|
+𝑗=1 exp(sim(ˆt𝑏
+𝑖,𝑘, v𝑗,𝑘)/𝜏)
+(15)
+where:
+• 𝐵is the number of business domains
+• 𝑤𝑏is the weight for business 𝑏, balancing the contribution
+of different business types
+• 𝑤𝑡= exp
+
+−𝛼· (𝑡last −𝑡(𝑘)
+𝑢,𝑡+1)
+
+is the time decay coefficient,
+where 𝛼is a positive hyperparameter controlling the de-
+cay rate, 𝑡last is the timestamp of the last interaction in the
+sequence, and 𝑡(𝑘)
+𝑢,𝑡+1 is the timestamp of the target item
+• 𝑁is the number of items in the batch
+• 𝐾is the number of tokens per item’s Semantic ID
+• 𝜏is the temperature parameter controlling the sharpness of
+the distribution
+• ˆt𝑏
+𝑖,𝑘is the predicted token embedding for the 𝑘-th token of
+item 𝑖in business 𝑏
+• t𝑏
+𝑖,𝑘is the ground truth token embedding
+• v𝑗,𝑘represents negative samples from the vocabulary V𝑘for
+token position 𝑘
+• sim(·, ·) computes the cosine similarity between embeddings
+5.3
+Reconstruction Loss for Semantic
+Preservation
+To ensure minimal semantic information loss during the encod-
+ing process, we employ a reconstruction loss that measures the
+difference between original and reconstructed token embeddings:
+Lrecon = 1
+𝐾
+𝐾
+∑︁
+𝑘=1
+∥𝑇(𝑘)
+𝑢
+−ˆ𝑇(𝑘)
+𝑢
+∥2
+2
+(16)
+where𝑇(𝑘)
+𝑢
+= {𝑡(𝑘)
+1
+,𝑡(𝑘)
+2
+, ...,𝑡(𝑘)
+𝐿𝑘} represents the original sequence
+of Semantic ID tokens and ˆ𝑇(𝑘)
+𝑢
+represents the reconstructed se-
+quence for business 𝑏𝑘.
+6
+Experiments
+To comprehensively evaluate the effectiveness of our proposed
+MBGR framework, we conducted extensive experiments in both
+offline and online settings. This section presents our experimental
+methodology, including dataset descriptions, baseline methods, and
+evaluation protocols.
+6.1
+Experimental Setup
+6.1.1
+Datasets. We evaluate our framework using two distinct
+datasets corresponding to different phases of deployment:
+1. Generative Training Dataset: Collected from Meituan’s
+platform, this dataset contains user interaction sequences spanning
+one year:
+• User Base: 38,258,649 unique users with click actions
+• Item Catalog: 54,875,570 distinct merchants across four
+business categories
+– Business A: 61.47% of merchants
+– Business B: 9.56% of merchants
+– Business C: 12.31% of merchants
+– Business D: 16.66% of merchants
+• Temporal Coverage: One year of sequential user interac-
+tions
+2. Downstream Application Dataset: Used for the deployment
+phase, this larger-scale dataset features:
+• User Base: 37,349,276 unique users
+• Interaction Samples: 783,946,360 user interaction records
+• Update Frequency: Daily refresh to maintain the most
+recent 30-day window
+6.1.2
+Baselines. We compare our proposed MBGR framework against
+two state-of-the-art sequential recommendation models:
+1. SASRec (Self-Attentive Sequential Recommendation): SAS-
+Rec employs a unidirectional Transformer architecture to capture
+sequential dependencies in user-item interactions for next-item
+prediction. The model utilizes self-attention mechanisms to weigh
+the importance of different historical interactions, enabling it to
+focus on the most relevant items when making predictions. SASRec
+serves as a strong baseline for sequential recommendation tasks,
+particularly in single-domain settings.
+2. HSTU (Hierarchical Sequential Transduction Unit): HSTU is
+a novel hierarchical Transformer architecture specifically designed
+for large-scale generative recommendation systems. The model in-
+troduces a multi-level transduction mechanism that can effectively
+handle high-cardinality item spaces and capture complex sequential
+patterns in user behavior.
+6.1.3
+Evaluation Protocol. We employ a two-part evaluation strat-
+egy that assesses both the generative training phase and online
+application phase:
+1. Generative Training Evaluation: For the generative training
+phase, we use Hit Rate@10 (HR@10) as the primary metric:
+• Business-wise Analysis: We compute HR@10 separately
+for each business category
+• Focus on Small Businesses: Special attention is given to
+performance on smaller business categories (e.g., B, C) to
+evaluate the effectiveness of our business-aware learning
+approach
+2. Downstream Application Evaluation: For the deployment
+phase, we use Grouped Area Under Curve (GAUC) as the primary
+metric:
+
+
+Conference’17, July 2017, Washington, DC, USA
+Changhao Li et al.
+• Business-wise GAUC: GAUC is calculated separately for
+each business category to assess business-specific perfor-
+mance.
+The comprehensive evaluation demonstrates our framework’s
+dual strengths in both generative capability (measured by HR@10)
+and downstream ranking performance (measured by GAUC), while
+maintaining robust system performance under production work-
+loads.
+6.1.4
+Implementation Details. Generative Training Phase: The
+generative model was implemented in PyTorch 2.7.0 using NVIDIA
+A100-80GB GPUs. We used Adam optimizer with learning rate
+0.001 and initialized parameters with normal distribution (𝜇=
+0, 𝜎= 0.01). The architecture featured 8 attention heads and 16
+transformer layers with 128-dimensional embeddings, trained with
+batch size 1024. The maximum sequence length was set to
+1500 items, with truncation or padding applied to all input
+sequences. Additional hyperparameters were tuned through grid
+search on the validation set.
+Downstream Application Phase: For the downstream appli-
+cation, we used TensorFlow 1.15 with identical model architecture,
+incorporating both user embeddings and BID-encoded item rep-
+resentations at the embedding layer. The model was trained on
+the same 30-day window and deployed on A100-80GB GPUs. The
+serving infrastructure included distributed embedding lookup and
+business-aware sharding to handle production traffic.
+6.2
+Overall Performance
+We evaluate our MBGR framework through comprehensive experi-
+ments on both generative capability and downstream application
+performance. All experiments were conducted using the infras-
+tructure described in Section 6, with results averaged across three
+runs to ensure statistical significance. This section presents our key
+findings, demonstrating the effectiveness of our approach across
+different business categories, with particular focus on improving
+performance for smaller businesses.
+6.2.1
+Generative Performance. Table 1 presents the Hit@10 per-
+formance across different business categories for all models. Our
+MBGR framework demonstrates significant improvements, particu-
+larly for smaller businesses.
+Table 1: Hit@10 Performance Across Business Categories
+Model
+All
+A (61.47%)
+B (9.56%)
+C (12.31%)
+D (16.66%)
+SASRec
+0.0192
+0.0218
+0.0101
+0.0178
+0.0269
+Tiger
+0.0202
+0.0221
+0.0128
+0.0180
+0.0278
+HSTU
+0.0214
+0.0231
+0.0127
+0.0198
+0.0299
+Transformer-MBGR
+0.0341
+0.0245
+0.0412
+0.0321
+0.0387
+HSTU-MBGR
+0.0410
+0.0252
+0.0554
+0.0398
+0.0421
+Regarding the Seq-to-Seq architecture, we evaluate two variants
+of our MBGR framework:
+• Transformer-MBGR: Uses a standard Transformer encoder-
+decoder architecture with 16 layers and 8 attention heads, fol-
+lowing the architecture described in Section 4.2. The model
+processes input sequences of maximum length 1500 items
+and generates Semantic ID token sequences autoregressively.
+• HSTU-MBGR: Based on the HSTU architecture [20], which
+introduces a hierarchical transduction mechanism to handle
+high-cardinality item spaces. We extend it with our proposed
+BID and MBP modules while preserving its core architecture.
+Both variants incorporate our proposed BID and MBP modules,
+with HSTU-MBGR achieving the best performance across all busi-
+ness categories, particularly for smaller businesses (B and C).
+6.2.2
+Downstream CTCVR Performance. Table 2 compares the base-
+line model with our MBP-enhanced approach.
+Table 2: Downstream CTCVR GAUC Comparison
+Model
+All
+A (61.47%) B (9.56%) C (12.31%) D (16.66%)
+Baseline
+0.7748
+0.7080
+0.7594
+0.8852
+0.7466
+MBGR
+0.8040
+0.7135
+0.8258
+0.9052
+0.7717
+Improvement
++3.8%
++0.8%
++8.7%
++2.3%
++3.4%
+We evaluate the downstream conversion performance using
+CTCVR GAUC metrics across business categories.
+6.3
+BID Encoder Effectiveness
+To evaluate the effectiveness of our BID encoder in learning business-
+aware representations, we conduct a comparative analysis of em-
+bedding distributions using Principal Component Analysis (PCA)
+for dimensionality reduction. Figure 2 compares the 2D projections
+of embedding spaces learned by the baseline sum pooling approach
+and our BID encoder.
+Figure 2: Comparison of embedding distributions between
+sum pooling and BID encoder approaches. The left panel
+shows embeddings generated by simple sum pooling of to-
+ken embeddings, while the right panel displays embeddings
+produced by our BID encoder. All embeddings are projected
+to 2D space using PCA for visualization. Different colors
+represent different business types with their proportions: A
+(61.47%), B (9.56%), C (12.31%), and D (16.66%).
+The visualization reveals three key insights about the BID en-
+coder’s effectiveness:
+1) Business Separation: The BID encoder (right) shows clearer
+separation between business types compared to the sum pooling
+approach (left), particularly for smaller businesses (B and C).
+
+
+MBGR: Multi-Business Prediction for Generative Recommendation at Meituan
+Conference’17, July 2017, Washington, DC, USA
+2) Natural Correlations: Both methods show natural overlaps
+between business types, reflecting real-world business correla-
+tions. However, the BID encoder maintains these correlations while
+achieving better separation.
+3) Proportion Alignment: The clustering patterns align well with
+the actual business proportions, validating our business-aware de-
+sign.
+These findings demonstrate that the BID encoder successfully
+captures business-specific patterns while maintaining semantic
+consistency across different business types.
+6.4
+Ablation Study
+We analyze the contributions of each component through ablation
+studies evaluated on Hit@10 performance. Table 3 shows the impact
+of removing key components from our full model.
+Table 3: Ablation Study Results on Hit@10 Performance
+Model(HSTU based)
+All
+A (61.47%)
+B (9.56%)
+C (12.31%)
+D (16.66%)
+w/o LDR
+0.0268
+0.0215
+0.0312
+0.0245
+0.0301
+w/o MBP
+0.0330
+0.0241
+0.0401
+0.0312
+0.0365
+w/o BID
+0.0335
+0.0243
+0.0408
+0.0318
+0.0372
+Full MBGR
+0.0410
+0.0252
+0.0554
+0.0398
+0.0421
+The implementation details for each ablation setting are as fol-
+lows:
+• w/o LDR: Instead of business-specific target routing, we use
+standard next-item prediction that computes loss against all
+subsequent items regardless of business type. This removes
+the adaptive target selection mechanism while maintaining
+single-target decoding.
+• w/o MBP Module: We simplify the multi-business predic-
+tion architecture into a single universal prediction head. This
+means generating one unified item representation e𝑢instead
+of business-specific representations e𝑏, and using shared
+parameters for all business prediction tasks.
+• w/o BID Module: We replace the business-aware codec with
+basic semantic transformation:1)Encoder: Use simple mean
+pooling over token embeddings t𝑖instead of the adaptive
+fusion in BID.2)Decoder: Implement shallow MLP that trans-
+forms e𝑏to token representations without semantic gate
+control.
+Key findings:
+• LDR Module contributes the most significant improvement
+• MBP Module provides substantial gains, particularly for
+smaller business
+• BID Module contributes meaningfully across all businesses
+• All components show synergistic effects, with their combi-
+nation yielding the best performance
+6.5
+Hyperparameter Analysis
+We conduct comprehensive experiments to analyze the impact
+of key hyperparameters, with particular focus on the time decay
+coefficient 𝛼and business weights 𝑤𝑏in the InfoNCE loss function.
+All experiments are conducted on the generative training dataset
+with HSTU as the base model.
+6.5.1
+Time Decay Coefficient (𝛼). The time decay coefficient 𝛼in
+𝑤𝑡= exp
+
+−𝛼· (𝑡last −𝑡(𝑘)
+𝑢,𝑡+1)
+
+controls how rapidly the influence of
+historical interactions diminishes. We evaluate five settings across
+different business categories:
+Table 4: Impact of Time Decay Coefficient 𝛼on Hit@10
+𝛼
+All
+A
+B
+C
+D
+0.01
+0.0382
+0.0241
+0.0512
+0.0371
+0.0403
+0.05
+0.0410
+0.0252
+0.0554
+0.0398
+0.0421
+0.10
+0.0397
+0.0248
+0.0531
+0.0385
+0.0412
+0.20
+0.0375
+0.0239
+0.0498
+0.0362
+0.0391
+0.50
+0.0341
+0.0225
+0.0442
+0.0328
+0.0357
+Key observations:
+• Optimal performance is achieved at 𝛼= 0.05, balancing
+between recent and historical interactions
+• Smaller businesses (B, C) benefit more from moderate decay
+(𝛼= 0.05 −0.10), suggesting their user preferences evolve
+faster
+• Larger business (A) shows better tolerance to smaller 𝛼, in-
+dicating more stable user interests
+• Excessive decay (𝛼≥0.20) significantly hurts performance
+across all businesses
+6.5.2
+Business Weight (𝑤𝑏) Configuration. The business weight 𝑤𝑏
+in the InfoNCE loss function is designed to balance the contribution
+of different business types based on their characteristics. We employ
+a heuristic weighting strategy derived from empirical analysis of
+business dynamics:
+Table 5: Business Weight Configuration
+Business
+Proportion
+Weight (𝑤𝑏)
+Rationale
+A
+61.47%
+0.9
+Stable user preferences,
+lower update frequency
+B
+9.56%
+1.5
+Fast-changing preferences,
+higher business value
+C
+12.31%
+1.3
+Moderate dynamics,
+strategic importance
+D
+16.66%
+1.0
+Balanced characteristics,
+baseline weight
+The weighting strategy follows these principles:
+• Inverse Relationship to Size: Smaller businesses receive
+higher weights to counteract the natural dominance of larger
+businesses in gradient updates
+• Preference Dynamics: Businesses with faster-changing
+user preferences (e.g., B) are assigned higher weights to
+ensure adequate model adaptation
+• Business Value: Strategic business lines receive moderate
+weight increases to align with platform objectives
+• Normalization: Weights are normalized such that Í
+𝑏𝑤𝑏=
+𝐵to maintain overall loss scale
+Comparative experiments validate this configuration:
+Key findings:
+
+
+Conference’17, July 2017, Washington, DC, USA
+Changhao Li et al.
+Table 6: Impact of Business Weight Configuration on Hit@10
+Configuration
+All
+A
+B
+C
+D
+Uniform (𝑤𝑏= 1.0)
+0.0368
+0.0235
+0.0487
+0.0342
+0.0381
+Inverse Frequency
+0.0360
+0.0243
+0.0521
+0.0375
+0.0379
+Empirical (Ours)
+0.0410
+0.0252
+0.0554
+0.0398
+0.0421
+• Our empirical weighting improves overall performance by
+11.4% over uniform weighting
+• Particularly effective for smaller businesses (B: +13.8%, C:
++16.4%)
+• Inverse frequency helps smaller businesses but hurts overall
+performance
+6.5.3
+Number of Experts (𝐾) in MBP. We analyze the impact of
+expert count in the Multi-Business Prediction module:
+Table 7: Impact of Expert Count on Hit@10
+𝐾
+All
+A
+B
+C
+D
+4
+0.0379
+0.0242
+0.0503
+0.0361
+0.0392
+8
+0.0410
+0.0252
+0.0554
+0.0398
+0.0421
+16
+0.0401
+0.0249
+0.0538
+0.0387
+0.0413
+32
+0.0387
+0.0243
+0.0512
+0.0372
+0.0398
+Observations:
+• Optimal at 𝐾= 8 for all businesses
+• Larger 𝐾shows diminishing returns due to parameter frag-
+mentation
+• Smaller businesses benefit more from moderate expert counts
+6.6
+Online Experiment Results
+As shown in Figure 3, the MBGR framework has been deployed in
+Meituan’s Real-Time Bidding (RTB) advertising system, addressing
+high queries per second (QPS) and low latency requirements while
+enabling flexible adaptation to downstream tasks.
+User Embedding Retrieval
+Sample Logs
+Offline
+Online
+Recommend
+Server
+Request
+Response
+User Request
+Item List
+Train
+Matching
+Server
+Ranking
+Server
+Model
+Server
+Item Embedding Generation
+Figure 3: Architecture of the online deployment with MBGR.
+In contrast to end-to-end paradigms like OneRec [4] and EGA
+[24], which unify the entire recommendation pipeline into a single
+model, our approach prioritizes industrial robustness. Such unified
+models entail significant engineering overhead and, more critically,
+pose substantial instability risks under the highly volatile condi-
+tions of Real-Time Bidding (RTB) systems. Therefore, we designed
+a more reliable serving strategy for MBGR based on incremental in-
+tegration. Rather than a full pipeline reconstruction, the generated
+user and item embeddings are utilized in two ways: as an additional
+retrieval channel and as enriched features for the ranking model.
+This architecture ensures system stability while effectively lever-
+aging the representational power of MBGR. The online serving
+architecture consists of the following components:
+• User Embedding Retrieval. Direct retrieval from distributed
+cache with precomputed business-specific embeddings.
+• Item Embedding Generation. Two-stage process that involves
+token-level embedding look-up followed by online encoding via
+the BID encoder.
+We conducted a one-week online A/B test with 30% of Meituan’s
+production traffic to evaluate our MBGR framework against the
+baseline model without MBP enhancement. The experiment was
+conducted under real-world conditions with live user interactions.
+Table 8: Business-wise CTCVR Improvements
+Business
+Proportion
+CTCVR Improvement
+A
+61.47%
++3.0%
+B
+9.56%
++7.5%
+C
+12.31%
++4.5%
+D
+16.66%
++5.2%
+Weighted Average
+100%
++3.98%
+Overall Performance: Our MBGR framework achieved a sta-
+tistically significant +3.98% improvement in CTCVR compared to
+the baseline (p < 0.01).
+The online results demonstrate consistent performance improve-
+ments across all business categories, with greater gains for smaller
+businesses, matching our offline findings. The weighted average
+improvement of +3.98% confirms the effectiveness of our approach
+in production while maintaining robust system performance under
+high traffic loads.
+7
+Conclusion
+In this paper, we identify two key limitations of existing generative
+recommendation methods in multi-business scenarios: the seesaw
+phenomenon in NTP-based models and representation confu-
+sion in unified SID spaces. To address these challenges, we propose
+MBGR, a tailored generative recommendation framework for multi-
+business prediction. MBGR consists of three core components: a
+Business-aware semantic ID (BID) module that maintains semantic
+integrity through domain-aware tokenization, a Multi-Business
+Prediction (MBP) structure that delivers business-specific forecast-
+ing, and a Label Dynamic Routing (LDR) module that enhances
+generation capability by converting sparse multi-business labels
+into dense representations. Offline and online experiments validate
+the effectiveness of MBGR in multi-business recommendation, and
+we have successfully deployed MBGR on Meituan’s food delivery
+platform.
+
+
+MBGR: Multi-Business Prediction for Generative Recommendation at Meituan
+Conference’17, July 2017, Washington, DC, USA
+References
+[1] Anirudhan Badrinath, Prabhat Agarwal, Laksh Bhasin, Jaewon Yang, Jiajing
+Xu, and Charles Rosenberg. 2025. PinRec: Outcome-Conditioned, Multi-Token
+Generative Retrieval for Industry-Scale Recommendation Systems. arXiv preprint
+arXiv:2504.10507 (2025).
+[2] Jianxin Chang, Chenbin Zhang, Yiqun Hui, Dewei Leng, Yanan Niu, Yang Song,
+and Kun Gai. 2023. Pepnet: Parameter and embedding personalized network for
+infusing with personalized prior information. In Proceedings of the 29th ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining. 3795–3804.
+[3] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra,
+Hrishi Aradhye, Glen Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, et al.
+2016. Wide & deep learning for recommender systems. In Proceedings of the 1st
+workshop on deep learning for recommender systems. 7–10.
+[4] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[5] Huifeng Guo, Ruiming Tang, Yunming Ye, Zhenguo Li, and Xiuqiang He. 2017.
+DeepFM: a factorization-machine based neural network for CTR prediction. arXiv
+preprint arXiv:1703.04247 (2017).
+[6] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, et al. 2025. MTGR: Industrial-
+Scale Generative Recommendation Framework in Meituan.
+arXiv preprint
+arXiv:2505.18654 (2025).
+[7] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating long
+semantic IDs in parallel for recommendation. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V. 2. 956–966.
+[8] Yanhua Huang, Yuqi Chen, Xiong Cao, Rui Yang, Mingliang Qi, Yinghao Zhu,
+Qingchang Han, Yaowei Liu, Zhaoyu Liu, Xuefeng Yao, et al. 2025. Towards
+Large-scale Generative Ranking. arXiv preprint arXiv:2505.04180 (2025).
+[9] Pengcheng Li, Runze Li, Qing Da, An-Xiang Zeng, and Lijun Zhang. 2020. Improv-
+ing multi-scenario learning to rank in e-commerce by exploiting task relation-
+ships in the label space. In Proceedings of the 29th ACM International Conference
+on Information & Knowledge Management. 2605–2612.
+[10] Jianxun Lian, Xiaohuan Zhou, Fuzheng Zhang, Zhongxia Chen, Xing Xie, and
+Guangzhong Sun. 2018. xdeepfm: Combining explicit and implicit feature in-
+teractions for recommender systems. In Proceedings of the 24th ACM SIGKDD
+international conference on knowledge discovery & data mining. 1754–1763.
+[11] Qi Pi, Guorui Zhou, Yujing Zhang, Zhe Wang, Lejian Ren, Ying Fan, Xiaoqiang
+Zhu, and Kun Gai. 2020. Search-based user interest modeling with lifelong
+sequential behavior data for click-through rate prediction. In Proceedings of the
+29th ACM International Conference on Information & Knowledge Management.
+2685–2692.
+[12] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[13] Xiang-Rong Sheng, Liqin Zhao, Guorui Zhou, Xinyao Ding, Binding Dai, Qiang
+Luo, Siran Yang, Jingshan Lv, Chi Zhang, Hongbo Deng, et al. 2021. One model to
+serve all: Star topology adaptive recommender for multi-domain ctr prediction. In
+Proceedings of the 30th ACM International Conference on Information & Knowledge
+Management. 4104–4113.
+[14] Zihua Si, Zhongxiang Sun, Xiao Zhang, Jun Xu, Xiaoxue Zang, Yang Song, Kun
+Gai, and Ji-Rong Wen. 2023. When search meets recommendation: Learning
+disentangled search representation for recommendation. In Proceedings of the 46th
+international ACM SIGIR conference on research and development in information
+retrieval. 1313–1323.
+[15] Hongyan Tang, Junning Liu, Ming Zhao, and Xudong Gong. 2020. Progressive
+layered extraction (ple): A novel multi-task learning (mtl) model for personalized
+recommendations. In Proceedings of the 14th ACM Conference on Recommender
+Systems. 269–278.
+[16] Yichao Wang, Huifeng Guo, Bo Chen, Weiwen Liu, Zhirong Liu, Qi Zhang,
+Zhicheng He, Hongkun Zheng, Weiwei Yao, Muyu Zhang, et al. 2022. Causalint:
+Causal inspired intervention for multi-scenario recommendation. In Proceedings
+of the 28th ACM SIGKDD Conference on Knowledge Discovery and Data Mining.
+4090–4099.
+[17] Yuhao Wang, Yichao Wang, Zichuan Fu, Xiangyang Li, Wanyu Wang, Yuyang
+Ye, Xiangyu Zhao, Huifeng Guo, and Ruiming Tang. 2024. Llm4msr: An llm-
+enhanced paradigm for multi-scenario recommendation. In Proceedings of the
+33rd ACM International Conference on Information and Knowledge Management.
+2472–2481.
+[18] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, et al. 2025. Sparse meets dense: Unified generative
+recommendations with cascaded sparse-dense representations. arXiv preprint
+arXiv:2503.02453 (2025).
+[19] Neil Zeghidour, Alejandro Luebs, Ahmed Omran, Jan Skoglund, and Marco
+Tagliasacchi. 2021. Soundstream: An end-to-end neural audio codec. IEEE/ACM
+Transactions on Audio, Speech, and Language Processing 30 (2021), 495–507.
+[20] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, et al. 2024. Actions speak louder than words:
+Trillion-parameter sequential transducers for generative recommendations. arXiv
+preprint arXiv:2402.17152 (2024).
+[21] Kexin Zhang, Yichao Wang, Xiu Li, Ruiming Tang, and Rui Zhang. 2024. Incmsr:
+An incremental learning approach for multi-scenario recommendation. In Pro-
+ceedings of the 17th ACM International Conference on Web Search and Data Mining.
+939–948.
+[22] Zijian Zhang, Shuchang Liu, Jiaao Yu, Qingpeng Cai, Xiangyu Zhao, Chunxu
+Zhang, Ziru Liu, Qidong Liu, Hongwei Zhao, Lantao Hu, et al. 2024. M3oe:
+Multi-domain multi-task mixture-of experts recommendation framework. In
+Proceedings of the 47th International ACM SIGIR Conference on Research and
+Development in Information Retrieval. 893–902.
+[23] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting large language models by integrating
+collaborative semantics for recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). IEEE, 1435–1448.
+[24] Zuowu Zheng, Ze Wang, Fan Yang, Jiangke Fan, Teng Zhang, Yongkang Wang,
+and Xingxing Wang. 2025. EGA-V2: An End-to-end Generative Framework for
+Industrial Advertising. arXiv preprint arXiv:2505.17549 (2025).
+[25] Guorui Zhou, Na Mou, Ying Fan, Qi Pi, Weijie Bian, Chang Zhou, Xiaoqiang
+Zhu, and Kun Gai. 2019. Deep interest evolution network for click-through rate
+prediction. In Proceedings of the AAAI conference on artificial intelligence, Vol. 33.
+5941–5948.
+[26] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD international conference
+on knowledge discovery & data mining. 1059–1068.
+[27] Jie Zhou, Xianshuai Cao, Wenhao Li, Lin Bo, Kun Zhang, Chuan Luo, and Qian
+Yu. 2023. HiNet: Novel Multi-Scenario & Multi-Task Learning with Hierarchi-
+cal Information Extraction. In 2023 IEEE 39th International Conference on Data
+Engineering (ICDE). IEEE, 2969–2975.
+[28] Jiachen Zhu, Yichao Wang, Jianghao Lin, Jiarui Qin, Ruiming Tang, Weinan
+Zhang, and Yong Yu. 2024. M-scan: A Multi-Scenario Causal-driven Adaptive
+Network for Recommendation. In Proceedings of the ACM Web Conference 2024.
+3844–3853.
