@@ -1,0 +1,1428 @@
+Beyond Static Collision Handling: Adaptive Semantic ID Learning
+for Multimodal Recommendation at Industrial Scale
+Yongsen Pan∗
+University of Electronic Science and
+Technology of China
+Chengdu, China
+Yuxin Chen∗
+Kuaishou Technology
+Beijing, China
+chenyuxin06@kuaishou.com
+Zheng Hu
+University of Electronic Science and
+Technology of China
+Chengdu, China
+Xu Yuan
+Daoyuan Wang
+Kuaishou Technology
+Beijing, China
+Yuting Yin
+Songhao Ni
+Kuaishou Technology
+Beijing, China
+Hongyang Wang
+Kuaishou Technology
+Beijing, China
+Jun Wang
+Kuaishou Technology
+Beijing, China
+Fuji Ren†
+University of Electronic Science and
+Technology of China
+Chengdu, China
+renfuji@uestc.edu.cn
+Wenwu Ou
+Kuaishou Technology
+Beijing, China
+Abstract
+Modern recommendation systems operate over massive catalogs
+of multimodal items whose semantics strongly affect downstream
+recommendation quality, making scalable item identification a rep-
+resentation problem that must balance compactness for efficient
+recommendation with semantic fidelity. Semantic IDs (SIDs) offer a
+practical solution to this representation challenge by mapping mul-
+timodal item signals into short discrete token sequences, thereby
+providing a compact yet semantically informed item interface for
+retrieval, ranking, and emerging generative recommendation. How-
+ever, learning effective SIDs remains challenging. One key chal-
+lenge is collision: different items may be assigned identical or highly
+confusable codes in the discrete space. Existing methods mainly
+improve SID learning through better quantization or fixed overlap
+regularization, but still lack an adaptive treatment of discrete ambi-
+guity for recommendation-oriented SID learning. To address this
+issue, we propose AdaSID, an adaptive semantic ID learning frame-
+work for recommendation. AdaSID regulates overlaps through a
+two-stage adaptive process. In the first stage, it adaptively relaxes
+repulsion for each observed overlap based on semantic compat-
+ibility, determining whether it should continue to receive repul-
+sion or be preserved as semantically admissible sharing. In the
+second stage, it adaptively allocates the remaining regulation pres-
+sure according to local collision load and training progress, so that
+∗Both authors contributed equally to this research.
+†Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference’17, Washington, DC, USA
+© 2026 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-x-xxxx-xxxx-x/YYYY/MM
+https://doi.org/10.1145/nnnnnnn.nnnnnnn
+SID learning remains aligned with both discrete-space structure
+and recommendation-oriented optimization. Extensive offline and
+online experiments validate AdaSID. On two public benchmarks,
+AdaSID improves Recall and NDCG by around 4.5% on average over
+strong baselines while also improving codebook utilization and SID
+diversity. In industrial validation on Kuaishou e-commerce, AdaSID
+further demonstrates practical value. An online A/B test on the
+short-video retrieval model covering tens of millions of users yields
+statistically significant gains in key business metrics, including a
+0.98% improvement in GMV, while industrial ranking evaluation
+also shows consistent AUC improvements.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+multimodal recommendation, semantic ID learning, generative rec-
+ommendation
+ACM Reference Format:
+Yongsen Pan, Yuxin Chen, Zheng Hu, Xu Yuan, Daoyuan Wang, Yuting
+Yin, Songhao Ni, Hongyang Wang, Jun Wang, Fuji Ren, and Wenwu Ou.
+2026. Beyond Static Collision Handling: Adaptive Semantic ID Learning for
+Multimodal Recommendation at Industrial Scale. In . ACM, New York, NY,
+USA, 10 pages. https://doi.org/10.1145/nnnnnnn.nnnnnnn
+1
+Introduction
+Modern recommendation systems increasingly operate on items
+equipped with rich content signals such as text, images, and videos.
+Effective item representation is therefore a fundamental require-
+ment in both generative and discriminative recommendation. Tra-
+ditional sparse IDs are efficient, but they carry little multimodal se-
+mantic information and treat items as isolated symbols [13], which
+limits generalization across related items [25]. This limitation be-
+comes more pronounced in dynamic recommendation scenarios
+arXiv:2604.23522v1  [cs.IR]  26 Apr 2026
+
+
+Conference’17, July 2017, Washington, DC, USA
+Yongsen Pan, Yuxin Chen, Zheng Hu, Xu Yuan, Daoyuan Wang, Yuting Yin, Songhao Ni, Hongyang Wang, Jun Wang, Fuji Ren, and Wenwu Ou
+such as short-video platforms, where items are continuously cre-
+ated, consumed, and replaced. In such settings, sparse-ID-based
+embeddings are prone to representation drift over time and are espe-
+cially difficult to keep well trained for tail and newly arrived items
+[41]. Direct multimodal item representations are more expressive,
+yet they do not serve as stable item identifiers for recommendation
+and are not directly optimized into stable item identifiers under
+downstream recommendation supervision [20]. To bridge this gap,
+Semantic IDs (SIDs) have recently attracted growing attention in
+both academia and industry [1, 21, 35]. By converting multimodal
+item features into short discrete token sequences, SIDs provide
+a practical balance between semantic richness, compactness, and
+learnability for modern recommendation pipelines [14].
+Despite these advantages, learning effective SIDs remains chal-
+lenging. A central difficulty is collision: during the projection from
+multimodal item features to discrete SIDs, different items may be
+assigned identical or highly confusable SIDs in the discrete space
+[17, 28]. This issue is especially consequential in recommendation,
+because SIDs serve not only as compressed representations, but
+also as the discrete interface through which downstream models
+differentiate items. When semantically or behaviorally mismatched
+items share similar SIDs, the downstream model is forced to up-
+date the same discrete representations according to inconsistent
+supervision signals, which can lead to conflicting optimization and
+degraded recommendation quality [16]. As a result, collision can
+directly undermine the recommendation utility of the learned SID
+space.
+Existing studies have improved SID learning mainly by enhanc-
+ing the quality of discrete representations. Some focus on improv-
+ing quantization quality, codebook utilization, or training stability,
+thereby mitigating collisions indirectly through better-structured
+discretization [15, 22, 27]. Others introduce explicit overlap-aware
+objectives to suppress harmful collisions in the SID space [6, 12].
+These advances are important, but their treatment of overlaps re-
+mains largely static once collisions are observed. The weakness of
+such static treatment is twofold. First, overlaps are judged under
+a fixed standard, without adequately distinguishing harmful am-
+biguity from semantically compatible sharing in the multimodal
+space. Second, once an overlap is treated as problematic, it is usually
+regulated with a largely fixed mode of response. As a result, overlap
+regulation can fail to distinguish what should be separated from
+what can be shared, and can further remain insensitive to the vary-
+ing conditions under which retained overlaps should be handled,
+thereby weakening the recommendation utility of the learned SID
+space, as illustrated in Figure 1.
+To address these limitations, we propose AdaSID, an adaptive
+SID learning framework for recommendation. AdaSID casts over-
+lap regulation as a two-stage adaptive process. The first stage
+determines from the semantic perspective whether an observed
+overlap should continue to receive repulsion or can be preserved
+as semantically admissible sharing. The second stage then ap-
+plies adaptive pressure allocation to the remaining overlaps, both
+spatially and temporally. Spatially, it regulates how separation pres-
+sure is distributed in the SID space through load-adaptive collision
+strengthening. Temporally, it adjusts the optimization emphasis of
+this regulation over training through progress-adaptive objective
+rebalancing. In this way, AdaSID turns overlap handling from a
+Semantically similar items
+Semantically dissimilar items
+A
+B
+SID 
+Collision
+Fixed 
+Judgment
+Same collision, different semantic similarity
+Same response, different conditions
+conditions
+Spatial Condition
+Temporal Condition
+Fixed 
+Treatment
+Static
+Semantic similar items
+Semantic dissimilar items
+A
+B
+Different semantics, different treatment
+Different conditions, different treatment
+Adaptive
+Protected
+Separation
+Semantic
+Qualification
+Strong Treatment
+Weak Treatment
+Different conditions
+[12] [95] [28]
+[12] [95] [28]
+[12] [95] [28]
+[12] [95] [28]
+SIDs
+SIDs
+Figure 1: Motivation of AdaSID. Static overlap regulation
+uses fixed judgment and fixed treatment, whereas AdaSID
+instead performs adaptive semantic qualification to deter-
+mine whether an observed overlap should continue to receive
+repulsion, and then allocates the remaining regulation pres-
+sure adaptively.
+fixed response into recommendation-oriented adaptive regulation.
+Extensive offline and online experiments validate the proposed
+framework. On two public benchmarks, AdaSID improves Recall
+and NDCG by around 4.5% on average over strong baselines while
+also improving SID codebook quality. In industrial validation on
+Kuaishou e-commerce, AdaSID further yields consistent gains in
+both online retrieval A/B tests and offline ranking, demonstrat-
+ing measurable value in real recommendation traffic. The main
+contributions of this work are as follows:
+• We address static overlap handling in existing SID learning.
+To this end, we propose AdaSID, an adaptive framework that
+casts overlap regulation as a two-stage process. In the first
+stage, AdaSID determines, based on semantic consistency,
+whether an observed overlap should continue to receive
+repulsion, thereby distinguishing harmful ambiguity from
+semantically admissible sharing during SID learning.
+• Building on this semantic qualification step, we develop the
+second stage of AdaSID as an adaptive pressure allocation
+design for the retained overlaps. This design regulates over-
+lap handling both spatially and temporally, through load-
+adaptive collision strengthening and progress-adaptive ob-
+jective rebalancing, respectively.
+• We conduct comprehensive offline and industrial evaluations
+of AdaSID, including recommendation accuracy, SID-space
+diagnostics, online retrieval A/B tests, and offline ranking
+
+
+Beyond Static Collision Handling: Adaptive Semantic ID Learning for Multimodal Recommendation at Industrial Scale
+Conference’17, July 2017, Washington, DC, USA
+studies. The results consistently show that AdaSID improves
+both recommendation performance and the quality of the
+learned SID space in real recommendation scenarios.
+2
+Related Work
+2.1
+Multimodal Item Representation for
+Recommendation
+Learning item representations from multimodal content has become
+an important direction in recommendation systems. Modern items
+are often associated with heterogeneous signals such as text, im-
+ages, and videos [5, 18, 31, 33]. A large body of work has shown that
+leveraging these signals can enrich item semantics beyond sparse
+IDs and improve recommendation quality, especially in cold-start
+and content-sensitive scenarios [4, 9, 29]. Representative techniques
+include cross-modal fusion [37], contrastive alignment [19], pre-
+trained encoders [38], and modality-aware interaction modeling
+[42]. These studies have substantially improved multimodal item
+understanding and representation learning for recommendation.
+However, most of them still model items as continuous embeddings,
+whereas SID learning focuses on constructing compact discrete item
+identifiers that can better support discrete indexing, token-based
+generation, and reusable item interfaces across recommendation
+stages [24, 25]. This distinction has motivated a separate line of
+research on semantic ID learning.
+2.2
+SID Learning for Recommendation
+SID learning has recently become an important direction in rec-
+ommendation. It maps item semantics into short discrete token
+sequences and provides a unified item interface for retrieval, rank-
+ing, and emerging generative recommendation models [16]. Ex-
+isting studies have explored this paradigm in both discriminative
+and generative settings, showing that SIDs can better balance se-
+mantic richness, vocabulary efficiency, and deployment flexibility
+than conventional sparse IDs or purely textual item representations
+[10, 25, 40]. Methodologically, prior work mainly differs in how dis-
+crete codes are constructed. Representative routes include product
+quantization [10], residual quantization [3, 20], and hierarchical
+or tree-structured tokenization [11, 39]. More recent studies fur-
+ther incorporate collaborative signals [40], multimodal alignment
+[30], or end-to-end downstream supervision [17, 35] so that learned
+IDs better reflect recommendation relevance rather than content
+similarity alone. Despite these advances, existing methods mainly
+improve SID construction through better discretization, utilization,
+or downstream alignment, while overlap handling is usually treated
+in a fixed or secondary manner once collisions arise [6, 12]. As a
+result, adaptive overlap regulation for recommendation-oriented
+SID learning remains underexplored.
+3
+Notation and Problem Definition
+3.1
+Notation
+Let D = {(𝑥tr
+𝑖,𝑥ta
+𝑖)}𝑁
+𝑖=1 denote the training set of collaborative item
+pairs, constructed from collaborative signals such as Swing [34]
+in this work. Here, 𝑥tr
+𝑖and 𝑥ta
+𝑖denote the multimodal inputs of
+the trigger item and the target item in the 𝑖-th pair, respectively.
+Each item input 𝑥denotes a multimodal item feature extracted
+from heterogeneous content signals such as text, image, and video
+by a pretrained multimodal model. On top of these extracted item
+features, a shared encoder 𝑓𝜃(·) maps 𝑥𝑖to a continuous repre-
+sentation 𝑧𝑖= 𝑓𝜃(𝑥𝑖) ∈R𝑑, where 𝑑is the embedding dimen-
+sion and 𝜃denotes the encoder parameters. We adopt an 𝐿-layer
+residual vector quantizer [15] with codebooks {C(𝑙)}𝐿
+𝑙=1, where
+C(𝑙) = {𝑐(𝑙)
+1 , . . . ,𝑐(𝑙)
+𝐾} and each codeword 𝑐(𝑙)
+𝑘
+∈R𝑑. Here, 𝐾de-
+notes the codebook size of each layer. For item 𝑖, the residual repre-
+sentation is initialized as 𝑟(0)
+𝑖
+= 𝑧𝑖. At layer 𝑙, the quantizer selects
+the nearest codeword index 𝑠(𝑙)
+𝑖
+∈{1, . . . , 𝐾}, obtains the corre-
+sponding quantized vector 𝑞(𝑙)
+𝑖
+= 𝑐(𝑙)
+𝑠(𝑙)
+𝑖
+, and updates the residual
+as 𝑟(𝑙)
+𝑖
+= 𝑟(𝑙−1)
+𝑖
+−𝑞(𝑙)
+𝑖. After 𝐿layers, the quantized embedding is
+ˆ𝑧𝑖= Í𝐿
+𝑙=1 𝑞(𝑙)
+𝑖, and the resulting SID is the discrete index sequence
+𝑠𝑖= [𝑠(1)
+𝑖
+,𝑠(2)
+𝑖
+, . . . ,𝑠(𝐿)
+𝑖
+]. A decoder ℎ𝜙(·) reconstructs the origi-
+nal item representation from the quantized embedding, yielding
+˜𝑥𝑖= ℎ𝜙(ˆ𝑧𝑖), where 𝜙denotes the decoder parameters. Since AdaSID
+is learned from item pairs, we further define several pairwise quan-
+tities used in the method section. For two items 𝑖and 𝑗, their SID
+overlap depth is defined as 𝑜𝑖𝑗= Í𝐿
+𝑙=1 I[𝑠(𝑙)
+𝑖
+= 𝑠(𝑙)
+𝑗], where I[·] is
+the indicator function. A larger 𝑜𝑖𝑗indicates that the two items are
+closer in the discrete SID space. We use sim𝑖𝑗to denote their seman-
+tic similarity in the continuous space, computed from encoder-side
+representations. Finally, 𝜏∈[0, 1] denotes the normalized training
+progress for progress-adaptive objective rebalancing.
+3.2
+Problem Definition
+Given the collaborative pair set D, our goal is to learn a SID map-
+ping that converts each multimodal item input 𝑥into a short dis-
+crete index sequence 𝑠= [𝑠(1), . . . ,𝑠(𝐿)]. The learned SIDs should
+satisfy two requirements simultaneously: they should preserve use-
+ful multimodal semantics under discretization, and they should
+remain well aligned with collaborative relations so as to support
+downstream recommendation. The main difficulty is that discrete
+overlaps are heterogeneous: the same overlap depth may play dif-
+ferent roles in the learned SID space and therefore require different
+treatment during training. Accordingly, our objective is to learn
+a recommendation-oriented SID space in which discrete overlaps
+are regulated adaptively, rather than being handled uniformly once
+they are observed.
+4
+Method
+In this section, we present AdaSID as a recommendation-oriented
+SID learning framework with two-stage adaptive overlap regula-
+tion. The first stage, semantics-adaptive overlap relaxation, deter-
+mines whether an observed overlap should continue to receive
+repulsion, and the second stage, adaptive pressure allocation,
+regulates the retained overlaps across discrete regions and train-
+ing progress through load-adaptive collision strengthening and
+progress-adaptive objective rebalancing.
+4.1
+Overall Framework
+AdaSID learns SIDs from collaborative item pairs by coupling mul-
+timodal discretization with recommendation-oriented alignment.
+Given a training pair (𝑥tr
+𝑖,𝑥ta
+𝑖), the trigger item and the target item
+
+
+Conference’17, July 2017, Washington, DC, USA
+Yongsen Pan, Yuxin Chen, Zheng Hu, Xu Yuan, Daoyuan Wang, Yuting Yin, Songhao Ni, Hongyang Wang, Jun Wang, Fuji Ren, and Wenwu Ou
+Collaborative
+Item Pair
+Decoder
+Decoder
+Codebooks
+Codebooks
+Two-Stage Adaptive Overlap Regulation
+Stage 1: Semantic-Adaptive Overlap Relaxation
+Dense
+Emb.
+Dense
+Emb.
+Objectives 
+Residual-
+Quantization 
+Objective
+Adaptive 
+Overlap 
+Regulation Loss
+Collaborative 
+Alignment Loss
+Optimization
+Reconstruction 
+Gradient
+Reconstruction 
+Gradient
+Residual Vector 
+Quantization
+SID overlap oij
+simij
+oij
+Multimodal 
+Similarity simij
+t
+Encoder
+Encoder
+Trigger Item i
+Target Item j
+SID Overlap Pairs
+Judgment
+Depth-aware Semantic Gate
+overlap 
+depth
+semantic 
+similarity
+Deeper 
+overlap 
+Stricter semantic 
+requirement
+Decision
+Exempt
+Retain
+Stage 2: Adaptive Pressure Allocation
+Retained Overlaps
+Count in-batch
+X 1
+X 5
+Weaker
+Repulsion
+Stronger
+Repulsion
+Repulsion Strength
+Retained Overlaps
+Training Progress
+Early
+Late
+Loss Weight
+Adaptively Adjustment
+Figure 2: Overall framework of AdaSID. AdaSID maps collaborative trigger–target item pairs into quantized representations
+and Semantic IDs, and then optimizes them through a two-stage adaptive overlap regulation process: semantic-adaptive
+overlap relaxation first determines whether repulsion should be relaxed, after which load-adaptive collision strengthening and
+progress-adaptive objective rebalancing regulate the remaining overlaps across discrete regions and training time.
+are first projected by a shared encoder to continuous representa-
+tions, then converted by the residual quantizer into discrete SIDs,
+and finally reconstructed by a decoder from the quantized embed-
+dings. Let 𝑄(·) denote the 𝐿-layer residual quantization process
+defined in Section 3.1. The forward process is written as:
+𝑧tr
+𝑖= 𝑓𝜃(𝑥tr
+𝑖),
+(ˆ𝑧tr
+𝑖,𝑠tr
+𝑖) = 𝑄(𝑧tr
+𝑖),
+˜𝑥tr
+𝑖= ℎ𝜙(ˆ𝑧tr
+𝑖),
+𝑧ta
+𝑖= 𝑓𝜃(𝑥ta
+𝑖),
+(ˆ𝑧ta
+𝑖,𝑠ta
+𝑖) = 𝑄(𝑧ta
+𝑖),
+˜𝑥ta
+𝑖= ℎ𝜙(ˆ𝑧ta
+𝑖).
+(1)
+Here, ˆ𝑧tr
+𝑖and ˆ𝑧ta
+𝑖are the quantized embeddings, while 𝑠tr
+𝑖and 𝑠ta
+𝑖
+are the corresponding SIDs. Since nearest-codeword lookup is non-
+differentiable, we adopt the straight-through estimator (STE) [2] to
+pass gradients from the quantized embeddings to the encoder-side
+representations during back-propagation.
+The forward pipeline above defines the tokenizer backbone.
+AdaSID introduces adaptive overlap regulation over in-batch SID
+overlaps so that the learned discrete space is regulated through
+adaptive mechanisms rather than by a fixed rule. To formalize this
+process, given a mini-batch, we first collect the set of candidate
+overlap pairs:
+P =
+
+(𝑖, 𝑗) | 𝑖≠𝑗, 𝑜𝑖𝑗> 0
+	
+.
+(2)
+Here, 𝑜𝑖𝑗is the SID overlap depth defined in Section 3.1. Following
+prior overlap-aware SID regularization in SID learning [12], we
+instantiate collision supervision as a margin-based repulsion on
+encoder-side representations. Let
+𝑑c
+𝑖𝑗= 1 −
+𝑧⊤
+𝑖𝑧𝑗
+∥𝑧𝑖∥2∥𝑧𝑗∥2
+(3)
+denote the cosine distance between items 𝑖and 𝑗. A generic base
+collision penalty is then written as:
+ℓcol
+𝑖𝑗= max
+
+0, 𝑚𝑖𝑗−𝑑c
+𝑖𝑗
+
+,
+(4)
+where 𝑚𝑖𝑗is a margin determined by the overlap type or severity
+of pair (𝑖, 𝑗). This base penalty serves as the common collision form
+used throughout AdaSID.
+4.2
+Stage One: Semantic-Adaptive Overlap
+Relaxation
+The first stage of AdaSID determines, based on semantic consis-
+tency, whether an observed overlap should continue to receive
+repulsion. Collision regulation in recommendation-oriented SID
+learning should not only separate harmful ambiguity, but also pre-
+serve semantically admissible sharing. Some overlap pairs remain
+highly consistent in the continuous space and therefore need not
+be repelled as aggressively as clearly mismatched pairs. To this end,
+AdaSID adopts an adaptive overlap relaxation mechanism. More im-
+portantly, the relaxation criterion is not uniform: as discrete overlap
+becomes deeper, relaxing repulsion should require progressively
+stronger semantic evidence. This graded design avoids a one-size-
+fits-all relaxation rule and makes the first-stage decision adaptive
+to overlap severity.
+For each candidate pair (𝑖, 𝑗) ∈P, we compute the semantic
+similarity between their encoder-side representations as:
+sim𝑖𝑗=
+𝑧⊤
+𝑖𝑧𝑗
+∥𝑧𝑖∥2∥𝑧𝑗∥2
+.
+(5)
+To encode the graded relaxation criterion, we design a depth-aware
+threshold vector:
+𝜼= [𝜂1,𝜂2, . . . ,𝜂𝐿],
+𝜂1 ≤𝜂2 ≤· · · ≤𝜂𝐿,
+(6)
+where 𝜂𝑜𝑖𝑗denotes the semantic threshold associated with overlap
+depth 𝑜𝑖𝑗. The relaxation gate is then instantiated as:
+𝑔𝑖𝑗= I
+
+sim𝑖𝑗≥𝜂𝑜𝑖𝑗
+
+.
+(7)
+
+
+Beyond Static Collision Handling: Adaptive Semantic ID Learning for Multimodal Recommendation at Industrial Scale
+Conference’17, July 2017, Washington, DC, USA
+This design avoids a one-size-fits-all relaxation rule. Shallow over-
+laps are relaxed under relatively mild semantic requirements, while
+deeper overlaps are relaxed only when the corresponding items re-
+main highly consistent in the continuous space. As a result, AdaSID
+preserves semantically admissible sharing without allowing strong
+discrete overlaps to remain insufficiently regulated merely because
+they are close in the continuous space. This stage therefore deter-
+mines which observed overlaps should continue to receive repulsion
+in the subsequent pressure-allocation stage.
+4.3
+Stage Two: Adaptive Pressure Allocation
+After the first-stage semantic-adaptive overlap relaxation, AdaSID
+regulates the retained overlaps through adaptive pressure alloca-
+tion. The key idea is that once repulsion is retained, it should not
+be applied uniformly. Instead, the second stage allocates regulation
+pressure from two complementary aspects. Spatially, it determines
+where stronger separation should be imposed in the SID space.
+Temporally, it adjusts how strongly collision regulation should in-
+fluence the overall optimization as training proceeds. The following
+two subsections realize this second stage through load-adaptive col-
+lision strengthening and progress-adaptive objective rebalancing,
+respectively.
+4.3.1
+Load-Adaptive Collision Strengthening. The spatial side of
+adaptive pressure allocation is realized through load-adaptive colli-
+sion strengthening. Once repulsion is retained after the first-stage
+semantic-adaptive overlap relaxation, AdaSID does not regulate all
+such overlaps with uniform strength. Instead, it considers where
+stronger correction should be placed in the discrete SID space. Over-
+lap depth 𝑜𝑖𝑗captures how close two items are in the discrete SID
+space, but it does not describe how densely the same overlap pat-
+tern is reused within the current mini-batch. For recommendation-
+oriented SID learning, this regional concentration is important:
+when many pairs repeatedly collapse into a similar discrete neigh-
+borhood, the corresponding SID region becomes overloaded and
+its discriminability is weakened. AdaSID therefore performs load-
+adaptive collision strengthening by complementing overlap depth
+with local collision-load estimation and assigning stronger reg-
+ularization to more congested regions. For each candidate pair
+(𝑖, 𝑗) ∈P, we define its collision signature as the layer-wise over-
+lap pattern:
+𝜅𝑖𝑗=
+h
+I
+h
+𝑠(1)
+𝑖
+= 𝑠(1)
+𝑗
+i
+, I
+h
+𝑠(2)
+𝑖
+= 𝑠(2)
+𝑗
+i
+, . . . , I
+h
+𝑠(𝐿)
+𝑖
+= 𝑠(𝐿)
+𝑗
+ii
+.
+(8)
+The local collision load of pair (𝑖, 𝑗) is then measured by the number
+of overlap pairs in the mini-batch that share the same signature:
+𝑐𝑖𝑗=
+∑︁
+(𝑢,𝑣)∈P
+I
+
+𝜅𝑢𝑣= 𝜅𝑖𝑗
+
+.
+(9)
+A larger𝑐𝑖𝑗indicates that the same discrete overlap pattern is reused
+more frequently and therefore deserves stronger separation. We
+instantiate the load-adaptive coefficient 𝑎𝑖𝑗by a bounded monotone
+scaling function:
+𝑎𝑖𝑗= 𝑔(𝑐𝑖𝑗; 𝑓min, 𝑓max,𝑑max, 𝛼),
+(10)
+where 𝑔(·) increases with the local collision load 𝑐𝑖𝑗, 𝑓max controls
+the maximum strengthening factor, 𝑑max controls the effective load
+range before saturation, and 𝛼controls the growth sharpness. This
+design keeps the strengthening factor bounded while still assigning
+larger penalties to highly congested overlap patterns.
+Load-adaptive strengthening thus equips collision regulation
+with regional context beyond pairwise overlap depth. While 𝑜𝑖𝑗
+describes the proximity of one pair in the SID space, 𝑐𝑖𝑗and 𝑎𝑖𝑗
+characterize how heavily the same overlap pattern accumulates
+in the current batch. Their combination enables AdaSID to focus
+stronger separation pressure on overloaded discrete neighborhoods,
+thereby improving the separability and utilization of the learned
+SID space.
+4.3.2
+Progress-Adaptive Objective Rebalancing. The temporal side
+of adaptive pressure allocation concerns how the optimization em-
+phasis should evolve during training. Early in training, the en-
+coder and codebooks are still forming a usable discrete structure, so
+stronger collision-related regulation helps prevent the emerging SID
+space from collapsing into crowded regions. As training proceeds
+and the discrete structure becomes more stable, recommendation-
+oriented alignment should gradually play a larger role. AdaSID
+captures this shift through progress-adaptive objective rebalancing,
+so that the optimization emphasis evolves with training progress
+rather than remaining fixed throughout training.
+Let 𝑡denote the current training step. We define the normalized
+schedule progress as:
+𝜏= clip
+ 𝑡−𝑇start
+𝑇end −𝑇start
+, 0, 1
+
+,
+(11)
+where 𝑇start and 𝑇end denote the start and end steps of adaptive
+rebalancing. Based on 𝜏, AdaSID uses progress-dependent objective
+weights to adjust the optimization emphasis over training. In par-
+ticular, collision-related regulation is emphasized more strongly in
+earlier training and is gradually relaxed as training proceeds, while
+collaborative alignment becomes increasingly important. This de-
+sign allows the model to first establish a stable discrete structure
+and then progressively place more emphasis on recommendation-
+oriented alignment. In the implementation used in this paper, we
+instantiate this idea by decaying the collision weight toward a
+non-zero floor while increasing the collaborative weight:
+𝜆col(𝜏) = 1 −(1 −𝜆min
+col )𝜏,
+𝜆cf (𝜏) = 𝜆max
+cf 𝜏.
+(12)
+This schedule keeps collision regulation more prominent when
+the SID space is still unstable, and gradually increases the role of
+collaborative alignment as training proceeds. In this way, AdaSID
+adapts not only which overlaps are regulated and how strongly
+they are regulated, but also how their role changes over the course
+of training.
+4.4
+Overall Objective and Training Procedure
+In our implementation, the stage-specific mechanisms introduced
+above are combined into the adaptive collision term:
+𝐿ada
+col =
+∑︁
+(𝑖,𝑗)∈P
+𝑎𝑖𝑗
+ 1 −𝑔𝑖𝑗
+ ℓcol
+𝑖𝑗.
+(13)
+Here, 𝑔𝑖𝑗relaxes repulsion under semantic compatibility, while 𝑎𝑖𝑗
+modulates the strength of repulsion according to local collision load.
+Using the progress-adaptive weights in Eq. 12, the overall training
+
+
+Conference’17, July 2017, Washington, DC, USA
+Yongsen Pan, Yuxin Chen, Zheng Hu, Xu Yuan, Daoyuan Wang, Yuting Yin, Songhao Ni, Hongyang Wang, Jun Wang, Fuji Ren, and Wenwu Ou
+Table 1: Statistics of the offline datasets.
+Dataset
+#Users
+#Items
+#Interactions
+Density
+Amazon-Toys
+19,412
+11,924
+905,253
+0.3911%
+Amazon-Beauty
+22,363
+12,101
+1,048,296
+0.3874%
+objective is:
+𝐿= 𝐿rec + 𝐿rq + 𝜆col(𝜏)𝐿ada
+col + 𝜆cf (𝜏)𝐿cf,
+(14)
+where 𝐿rec is the reconstruction loss between the input multi-
+modal feature and the decoded feature, 𝐿rq is the standard residual-
+quantization objective, and 𝐿cf is the collaborative alignment objec-
+tive between paired items. In our implementation, 𝐿cf is instantiated
+as an InfoNCE-style contrastive loss [26] over the quantized em-
+beddings.
+During training, each mini-batch is encoded and quantized with
+STE, after which AdaSID computes overlap patterns, estimates
+load-adaptive factors and semantic relaxation gates, and applies
+progress-adaptive weights to the collision and collaborative terms.
+All parameters are optimized jointly by back-propagation. At infer-
+ence time, AdaSID uses the learned encoder and residual quantizer
+to generate SIDs as in a standard SID pipeline, so the adaptive mech-
+anisms improve SID learning during training without introducing
+extra online complexity.
+5
+Experiments
+5.1
+Experimental Setup
+5.1.1
+Offline Datasets. We conduct experiments on two public
+benchmarks from Amazon 2018 review datasets1, namely Beauty
+and Toys & Games (abbreviated as Toys). Following prior work [8],
+we apply a standard 5-core filtering procedure, discarding users
+and items with fewer than five interactions. We then adopt a leave-
+one-out strategy to split each dataset into training, validation, and
+test sets. Item textual fields include Title, Brand, Categories, and
+Price. We concatenate these fields and extract semantic item em-
+beddings using Sentence-T5-XXL [23]. The statistics of the offline
+experiments are shown in Table 1.
+5.1.2
+Evaluation Metrics. For offline recommendation performance,
+we report Recall@𝐾and NDCG@𝐾with 𝐾∈{3, 5}. Since all com-
+pared methods are evaluated under the same downstream TIGER
+backbone [24], differences in these metrics can be attributed to
+the quality of the learned SIDs. To characterize the learned SID
+space, we further compute four codebook-side statistics on each
+dataset and visualize their joint behavior in Figure 3. Specifically,
+SID Entropy measures the entropy of the full SID sequence distri-
+bution and reflects how broadly SID sequences occupy the discrete
+sequence space. Average Perplexity is the mean perplexity across
+codebook layers and reflects overall codebook utilization. Mini-
+mum Perplexity measures the weakest-utilized layer and serves
+as a stricter indicator of layer-wise under-utilization. Mean Top-1
+Load Ratio measures the average fraction of samples assigned to
+the most frequently used code in each layer, where smaller values
+indicate weaker dominant-code concentration. In the visualization,
+1https://nijianmo.github.io/amazon/
+these statistics are mapped to axis position, point size, and point
+color to reveal the overall structure of the learned SID space rather
+than any single metric in isolation. For industrial validation, we
+additionally report online business metrics and offline ranking AUC
+gain. Specifically, Orders measures completed transactions, GMV
+denotes gross merchandise volume, and GPM denotes gross mer-
+chandise volume per mille exposures. For the ranking module, we
+report AUC gain in percentage points (pp).
+5.1.3
+Baselines. We compare AdaSID against representative SID
+pre-training methods. To ensure fair comparison, all methods use
+the same downstream generative recommendation backbone and
+differ only in how SIDs are learned before downstream training. Our
+baselines fall into three categories. (1) Standard quantization-
+based SID learning methods, represented by vanilla RQ-VAE
+[15]. (2) Improved quantization or code-utilization methods,
+including GRVQ [32], RQ-OPQ [3], Rotation Trick [7], Improved
+VQGAN [36], SimRQ [43], and RQ-KMeans [20], which improve
+optimization stability, code usage, or quantization quality from dif-
+ferent perspectives. (3) Collision-aware SID learning methods,
+represented by QuaSID [12], which introduces explicit collision
+regularization during SID pre-training.
+5.1.4
+Implementation Details. For all offline experiments, the SID
+length is set to 3, and each codebook contains 256 codes. All meth-
+ods use the same 768-dimensional item features as input, and the
+same downstream TIGER configuration. Unless otherwise spec-
+ified, the code embedding dimension is set to 32. We select hy-
+perparameters on the validation set and report the final results
+on the test set. For AdaSID, we tune a compact set of hyperpa-
+rameters associated with its three adaptive components, including
+the upper bound of load-adaptive strengthening 𝑓max ∈{2.0, 3.0},
+two candidate depth-aware semantic relaxation threshold vectors
+{[0.18, 0.24, 0.30], [0.14, 0.19, 0.24]}, the adaptive rebalancing start/end
+steps {(10000, 200000), (3000, 90000)}, the collision-weight floor
+𝜆min
+col
+∈{0.05, 0.02}, and the collaborative-weight ceiling 𝜆max
+cf
+∈
+{0.25, 0.35}. The final configuration is chosen on the validation set
+and then fixed for the reported offline comparisons.
+5.2
+Overall Offline Recommendation
+Performance
+Table 2 compares different SID tokenizers on Toys and Beauty
+under the same downstream TIGER setting. Since the downstream
+recommendation backbone, input item features, and evaluation
+protocol are all fixed, the differences here reflect the quality of the
+learned SIDs rather than downstream architectural changes. Based
+on these results, we make the following observations.
+• AdaSID achieves the best result on all datasets and all metrics.
+Averaged over the strongest baseline for each metric, the
+relative improvement is about 6.2% on Toys and 2.9% on
+Beauty, corresponding to an overall average gain of about
+4.5%. This pattern suggests that the benefit of AdaSID is
+not tied to a single dataset or a single evaluation cutoff, but
+reflects a broadly improved SID quality.
+• On Toys, AdaSID improves Recall@3 from 0.0195 to 0.0214
+and NDCG@3 from 0.0164 to 0.0175, corresponding to rela-
+tive gains of about 9.6% and 6.6%, respectively. On Beauty,
+
+
+Beyond Static Collision Handling: Adaptive Semantic ID Learning for Multimodal Recommendation at Industrial Scale
+Conference’17, July 2017, Washington, DC, USA
+Table 2: Performance comparison of different SID tokenizers on the Toys and Beauty datasets. The best results are boldfaced,
+and the best baseline results are underlined.
+Tokenizer
+Toys
+Beauty
+Recall@3
+NDCG@3
+Recall@5
+NDCG@5
+Recall@3
+NDCG@3
+Recall@5
+NDCG@5
+RQ-OPQ
+0.0176
+0.0152
+0.0215
+0.0178
+0.0181
+0.0152
+0.0225
+0.0170
+RQ-VAE
+0.0164
+0.0142
+0.0197
+0.0161
+0.0161
+0.0131
+0.0206
+0.0149
+Improved VQGAN
+0.0191
+0.0164
+0.0224
+0.0177
+0.0178
+0.0146
+0.0231
+0.0167
+GRVQ
+0.0170
+0.0147
+0.0192
+0.0166
+0.0189
+0.0151
+0.0246
+0.0179
+Rotation Trick
+0.0182
+0.0157
+0.0221
+0.0183
+0.0193
+0.0155
+0.0245
+0.0180
+SimRQ
+0.0191
+0.0160
+0.0216
+0.0175
+0.0182
+0.0147
+0.0236
+0.0169
+RQ-KMeans
+0.0193
+0.0160
+0.0271
+0.0187
+0.0199
+0.0151
+0.0271
+0.0184
+QuaSID
+0.0195
+0.0157
+0.0273
+0.0191
+0.0201
+0.0155
+0.0268
+0.0186
+AdaSID
+0.0214
+0.0175
+0.0281
+0.0202
+0.0205
+0.0164
+0.0275
+0.0190
+0.0
+0.5
+1.0
+Lower code concentration (inverse Top-1 Load)
+0.0
+0.5
+1.0
+Weakest-layer utilization (Min PPL)
+Toys
+0.0
+0.5
+1.0
+Lower code concentration (inverse Top-1 Load)
+0.0
+0.5
+1.0
+Weakest-layer utilization (Min PPL)
+Beauty
+Figure 3: Discrete SID space landscape on two datasets. Each point denotes a tokenizer. The x-axis is inverse normalized Top-1
+Load, and the y-axis is normalized Minimum Perplexity. Point size and color denote Mean Perplexity and SID Entropy. Points
+nearer the upper-right, and with larger and darker markers, indicate a more uniformly utilized and more diverse SID space.
+Table 3: Industrial validation on Kuaishou e-commerce.
+Panel A: Online retrieval A/B
+Panel B: Offline ranking
+Target
+Gain
+Metric
+AUC Gain
+GMV
++0.98%
+Overall CTCVR
++0.05 pp
+Orders
++0.91%
+Scenario-A CVR
++0.05 pp
+GPM
++1.16%
+Cold-start CVR
++0.08 pp
+the gain on NDCG@3 is also clear, rising from 0.0155 to
+0.0164 (about 5.8%), whereas the gain on Recall@5 is more
+modest. This pattern indicates that AdaSID is particularly
+effective at sharpening fine-grained discriminability in the
+top-ranked positions rather than merely improving broader
+retrieval coverage.
+• Compared with QuaSID, a strong collision-aware baseline,
+AdaSID improves all four metrics on both datasets, with aver-
+age relative gains of about 7.4% on Toys and 3.1% on Beauty.
+AdaSID also surpasses strong code-utilization baselines such
+as RQ-KMeans and SimRQ on their strongest metrics. This
+result suggests that the gain does not come merely from
+adding a collision penalty or from improving generic code
+usage alone; instead, it comes from regulating overlaps more
+precisely according to collision load, semantic compatibility,
+and training stage.
+5.3
+Industrial Validation
+Table 3 reports industrial validation of AdaSID on Kuaishou e-
+commerce. In this setting, we first extract multimodal item features
+from heterogeneous signals such as images, text, keyframes, and
+audio transcripts using a multimodal foundation model, then train
+AdaSID based on these features. Specifically, we conduct a 4-day
+online A/B test on the short-video retrieval model, covering tens of
+millions of users, and a 4-day offline study on the ranking model.
+Here, Scenario-A corresponds to a specialized commerce-content
+slice. Based on these results, we make the following observations.
+
+
+Conference’17, July 2017, Washington, DC, USA
+Yongsen Pan, Yuxin Chen, Zheng Hu, Xu Yuan, Daoyuan Wang, Yuting Yin, Songhao Ni, Hongyang Wang, Jun Wang, Fuji Ren, and Wenwu Ou
+Table 4: Ablation study of AdaSID on Toys and Beauty. The
+full model is boldfaced.
+Dataset
+Variant
+Recall@3
+NDCG@3
+Recall@5
+NDCG@5
+Toys
+AdaSID
+0.0214
+0.0175
+0.0281
+0.0202
+w/o SeAR
+0.0192
+0.0153
+0.0246
+0.0175
+w/o PAR
+0.0204
+0.0169
+0.0252
+0.0189
+w/o LAS
+0.0205
+0.0161
+0.0271
+0.0188
+Beauty
+AdaSID
+0.0205
+0.0164
+0.0275
+0.0190
+w/o SeAR
+0.0184
+0.0149
+0.0263
+0.0181
+w/o PAR
+0.0182
+0.0147
+0.0236
+0.0169
+w/o LAS
+0.0201
+0.0161
+0.0269
+0.0188
+• AdaSID delivers clear business gains in the online A/B test.
+This result is important because it shows that the benefit of
+adaptive SID learning is not limited to public offline bench-
+marks, but can translate into measurable commercial value
+after deployment in a real recommendation system. In other
+words, improving semantic discretization on the item side
+can produce practical gains on both transaction and value-
+oriented objectives.
+• The offline ranking results are directionally consistent with
+the online findings. The observed improvements on both the
+overall metric and cold-start subsets indicate that the learned
+SIDs provide useful multimodal item semantics in realistic
+industrial settings, rather than only working under simplified
+benchmark conditions. This consistency also strengthens the
+evidence that the online gains are supported by better item
+representations.
+5.4
+Codebook Quality Analysis
+Figure 3 visualizes the learned SID space by jointly projecting four
+codebook-side statistics into a single landscape. In this figure, the
+x-axis corresponds to inverse normalized Top-1 Load, the y-axis
+corresponds to normalized Minimum Perplexity, point size encodes
+Mean Perplexity, and point color encodes SID Entropy. A point
+closer to the upper-right region indicates weaker dominant-code
+concentration and better weakest-layer utilization, while larger
+points and points mapped to higher SID entropy indicate stronger
+overall codebook usage and richer SID-sequence diversity. This
+joint view is useful because it reveals whether a tokenizer improves
+the SID space in a balanced manner rather than on only one isolated
+statistic. Based on Figure 3, we make the following observations.
+• On Toys, AdaSID lies close to the upper-right frontier and is
+also among the largest points with high entropy encoding.
+On Beauty, it again stays near the frontier and remains visu-
+ally competitive on both size and entropy. This indicates that
+AdaSID improves weakest-layer utilization and dominant-
+code concentration without sacrificing the broader diversity
+of the learned SID space. In other words, its advantage is
+structural rather than metric-specific.
+• Compared with strong baselines such as QuaSID, SimRQ,
+and RQ-KMeans, AdaSID is not better only along one axis
+while worse on the others. Instead, it remains competitive
+or favorable simultaneously in position, size, and entropy
+encoding. This suggests that AdaSID does not obtain better
+80
+90
+100
+Load-adaptive strengthening
+80
+90
+100
+Semantic-adaptive relaxation
+Low
+Mid-Low
+Mid-High
+High
+80
+90
+100
+Progress-adaptive rebalancing
+Normalized Performance (%)
+Hyperparameter strength
+Recall@5
+NDCG@5
+Figure 4: Hyperparameter sensitivity of AdaSID on the
+Beauty dataset.
+recommendation results by over-optimizing a single code-
+book statistic; rather, it shifts the overall SID-space profile
+toward a better joint regime, which is consistent with the
+ranking improvements in Table 2.
+5.5
+Ablation Study
+Table 4 reports the ablation results of AdaSID on Toys and Beauty.
+SeAR corresponds to the first-stage semantic-adaptive overlap re-
+laxation, whereas LAS and PAR correspond to the second-stage
+pressure allocation in space and training progress, respectively. We
+remove one adaptive component at a time while keeping the rest of
+the tokenizer training pipeline unchanged, in order to test whether
+the gain of AdaSID comes from the coordinated two-stage design
+rather than from any single module.
+Overall, all three components contribute to the full model, but
+their roles differ across datasets. Removing LAS causes a consis-
+tent yet relatively mild degradation, and this variant remains the
+strongest ablation on 6 of the 8 reported metrics. This suggests that
+load-adaptive strengthening is a stable contributor whose main role
+is to refine collision regulation rather than dominate the overall
+gain. In contrast, PAR is especially important on Beauty: once it
+is removed, all four Beauty metrics become the weakest among
+the ablation variants, indicating that this dataset is particularly
+sensitive to how optimization emphasis shifts over training. SeAR
+plays the most critical role on Toys. After removing it, all four
+Toys metrics drop to the lowest level among the ablation vari-
+ants, showing that uniform collision suppression alone is insuffi-
+cient. These results suggest that AdaSID benefits from coordinated
+adaptive regulation, where semantic-adaptive overlap relaxation
+prevents over-separation, load-aware strengthening refines local
+collision handling, and progress-adaptive rebalancing improves
+recommendation-oriented optimization over training.
+5.6
+Hyperparameter Sensitivity
+Figure 4 examines the sensitivity of AdaSID to its three adaptive
+components on Beauty by varying one component at a time while
+keeping the others fixed. Overall, AdaSID does not improve mono-
+tonically as the adaptive strength increases. The best performance
+is generally achieved in a moderate-to-strong regime rather than at
+
+
+Beyond Static Collision Handling: Adaptive Semantic ID Learning for Multimodal Recommendation at Industrial Scale
+Conference’17, July 2017, Washington, DC, USA
+the weakest or most aggressive setting, indicating that effective SID
+learning requires calibrated adaptive control. Among the three com-
+ponents, progress-adaptive rebalancing produces the largest perfor-
+mance variation, suggesting that how the optimization emphasis
+shifts over training is particularly important for downstream recom-
+mendation. In contrast, load-adaptive strengthening and semantics-
+adaptive relaxation show smoother trends, which indicates that
+their contributions are more stable over a wider range of settings.
+6
+Conclusion and Future Work
+In this paper, we proposed AdaSID, an adaptive SID learning frame-
+work for recommendation. By treating overlap regulation as a two-
+stage adaptive process—first relaxing repulsion under semantic com-
+patibility and then regulating the remaining overlaps across space
+and training time—AdaSID learns SIDs that better balance discrete-
+space discriminability and downstream recommendation alignment.
+Extensive experiments on public benchmarks show consistent im-
+provements in both recommendation performance and codebook
+quality, and industrial validation on Kuaishou e-commerce further
+confirms its practical value in real-world recommendation scenar-
+ios. In the future, it would be interesting to extend adaptive SID
+learning to joint user–item discrete modeling, tighter end-to-end
+coupling with generative recommenders, and more scalable settings
+with longer SIDs, larger codebooks, and richer multimodal inputs.
+References
+[1] Prabhat Agarwal, Anirudhan Badrinath, Laksh Bhasin, Jaewon Yang, Jiajing Xu,
+and Charles Rosenberg. 2025. Autoregressive Generative Retrieval for Industrial-
+Scale Recommendations at Pinterest. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management (Seoul, Republic of Ko-
+rea) (CIKM ’25). Association for Computing Machinery, New York, NY, USA,
+6861–6862. doi:10.1145/3746252.3761439
+[2] Yoshua Bengio, Nicholas Léonard, and Aaron Courville. 2013. Estimating or
+propagating gradients through stochastic neurons for conditional computation.
+arXiv preprint arXiv:1308.3432 (2013).
+[3] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong Xiao,
+Bowen Xue, Xuxin Zhang, Ying Yang, et al. 2025. Onesearch: A preliminary
+exploration of the unified end-to-end generative framework for e-commerce
+search. arXiv preprint arXiv:2509.03236 (2025).
+[4] Gaode Chen, Ruina Sun, Yuezihan Jiang, Jiangxia Cao, Qi Zhang, Jingjian Lin, Han
+Li, Kun Gai, and Xinghua Zhang. 2024. A Multi-modal Modeling Framework for
+Cold-start Short-video Recommendation. In Proceedings of the 18th ACM Confer-
+ence on Recommender Systems (Bari, Italy) (RecSys ’24). Association for Computing
+Machinery, New York, NY, USA, 391–400. doi:10.1145/3640457.3688098
+[5] Zhangtao Cheng, Jienan Zhang, Xovee Xu, Goce Trajcevski, Ting Zhong, and
+Fan Zhou. 2024. Retrieval-Augmented Hypergraph for Multimodal Social Media
+Popularity Prediction. In Proceedings of the 30th ACM SIGKDD Conference on
+Knowledge Discovery and Data Mining (Barcelona, Spain) (KDD ’24). Association
+for Computing Machinery, New York, NY, USA, 445–455. doi:10.1145/3637528.
+3672041
+[6] Dengzhao Fang, Jingtong Gao, Chengcheng Zhu, Yu Li, Xiangyu Zhao, and Yi
+Chang. 2025. HiD-VAE: Interpretable Generative Recommendation via Hierarchi-
+cal and Disentangled Semantic IDs. CoRR abs/2508.04618 (2025). arXiv:2508.04618
+doi:10.48550/ARXIV.2508.04618
+[7] Christopher Fifty, Ronald Guenther Junkins, Dennis Duan, Aniketh Iyengar,
+Jerry Weihong Liu, Ehsan Amid, Sebastian Thrun, and Christopher Ré. 2025.
+Restructuring Vector Quantization with the Rotation Trick. In The Thirteenth
+International Conference on Learning Representations, ICLR 2025, Singapore, April
+24-28, 2025. OpenReview.net. https://openreview.net/forum?id=GMwRl2e9Y1
+[8] Shijie Geng, Shuchang Liu, Zuohui Fu, Yingqiang Ge, and Yongfeng Zhang. 2022.
+Recommendation as Language Processing (RLP): A Unified Pretrain, Personalized
+Prompt & Predict Paradigm (P5). In RecSys ’22: Sixteenth ACM Conference on
+Recommender Systems, Seattle, WA, USA, September 18 - 23, 2022. ACM, 299–315.
+doi:10.1145/3523227.3546767
+[9] Ruining He and Julian McAuley. 2016. VBPR: visual Bayesian Personalized
+Ranking from implicit feedback. In Proceedings of the Thirtieth AAAI Conference
+on Artificial Intelligence (Phoenix, Arizona) (AAAI’16). AAAI Press, 144–150.
+[10] Yupeng Hou, Zhankui He, Julian McAuley, and Wayne Xin Zhao. 2023. Learn-
+ing Vector-Quantized Item Representation for Transferable Sequential Rec-
+ommenders. In Proceedings of the ACM Web Conference 2023 (Austin, TX,
+USA) (WWW ’23). Association for Computing Machinery, New York, NY, USA,
+1162–1171. doi:10.1145/3543507.3583434
+[11] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating Long
+Semantic IDs in Parallel for Recommendation. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V.2 (Toronto ON,
+Canada) (KDD ’25). Association for Computing Machinery, New York, NY, USA,
+956–966. doi:10.1145/3711896.3736979
+[12] Zheng Hu, Yuxin Chen, Yongsen Pan, Xu Yuan, Yuting Yin, Daoyuan Wang,
+Boyang Xia, Zefei Luo, Hongyang Wang, Songhao Ni, et al. 2026. Stop Treating
+Collisions Equally: Qualification-Aware Semantic ID Learning for Recommenda-
+tion at Industrial Scale. arXiv preprint arXiv:2603.00632 (2026).
+[13] Siyuan Huang, Jiahui Jin, Xin Lin, Xigang Sun, and Yukun Ban. 2025. IM-POI:
+Bridging ID and Multi-modal Gaps in Next POI Recommendation. In Proceedings
+of the 33rd ACM International Conference on Multimedia (Dublin, Ireland) (MM
+’25). Association for Computing Machinery, New York, NY, USA, 5979–5987.
+doi:10.1145/3746027.3754937
+[14] Bowen Jin, Hansi Zeng, Guoyin Wang, Xiusi Chen, Tianxin Wei, Ruirui Li,
+Zhengyang Wang, Zheng Li, Yang Li, Hanqing Lu, Suhang Wang, Jiawei Han, and
+Xianfeng Tang. 2024. Language models as semantic indexers. In Proceedings of the
+41st International Conference on Machine Learning (Vienna, Austria) (ICML’24).
+JMLR.org, Article 894, 16 pages.
+[15] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive Image Generation using Residual Quantization. In IEEE/CVF
+Conference on Computer Vision and Pattern Recognition, CVPR 2022, New Orleans,
+LA, USA, June 18-24, 2022. IEEE, 11513–11522. doi:10.1109/CVPR52688.2022.01123
+[16] Xiaopeng Li, Bo Chen, Junda She, Shiteng Cao, You Wang, Qinlin Jia, Haiying He,
+Zheli Zhou, Zhao Liu, Ji Liu, et al. 2025. A survey of generative recommendation
+from a tri-decoupled perspective: Tokenization, architecture, and optimization.
+(2025).
+[17] Enze Liu, Bowen Zheng, Cheng Ling, Lantao Hu, Han Li, and Wayne Xin Zhao.
+2025. Generative Recommender with End-to-End Learnable Item Tokenization.
+In Proceedings of the 48th International ACM SIGIR Conference on Research and De-
+velopment in Information Retrieval (Padua, Italy) (SIGIR ’25). Association for Com-
+puting Machinery, New York, NY, USA, 729–739. doi:10.1145/3726302.3729989
+[18] Qijiong Liu, Jieming Zhu, Yanting Yang, Quanyu Dai, Zhaocheng Du, Xiao-Ming
+Wu, Zhou Zhao, Rui Zhang, and Zhenhua Dong. 2024. Multimodal Pretraining,
+Adaptation, and Generation for Recommendation: A Survey. In Proceedings of
+the 30th ACM SIGKDD Conference on Knowledge Discovery and Data Mining
+(Barcelona, Spain) (KDD ’24). Association for Computing Machinery, New York,
+NY, USA, 6566–6576. doi:10.1145/3637528.3671473
+[19] Zhuang Liu, Yunpu Ma, Matthias Schubert, Yuanxin Ouyang, and Zhang Xiong.
+2022. Multi-Modal Contrastive Pre-training for Recommendation. In Proceedings
+of the 2022 International Conference on Multimedia Retrieval (Newark, NJ, USA)
+(ICMR ’22). Association for Computing Machinery, New York, NY, USA, 99–108.
+doi:10.1145/3512527.3531378
+[20] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, Changqing Qiu, Jiaqi Zhang, Xu
+Zhang, Zhiheng Yan, Jingming Zhang, Simin Zhang, Mingxing Wen, Zhaojie Liu,
+and Guorui Zhou. 2025. QARM: Quantitative Alignment Multi-Modal Recom-
+mendation at Kuaishou. In Proceedings of the 34th ACM International Conference
+on Information and Knowledge Management (Seoul, Republic of Korea) (CIKM
+’25). Association for Computing Machinery, New York, NY, USA, 5915–5922.
+doi:10.1145/3746252.3761502
+[21] Zheqi Lv, Shaoxuan He, Tianyu Zhan, Shengyu Zhang, Wenqiao Zhang, Jingyuan
+Chen, Zhou Zhao, and Fei Wu. 2024. Semantic Codebook Learning for Dynamic
+Recommendation Models. In Proceedings of the 32nd ACM International Conference
+on Multimedia (Melbourne VIC, Australia) (MM ’24). Association for Computing
+Machinery, New York, NY, USA, 9611–9620. doi:10.1145/3664647.3680574
+[22] Fabian Mentzer, David Minnen, Eirikur Agustsson, and Michael Tschannen. 2024.
+Finite Scalar Quantization: VQ-VAE Made Simple. In The Twelfth International
+Conference on Learning Representations (ICLR). https://arxiv.org/abs/2309.15505
+[23] Jianmo Ni, Gustavo Hernández Ábrego, Noah Constant, Ji Ma, Keith B. Hall,
+Daniel Cer, and Yinfei Yang. 2022. Sentence-T5: Scalable Sentence Encoders from
+Pre-trained Text-to-Text Models. In Findings of the Association for Computational
+Linguistics: ACL 2022, Dublin, Ireland, May 22-27, 2022 (Findings of ACL, Vol. ACL
+2022), Smaranda Muresan, Preslav Nakov, and Aline Villavicencio (Eds.). Associa-
+tion for Computational Linguistics, 1864–1874. doi:10.18653/V1/2022.FINDINGS-
+ACL.146
+[24] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+
+
+Conference’17, July 2017, Washington, DC, USA
+Yongsen Pan, Yuxin Chen, Zheng Hu, Xu Yuan, Daoyuan Wang, Yuting Yin, Songhao Ni, Hongyang Wang, Jun Wang, Fuji Ren, and Wenwu Ou
+[25] Anima Singh, Trung Vu, Nikhil Mehta, Raghunandan Keshavan, Maheswaran
+Sathiamoorthy, Yilin Zheng, Lichan Hong, Lukasz Heldt, Li Wei, Devansh Tandon,
+Ed Chi, and Xinyang Yi. 2024. Better Generalization with Semantic IDs: A Case
+Study in Ranking for Recommendations (RecSys ’24). Association for Computing
+Machinery, New York, NY, USA, 1039–1044. doi:10.1145/3640457.3688190
+[26] Aäron van den Oord, Yazhe Li, and Oriol Vinyals. 2018.
+Representation
+Learning with Contrastive Predictive Coding.
+CoRR abs/1807.03748 (2018).
+arXiv:1807.03748 http://arxiv.org/abs/1807.03748
+[27] Aaron Van Den Oord, Oriol Vinyals, et al. 2017. Neural discrete representation
+learning. Advances in neural information processing systems 30 (2017).
+[28] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable Item Tokenization for Generative
+Recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management (Boise, ID, USA) (CIKM ’24). Association
+for Computing Machinery, New York, NY, USA, 2400–2409. doi:10.1145/3627673.
+3679569
+[29] Yinwei Wei, Xiang Wang, Liqiang Nie, Xiangnan He, Richang Hong, and Tat-Seng
+Chua. 2019. MMGCN: Multi-modal Graph Convolution Network for Personalized
+Recommendation of Micro-video. In Proceedings of the 27th ACM International
+Conference on Multimedia (Nice, France) (MM ’19). Association for Computing
+Machinery, New York, NY, USA, 1437–1445. doi:10.1145/3343031.3351034
+[30] Binrui Wu, Shisong Tang, Fan Li, Bing Han, Chang Meng, Jingyu Xiao, and
+Jiechao Gao. 2025. Aligning and Balancing ID and Multimodal Representations
+for Recommendation. In Proceedings of the 31st ACM SIGKDD Conference on
+Knowledge Discovery and Data Mining V.2 (Toronto ON, Canada) (KDD ’25).
+Association for Computing Machinery, New York, NY, USA, 5029–5038. doi:10.
+1145/3711896.3737275
+[31] Jinfeng Xu, Zheyu Chen, Shuo Yang, Jinze Li, and Edith C. H. Ngai. 2025. The
+Best is Yet to Come: Graph Convolution in the Testing Phase for Multimodal
+Recommendation. In Proceedings of the 33rd ACM International Conference on
+Multimedia (Dublin, Ireland) (MM ’25). Association for Computing Machinery,
+New York, NY, USA, 6325–6334. doi:10.1145/3746027.3755781
+[32] Dongchao Yang, Songxiang Liu, Rongjie Huang, Jinchuan Tian, Chao Weng,
+and Yuexian Zou. 2023. HiFi-Codec: Group-residual Vector quantization for
+High Fidelity Audio Codec.
+CoRR abs/2305.02765 (2023).
+arXiv:2305.02765
+doi:10.48550/ARXIV.2305.02765
+[33] Wei Yang, Rui Zhong, Yiqun Chen, Shixuan Li, Heng Ping, Chi Lu, and Peng Jiang.
+2025. FITMM: Adaptive Frequency-Aware Multimodal Recommendation via
+Information-Theoretic Representation Learning. In Proceedings of the 33rd ACM
+International Conference on Multimedia (Dublin, Ireland) (MM ’25). Association
+for Computing Machinery, New York, NY, USA, 6193–6202. doi:10.1145/3746027.
+3755540
+[34] Xiaoyong Yang, Yadong Zhu, Yi Zhang, Xiaobo Wang, and Quan Yuan. 2020.
+Large Scale Product Graph Construction for Recommendation in E-commerce.
+CoRR abs/2010.05525 (2020). arXiv:2010.05525 https://arxiv.org/abs/2010.05525
+[35] Wencai Ye, Mingjie Sun, Shaoyun Shi, Peng Wang, Wenjin Wu, and Peng Jiang.
+2025. DAS: Dual-Aligned Semantic IDs Empowered Industrial Recommender
+System (CIKM ’25). Association for Computing Machinery, New York, NY, USA,
+6217–6224. doi:10.1145/3746252.3761529
+[36] Jiahui Yu, Xin Li, Jing Yu Koh, Han Zhang, Ruoming Pang, James Qin, Alexander
+Ku, Yuanzhong Xu, Jason Baldridge, and Yonghui Wu. 2022. Vector-quantized
+Image Modeling with Improved VQGAN. In The Tenth International Conference
+on Learning Representations, ICLR 2022, Virtual Event, April 25-29, 2022. OpenRe-
+view.net. https://openreview.net/forum?id=pfNyExj7z2
+[37] Jinghao Zhang, Yanqiao Zhu, Qiang Liu, Shu Wu, Shuhui Wang, and Liang Wang.
+2021. Mining Latent Structures for Multimedia Recommendation. In Proceedings
+of the 29th ACM International Conference on Multimedia (Virtual Event, China)
+(MM ’21). Association for Computing Machinery, New York, NY, USA, 3872–3880.
+doi:10.1145/3474085.3475259
+[38] Lingzi Zhang, Xin Zhou, Zhiwei Zeng, and Zhiqi Shen. 2024. Multimodal Pre-
+training for Sequential Recommendation via Contrastive Learning. ACM Trans.
+Recomm. Syst. 3, 1, Article 9 (Oct. 2024), 23 pages. doi:10.1145/3682075
+[39] Rui Zhao, Rui Zhong, Haoran Zheng, Wei Yang, Chi Lu, Beihong Jin, Peng
+Jiang, and Kun Gai. 2025. Hierarchical Sequence ID Representation of Large
+Language Models for Large-scale Recommendation Systems. In Companion Pro-
+ceedings of the ACM on Web Conference 2025 (Sydney NSW, Australia) (WWW
+’25). Association for Computing Machinery, New York, NY, USA, 641–650.
+doi:10.1145/3701716.3715234
+[40] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting Large Language Models by Integrating
+Collaborative Semantics for Recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). 1435–1448. doi:10.1109/ICDE60146.2024.
+00118
+[41] Carolina Zheng, Minhui Huang, Dmitrii Pedchenko, Kaushik Rangadurai, Siyu
+Wang, Fan Xia, Gaby Nahum, Jie Lei, Yang Yang, Tao Liu, Zutian Luo, Xiaohan
+Wei, Dinesh Ramasamy, Jiyan Yang, Yiping Han, Lin Yang, Hangjun Xu, Rong
+Jin, and Shuang Yang. 2025. Enhancing Embedding Representation Stability in
+Recommendation Systems with Semantic ID. In Proceedings of the Nineteenth ACM
+Conference on Recommender Systems (RecSys ’25). Association for Computing
+Machinery, New York, NY, USA, 954–957. doi:10.1145/3705328.3748123
+[42] Xin Zhou, Hongyu Zhou, Yong Liu, Zhiwei Zeng, Chunyan Miao, Pengwei Wang,
+Yuan You, and Feijun Jiang. 2023. Bootstrap Latent Representations for Multi-
+modal Recommendation. In Proceedings of the ACM Web Conference 2023 (Austin,
+TX, USA) (WWW ’23). Association for Computing Machinery, New York, NY,
+USA, 845–854. doi:10.1145/3543507.3583251
+[43] Yongxin Zhu, Bocheng Li, Yifei Xin, Zhihua Xia, and Linli Xu. 2025. Addressing
+representation collapse in vector quantized models with one linear layer. In
+Proceedings of the IEEE/CVF International Conference on Computer Vision. 22968–
+22977.

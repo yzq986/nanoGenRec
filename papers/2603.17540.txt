@@ -1,0 +1,1050 @@
+Deploying Semantic ID-based Generative Retrieval for
+Large-Scale Podcast Discovery at Spotify
+Edoardo D’Amico, Marco De Nadai, Praveen Chandar, Divita Vohra, Shawn Lin, Max Lefarov†, Paul
+Gigioli, Gustavo Penha, Ilya Kopysitsky, Ivo Joel Senese, Darren Mei, Francesco Fabbri, Oguz
+Semerci, Yu Zhao†, Vincent Tang, Brian St. Thomas, Alexandra Ranieri, Matthew N.K. Smith, Aaron
+Bernkopf, Bryan Leung, Ghazal Fazelnia, Mark VanMiddlesworth, Timothy Christopher Heath,
+Petter Pehrson Skiden, Alice Y. Wang, Doug J. Cole, Andreas Damianou, Maya Hristakeva, Reid
+Wilbur, Tarun Chillara, Vladan Radosavljevic, Pooja Chitkara, Sainath Adapa, Juan Elenter, Bernd
+Huber, Jacqueline Wood, Saaketh Vedantam†, Jan Stypka†, Sandeep Ghael, Martin D. Gould, David
+Murgatroyd, Yves Raimond, Mounia Lalmas, Paul N. Bennett
+Spotify
+Spain, Denmark, United States, Germany, France, United Kingdom
+edoardod,mdenadai,praveenr,divitav,weihsiangl,pgigioli,gustavop,ikopysitsky,ivojoels,darrenm,francescof,oguz,vtang,brianstt,
+asimonoff,mattnks,abernkopf,bleung,ghazalf,mvanmiddlesworth,theath,peppe,alicew,dougcole,andreasd,mayah,reid,tarunc,
+vladanr,poojac,sainatha,juane,berndh,jacquelinew,sandeepg,mg,dmurga,yvesr,mounial,pbennett@spotify.com
+Abstract
+Podcast listening is often grounded in a set of favorite shows, while
+listener intent can evolve over time. This combination of stable
+preferences and changing intent motivates recommendation ap-
+proaches that support both familiarity and exploration. Traditional
+recommender systems typically emphasize long-term interaction
+patterns, and are less explicitly designed to incorporate rich con-
+textual signals or flexible, intent-aware discovery objectives. In
+this setting, models that can jointly reason over semantics, con-
+text, and user state offer a promising direction. Large Language
+Models (LLMs) provide strong semantic reasoning and contextual
+conditioning for discovery-oriented recommendation, but deploy-
+ing them in production introduces challenges in catalog grounding,
+user-level personalization, and latency-critical serving.
+We address these challenges with GLIDE, a production-scale
+generative recommender for podcast discovery at Spotify. GLIDE
+formulates recommendation as an instruction-following task over
+a discretized catalog using Semantic IDs, enabling grounded gen-
+eration over a large inventory. The model conditions on recent
+listening history and lightweight user context, while injecting long-
+term user embeddings as soft prompts to capture stable preferences
+under strict inference constraints. We evaluate GLIDE using of-
+fline retrieval metrics, human judgments, and LLM-based evalua-
+tion, and validate its impact through large-scale online A/B testing.
+Across experiments involving millions of users, GLIDE increases
+† Work performed while at Spotify.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-x-xxxx-xxxx-x/YYYY/MM
+https://doi.org/XXXXXXX.XXXXXXX
+non-habitual podcast streaming on Spotify home surface by up
+to 5.4% and new-show discovery by up to 14.3%, while meeting
+production cost and latency constraints.
+Keywords
+Recommender Systems, Large Language Models, Semantic IDs,
+Generative Retrieval, Podcast Discovery
+ACM Reference Format:
+Edoardo D’Amico, Marco De Nadai, Praveen Chandar, Divita Vohra, Shawn
+Lin, Max Lefarov†, Paul Gigioli, Gustavo Penha, Ilya Kopysitsky, Ivo Joel
+Senese, Darren Mei, Francesco Fabbri, Oguz Semerci, Yu Zhao†, Vincent
+Tang, Brian St. Thomas, Alexandra Ranieri, Matthew N.K. Smith, Aaron
+Bernkopf, Bryan Leung, Ghazal Fazelnia, Mark VanMiddlesworth, Timothy
+Christopher Heath, Petter Pehrson Skiden, Alice Y. Wang, Doug J. Cole,
+Andreas Damianou, Maya Hristakeva, Reid Wilbur, Tarun Chillara, Vladan
+Radosavljevic, Pooja Chitkara, Sainath Adapa, Juan Elenter, Bernd Huber,
+Jacqueline Wood, Saaketh Vedantam†, Jan Stypka†, Sandeep Ghael, Martin D.
+Gould, David Murgatroyd, Yves Raimond, Mounia Lalmas, Paul N. Bennett .
+2018. Deploying Semantic ID-based Generative Retrieval for Large-Scale
+Podcast Discovery at Spotify. In Proceedings of Make sure to enter the correct
+conference title from your rights confirmation email (Conference acronym ’XX).
+ACM, New York, NY, USA, 9 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Podcast consumption often exhibits continuity, with listeners reg-
+ularly engaging with shows1 they already follow. Supporting ef-
+fective discovery alongside this continuity remains an important
+challenge for recommender systems [24]. When recommendation
+models rely predominantly on historical interactions, they tend
+to emphasize familiar content, while adapting recommendations
+to evolving listener intent and surfacing timely, relevant episodes
+requires additional modeling capacity.
+1We use show to denote a podcast series and episode to denote an individual installment
+within a show.
+arXiv:2603.17540v1  [cs.IR]  18 Mar 2026
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Edoardo D’Amico et al.
+Listener intent is inherently dynamic: even highly engaged users
+may seek different content depending on context, such as timely up-
+dates during a commute, brief entertainment between meetings, or
+deeper topical exploration at home. Approaches based on similarity
+heuristics or static user–item formulations are not explicitly de-
+signed to capture such shifts within or across sessions. Addressing
+this challenge calls for modeling listening behavior as a sequence
+that integrates short-term context with stable preferences, while
+preserving a robust semantic understanding of podcast topics.
+These requirements motivate Large Language Models (LLMs) as
+a promising foundation for podcast recommendation. LLMs sup-
+port long-context sequence modeling, instruction-conditioned ob-
+jectives, and rich pre-trained semantic representations. However,
+applying them in recommender systems introduces additional chal-
+lenges, including grounding model outputs to large, fast-changing
+catalogs, achieving long-term user-level personalization, and meet-
+ing strict latency and reliability constraints.
+We address these challenges by proposing GLIDE (Grounded
+LLM for Interest Discovery rEcommendations), a generative, language-
+based podcast recommender that frames recommendation as an
+instruction-following task. Given a prompt encoding recent lis-
+tening history, lightweight user context, and an explicit discovery
+objective, the model generates identifiers for episodes the user is
+likely to listen next. Episodes are represented using Semantic IDs
+(SIDs) [28], which allow the model to generate valid catalog items
+directly while providing a compact, semantically meaningful in-
+terface to a large and evolving podcast catalog. To incorporate
+long-term personalization without inflating prompt length, we in-
+ject compact soft prompts derived from collaborative-filtering user
+embeddings [8, 13].
+We evaluate GLIDE using offline retrieval metrics, human judg-
+ments, and LLM-based evaluation, and assess its impact through
+large-scale online A/B testing on Spotify. Beyond accuracy, we re-
+port practical lessons on data construction, model adaptation, and
+serving under real-world latency and reliability constraints.
+Contributions.
+• We introduce an instruction-following formulation for
+podcast recommendation, enabling session-aware and con-
+trollable discovery at the episode level.
+• We propose a practical adaptation recipe for open-weight
+LLMs that combines SIDs with compact user-level personal-
+ization in a single, promptable recommender architecture.
+• We present a comprehensive evaluation strategy for
+discovery-oriented recommendation, combining offline met-
+rics, human judgments, and LLM-based evaluation.
+• We demonstrate production-scale impact through an on-
+line A/B test, showing significant improvements in non-
+habitual discovery while meeting real-world latency and
+reliability constraints.
+Together, these contributions demonstrate how language-grounded
+generative models can be adapted into practical, personalized rec-
+ommender systems operating at scale.
+2
+Related Work
+Podcast Recommendation. Episodes are long-form, topical cover-
+age is broad, and listening behavior often exhibits continuity, with
+users regularly returning to shows they follow. Prior work has stud-
+ied show-level recommendation [1, 32], long-term consumption
+dynamics [20, 21], and cold-start scenarios, as well as drawing par-
+allels between podcasts and other content modalities [4]. Our work
+complements these directions by focusing on recommendations
+that support discovery alongside established listening patterns, a
+setting that poses distinct modeling challenges for recommender
+systems [24].
+Generative Recommendations. Sequential recommenders such
+as SASRec [16] model next-item prediction from interaction his-
+tories, typically representing items as atomic identifiers. While
+effective, atomic ID-based representations often struggle to gener-
+alize when interaction data are sparse, particularly for cold-start
+or long-tail items that lack sufficient historical signals [29]. Recent
+work has introduced SIDs, which discretize continuous content
+representations into short sequences of tokens, preserving seman-
+tic similarity while remaining compatible with sequence models
+(e.g., TIGER [28]) and improving generalization [29]. This line of
+work has sparked broader interest in grounding recommendation
+over tokenized catalogs and in designing discretization schemes that
+balance semantic expressiveness, stability (i.e., maintaining consis-
+tent item representations as catalogs and embeddings evolve), and
+computational efficiency [28, 30]. Our work builds on this line of
+research by adopting SIDs for catalog grounding.
+LLMs for recommendation and catalog grounding. LLMs have
+recently been adapted to recommendation via text-based prompt-
+ing and instruction tuning. P5 [9] introduced a unified, prompt-
+based framework for multiple recommendation tasks, but relies on
+atomic item identifiers. Other approaches represent items using
+textual fields such as titles [34], which can improve semantic under-
+standing but often incur higher serving cost due to longer prompts
+and the need to disambiguate noisy or inconsistent item text at
+scale. More recent work incorporates SIDs into LLMs to enable
+catalog-grounded generation and retrieval at scale. For example,
+PLUM [10] adapts pretrained language models into retrieval-style
+recommenders grounded in a large video catalog, demonstrating
+the feasibility of SID-based grounding at industrial scale. However,
+they do not handle textual understanding for discovery tasks, and
+their deployment setting and related learnings are unknown.
+We build on these directions by combining (i) an open-weight
+LLM trained to operate over catalog-grounded SIDs, (ii) instruction-
+conditioned generation that captures session-level recommenda-
+tion objectives, and (iii) soft-prompt personalization via dense
+collaborative-filtering user embeddings [13]. While prior work typ-
+ically focuses on either atomic item identifiers or long textual item
+representations, we adopt a representation that supports both se-
+mantic grounding and efficient generation at scale. In addition, our
+work targets production deployment over a large, fast-changing
+podcast catalog, and provides an end-to-end account spanning
+problem formulation, model adaptation, system design, and online
+experimentation.
+
+
+Deploying Semantic ID-based Generative Retrieval for Large-Scale Podcast Discovery at Spotify
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Figure 1: We extend the vocabulary of a pre-trained LLM
+with SID tokens. Then, we undergo a two phase training.
+First, we ground the model to speak SIDs, along with the
+original languages. Then, we add a soft prompt user vector
+projection to add individual-level personalization and train
+the model for language-steerable podcast recommendations.
+3
+Problem design
+We formalize discovery through the notion of non-habitual stream-
+ing at the user-show level. For a user 𝑢and a show 𝑠, 𝑇𝑢,𝑠denotes
+the total listening time on show 𝑠in the past 28 days. We define:
+• Habitual shows: shows with 𝑇𝑢,𝑠≥10 minutes in the past
+28 days.
+• Non-habitual shows: shows with 𝑇𝑢,𝑠< 10 minutes in the
+past 28 days, which we further subdivide into:
+(1) Non-habitual and unfamiliar: shows with no historical
+consumption by 𝑢(never listened).
+(2) Non-habitual but familiar: shows with some histori-
+cal consumption, but without a current habit (𝑇𝑢,𝑠< 10
+minutes in the past 28 days).
+Based on empirical analysis of listening behavior and internal user
+research, the 28-day window captures recent habits while smooth-
+ing short-term noise, and the 10-minute threshold distinguishes
+meaningful engagement from incidental listening.
+All other previously consumed shows are treated as habitual for
+the user. These categories are used throughout to define training
+targets, evaluation slices, and language-conditioned discovery ob-
+jectives (e.g., favoring familiar versus unfamiliar content). Under
+this formulation, podcast recommendation is inherently sequential:
+recent listening events provide strong signals of short-term intent,
+which evolves as users discover new topics or transition across
+successive sessions.
+A natural baseline for sequential prediction is a transformer-
+based recommender such as SASRec [16] or TIGER [28]. However,
+our production setting imposes two additional requirements that
+motivate a language-grounded formulation. First, recommendation
+objectives are not monolithic: different surfaces and usages im-
+pose different notions of relevance. For example, recommendations
+shown on a discovery-oriented surface may prioritize novelty and
+exploration, while those presented mid-session may favor topical
+continuity, familiarity, or format constraints such as episode length.
+Second, effective discovery requires language-level understand-
+ing to surface topics and themes that align with a user’s interests,
+beyond what can be captured by interaction patterns alone
+These requirements motivate a formulation in which recom-
+mendation objectives and user context are expressed directly in
+language. We therefore formulate recommendation as instruction-
+conditioned sequence modeling over a discretized, semantically
+grounded catalog. To satisfy production serving constraints, we
+focus on compact open-weight LLM backbones (up to ∼1B parame-
+ters) that balance expressiveness with latency and cost efficiency.
+The next section describes the model architecture, conditioning
+signals, and training procedure.
+4
+Methodology
+For each user𝑢with interaction history H𝑢= {(𝑒1,𝑡1), . . . , (𝑒𝑛,𝑡𝑛)},
+where 𝑒𝑖denotes an episode and 𝑡𝑖its timestamp, our goal is to
+generate a ranked list of 𝑘candidate episodes from non-habitual
+shows that the user is likely to listen next. We operationalize this
+objective as conditional generation:
+𝑝(SID(𝑒) | prompt(𝑢, H𝑢, instruction)),
+where the model generates one or more SID sequences conditioned
+on user context, recent listening history, and a task instruction.
+These sequences are then mapped back to episode identifiers and
+used as candidates for downstream ranking.
+The model consumes four types of inputs: (i) recent listening
+context, serialized as a time-ordered sequence of SIDs; (ii) light-
+weight user context expressed as natural-language tokens (e.g.,
+locale or country, high-level affinity topics); (iii) long-term user
+preferences represented by a dense collaborative-filtering user em-
+bedding, injected as a soft prompt [13, 19, 22]; and (iv) a natural-
+language instruction specifying the recommendation objective (e.g.,
+non-habitual familiar versus non-habitual unfamiliar). The model
+generates SID sequences conditioned on these inputs, which are
+decoded via a lookup table into episode identifiers and returned as
+a ranked candidate set.
+Figure 1 shows that GLIDE is composed of two training stages
+to decouple catalog grounding from task-specific personalization.
+First, the model is trained to translate between SID sequences and
+episode text descriptors, making SIDs semantically meaningful to
+the model. Then, the grounded model is trained for instruction fol-
+lowing tasks: given a prompt containing recent-history SIDs, long-
+and short-term user context, the model generates SID sequences
+corresponding to non-habitual episode recommendations.
+4.1
+Semantic IDs and User Representation
+To enable generation over large, dynamic catalog, we represent each
+episode using a short sequence of discrete SIDs [25, 28], obtained
+by quantizing a continuous episode content embedding (computed
+from the episode’s title and description text) into a fixed-length
+sequence of indices. This discretization yields a compact vocabulary
+whose size scales with the quantizer configuration, rather than with
+the number of catalog items, making SIDs more efficient.
+Episode embeddings are produced by encoding titles and de-
+scriptions with a proprietary text encoder fine-tuned on podcast-
+specific data. The encoder follows the architecture of multilingual
+BGE-M3 [3].
+Although prior work has explored constructing SIDs from col-
+laborative signals (CF) (e.g., [25, 27, 35]) we focus on content-based
+SIDs derived from episode titles and descriptions for two reasons.
+First, cold-start coverage: new episodes are published continuously
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Edoardo D’Amico et al.
+and must be recommendable immediately, whereas CF embeddings
+require sufficient interaction volume before a stable representation
+emerges. Second, stability: because content-based SIDs are derived
+from episode embeddings, updates to the embedding space propa-
+gates to SID assignments, while CF embeddings evolve with user
+behavior, making the episode-to-SID mapping non-stationary and
+introduce train–serve mismatch (i.e., different item representations
+at training and inference time). Content-based embeddings remain
+stable unless episode metadata itself is revised.
+To construct discrete SIDs from continuous episode embeddings,
+we require a quantization method that is scalable, stable over time,
+and compatible with auto-regressive generation.
+4.1.1
+Residual K-Means quantization. We construct SIDs using a
+residual quantizer, specifically Residual K-Means (R-KMeans) [25],
+which balances simplicity with stable performance [15]. R-KMeans
+encodes an episode embedding 𝑥𝑒∈R𝑑as a length-𝑀sequence of
+discrete cluster indices by iteratively quantizing the residual error.
+At each level 𝑚∈{1, . . . , 𝑀}, the algorithm selects the nearest
+centroid from a level-specific set of 𝐾centroids {𝜇𝑚,1, . . . , 𝜇𝑚,𝐾}
+and updates the residual:
+𝑟0 = 𝑥𝑒,
+(1)
+𝑐𝑚= arg min
+𝑗∈[1..𝐾]
+𝑟𝑚−1 −𝜇𝑚,𝑗
+
+2 ,
+(2)
+𝑟𝑚= 𝑟𝑚−1 −𝜇𝑚,𝑐𝑚.
+(3)
+The resulting SID is the tuple (𝑐1, . . . ,𝑐𝑀), which we treat as a
+sequence of discrete tokens.
+In our implementation, the quantization level 𝑚is represented
+implicitly via a distinct token namespace per level: for each level,
+we introduce 𝐾tokens of the form ⟨SID𝑚=𝑗⟩for 𝑗∈[1..𝐾]. With
+𝐾=256 and 𝑀=4, this yields 𝑀× 𝐾= 1024 SID tokens to the LLM
+vocabulary, and each episode is represented by exactly four to-
+kens (one per level). For example, an episode may be encoded as
+⟨SID1=13⟩⟨SID2=65⟩⟨SID3=188⟩⟨SID4=7⟩.
+As shown in prior work [29], using multiple quantization levels
+can induce a coarse-to-fine semantic structure (e.g., News →Sports-
+News), which provides a useful inductive bias for auto-regressive
+generation.
+4.1.2
+Soft Prompt User Personalization. Achieving user-level per-
+sonalization with an LLM is challenging because short-term context
+alone (e.g., recent listening history) is often insufficient to capture
+stable, long-term preferences. A natural approach is to serialize
+user information in text, describing interests, topics, and historical
+behavior [13], which results in long context.
+Instead, we inject long-term preference signals into the LLM via
+dense user embeddings from an existing production personalization
+model. Following prior work on embedding-based conditioning [13],
+given a user embedding 𝑣𝑢, we project it into the LLM hidden dimen-
+sion 𝑑LLM using a learned projection. The resulting representation
+forms a single soft prompt token ˜𝑉𝑢= Proj(𝑣𝑢) ∈R1𝑑×𝑑LLM, com-
+puted via a two-layer MLP and inserted at the beginning of the user
+context, immediately following the system instruction. This soft
+prompt allows the LLM to attend to high-dimensional user state
+alongside natural-language tokens and SIDs, preserving a compact
+context window while maintaining rich collaborative signals.
+[System Instruction]
+Define the role (Recommender) and output format (Semantic
+IDs).
+[User Context]
+<Soft Prompt Vector> ⊕<Textual Metadata>
+[Interaction History]
+<Sequence of Recent Episode SIDs>
+[Task Instruction]
+"Recommend a {{ familiarity_mode }} episode aligned with
+user interests."
+Figure 2: Structure of the GLIDE prompt. The model is condi-
+tioned on a hybrid of continuous soft prompts and discrete
+tokens.
+4.2
+Semantic Grounding
+Newly added SID tokens lack semantic grounding for the LLM,
+even when their embeddings are initialized in the base model’s
+embedding space [11]. Moreover, naïvely adding new vocabulary
+items and fine-tuning the full model can destabilize pre-trained
+representations, leading to degraded language capabilities such as
+representation collapse or catastrophic forgetting [2, 23].
+We therefore ground and align SID tokens to the base LLM
+through continued training on a bidirectional translation objective.
+For each episode, we pair its SID tuple 𝑠𝑒with a textual descriptor
+𝑡𝑒derived from metadata (e.g., a summary or topic labels), and opti-
+mize both directions: generating 𝑡𝑒from 𝑠𝑒and generating 𝑠𝑒from
+𝑡𝑒. This bidirectional grounding objective encourages the model
+to treat SID tokens as semantically meaningful vocabulary items
+rather than arbitrary codes, enabling reasoning over catalog identi-
+fiers within the same representational space as natural language.
+To ensure stable alignment, we adopt a two-stage adaptation
+strategy. First, we freeze the Transformer backbone and optimize
+only the newly initialized SID token embeddings, establishing a
+robust semantic projection for the catalog without perturbing the
+pre-trained model. Second, we freeze the entire model, including
+the embeddings, and adapt the Transformer blocks using LoRA [12].
+Compared to full-parameter fine-tuning, this parameter-efficient ap-
+proach regularizes adaptation and helps preserve general language
+and world knowledge while improving catalog-specific grounding.
+We do not ground the user soft prompting to maintain this
+stage free from collaborative signals, which are incorporated in the
+Instruction Tuning stage.
+4.3
+Instruction Tuning
+We employ instruction tuning to adapt the semantically grounded
+model to the downstream task of episode recommendation. We
+formulate the input prompt as a unified, natural language directive
+that aggregates three signal modalities into a single context window,
+as illustrated in Figure 2:
+(1) User Representation: A hybrid context comprising the
+projected dense user embedding (soft prompt) and high-level
+textual metadata (e.g., locale, affinity topics).
+
+
+Deploying Semantic ID-based Generative Retrieval for Large-Scale Podcast Discovery at Spotify
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+(2) Interaction History: A time-ordered sequence of SIDs rep-
+resenting the user’s recent listening sessions.
+(3) Task Instruction: A final natural language directive con-
+taining a dynamic control token to specify the recommenda-
+tion goal.
+Crucially, we introduce and optimize the learned projection
+jointly with the LLM parameters during this stage. This allows
+the model to learn the mapping between the collaborative filter-
+ing space—which was excluded during the Semantic Grounding
+phase—and the LLM’s internal representation.
+This design enables a single model to support multiple discovery
+objectives. By simply swapping the control token at inference time
+(e.g., from “familiar” to “unfamiliar”), we can explicitly shift the
+generation distribution toward either previously known shows or
+entirely novel content without retraining.
+4.3.1
+Multi-task learning for controllable discovery. Training on all
+non-habitual streams with a single objective increases the tendency
+of the model toward non-habitual but familiar shows, which are
+more commonly observed in interaction logs than unfamiliar con-
+tent. To address this, we employ multi-task supervised fine-tuning
+to explicitly distinguish between these two discovery horizons.
+We operationalize this using the prompt structure shown in
+Figure 2. For each training example, we determine the target’s
+relationship to the user’s history and populate the control token
+accordingly:
+• Familiar Mode: If the target episode belongs to a show the
+user has previously listened to (but is not currently habitual),
+we set the control token to familiar.
+• Unfamiliar Mode: If the target episode belongs to a show
+the user has never listened to, we set the control token to
+unfamiliar.
+This formulation enables the model to disentangle the two ob-
+jectives within a single set of parameters. By learning to associate
+the familiarity mode token with the corresponding retrieval distri-
+bution, the model gains the ability to be explicitly conditioned at
+inference time, allowing the model to request "pure discovery" or
+"familiar discovery" depending on the surface context.
+We mitigate skewed prediction distributions that arise from
+exposure effects and popularity bias using the following strategies:
+• Cross-surface sampling: We draw training examples from
+multiple surfaces to reduce feedback loops in which expo-
+sure from one surface disproportionately reinforces its own
+recommendations over time.
+• Exploration upweighting: We assign higher sampling
+weight to streams originating from randomized or exploration-
+driven placements, as these interactions are less shaped by
+prior recommender exposure and therefore provide cleaner
+signals of user preference.
+• Popularity capping: We limit the number of training ex-
+amples contributed by any single episode, preventing highly
+popular items from dominating the training loss and rein-
+forcing popularity bias.
+Together, these training choices balance relevance, exploration,
+and robustness, preparing the model for deployment under real-
+world serving constraints.
+4.4
+Model Serving
+Deploying GLIDE in production requires addressing system-level
+challenges in serving, scalability, and reliability, in addition to model
+accuracy.
+4.4.1
+Collision resolution. Quantizing embeddings into SIDs can
+map multiple episodes to the same SID sequence, resulting in colli-
+sions [28, 29]. Internal analyses indicate that such collisions typi-
+cally arise from near-duplicate content embeddings, often caused
+by episodes with short or repetitive descriptions, or by multiple
+episodes within the same show sharing highly similar metadata.
+At inference time, we resolve collisions using a deterministic
+popularity-based tie-breaker. For each episode sharing the same
+SID, we select the most popular episode that satisfies eligibility
+constraints (e.g., playable, available in the user’s locale, and absent
+from the current candidate set). Since collisions generally occur
+among semantically near-indistinguishable items under the embed-
+ding model, this strategy resolves ambiguity without additional
+model inference, using popularity as a pragmatic proxy for quality
+within each group. The tie-breaker is updated daily.
+4.4.2
+Deployment. Deploying an LLM-based recommender in pro-
+duction requires meeting strict constraints on latency, cost effi-
+ciency, and operational reliability. We deploy GLIDE as an online in-
+ference service integrated into existing recommendation pipelines.
+Requests are event-triggered (e.g., session start or user-state up-
+dates), which allows results to be pre-computed and cached when
+appropriate while still meeting downstream service-level objectives.
+At inference time, the service assembles a compact model input
+from (i) recent interaction history represented as SIDs, (ii) light-
+weight user context, and (iii) a dense long-term user representation
+injected as a soft prompt. The model generates candidate SID se-
+quences, which are mapped back to concrete episode identifiers
+and passed to downstream ranking components.
+4.4.3
+Soft Prompts Support. GLIDE conditions the SID generation
+on dense user embeddings via soft prompts (Section 4.1.2). We im-
+plement per-request conditioning by passing the projected user
+embedding alongside the tokenized prompt and prepend it at a
+fixed placeholder position during input preparation. This preserves
+a stable prompt structure between training and serving while keep-
+ing the inference engine interface unchanged. The added overhead
+is constant per request; the dominant runtime cost remains autore-
+gressive decoding.
+4.4.4
+Beam Search Optimization. Consistent with prior work on
+catalog-grounded generative retrieval [10, 27, 35], we use Beam
+Search with 30 beams to generate 30 candidates per request. Each
+generated SID sequence is mapped to episode identifiers via a
+lookup table and passed to downstream ranking stages.
+In our initial deployment, wide-beam decoding exposed two cou-
+pled bottlenecks. First, CPU-side request orchestration increased
+latency under load. Second, accelerators were under-utilized due
+to the many small, sequential decoding steps induced by beam ex-
+pansion. Rather than modifying the inference engine, we mitigated
+these issues with standard serving optimizations, including scaling
+the request-orchestration layer and tuning the serving configura-
+tion to better match the utilization profile of wide-beam decoding.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Edoardo D’Amico et al.
+Under the same latency objectives, these changes improved through-
+put by up to 8×, enabling an increase in beam width from 14 to 30
+while maintaining production latency targets.
+5
+Experiments and Results
+We evaluate the performance of the proposed GLIDE framework
+through both offline and online experiments. Our generative recom-
+mender model was initialized with a Llama 3.2 1B–based backbone
+model [6] before adaptation.
+5.1
+Evaluation Framework
+To achieve a robust evaluation, we rely on a framework composed
+of three complementary components with different strengths, costs
+and levels of fidelity: traditional retrieval metrics computed from
+interaction logs, human evaluation, and LLM-based judges.
+Retrieval Metrics. We compute Recall@30, HitRate@30 and NDCG@30
+on held-out non-habitual streams. These metrics are reported sepa-
+rately for familiar and unfamiliar content segments (as defined in
+Section 3). This allows us to distinguish improvements driven by
+better modeling of latent preferences (familiar) from gains due to
+genuine expansion of user taste (unfamiliar).
+Human Evaluation. We complement offline metrics with internal
+human evaluations performed with Spotify employees. In each eval-
+uation round, annotators review sampled top-K recommendation
+lists and rate recommendations along qualitative dimensions includ-
+ing interest alignment (topic, host or guest, and style or format),
+recency or freshness, diversity, and familiarity. Annotators also
+provide brief free-text comments to capture errors and subjective
+preferences. These evaluations reveal failure modes not captured
+by retrieval metrics, such as locale or language mismatches, and
+recommendations that are stale or already consumed. Insights from
+human evaluation are used to guide model iteration and to calibrate
+LLM-based judge assessments.
+LLM-judges. To scale qualitative evaluation beyond what human
+evaluation sessions can support, we leverage LLM-based judges
+to assess recommendation quality. Previous work has shown that
+LLM judges align well with human feedback in the podcast recom-
+mendation problem [7].
+The LLM judge takes as input a user profile summarizing top
+shows, episodes, and topics, together with the recommended episode
+metadata and a transcript excerpt. We prompt the judge to assess
+whether the episode is interest-aligned with the user by decom-
+posing alignment into pointwise dimensions–topic, host & guest,
+style & format, tone & genre–along with an overall interest-aligned
+score. We also consider listwise dimensions to evaluate whether
+recommendation lists are interest-diverse, covering multiple inter-
+ests, and interest-representative, capturing the breadth of the user
+profile. This approach complements offline retrieval metrics with
+scalable, fine-grained assessments of recommendation quality.
+5.2
+Offline Results
+We first present offline results that quantify the impact of differ-
+ent model variants on retrieval quality for non-habitual content.
+Datasets are constructed by sampling user interaction sequences
+Table 1: Offline evaluation. Relative improvement (%) over
+the baseline across content familiarity segments.
+Method
+Recall@30
+NDCG@30
+Overall
+LLM (SID only) (Baseline)
+-
+-
+LLM (SID + Text)
++25.0%
++28.2%
+GLIDE (Ours)
++29.9%
++31.2%
+Non-Habitual but Familiar
+LLM (SID only) (Baseline)
+-
+-
+LLM (SID + Text)
++25.0%
++30.5%
+GLIDE (Ours)
++28.7%
++28.7%
+Non-Habitual and Unfamiliar
+LLM (SID only) (Baseline)
+-
+-
+LLM (SID + Text)
++18.1%
++14.7%
+GLIDE (Ours)
++29.5%
++35.4%
+from a 7-day sliding window of streaming logs with a user-based
+evaluation split.
+5.2.1
+Episode Recommendation. We evaluate the contribution of
+different conditioning signals in the proposed language-grounded
+recommendation framework by benchmarking GLIDE against two
+LLM-based variants. All models operate over the same semantically
+grounded LLM backbone (Section 4.2), differing only in their input
+conditioning:
+• SID-only: A reference baseline that models recommendation
+purely as sequence generation over SIDs, without additional
+semantic or personalization signals. This setting is similar
+to TIGER [28];
+• SID + Text: An ablation that augments the SID sequence
+with textual episode information, but excludes the user soft
+prompt.
+As summarized in Table 1, incorporating textual information
+(SID + Text) yields substantial gains over SID-only baseline, sug-
+gesting that explicit text enables the model to better leverage its
+pre-trained semantic knowledge. GLIDE achieves the strongest
+overall performance, with a +29.9% improvement in Recall@30
+and a +31.2% improvement in NDCG@30. These results indicate
+that combining semantic grounding with user-level personalization
+improves both candidate retrieval and ranking quality.
+The benefits of GLIDE are most pronounced in the Non-Habitual
+Unfamiliar segment, which is central to the discovery objective. In
+this setting, GLIDE significantly outperforms the text-conditioned
+variant (+35.4% vs. +14.7% in NDCG@30), indicating that the full
+training recipe is particularly effective at recommending content
+outside a listener’s established routine, where interaction-based
+signals are weakest.
+5.2.2
+What is the best quantizer for SIDs? We compare three ap-
+proaches to constructing SIDs from episode content embeddings:
+RQ-VAE, R-LFQ, and R-KMeans. All three methods generate a short
+sequence of discrete codes for each episode by progressively quan-
+tizing the embedding, but they differ substantially in complexity
+and training requirements.
+
+
+Deploying Semantic ID-based Generative Retrieval for Large-Scale Podcast Discovery at Spotify
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 2: Ablation across SID quantization methods. R-
+KMeans achieves better accuracy and higher embedding co-
+sine similarity within each group (sharing the same SID)
+where there is at least one collision.
+SemID Space
+HR@30
+Intra-Bucket Similarity
+RQ-VAE (Baseline)
+–
+0.657
+R-LFQ
++4.76%
+0.713
+R-KMeans
++9.52%
+0.856
+RQ-VAE [18] is a neural quantization approach that learns dis-
+crete codes through end-to-end training with a learned codebook.
+It has been widely used in prior work on generative retrieval [28],
+but is known to be difficult to train reliably, often requiring careful
+tuning and additional stabilization techniques to prevent under-
+utilization of codes [14, 17]. R-LFQ builds on Lookup-Free Quanti-
+zation (LFQ) [33], which replaces explicit codebooks with simple
+binary decisions in the latent space. We extend this method to
+a residual setting by applying it iteratively. While this approach
+avoids maintaining large codebooks, it still relies on end-to-end
+training with regularization to ensure effective use of codes, adding
+training complexity.
+Table 2 compares offline retrieval performance and semantic
+consistency across methods. R-KMeans achieves a 9.52% relative
+improvement in Hit-Rate@30 over RQ-VAE, and substantially out-
+performs R-LFQ (+4.76%). This advantage is accompanied by higher
+semantic consistency: episodes assigned the same SID under R-
+KMeans have a higher average cosine similarity in the original em-
+bedding space (0.856) than those under RQ-VAE (0.657). This prop-
+erty is particularly important in our setting, as higher within-ID
+semantic consistency ensures that collision resolution (Section 4.4.1)
+surfaces meaningful alternatives when the target episode is filtered.
+Deep quantizers such as RQ-VAE and R-LFQ offer appealing
+theoretical properties: their end-to-end training makes it possible
+to directly encode desired behavior into the quantization process,
+for example by encouraging similar items to share codes [10] or by
+promoting balanced code usage. However, these methods also intro-
+duce substantial engineering complexity. In practice, training can
+be unstable, with issues such as codebook collapse, sensitivity to ini-
+tialization, and dependence on carefully tuned auxiliary losses, mak-
+ing them difficult to deploy reliably in production systems [5, 14].
+Given the strong empirical performance and operational simplicity
+of R-KMeans, we adopt it as our production quantizer.
+5.2.3
+Impact of Controllable Multi-Task Learning. We validate the
+multi-task strategy (Section 4.3.1) by comparing GLIDE Multi-Task
+against a GLIDE Single-Task variant. We define the single-task
+model as one trained on the aggregate dataset without control
+tokens, effectively treating all non-habitual listening as a single,
+task. Without explicit signals, this single-task variant models the
+marginal distribution over mixed intents, resulting in predictions
+that collapse toward the dominant mode of the training data.
+By contrast, GLIDE Multi-Task disentangles these objectives.
+When conditioning the generation on the unfamiliar token, we
+observe a +11.8% relative improvement in Recall@30 for Non-
+Habitual Unfamiliar items compared to the single-task baseline.
+Table 3: Impact of different decoding strategies. We report
+the relative degradation when moving from Beam Search to
+Greedy Decoding. To analyze the source of the degradation,
+we provide the Prefix Ceiling (the maximum achievable Re-
+call given the first 𝑁tokens of the generated SIDs).
+Decoding Strategy
+Scope
+Δ Recall@30
+Beam Search
+Full Sequence (4 tokens)
+–
+Sampling
+Full Sequence (4 tokens)
+-27.07%
+Sampling
+Prefix Ceiling (3 tokens)
+-26.17%
+Sampling
+Prefix Ceiling (2 tokens)
+-12.53%
+Similarly, prompting with the familiar mode results in a +4.9% lift
+for Non-Habitual Familiar content. This confirms that conditioned
+multi-task learning effectively specializes the output distribution
+for specific discovery horizons while simultaneously improving the
+performance on non-habitual familiar content.
+5.2.4
+Ablation: Semantic Grounding. We evaluate the impact of the
+Semantic Grounding phase (Section 4.2) by comparing two model
+variants that both include user-level personalization via the soft
+prompt. In the first variant, the model is instruction-tuned directly
+for recommendation without first grounding the SID tokens. In
+the second one, we use the full GLIDE pipeline, in which SIDs are
+first aligned with text through a bidirectional translation objective
+before instruction tuning.
+Semantic Grounding yields consistent improvements across met-
+rics, yielding a +8.34% relative lift in Recall@5. These results suggest
+that connecting SID tokens with their textual meaning provides
+a more informative starting point for the recommendation task.
+Intuitively, grounding helps the model treat SIDs as meaningful
+representations of content, rather than as arbitrary symbols.
+5.2.5
+Ablation: Beam Search. As mentioned in Section 4.4.4, we
+rely on beam search at inference time, but its necessity is not obvi-
+ous given the added computational cost. We therefore evaluate its
+impact by comparing beam search against simpler sampling-based
+decoding strategies, such as greedy decoding and sampling with
+temperature or top-𝑝(Table 3).
+Replacing beam search with greedy decoding results in a 27.07%
+relative drop in Recall@30, indicating a substantial loss in retrieval
+quality. To understand the source of this loss, we analyze the Prefix
+Ceiling, which measures the maximum achievable recall when
+considering only the first few tokens of the generated SID sequence.
+We see that most relevant candidates are captured within the first
+two tokens, with only a 12.53% drop in recall. However, performance
+degrades sharply as longer sequences are required.
+This pattern suggests that sampling-based decoding is often
+sufficient to identify the coarse semantic region of the target episode,
+but struggles to select the correct fine-grained identifier within that
+region. As a result, generation frequently collapses to low-quality
+or invalid SIDs. These findings show that beam search is necessary
+to reliably navigate the fine-grained structure of SIDs and recover
+high-quality recommendations.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Edoardo D’Amico et al.
+June
+July
+August
+September
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1.0
+Score
+0.44
+0.76
+0.85
+0.91
+LLM-Judge Interest Alignment Over Time
+Figure 3: Interest alignment scores from the LLM-judge
+across multiple model development iterations.
+5.2.6
+LLM-judge Results. Using LLMs as evaluators has recently
+emerged as a scalable alternative to human annotation [36]. In in-
+formation retrieval, prior work has shown that LLMs such as GPT-4
+can predict document relevance with near-human accuracy [31].
+Recommendation evaluation, however, introduces additional chal-
+lenges, since user preferences must be inferred from past behavior,
+and recommendations do not come with explicit queries to anchor
+judgments.
+Recent work on profile-aware evaluation [7] addresses these
+challenges by representing user interests as natural-language pro-
+files, enabling LLMs to assess whether recommended items align
+with a user’s preferences. We adopt this approach and continuously
+validate the LLM-judge by comparing its assessments with feedback
+collected from internal human evaluations. We observe that judge
+scores correlate positively with Recall@30, while also capturing
+qualitative aspects of recommendation quality that are not reflected
+in retrieval metrics alone.
+Importantly, in one evaluation round, the LLM-judge and human
+evaluators agreed on a preferred model variant, while offline recall
+metrics favored a different one. Further analysis showed that the
+recall-favored model exhibited stronger popularity bias: it achieved
+higher hit rates by recommending more popular episodes, which
+were judged as less interest-aligned. This case highlights the com-
+plementary role of LLM-judges in identifying quality differences
+that offline metrics can miss.
+Throughout development, we tracked LLM-judge scores along-
+side traditional metrics and observed steady improvements in in-
+terest alignment as we iterated on the training recipe and data
+quality (Figure 3). For a more detailed analysis of how LLM-judge
+rankings relate to traditional retrieval metrics, and how they help
+mitigate exposure and popularity biases, we refer the reader to [26].
+Taken together, these offline results show that semantic ground-
+ing, user-level personalization, and careful decoding are all critical
+to improving retrieval quality for non-habitual content, motivating
+validation in an online setting.
+5.3
+Online A/B Test
+We conducted a 21-day randomized user-level online experiment
+on podcast listeners in English-speaking markets who where active
+in the 30 days prior to evaluate the effect of generative recommen-
+dations on discovery for engaged users. We compared a Control
+condition, using the existing production recommendation system,
+against a single treatment condition. In the treatment, candidates
+generated by GLIDE were added as an additional candidate retrieval
+source to the existing candidate pool and then scored and ranked
+by the standard downstream episode ranker alongside candidates
+from other sources.
+We report results on the Home surface of Spotify, with each cell
+covering approximately 20M impressions. Adding GLIDE as a can-
+didate source led to statistically significant improvements in non-
+habitual consumption and new show discovery, while preserving
+guardrails and with no regressions in overall engagement or user
+satisfaction. Specifically, in the treatment, non-habitual streams
+per user increased by 5.4% (𝛼< 0.01) and new-show non-habitual
+streams increased by 14.3% (𝛼< 0.01). GLIDE candidates accounted
+for ∼34% of recommendations in the treatment group, supporting
+the attribution of the observed lift to the added candidate source.
+The system met production cost and latency constraints, remaining
+within the allocated serving budget for candidate generation.
+These results demonstrate that language-grounded, generative
+recommendation can drive meaningful discovery gains at scale
+while satisfying real-world deployment requirements.
+6
+Conclusion
+We presented a production-ready, LLM-based generative recom-
+mender for episode-level podcast discovery, grounded in SIDs and
+designed for deployment at scale. The proposed system combines
+language-conditioned generation with catalog grounding and user-
+level personalization, enabling controllable, session-aware recom-
+mendations over a large and dynamic content catalog.
+Through extensive offline experiments, we showed that seman-
+tic grounding, user personalization, and careful decoding choices
+each contribute meaningfully to retrieval quality for non-habitual
+content. These gains translated to real-world impact in a 21-day on-
+line A/B test on Spotify home surface, where the system increased
+non-habitual podcast streams by +5.4% and new-show non-habitual
+streaming by +14.3%, with no regressions in engagement or user
+satisfaction and within production cost and latency constraints.
+Beyond model performance, our results highlight the importance
+of evaluation design. We showed that offline retrieval metrics alone
+are insufficient to capture discovery-oriented success, and that
+combining offline metrics with human judgments and LLM-based
+evaluation provides a more complete picture of recommendation
+quality.
+Future work includes deeper analysis of how grounded language
+models leverage pre-trained world knowledge in recommendation
+settings, extending language-conditioned control to additional ob-
+jectives and surfaces, and further improving evaluation methods
+for long-term recommendations.
+Acknowledgments
+The authors would like to thank Oskar Stål for his technical leader-
+ship and invaluable contributions to the project.
+References
+[1] Benton, G., Fazelnia, G., Wang, A., and Carterette, B. Trajectory based
+podcast recommendation. arXiv preprint arXiv:2009.03859 (2020).
+
+
+Deploying Semantic ID-based Generative Retrieval for Large-Scale Podcast Discovery at Spotify
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+[2] Biderman, D., Portes, J., Ortiz, J. J. G., Paul, M., Greengard, P., Jennings, C.,
+King, D., Havens, S., Chiley, V., Frankle, J., et al. Lora learns less and forgets
+less. arXiv preprint arXiv:2405.09673 (2024).
+[3] Chen, J., Xiao, S., Zhang, P., Luo, K., Lian, D., and Liu, Z. Bge m3-embedding:
+Multi-lingual, multi-functionality, multi-granularity text embeddings through
+self-knowledge distillation, 2024.
+[4] De Nadai, M., Fabbri, F., Gigioli, P., Wang, A., Li, A., Silvestri, F., Kim, L., Lin,
+S., Radosavljevic, V., Ghael, S., Nyhan, D., Bouchard, H., Lalmas, M., and
+Damianou, A. Personalized audiobook recommendations at spotify through
+graph neural networks. In Companion Proceedings of the ACM Web Conference 2024
+(New York, NY, USA, 2024), WWW ’24, Association for Computing Machinery,
+p. 403–412.
+[5] Dhariwal, P., Jun, H., Payne, C., Kim, J. W., Radford, A., and Sutskever, I.
+Jukebox: A generative model for music. In International Conference on Machine
+Learning (ICML) (2020).
+[6] Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A.,
+Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models.
+arXiv e-prints (2024), arXiv–2407.
+[7] Fabbri, F., Penha, G., D’Amico, E., Wang, A., Nadai, M. D., Doremus, J., Gigioli,
+P., Damianou, A., Stål, O., and Lalmas, M. Evaluating podcast recommenda-
+tions with profile-aware llm-as-a-judge. In Proceedings of the 19th ACM Conference
+on Recommender Systems (RecSys) (2025), pp. 1181–1186.
+[8] Fazelnia, G., Gupta, S., Keum, C., Koh, M., Heath, T., Carrasco Hernández,
+G., Xie, S., Singh, N., Anderson, I., Hristakeva, M., Pehrson Skidén, P., and
+Lalmas, M. Generalized user representations for large-scale recommendations
+and downstream tasks. In Proceedings of the Nineteenth ACM Conference on
+Recommender Systems (New York, NY, USA, 2025), RecSys ’25, Association for
+Computing Machinery, p. 962–966.
+[9] Geng, S., Liu, S., Fu, Z., Ge, Y., and Zhang, Y. Recommendation as language
+processing (rlp): A unified pretrain, personalized prompt & predict paradigm
+(p5). In Proceedings of the 16th ACM Conference on Recommender Systems (RecSys)
+(2022), pp. 299–315.
+[10] He, R., Heldt, L., Hong, L., Keshavan, R., Mao, S., Mehta, N., Su, Z., Tsai, A.,
+Wang, Y., Wang, S.-C., Yi, X., Baugher, L., Cakici, B., Chi, E., Goodrow, C.,
+Han, N., Ma, H., Rosales, R., Soest, A. V., Tandon, D., Wu, S.-L., Yang, W., and
+Zheng, Y. PLUM: Adapting Pre-trained Language Models for Industrial-scale
+Generative Recommendations, Oct. 2025.
+[11] Hewitt, J. Initializing new word embeddings for pretrained language models.
+https:/nlp.stanford.edu/~johnhew//vocab-expansion.html, 2021.
+[12] Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., Chen,
+W., et al. Lora: Low-rank adaptation of large language models. ICLR 1, 2 (2022),
+3.
+[13] Huber, B., Fazelnia, G., Damianou, A., Peleato, S., Lefarov, M., Ravichan-
+dran, P., De Nadai, M., Lalmas-Roellke, M., and Bennett, P. N. Embedding-to-
+prefix: Parameter-efficient personalization for pre-trained large language models.
+arXiv preprint arXiv:2505.17051 (2025).
+[14] Huh, M., Cheung, B., Agrawal, P., and Isola, P. Straightening out the straight-
+through estimator: Overcoming optimization challenges in vector quantized net-
+works. In International Conference on Machine Learning (ICML) (2023), pp. 14096–
+14113.
+[15] Ju, C. M., Collins, L., Neves, L., Kumar, B., Wang, L. Y., Zhao, T., and Shah,
+N. Generative recommendation with semantic ids: A practitioner’s handbook.
+In Proceedings of the 34th ACM International Conference on Information and
+Knowledge Management (2025), pp. 6420–6425.
+[16] Kang, W.-C., and McAuley, J. Self-attentive sequential recommendation. In 2018
+IEEE international conference on data mining (ICDM) (2018), IEEE, pp. 197–206.
+[17] Łańcucki, A., Chorowski, J., Sanchez, G., Marxer, R., Chen, N., Dolfing, H. J.,
+Khurana, S., Alumae, T., and Laurent, A. Robust training of vector quantized
+bottleneck models. In International Joint Conference on Neural Networks (IJCNN)
+(2020), pp. 1–8.
+[18] Lee, D., Kim, C., Kim, S., Cho, M., and Han, W.-S. Autoregressive image genera-
+tion using residual quantization. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition (CVPR) (2022), pp. 11523–11532.
+[19] Lester, B., Al-Rfou, R., and Constant, N. The power of scale for parameter-
+efficient prompt tuning. arXiv preprint arXiv:2104.08691 (2021).
+[20] Maystre, L., Russo, D., and Zhao, Y. Optimizing audio recommendations for
+the long-term: A reinforcement learning perspective, 2024.
+[21] McDonald, T. M., Maystre, L., Lalmas, M., Russo, D., and Ciosek, K. Impa-
+tient bandits: Optimizing recommendations for the long-term without delay. In
+Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining (2023), pp. 1687–1697.
+[22] Mu, J., Li, X., and Goodman, N. Learning to compress prompts with gist tokens.
+Advances in Neural Information Processing Systems 36 (2023), 19327–19352.
+[23] Mundra, N., Khandavally, A. N. K., Dabre, R., Puduppully, R., Kunchukuttan,
+A., and Khapra, M. M. An empirical comparison of vocabulary expansion
+and initialization approaches for language models. In Proceedings of the 28th
+Conference on Computational Natural Language Learning (2024), pp. 84–104.
+[24] Nazari, Z., Charbuillet, C., Pages, J., Laurent, M., Charrier, D., Vecchione,
+B., and Carterette, B. Recommending podcasts for cold-start users based on
+music listening and taste. In Proceedings of the 45th International ACM SIGIR
+Conference on Research and Development in Information Retrieval (SIGIR) (2022),
+pp. 1513–1523.
+[25] Penha, G., D’Amico, E., Nadai, M. D., Palumbo, E., Tamborrino, A., Vardasbi,
+A., Lefarov, M., Lin, S., Heath, T., Fabbri, F., and Bouchard, H. Semantic ids
+for joint generative search and recommendation. In Proceedings of the 19th ACM
+Conference on Recommender Systems (RecSys) (2025), pp. 1181–1186.
+[26] Penha, G., Petrov, A. V., Hauff, C., Palumbo, E., Vardasbi, A., D’Amico, E.,
+Fabbri, F., Wang, A., Chandar, P., Lindstrom, H., Bouchard, H., and Lalmas,
+M. Do llm-judges align with human relevance in cranfield-style recommender
+evaluation? arXiv preprint arXiv:2511.23312 (2025).
+[27] Qu, H., Fan, W., Zhao, Z., and Li, Q. Tokenrec: Learning to tokenize id for
+llm-based generative recommendations. IEEE Transactions on Knowledge and
+Data Engineering (2025).
+[28] Rajput, S., Mehta, N., Singh, A., Keshavan, R., Vu, T., Helber, L., Hong, L.,
+Tay, Y., Tran, V., Samost, J., Kula, M., Chi, E., and Sathiamoorthy, M. Rec-
+ommender systems with generative retrieval. In Advances in Neural Information
+Processing Systems (NeurIPS) (2024).
+[29] Singh, A., Vu, T., Mehta, N., Keshavan, R., Sathiamoorthy, M., Zheng, Y.,
+Hong, L., Heldt, L., Wei, L., Tandon, D., et al. Better generalization with
+semantic ids: A case study in ranking for recommendations. In Proceedings of the
+18th ACM Conference on Recommender Systems (2024), pp. 1039–1044.
+[30] Tay, Y., Tran, V., Dehghani, M., Ni, J., Bahri, D., Mehta, H., Qin, Z., Hui, K.,
+Zhao, Z., Gupta, J., Schuster, T., Cohen, W., and Metzler, D. Transformer
+memory as a differentiable search index. In Advances in Neural Information
+Processing Systems (NeurIPS) (2022), pp. 21714–21728.
+[31] Thomas, P., Spielman, S., Craswell, N., and Mitra, B. Large language models
+can accurately predict searcher preferences. In Proceedings of the 47th Interna-
+tional ACM SIGIR Conference on Research and Development in Information Retrieval
+(SIGIR) (2024), pp. 1930–1940.
+[32] Tsagkias, M., Larson, M., and de Rijke, M. Exploiting surface features for the
+prediction of podcast preference. In European Conference on Information Retrieval
+(ECIR) (2009), pp. 688–692.
+[33] Yu, L., Lezama, J., Gundavarapu, N. B., Versari, L., Sber, K., Rubinstein, M.,
+Zhai, X., Yin, F., Shi, F., Chen, X., Li, B., Mao, H., Ke, J., Yu, S., Sun, S., Choi, Y.,
+Fitzgerald, C., Alon, U., Barber, D., Seybold, B., Gao, P., Parmar, N., Chen,
+X., Vaduva, O., et al. Language model beats diffusion–tokenizer is key to visual
+generation. In International Conference on Learning Representations (ICLR) (2024).
+[34] Zhang, J., Xie, R., Hou, Y., Zhao, W. X., Lin, L., and Wen, J.-R. Recommendation
+as instruction following: A large language model empowered recommendation
+approach. arXiv preprint arXiv:2305.07001 (2023).
+[35] Zheng, B., Hou, Y., Lu, H., Chen, Y., Zhao, W. X., Chen, M., and Wen, J.-R.
+Adapting Large Language Models by Integrating Collaborative Semantics for
+Recommendation, Apr. 2024.
+[36] Zheng, L., Chiang, W.-L., Sheng, Y., Zhuang, S., Wu, Z., Zhuang, Y., Lin, Z., Li,
+Z., Li, D., Xing, E. P., Zhang, H., Gonzalez, J. E., and Stoica, I. Judging llm-
+as-a-judge with mt-bench and chatbot arena. In Advances in Neural Information
+Processing Systems (NeurIPS) (2023).
+,
