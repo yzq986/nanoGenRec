@@ -316,6 +316,81 @@ def load_all_behavior_data(date_start: str = None, date_end: str = None,
     }
 
 
+def load_behavior_v2_data(local_path: str,
+                          date_start: str = None,
+                          date_end: str = None) -> Dict:
+    """Load behavior_v2 data (positives + inline negatives).
+
+    Schema: uid, session_id, iid, action_bitmap, first_ts, last_ts, event_cnt
+    action_bitmap=0 rows are session-level negatives.
+
+    Returns dict with:
+        positives: dict with uid, iid, action_bitmap, first_ts (np arrays) — behavior_data compatible
+        neg_lookup: dict[(uid, iid)] -> List[str]  neg iids from same session
+    """
+    import glob as glob_module
+    import pandas as pd
+    from datetime import datetime, timedelta
+
+    print(f"\n{'='*60}")
+    print("Loading Behavior V2 Data (positives + inline negatives)")
+    print(f"{'='*60}")
+
+    # Resolve date dirs
+    if date_start and date_end:
+        d = datetime.strptime(date_start, "%Y-%m-%d")
+        end = datetime.strptime(date_end, "%Y-%m-%d")
+        dirs = []
+        while d <= end:
+            dirs.append(os.path.join(local_path, d.strftime("%Y-%m-%d")))
+            d += timedelta(days=1)
+    else:
+        dirs = sorted(glob_module.glob(os.path.join(local_path, "????-??-??")))
+
+    files = []
+    for d in dirs:
+        files.extend(sorted(glob_module.glob(os.path.join(d, "*.parquet"))))
+
+    print(f"  Local path: {local_path}")
+    print(f"  Found {len(files)} parquet files across {len(dirs)} days")
+    if not files:
+        raise FileNotFoundError(f"No parquet files found at {local_path}")
+
+    dfs = []
+    for i, f in enumerate(files):
+        dfs.append(pd.read_parquet(f))
+        if (i + 1) % 10 == 0:
+            print(f"  Loaded {i + 1}/{len(files)}")
+    df = pd.concat(dfs, ignore_index=True)
+
+    pos_df = df[df['action_bitmap'] != 0].copy()
+    neg_df = df[df['action_bitmap'] == 0].copy()
+    print(f"  Total: {len(pos_df):,} positives, {len(neg_df):,} negatives")
+
+    # Build neg_lookup: (uid, session_id) -> list of neg iids
+    neg_lookup: Dict = {}
+    for row in neg_df.itertuples(index=False):
+        key = (row.uid, row.session_id)
+        if key not in neg_lookup:
+            neg_lookup[key] = []
+        neg_lookup[key].append(row.iid)
+
+    first_ts = pos_df['first_ts'].fillna(0).values.astype(np.int64)
+
+    positives = {
+        'uid': pos_df['uid'].values,
+        'iid': pos_df['iid'].values,
+        'action_bitmap': pos_df['action_bitmap'].values.astype(np.int32),
+        'first_ts': first_ts,
+        'session_id': pos_df['session_id'].values,
+    }
+    print(f"  neg_lookup: {len(neg_lookup):,} (uid, session) keys with negatives")
+    return {
+        'positives': positives,
+        'neg_lookup': neg_lookup,
+    }
+
+
 # ============================================================
 # Main
 # ============================================================

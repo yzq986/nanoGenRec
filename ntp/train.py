@@ -186,6 +186,7 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print, min_ac
 def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_len=512,
                             n_eval_target=50000, verbose_fn=print,
                             exposure_neg_data=None, entp_k=5,
+                            behavior_v2_data=None,
                             shift_features=False, action_l2_only=False,
                             min_action_level=1):
     """Build unified per-user sequences with split_pos for train/eval masking.
@@ -216,7 +217,14 @@ def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_le
     verbose_fn(f"  SID: {n_layers} layers, codebooks={n_clusters_per_layer}")
     verbose_fn(f"  Unique SIDs: {len(_sid_to_items):,}")
 
-    if exposure_neg_data is not None:
+    if behavior_v2_data is not None:
+        # ── V2 mode: behavior positives + inline session negatives ──
+        return _build_sequences_from_behavior_v2(
+            behavior_v2_data, content_to_tokens, n_layers, n_clusters_per_layer,
+            entp_k, max_seq_len, n_eval_target, verbose_fn,
+            shift_features=shift_features, action_l2_only=action_l2_only,
+            min_action_level=min_action_level)
+    elif exposure_neg_data is not None:
         # ── ENTP mode: compact positive + neg_iids from PySpark ──
         return _build_sequences_from_exposure(
             exposure_neg_data, content_to_tokens, n_layers, n_clusters_per_layer,
@@ -225,7 +233,7 @@ def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_le
     else:
         # ── Legacy mode: behavior data only ──
         if behavior_data is None:
-            raise ValueError("Either behavior_data or exposure_neg_data must be provided")
+            raise ValueError("behavior_data, behavior_v2_data, or exposure_neg_data must be provided")
         return _build_sequences_from_behavior(
             behavior_data, content_to_tokens, n_layers, n_clusters_per_layer,
             max_seq_len, n_eval_target, verbose_fn,
@@ -416,6 +424,185 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
                f"avg {avg_neg:.1f}/seq (K={entp_k}), "
                f"{n_users_with_negs:,}/{len(sequences):,} users with negs")
 
+    return sequences, n_layers, n_clusters_per_layer, split_ts, seq_stats
+
+
+def _build_sequences_from_behavior_v2(behavior_v2_data, content_to_tokens,
+                                      n_layers, n_clusters_per_layer,
+                                      entp_k, max_seq_len, n_eval_target,
+                                      verbose_fn, shift_features=False,
+                                      action_l2_only=False, min_action_level=1):
+    """Build sequences from behavior_v2 data (positives + inline session negatives).
+
+    behavior_v2_data: output of load_behavior_v2_data()
+        positives: dict with uid, iid, action_bitmap, first_ts, session_id
+        neg_lookup: dict[(uid, session_id)] -> List[str] neg iids
+    """
+    positives = behavior_v2_data['positives']
+    neg_lookup = behavior_v2_data['neg_lookup']
+
+    uids_s, iids_s, ts_s, actions_s, starts, ends, sorted_orig_indices = \
+        _build_user_items(positives, content_to_tokens, verbose_fn,
+                          min_action_level=min_action_level)
+
+    session_ids_all = positives['session_id']
+
+    sorted_ts = np.sort(ts_s)
+    total_items = len(sorted_ts)
+    split_idx = max(0, min(total_items - 1, total_items - n_eval_target))
+    split_ts = float(sorted_ts[split_idx])
+    actual_eval = int((sorted_ts > split_ts).sum())
+    pct = 100.0 * split_idx / total_items if total_items > 0 else 0
+    verbose_fn(f"  Time split: {actual_eval:,} eval items targeted "
+               f"(~{pct:.1f}th percentile, split_ts={split_ts:.0f})")
+
+    max_items = max_seq_len // n_layers
+    sequences = []
+    n_train_only = n_eval_only = n_both = n_truncated = 0
+    n_neg_total = n_users_with_negs = 0
+    raw_items_per_user = []
+
+    for u in range(len(starts)):
+        s, e = starts[u], ends[u]
+        n = e - s
+        if n < 2:
+            continue
+
+        raw_items_per_user.append(n)
+        user_iids = iids_s[s:e]
+        user_ts = ts_s[s:e]
+        user_actions = actions_s[s:e]
+        user_orig_idx = sorted_orig_indices[s:e]
+
+        if n > max_items:
+            n_truncated += 1
+            offset = n - max_items
+            user_iids = user_iids[offset:]
+            user_ts = user_ts[offset:]
+            user_actions = user_actions[offset:]
+            user_orig_idx = user_orig_idx[offset:]
+            n = max_items
+
+        user_tokens = [content_to_tokens[iid] for iid in user_iids]
+
+        # Build neg_l0 per item from session-level neg_lookup
+        uid = positives['uid'][user_orig_idx[0]]
+        user_neg_l0 = []
+        user_has_negs = False
+        for oi in user_orig_idx:
+            iid = positives['iid'][oi]
+            sess = session_ids_all[oi]
+            neg_iids = neg_lookup.get((uid, sess), [])
+            neg_l0 = [-1] * entp_k
+            j = 0
+            for neg_iid in neg_iids:
+                if neg_iid == iid:
+                    continue
+                neg_toks = content_to_tokens.get(neg_iid)
+                if neg_toks is not None:
+                    neg_l0[j] = int(neg_toks[0])
+                    j += 1
+                    if j >= entp_k:
+                        break
+            if j > 0:
+                n_neg_total += j
+                user_has_negs = True
+            user_neg_l0.append(neg_l0)
+        if user_has_negs:
+            n_users_with_negs += 1
+
+        split_item_idx = n
+        for i in range(n):
+            if user_ts[i] > split_ts:
+                split_item_idx = i
+                break
+
+        split_token_pos = split_item_idx * n_layers
+        eval_cids = [user_iids[i] for i in range(split_item_idx, n)]
+
+        flat = []
+        for toks in user_tokens:
+            flat.extend(toks)
+
+        time_gaps = []
+        action_levels = []
+        for i in range(n):
+            if i == 0:
+                bucket = 0
+            else:
+                delta = float(user_ts[i] - user_ts[i - 1])
+                bucket = _compute_time_gap_bucket(delta)
+            level = _action_bitmap_to_level(int(user_actions[i]))
+            for _ in range(n_layers):
+                time_gaps.append(bucket)
+                action_levels.append(level)
+
+        if action_l2_only:
+            for i in range(len(action_levels)):
+                if (i + 1) % n_layers != 0:
+                    action_levels[i] = 0
+
+        if shift_features:
+            L = n_layers
+            time_gaps = [0] * L + time_gaps[:-L]
+            action_levels = [0] * L + action_levels[:-L]
+
+        sequences.append({
+            'tokens': flat,
+            'split_pos': split_token_pos,
+            'eval_cids': eval_cids,
+            'neg_l0': user_neg_l0,
+            'time_gaps': time_gaps,
+            'action_levels': action_levels,
+        })
+
+        if split_item_idx == n:
+            n_train_only += 1
+        elif split_item_idx == 0:
+            n_eval_only += 1
+        else:
+            n_both += 1
+
+    if not sequences:
+        raise ValueError("No valid sequences")
+
+    total_tokens = sum(len(s['tokens']) for s in sequences)
+    avg_len = total_tokens / len(sequences)
+    n_eval_items = sum(len(s['eval_cids']) for s in sequences)
+    raw_arr = np.array(raw_items_per_user)
+    pcts = np.percentile(raw_arr, [25, 50, 75, 90, 95, 99, 99.9])
+    seq_stats = {
+        'n_users': len(raw_arr),
+        'max_items': max_items,
+        'items_per_user_mean': round(float(raw_arr.mean()), 1),
+        'items_per_user_p25': int(pcts[0]),
+        'items_per_user_p50': int(pcts[1]),
+        'items_per_user_p75': int(pcts[2]),
+        'items_per_user_p90': int(pcts[3]),
+        'items_per_user_p95': int(pcts[4]),
+        'items_per_user_p99': int(pcts[5]),
+        'items_per_user_p999': int(pcts[6]),
+        'items_per_user_max': int(raw_arr.max()),
+        'n_truncated': n_truncated,
+        'truncated_pct': round(100.0 * n_truncated / len(raw_arr), 2),
+    }
+    verbose_fn(f"  Unified sequences: {len(sequences):,}, "
+               f"{total_tokens:,} tokens, avg {avg_len:.0f} tok/seq")
+    verbose_fn(f"  Items/user: mean={seq_stats['items_per_user_mean']}, "
+               f"p50={seq_stats['items_per_user_p50']}, "
+               f"p90={seq_stats['items_per_user_p90']}, "
+               f"p95={seq_stats['items_per_user_p95']}, "
+               f"p99={seq_stats['items_per_user_p99']}, "
+               f"max={seq_stats['items_per_user_max']}")
+    verbose_fn(f"  Truncated at {max_items} items: {n_truncated:,} / {len(raw_arr):,} "
+               f"({seq_stats['truncated_pct']:.2f}%)")
+    verbose_fn(f"  Split: {n_both:,} train+eval, "
+               f"{n_train_only:,} train-only, {n_eval_only:,} eval-only")
+    verbose_fn(f"  Eval items: {n_eval_items:,}")
+    avg_neg = n_neg_total / max(len(sequences), 1)
+    verbose_fn(f"  ENTP negatives (session): {n_neg_total:,} total, "
+               f"avg {avg_neg:.1f}/seq (K={entp_k}), "
+               f"{n_users_with_negs:,}/{len(sequences):,} users with negs")
     return sequences, n_layers, n_clusters_per_layer, split_ts, seq_stats
 
 

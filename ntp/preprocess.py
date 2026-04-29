@@ -51,6 +51,9 @@ def parse_args():
     parser.add_argument('--exposure_neg_path', type=str, default=None,
                         help='Local dir for exposure neg parquet (skips S3). '
                              'e.g. /mnt/workspace/gr-demo-exposure-neg/2026-03-01_2026-03-31')
+    parser.add_argument('--behavior_v2_path', type=str, default=None,
+                        help='Local dir for behavior_v2 parquet (positives + inline session negatives). '
+                             'e.g. /mnt/workspace/gr-demo-behavior-v2')
     parser.add_argument('--entp_k', type=int, default=5,
                         help='Max negative L0 tokens per position for ENTP')
     parser.add_argument('--shift_features', action='store_true', default=False,
@@ -245,8 +248,19 @@ def main():
     # ── Load data ──
     exposure_neg_data = None
     behavior_data = None
-    if args.entp_weight > 0:
-        # ENTP mode: load compact positive+neg_iids from PySpark export
+    behavior_v2_data = None
+
+    if args.behavior_v2_path is not None:
+        # V2 mode: behavior positives + inline session negatives
+        print("\nStep 2: Loading behavior_v2 data (positives + inline negatives)")
+        from eval.batch import load_behavior_v2_data
+        behavior_v2_data = load_behavior_v2_data(
+            local_path=args.behavior_v2_path,
+            date_start=args.date_start, date_end=args.date_end)
+        print(f"  Positives: {len(behavior_v2_data['positives']['uid']):,}")
+        print(f"  Neg lookup entries: {len(behavior_v2_data['neg_lookup']):,}")
+    elif args.entp_weight > 0:
+        # Legacy ENTP mode: load compact positive+neg_iids from PySpark export
         print("\nStep 2: Loading ENTP negative data")
         from eval.batch import load_exposure_neg_data
         exposure_neg_data = load_exposure_neg_data(
@@ -255,8 +269,6 @@ def main():
         print(f"  Positives with negatives: {len(exposure_neg_data['uid']):,}")
 
         # Filter out negatives that share L0 with their positive (gradient conflict).
-        # Same-session items often cluster to the same L0 → ENTP and NTP push
-        # the same L0 probability in opposite directions, hurting training.
         print("\n  Filtering neg_iids sharing L0 with positive...")
         content_to_tokens = {}
         for cid, sid_str in sid_dict.items():
@@ -298,11 +310,12 @@ def main():
             n_items=args.n_items, max_seq_len=args.max_seq_len,
             n_eval_target=args.n_eval_target,
             exposure_neg_data=exposure_neg_data, entp_k=args.entp_k,
+            behavior_v2_data=behavior_v2_data,
             shift_features=args.shift_features,
             action_l2_only=args.action_l2_only,
             min_action_level=args.min_action_level)
 
-    del sid_dict, behavior_data, exposure_neg_data  # free memory
+    del sid_dict, behavior_data, exposure_neg_data, behavior_v2_data  # free memory
 
     # ── Save shards ──
     n_total = len(sequences)
@@ -320,7 +333,7 @@ def main():
         file_size = os.path.getsize(shard_path) / 1e6
         print(f"  shard {i}: {end - start:,} seqs -> {shard_path} ({file_size:.1f}MB)")
 
-    has_neg = args.entp_weight > 0
+    has_neg = args.entp_weight > 0 or args.behavior_v2_path is not None
     del sequences
 
     # ── Save metadata ──
