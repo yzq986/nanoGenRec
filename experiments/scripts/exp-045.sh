@@ -30,6 +30,10 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export EFS_BASE="${EFS_BASE:-/mnt/workspace}"
 cd "${REPO_ROOT}"
 
+# Use gr conda env for faiss-gpu support
+GR_PYTHON="/home/dev/.conda/envs/gr/bin/python"
+[ -f "${GR_PYTHON}" ] && export PATH="/home/dev/.conda/envs/gr/bin:${PATH}"
+
 FORCE=false
 for arg in "$@"; do
     case "$arg" in
