@@ -5,15 +5,22 @@ set -euo pipefail
 # Date: 2026-04-29
 #
 # 目标: 对比三种 embedding model 生成的 SID tokenizer 对 NTP 性能的影响
-#   Config A: Qwen3-0.6B (1024D) — exp026-0.6b-14d
-#   Config B: Qwen3-4B  (2560D) — exp026-4b-14d
-#   Config C: Qwen3-8B  (4096D) — exp026-8b-14d
+# 两组模型 × 三个 SID = 6 configs:
 #
-# 固定条件: S-tier 模型, 14d 数据, full features (time_gap+action_level+segment_emb)
-# 对标: exp036-full-features (exp013 SID, 旧 0.6B cache) R@500=59.0%
+#   S-tier (256d 6L 8E, ~17.5M active):
+#     Config S1: Qwen3-0.6B SID — exp043-s-0.6b
+#     Config S2: Qwen3-4B  SID — exp043-s-4b
+#     Config S3: Qwen3-8B  SID — exp043-s-8b
 #
-# 注意: 三个 SID cache 的 item 集合不同 (~110万 vs exp013 的 ~497万)
-# 直接用 14d 行为数据 preprocess，各自过滤到对应 SID cache 内的 item
+#   M-tier (512d 8L 8E, ~71.6M active):
+#     Config M1: Qwen3-0.6B SID — exp043-m-0.6b
+#     Config M2: Qwen3-4B  SID — exp043-m-4b
+#     Config M3: Qwen3-8B  SID — exp043-m-8b
+#
+# 固定条件: 14d 数据, full features (time_gap+action_level+segment_emb)
+# NTP 数据三个 SID 各一份，S/M 两个模型共用
+# 对标: exp036-full-features (exp013 SID, 旧 0.6B) R@500=59.0%
+#       exp042-m-sft          (exp013 SID, M-tier)  R@500=TBD
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
@@ -81,22 +88,19 @@ if [ "${SKIP_SMOKE}" == false ] && [ "${START_FROM}" -le 1 ]; then
     echo ""
 fi
 
-# ── Helper: run one config ────────────────────────────────────
-run_config() {
-    local MODEL_KEY=$1          # 0.6b / 4b / 8b
-    local CONFIG_NUM=$2         # 1 / 2 / 3
+# M-tier model config
+M_EMBED=512
+M_HEADS=8
+M_LAYERS=8
+M_EXPERTS=8
+M_EXPERT_DIM=2048
 
+# ── Helper: preprocess NTP data for one SID ──────────────────
+preprocess_sid() {
+    local MODEL_KEY=$1    # 0.6b / 4b / 8b
     local SID_CACHE="experiments/sid_cache/exp026-${MODEL_KEY}-14d"
     local NTP_DATA="experiments/ntp_data/exp043-${MODEL_KEY}-14d"
-    local NAME="exp043-s-${MODEL_KEY}"
-    local OUTPUT="${CKPT_DIR}/${NAME}"
 
-    echo ""
-    echo "============================================================"
-    echo "Config ${CONFIG_NUM}: Qwen3-${MODEL_KEY^^} SID"
-    echo "============================================================"
-
-    # Step 1: preprocess
     if [ ! -f "${NTP_DATA}/meta.json" ] || [ "${FORCE}" == true ]; then
         echo ">>> Preprocessing NTP data (${MODEL_KEY} SID)..."
         torchrun --nproc_per_node="${N_GPUS}" run.py preprocess-ntp \
@@ -106,39 +110,66 @@ run_config() {
             --date_start "${DATE_START}" \
             --date_end "${DATE_END}" \
             --shift_features
-        python3 -c "
-import json
-m = json.load(open('${NTP_DATA}/meta.json'))
-print(f'  n_seqs={m[\"n_seqs\"]:,}  n_eval_items={m[\"n_eval_items\"]:,}')
-" 2>/dev/null || true
     else
         echo "  [data] ${NTP_DATA} already exists, skipping preprocess."
-        python3 -c "
+    fi
+    python3 -c "
 import json
 m = json.load(open('${NTP_DATA}/meta.json'))
 print(f'  n_seqs={m[\"n_seqs\"]:,}  n_eval_items={m[\"n_eval_items\"]:,}')
 " 2>/dev/null || true
-    fi
+}
 
-    # Step 2: train
+# ── Helper: train + eval one config ──────────────────────────
+run_config() {
+    local TIER=$1         # s / m
+    local MODEL_KEY=$2    # 0.6b / 4b / 8b
+    local CONFIG_NUM=$3
+
+    local NTP_DATA="experiments/ntp_data/exp043-${MODEL_KEY}-14d"
+    local NAME="exp043-${TIER}-${MODEL_KEY}"
+    local OUTPUT="${CKPT_DIR}/${NAME}"
+
+    echo ""
+    echo "============================================================"
+    echo "Config ${CONFIG_NUM}: ${TIER^^}-tier × Qwen3-${MODEL_KEY^^} SID"
+    echo "============================================================"
+
+    # Train
     T0=$(date +%s)
     if [ -f "${OUTPUT}/train_meta.json" ] && [ "${FORCE}" != true ]; then
         echo "  [train] Checkpoint found, skipping."
     else
         echo ">>> Training ${NAME}..."
-        torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
-            --preprocessed_dir "${NTP_DATA}" \
-            --output_dir "${OUTPUT}" \
-            --name "${NAME}" \
-            --model s-tier \
-            --use_time_gap \
-            --use_action_level \
-            --use_segment_emb
+        if [ "${TIER}" == "s" ]; then
+            torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
+                --preprocessed_dir "${NTP_DATA}" \
+                --output_dir "${OUTPUT}" \
+                --name "${NAME}" \
+                --model s-tier \
+                --use_time_gap \
+                --use_action_level \
+                --use_segment_emb
+        else
+            torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
+                --preprocessed_dir "${NTP_DATA}" \
+                --output_dir "${OUTPUT}" \
+                --name "${NAME}" \
+                --model s-tier \
+                --embed_dim "${M_EMBED}" \
+                --n_heads "${M_HEADS}" \
+                --n_transformer_layers "${M_LAYERS}" \
+                --n_experts "${M_EXPERTS}" \
+                --expert_dim "${M_EXPERT_DIM}" \
+                --use_time_gap \
+                --use_action_level \
+                --use_segment_emb
+        fi
     fi
     T1=$(date +%s)
     echo "  Training complete  ($(( (T1 - T0) / 60 ))min)"
 
-    # Step 3: full eval
+    # Full eval
     echo ">>> Full eval (n_recall=1000)..."
     T2=$(date +%s)
     torchrun --nproc_per_node="${N_GPUS}" run.py eval-ntp \
@@ -148,14 +179,33 @@ print(f'  n_seqs={m[\"n_seqs\"]:,}  n_eval_items={m[\"n_eval_items\"]:,}')
     echo "  Eval complete  ($(( (T3 - T2) / 60 ))min)  total=$(( (T3 - T0) / 60 ))min"
 
     git add experiments/
-    git commit -m "EXP-043 ${NAME}: S-tier NTP with Qwen3-${MODEL_KEY} SID" || echo "Nothing to commit"
+    git commit -m "EXP-043 ${NAME}: ${TIER^^}-tier NTP with Qwen3-${MODEL_KEY} SID" || echo "Nothing to commit"
     ./push.sh
 }
 
-# ── Run all configs ───────────────────────────────────────────
-[ "${START_FROM}" -le 1 ] && run_config "0.6b" 1
-[ "${START_FROM}" -le 2 ] && run_config "4b"   2
-[ "${START_FROM}" -le 3 ] && run_config "8b"   3
+# ── Step 1: Preprocess NTP data (3 SID caches, shared by S+M) ─
+echo ">>> Preprocessing NTP data for all 3 SID caches..."
+[ "${START_FROM}" -le 1 ] && preprocess_sid "0.6b"
+[ "${START_FROM}" -le 1 ] && preprocess_sid "4b"
+[ "${START_FROM}" -le 1 ] && preprocess_sid "8b"
+
+# ── Step 2: S-tier configs ────────────────────────────────────
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo "S-tier × 3 SID"
+echo "════════════════════════════════════════════════════════════════"
+[ "${START_FROM}" -le 1 ] && run_config "s" "0.6b" "S1"
+[ "${START_FROM}" -le 2 ] && run_config "s" "4b"   "S2"
+[ "${START_FROM}" -le 3 ] && run_config "s" "8b"   "S3"
+
+# ── Step 3: M-tier configs ────────────────────────────────────
+echo ""
+echo "════════════════════════════════════════════════════════════════"
+echo "M-tier × 3 SID"
+echo "════════════════════════════════════════════════════════════════"
+[ "${START_FROM}" -le 4 ] && run_config "m" "0.6b" "M1"
+[ "${START_FROM}" -le 5 ] && run_config "m" "4b"   "M2"
+[ "${START_FROM}" -le 6 ] && run_config "m" "8b"   "M3"
 
 # ── Summary ───────────────────────────────────────────────────
 echo ""
@@ -164,10 +214,14 @@ python3 -c "
 import json, os
 
 configs = [
-    ('exp036-full-features',  'exp013 SID (old 0.6B, ~497万 items)'),
-    ('exp043-s-0.6b',         'exp026 SID Qwen3-0.6B (1024D, ~110万 items)'),
-    ('exp043-s-4b',           'exp026 SID Qwen3-4B  (2560D, ~111万 items)'),
-    ('exp043-s-8b',           'exp026 SID Qwen3-8B  (4096D, ~111万 items)'),
+    ('exp036-full-features',  'S-tier, exp013 SID (old 0.6B)'),
+    ('exp042-m-sft',          'M-tier, exp013 SID (old 0.6B)'),
+    ('exp043-s-0.6b',         'S-tier, Qwen3-0.6B SID'),
+    ('exp043-s-4b',           'S-tier, Qwen3-4B  SID'),
+    ('exp043-s-8b',           'S-tier, Qwen3-8B  SID'),
+    ('exp043-m-0.6b',         'M-tier, Qwen3-0.6B SID'),
+    ('exp043-m-4b',           'M-tier, Qwen3-4B  SID'),
+    ('exp043-m-8b',           'M-tier, Qwen3-8B  SID'),
 ]
 
 # also show SID cache stats
@@ -207,7 +261,7 @@ for name, desc in configs:
 echo ""
 echo ">>> Committing final results..."
 git add experiments/
-git commit -m "EXP-043 complete: embedding model size comparison (0.6B/4B/8B SID)" || echo "Nothing to commit"
+git commit -m "EXP-043 complete: S+M tier × 0.6B/4B/8B SID comparison" || echo "Nothing to commit"
 ./push.sh
 
 echo ""
