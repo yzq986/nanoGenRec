@@ -12,7 +12,7 @@ CKPT_DIR = REPO_ROOT / "experiments" / "ntp_checkpoints"
 REGISTRY_PATH = REPO_ROOT / "experiments" / "registry.json"
 
 # Known config mapping: checkpoint name → config params
-# Manually curated from experiments/log.md + scripts
+# Manually curated from experiments/logs/ + scripts
 KNOWN_CONFIGS = {
     "exp020-hard-lam03": {
         "model": "probe", "sid_cache_name": "exp020-hard-lam03",

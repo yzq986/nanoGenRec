@@ -100,7 +100,7 @@ FORCE="${FORCE:-false}"
 - 日期窗口: `2026-03-18` ~ `2026-03-31`（14d，EXP-016 验证最优）
 - Checkpoint 目录: `experiments/ntp_checkpoints/`
 - 实验结果: `experiments/results/ntp/`
-- 实验日志模板: `experiments/log.md` 顶部的 Template 注释块
+- 实验日志模板: `experiments/logs/index.md` 顶部的 Template 注释块；每个实验独立文件 `experiments/logs/exp-NNN.md`
 
 ### 2.4 Model Tiers
 
@@ -218,7 +218,7 @@ Estimated: 21.0 min | Actual: 20.9 min | Ratio: 1.005
 
 ### P4. 执行 P0 实验
 检查 `ideas/` 各文件的 P0 idea：
-- 对照 `experiments/log.md` 确认是否已执行
+- 对照 `experiments/logs/` 确认是否已执行
 - 如果有未执行的 P0 → 设计并执行
 - 不需要等人类批准（P0 是预批准的）
 
@@ -262,11 +262,12 @@ Estimated: 21.0 min | Actual: 20.9 min | Ratio: 1.005
 
 ### Phase A: Design
 
-1. 阅读 `experiments/log.md` 了解历史
+1. 阅读 `experiments/logs/index.md` + 相关 `exp-NNN.md` 了解历史
 2. 确定实验编号：`ls experiments/scripts/exp-*.sh | tail -1` 取最大编号 + 1
-3. 在 `experiments/log.md` 顶部（Template 下方）写实验记录：
+3. 新建 `experiments/logs/exp-NNN.md` 写实验记录（复制 `index.md` 顶部 Template）：
    - Background、Hypothesis、Design（Variable / Fixed / Metric / Data）
    - Results 和 Analysis 留空（跑完填）
+   - 在 `experiments/logs/index.md` 表格最上方加一行索引
 4. 更新 `ideas/` 对应文件，将 idea status 改为 `active`
 
 ### Phase B: Script Creation
@@ -301,7 +302,7 @@ Estimated: 21.0 min | Actual: 20.9 min | Ratio: 1.005
 
 1. 读 `experiments/ntp_checkpoints/expNNN-*/train_meta.json` 的 eval 结果
 2. 与 baseline（§2.5）对比
-3. 填写 `experiments/log.md` 的 Results 表格
+3. 填写 `experiments/logs/exp-NNN.md` 的 Results 表格
 
 ### Phase F: Decision
 
@@ -312,7 +313,7 @@ Estimated: 21.0 min | Actual: 20.9 min | Ratio: 1.005
    - **INCONCLUSIVE**: 指标互相矛盾（如 PPL 改善但 R@500 下降）→ 写 outbox 请人类判断
 3. 如果 MERGE：更新 §2.5 的 baseline（通过 status.md）
 4. 更新 `ideas/` 中对应 idea 的 status 为 `completed` 或 `closed`
-5. 在 `experiments/log.md` 填写 Analysis 和 Next Steps
+5. 在 `experiments/logs/exp-NNN.md` 填写 Analysis 和 Next Steps
 
 ---
 
@@ -411,7 +412,7 @@ git pull → 读 status → 读 inbox → 决策 →
 |------|------|------|------|
 | `research/` | ✓ | ✓ | 始终 |
 | `experiments/scripts/` | ✓ | ✓ | 新实验脚本 |
-| `experiments/log.md` | ✓ | ✓ | 记录实验 |
+| `experiments/logs/` | ✓ | ✓ | 记录实验 |
 | `ideas/` | ✓ | ✓ | 仅更新 idea status |
 | `papers/` | ✓ | ✗ | 只读 |
 | `ntp/`, `model/`, `rl/`, `eval/`, `data/` | ✓ | ✗ | 需人类批准 |

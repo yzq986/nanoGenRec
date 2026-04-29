@@ -1,6 +1,6 @@
 ---
 name: experiment
-description: Record an experiment entry in experiments/log.md with structured format (Background → Hypothesis → Design → Results → Analysis → Next Steps), and generate a runnable .sh script
+description: Record an experiment entry in experiments/logs/ with structured format (Background → Hypothesis → Design → Results → Analysis → Next Steps), and generate a runnable .sh script
 argument-hint: [experiment title]
 disable-model-invocation: true
 allowed-tools: Read, Edit, Write, Glob, Grep
@@ -8,11 +8,11 @@ allowed-tools: Read, Edit, Write, Glob, Grep
 
 # /experiment Skill
 
-Record a new experiment entry in `experiments/log.md` using the project's structured six-section format.
+Record a new experiment entry in `experiments/logs/` using the project's structured six-section format.
 
 ## Instructions
 
-1. **Read the log**: Use Read tool on `experiments/log.md` to find the highest existing `EXP-NNN` number.
+1. **Read the log**: Use Read tool on `experiments/logs/` to find the highest existing `EXP-NNN` number.
 
 2. **Determine new ID**: Increment the highest EXP number by 1 (e.g., if EXP-001 exists, create EXP-002).
 
@@ -173,7 +173,7 @@ User discusses testing different cluster sizes (512 vs 1024 vs 2048) for NTP rec
 
 Creates two artifacts:
 
-### 1. `experiments/log.md` entry:
+### 1. `experiments/logs/` entry:
 
 ```markdown
 ## EXP-002: NTP Recall vs Cluster Size

@@ -275,7 +275,7 @@ gr_demo/
 
 ## 实验全景图
 
-> 详细记录见 [experiments/log.md](experiments/log.md)。
+> 详细记录见 [experiments/logs/](experiments/logs/)。
 
 ---
 

@@ -46,5 +46,9 @@ sid_prediction_results/
 comparison_report/
 comparison_report_with_behavior/
 
-# Session-local scheduler lock file
+# Session-local scheduler state (per-session, don't share between mirrors)
 .claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
+
+# Runtime queue state (per-session, don't share between mirrors)
+experiments/queue_state.json

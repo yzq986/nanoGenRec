@@ -18,7 +18,7 @@ User runs `/checkpoint [phase description]` after a batch of experiments finishe
 
 ### Step 1: Gather context
 
-1. **Read `experiments/log.md`** to identify all experiments related to this phase and their results.
+1. **Read `experiments/logs/`** to identify all experiments related to this phase and their results.
 2. **Read `ideas/README.md`** to get the global idea index and priority tables.
 3. **Use Grep** to find all IDEA entries across `ideas/*.md` that are affected by the concluded phase.
 
@@ -107,7 +107,7 @@ At the bottom of the topic file, update the `## 优先级总结` table:
 3. **If a "演进记录" subsection exists** under design principles, append the new phase conclusions. If not, create one after the design principles section.
 4. **Preserve all original design principles text** — only append, never rewrite original thinking.
 
-### Step 7: Update `experiments/log.md`
+### Step 7: Update `experiments/logs/`
 
 For any experiments that were concluded as part of this phase but not yet marked completed:
 - Update `**Status**` to `completed`

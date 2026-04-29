@@ -156,7 +156,7 @@ Three remotes are configured:
       --n_recall 1000
   ```
 - **baseline 标准**（exp020-hard-lam03，4×L20X，n_recall=1000）：PPL=16.3，R@10=14.1%，R@500=66.2%
-- 每次新实验 checkpoint 跑完，必须用上述命令补全量 eval，再更新 experiments/log.md 结论。
+- 每次新实验 checkpoint 跑完，必须用上述命令补全量 eval，再更新 `experiments/logs/exp-NNN.md` 结论（并在 `experiments/logs/index.md` 的表格里同步 Status）。
 - `train_meta.json` 里的 eval keys 是 `item_recall@10` / `item_recall@500`（带 `@`，不是 `_`）。
 
 ## Side Features 注入架构
@@ -371,7 +371,7 @@ if deduped:
 
 5. 完成：
    a. 执行 post_hook（如 EVAL_MID_CHECKPOINTS：串行 eval ep1/ep2，找最优 checkpoint）
-   b. 读 train_meta.json，更新 experiments/log.md 对应 EXP 的 Results/Analysis
+   b. 读 train_meta.json，更新 `experiments/logs/exp-NNN.md` 的 Results/Analysis（并同步 `experiments/logs/index.md` 表格 Status 列）
    c. git add experiments/ && git commit -m "EXP-XXX complete: ..." && ./push.sh
    d. 读 queue.txt，找下一个未完成的实验，nohup 启动，更新 queue_state.json
    e. 如队列已空：state 改为 done，告知用户，保持 cron 存活（等新追加）
