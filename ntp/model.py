@@ -1177,6 +1177,28 @@ class NTPModel(nn.Module):
             x = layer(x, positions=positions, timestamps=timestamps, layers=layers)
         return self.final_norm(x)
 
+    def forward_tf(
+        self,
+        tokens: torch.Tensor,
+        side_features: Optional[dict] = None,
+    ) -> torch.Tensor:
+        """Teacher-forced forward: embed tokens + run transformer with correct RoPE params.
+
+        Single call site for all teacher-forced eval. Handles torope position/timestamp/layer
+        internally so callers never need to know about n_sid_layers or torope flags.
+        """
+        B, T = tokens.size()
+        device = tokens.device
+        pos_raw = torch.arange(T, device=device).unsqueeze(0)
+        x = self.embed_with_features(tokens, pos_raw, side_features)
+        if self.use_torope:
+            L = self.n_sid_layers
+            tf_pos = pos_raw // L
+            tf_lay = pos_raw % L
+            tf_ts  = torch.zeros(1, T, device=device)
+            return self._transformer_forward(x, positions=tf_pos, timestamps=tf_ts, layers=tf_lay)
+        return self._transformer_forward(x)
+
     # ── KV-cached inference ──
 
     def _embed_tokens_at_offset(self, tokens: torch.Tensor, offset: int) -> torch.Tensor:

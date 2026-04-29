@@ -143,22 +143,13 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
 
         # Forward pass
         L = n_layers
-        positions = torch.arange(T, device=device).unsqueeze(0)
-        x = probe.embed_with_features(input_tokens, positions, input_sf or None)
-
         if hasattr(probe, 'encoder'):
+            positions = torch.arange(T, device=device).unsqueeze(0)
+            x = probe.embed_with_features(input_tokens, positions, input_sf or None)
             causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
             hidden = probe.encoder(x, mask=causal_mask, is_causal=True)
         else:
-            if getattr(probe, 'use_torope', False):
-                L_sid = probe.n_sid_layers
-                pos_raw = torch.arange(T, device=device).unsqueeze(0)
-                tf_pos = pos_raw // L_sid
-                tf_lay = pos_raw % L_sid
-                tf_ts  = torch.zeros(1, T, device=device)
-                hidden = probe._transformer_forward(x, positions=tf_pos, timestamps=tf_ts, layers=tf_lay)
-            else:
-                hidden = probe._transformer_forward(x)
+            hidden = probe.forward_tf(input_tokens, input_sf or None)
 
         # Per-layer loss and per-position hit@10
         hidden_flat = hidden.reshape(-1, hidden.size(-1))
