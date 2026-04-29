@@ -3,6 +3,9 @@
 # Usage: bash experiments/scripts/upload_s3_models.sh <model>
 #
 # Models:
+#   qwen3-emb-0.6b     Qwen3-Embedding-0.6B  → s3://.../models/Qwen3-Embedding-0.6B
+#   qwen3-emb-4b       Qwen3-Embedding-4B    → s3://.../models/Qwen3-Embedding-4B
+#   qwen3-emb-8b       Qwen3-Embedding-8B    → s3://.../models/Qwen3-Embedding-8B
 #   qwen3-vl-emb-8b    Qwen3-VL-Embedding-8B → s3://.../models/Qwen3-VL-Embedding-8B
 #   qwen3-vl-emb-2b    Qwen3-VL-Embedding-2B → s3://.../models/Qwen3-VL-Embedding-2B
 #   all                上传以上全部
@@ -17,8 +20,11 @@ usage() {
     echo "Usage: bash $0 <model>"
     echo ""
     echo "Available models:"
-    echo "  qwen3-vl-emb-8b    Qwen3-VL-Embedding-8B (16.3GB)"
-    echo "  qwen3-vl-emb-2b    Qwen3-VL-Embedding-2B (4.27GB)"
+    echo "  qwen3-emb-0.6b     Qwen3-Embedding-0.6B  (~1.2GB)"
+    echo "  qwen3-emb-4b       Qwen3-Embedding-4B    (~7.8GB)"
+    echo "  qwen3-emb-8b       Qwen3-Embedding-8B    (~15GB)"
+    echo "  qwen3-vl-emb-8b    Qwen3-VL-Embedding-8B (~16.3GB)"
+    echo "  qwen3-vl-emb-2b    Qwen3-VL-Embedding-2B (~4.27GB)"
     echo "  all                上传以上全部"
     exit 1
 }
@@ -71,6 +77,21 @@ upload_model() {
 MODEL="$1"
 
 case "${MODEL}" in
+    qwen3-emb-0.6b)
+        upload_model "qwen3-emb-0.6b" \
+            "models--Qwen--Qwen3-Embedding-0.6B" \
+            "Qwen3-Embedding-0.6B"
+        ;;
+    qwen3-emb-4b)
+        upload_model "qwen3-emb-4b" \
+            "models--Qwen--Qwen3-Embedding-4B" \
+            "Qwen3-Embedding-4B"
+        ;;
+    qwen3-emb-8b)
+        upload_model "qwen3-emb-8b" \
+            "models--Qwen--Qwen3-Embedding-8B" \
+            "Qwen3-Embedding-8B"
+        ;;
     qwen3-vl-emb-8b)
         upload_model "qwen3-vl-emb-8b" \
             "models--Qwen--Qwen3-VL-Embedding-8B" \
@@ -82,6 +103,15 @@ case "${MODEL}" in
             "Qwen3-VL-Embedding-2B"
         ;;
     all)
+        upload_model "qwen3-emb-0.6b" \
+            "models--Qwen--Qwen3-Embedding-0.6B" \
+            "Qwen3-Embedding-0.6B"
+        upload_model "qwen3-emb-4b" \
+            "models--Qwen--Qwen3-Embedding-4B" \
+            "Qwen3-Embedding-4B"
+        upload_model "qwen3-emb-8b" \
+            "models--Qwen--Qwen3-Embedding-8B" \
+            "Qwen3-Embedding-8B"
         upload_model "qwen3-vl-emb-8b" \
             "models--Qwen--Qwen3-VL-Embedding-8B" \
             "Qwen3-VL-Embedding-8B"
