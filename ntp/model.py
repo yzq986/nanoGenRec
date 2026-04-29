@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import math
 
+from ntp.features import REGISTRY as _FEATURE_REGISTRY
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -944,8 +946,7 @@ class NTPModel(nn.Module):
         max_seq_len: int = 0,
         contrastive_dim: int = 0,
         contrastive_item_dim: int = 1024,
-        n_time_buckets: int = 0,
-        n_action_levels: int = 0,
+        active_features: Optional[List[str]] = None,
         use_segment_emb: bool = False,
         use_torope: bool = False,
         torope_time_split: float = 0.5,
@@ -990,13 +991,12 @@ class NTPModel(nn.Module):
             else:
                 self.pos_emb = nn.Embedding(self.max_seq_len, embed_dim)
 
-        # Side information embeddings
-        # time_gap_emb and TO-RoPE time planes are complementary: bucket emb captures
-        # coarse categorical gap; RoPE time planes encode continuous relative ordering.
-        if n_time_buckets > 0:
-            self.time_gap_emb = nn.Embedding(n_time_buckets, embed_dim)
-        if n_action_levels > 0:
-            self.action_emb = nn.Embedding(n_action_levels, embed_dim)
+        # Side feature embeddings — auto-created from registry for each active feature.
+        self.active_features: List[str] = list(active_features) if active_features else []
+        for key in self.active_features:
+            fdef = _FEATURE_REGISTRY.get(key)
+            if fdef is not None and fdef.inject == 'embed_add' and fdef.emb_size > 0:
+                setattr(self, f'{key}_emb', nn.Embedding(fdef.emb_size, embed_dim))
 
         # Build TO-RoPE params dict for TransformerLayer (or None)
         torope_layer_params = None
@@ -1081,17 +1081,18 @@ class NTPModel(nn.Module):
         feature embeddings manually.  Adding a new side feature means editing
         exactly this one function.
 
-        side_features: dict with optional keys:
-            "time_gaps"     — (B, T) long, bucket embedding
-            "action_levels" — (B, T) long, action level embedding
-            (timestamps lives in the TO-RoPE path, not here)
+        side_features: dict[str, Tensor] — any registered 'embed_add' features.
+            'torope' features (timestamps) are handled in _forward_packed, not here.
         """
         x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
         sf = side_features or {}
-        if 'time_gaps' in sf and sf['time_gaps'] is not None and hasattr(self, 'time_gap_emb'):
-            x = x + self.time_gap_emb(sf['time_gaps'])
-        if 'action_levels' in sf and sf['action_levels'] is not None and hasattr(self, 'action_emb'):
-            x = x + self.action_emb(sf['action_levels'])
+        for key, val in sf.items():
+            fdef = _FEATURE_REGISTRY.get(key)
+            if fdef is None or fdef.inject != 'embed_add':
+                continue
+            emb = getattr(self, f'{key}_emb', None)
+            if emb is not None and val is not None:
+                x = x + emb(val)
         return x
 
     def _transformer_forward(

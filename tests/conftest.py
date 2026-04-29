@@ -13,6 +13,7 @@ sys.path.insert(0, repo_root)
 import torch
 
 from ntp.model import NTPModel, SIDTrie
+from ntp.features import REGISTRY, FeatureDef
 
 
 # ── Model factories ──────────────────────────────────────────────────────────
@@ -22,16 +23,17 @@ CLUSTERS = 32   # small enough for fast softmax
 EMBED_DIM = 64
 N_HEADS = 4
 N_TRANSFORMER = 2
-N_TIME_BUCKETS = 8
-N_ACTION_LEVELS = 4
 SEQ_LEN = 64    # max_seq_len
+
+# Derived from registry — no hardcoded sizes here
+_EMBED_ADD_FEATURES = [k for k, v in REGISTRY.items() if v.inject == 'embed_add']
 
 
 def make_model(features: bool = False, seed: int = 42) -> NTPModel:
     """Tiny NTPModel, CPU, eval mode.
 
     Args:
-        features: if True, add time_gap_emb + action_emb.
+        features: if True, activate all embed_add features from REGISTRY.
     """
     torch.manual_seed(seed)
     model = NTPModel(
@@ -44,8 +46,7 @@ def make_model(features: bool = False, seed: int = 42) -> NTPModel:
         dropout=0.0,
         use_moe=False,
         max_seq_len=SEQ_LEN,
-        n_time_buckets=N_TIME_BUCKETS if features else 0,
-        n_action_levels=N_ACTION_LEVELS if features else 0,
+        active_features=_EMBED_ADD_FEATURES if features else [],
     )
     model.eval()
     return model
@@ -76,9 +77,17 @@ def make_sid(batch: int = 2, seed: int = 1) -> torch.Tensor:
     return torch.randint(0, CLUSTERS, (batch, N_LAYERS))
 
 
-def make_features(batch: int, length: int, seed: int = 2):
-    """Random time_gaps (B, T) and action_levels (B, T)."""
+def make_features(batch: int, length: int, seed: int = 2) -> dict:
+    """Random side features dict for all embed_add features in REGISTRY.
+
+    Returns dict[str, Tensor] keyed by feature name — pass directly as
+    side_features / ctx_side_features.
+    """
     torch.manual_seed(seed)
-    tg = torch.randint(0, N_TIME_BUCKETS, (batch, length))
-    al = torch.randint(0, N_ACTION_LEVELS, (batch, length))
-    return tg, al
+    result = {}
+    for key in _EMBED_ADD_FEATURES:
+        fdef = REGISTRY[key]
+        size = fdef.emb_size
+        dtype = torch.long if fdef.dtype == 'long' else torch.float32
+        result[key] = torch.randint(0, size, (batch, length)).to(dtype)
+    return result

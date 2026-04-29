@@ -222,18 +222,17 @@ def test_ntp_model_param_count_positive():
 
 def test_ntp_model_with_features_forward():
     """_forward_packed with features runs without error."""
-    from conftest import make_features, N_TIME_BUCKETS, N_ACTION_LEVELS
+    from conftest import make_features
     model = make_model(features=True)
     torch.manual_seed(2)
     B, T = 2, 12
     tokens = torch.randint(0, CLUSTERS, (B, T))
     targets = torch.randint(0, CLUSTERS, (B, T))
     mask = torch.ones(B, T, dtype=torch.bool)
-    tg, al = make_features(batch=B, length=T)
+    sf = make_features(batch=B, length=T)
 
     with torch.no_grad():
-        loss = model._forward_packed(tokens, targets, mask,
-                                      time_gaps=tg, action_levels=al)
+        loss = model._forward_packed(tokens, targets, mask, side_features=sf)
 
     assert torch.isfinite(loss)
     print(f"  [PASS] NTPModel _forward_packed with features ({loss.item():.4f})")

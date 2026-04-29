@@ -114,28 +114,26 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
         for i, toks in enumerate(tokens_list):
             padded[i, :len(toks)] = torch.tensor(toks, dtype=torch.long)
 
-        # Side features (time_gaps, action_levels) — pad if present
-        has_time_gap = hasattr(probe, 'time_gap_emb') and 'time_gaps' in batch_seqs[0]
-        has_action = hasattr(probe, 'action_emb') and 'action_levels' in batch_seqs[0]
-        time_gaps_padded = None
-        action_levels_padded = None
-        if has_time_gap:
-            time_gaps_padded = torch.zeros(B, max_len, dtype=torch.long, device=device)
+        # Side features — pad all features present in both the shard and the model
+        from ntp.features import REGISTRY as _FEAT_REG
+        sf_padded: Dict[str, torch.Tensor] = {}
+        for key, fdef in _FEAT_REG.items():
+            if fdef.inject != 'embed_add':
+                continue
+            if key not in batch_seqs[0]:
+                continue
+            dtype = torch.long if fdef.dtype == 'long' else torch.float32
+            t = torch.zeros(B, max_len, dtype=dtype, device=device)
             for i, s in enumerate(batch_seqs):
-                tg = s['time_gaps']
-                time_gaps_padded[i, :len(tg)] = torch.tensor(tg, dtype=torch.long)
-        if has_action:
-            action_levels_padded = torch.zeros(B, max_len, dtype=torch.long, device=device)
-            for i, s in enumerate(batch_seqs):
-                al = s['action_levels']
-                action_levels_padded[i, :len(al)] = torch.tensor(al, dtype=torch.long)
+                v = s[key]
+                t[i, :len(v)] = torch.tensor(v, dtype=dtype)
+            sf_padded[key] = t
 
         # LM-style shift
         input_tokens = padded[:, :-1]
         target_tokens = padded[:, 1:]
         T = input_tokens.size(1)
-        input_time_gaps = time_gaps_padded[:, :-1] if has_time_gap else None
-        input_action_levels = action_levels_padded[:, :-1] if has_action else None
+        input_sf = {k: v[:, :-1] for k, v in sf_padded.items()}
 
         arange = torch.arange(T, device=device).unsqueeze(0)
         valid_mask = arange < (lengths.unsqueeze(1) - 1)
@@ -149,11 +147,7 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
         # Forward pass
         L = n_layers
         positions = torch.arange(T, device=device).unsqueeze(0)
-        x = probe._embed_tokens(input_tokens) + probe._get_pos_emb(positions)
-        if input_time_gaps is not None:
-            x = x + probe.time_gap_emb(input_time_gaps)
-        if input_action_levels is not None:
-            x = x + probe.action_emb(input_action_levels)
+        x = probe.embed_with_features(input_tokens, positions, input_sf or None)
 
         if hasattr(probe, 'encoder'):
             causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
@@ -280,17 +274,13 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
         n_items_in_seq = len(tokens) // n_layers
         split_item_idx = split_pos // n_layers
 
-        has_tg = 'time_gaps' in seq
-        has_al = 'action_levels' in seq
-
+        from ntp.features import REGISTRY as _FEAT_REG
         for ei, cid in enumerate(eval_cids):
             item_idx = split_item_idx + ei
-            if item_idx < 1:  # need at least 1 preceding item for context
+            if item_idx < 1:
                 continue
-            # Context: all tokens before this item
             ctx_end = item_idx * n_layers
             context_tokens = tokens[:ctx_end]
-            # Target: this item's SID tokens
             target_tokens = tokens[ctx_end:ctx_end + n_layers]
             item = {
                 'context': context_tokens,
@@ -299,12 +289,11 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
             }
             ctx_sf = {}
             gen_sf = {}
-            if has_tg:
-                ctx_sf['time_gaps'] = seq['time_gaps'][:ctx_end]
-                gen_sf['time_gaps'] = seq['time_gaps'][ctx_end]
-            if has_al:
-                ctx_sf['action_levels'] = seq['action_levels'][:ctx_end]
-                gen_sf['action_levels'] = seq['action_levels'][ctx_end - 1]
+            for key, fdef in _FEAT_REG.items():
+                if fdef.inject != 'embed_add' or key not in seq:
+                    continue
+                ctx_sf[key] = seq[key][:ctx_end]
+                gen_sf[key] = seq[key][ctx_end] if ctx_end < len(seq[key]) else fdef.default_val
             if ctx_sf:
                 item['ctx_side_features'] = ctx_sf
             if gen_sf:
@@ -338,10 +327,11 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
         # Build side feature tensors for context (if available)
         ctx_sf_tensors = None
         if 'ctx_side_features' in item:
-            ctx_sf_tensors = {
-                k: torch.tensor(v, dtype=torch.long, device=device).unsqueeze(0)
-                for k, v in item['ctx_side_features'].items()
-            }
+            ctx_sf_tensors = {}
+            for k, v in item['ctx_side_features'].items():
+                fdef = _FEAT_REG.get(k)
+                dtype = torch.float32 if (fdef and fdef.dtype == 'float') else torch.long
+                ctx_sf_tensors[k] = torch.tensor(v, dtype=dtype, device=device).unsqueeze(0)
 
         beams, scores, _ = constrained_beam_search(
             probe, ctx, sid_trie, beam_size=recall_beam_size,

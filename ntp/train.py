@@ -1050,10 +1050,6 @@ def train_packed(
         if contrastive_weight > 0:
             _extra_kwargs['contrastive_dim'] = contrastive_dim
             _extra_kwargs['contrastive_item_dim'] = _contrastive_item_dim
-        if 'time_gaps' in sf_lists:
-            _extra_kwargs['n_time_buckets'] = 16
-        if 'action_levels' in sf_lists:
-            _extra_kwargs['n_action_levels'] = 4
         if use_segment_emb:
             _extra_kwargs['use_segment_emb'] = True
         if use_torope:
@@ -1070,8 +1066,9 @@ def train_packed(
             n_experts=max(n_experts, 1),
             top_k=top_k,
             expert_dim=_expert_dim,
-            parallel=False,  # packed = always causal AR
+            parallel=False,
             max_seq_len=max_seq_len,
+            active_features=list(sf_lists.keys()),
             **_extra_kwargs,
         ).to(device)
     else:
@@ -1385,10 +1382,8 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
         }
         if hasattr(probe, 'use_segment_emb') and probe.use_segment_emb:
             probe_config['use_segment_emb'] = True
-        if hasattr(probe, 'time_gap_emb'):
-            probe_config['n_time_buckets'] = probe.time_gap_emb.num_embeddings
-        if hasattr(probe, 'action_emb'):
-            probe_config['n_action_levels'] = probe.action_emb.num_embeddings
+        if hasattr(probe, 'active_features') and probe.active_features:
+            probe_config['active_features'] = probe.active_features
         if hasattr(probe, 'use_torope') and probe.use_torope:
             probe_config['use_torope'] = True
             probe_config['torope_time_split'] = probe.torope_time_split
@@ -1490,16 +1485,12 @@ def parse_args():
     parser.add_argument('--dry_run', action='store_true',
                         help='Run 2 steps only (smoke test)')
     # Side information features (EXP-023)
-    parser.add_argument('--use_time_gap', action='store_true', default=False,
-                        help='Enable time gap embedding (16 buckets)')
-    parser.add_argument('--use_action_level', action='store_true', default=False,
-                        help='Enable action level embedding (4 levels)')
     parser.add_argument('--use_segment_emb', action='store_true', default=False,
                         help='Enable segment embedding (item_pos + layer_pos)')
-    # TO-RoPE (feat-5, arxiv 2510.20455)
+    # TO-RoPE (feat-5, arxiv 2510.20455) — architecture flag, not a data feature
     parser.add_argument('--use_torope', action='store_true', default=False,
                         help='Enable TO-RoPE (Time-and-Order RoPE). Replaces learnable pos_emb '
-                             'and time_gap_emb with split-by-dim rotary encoding.')
+                             'with split-by-dim rotary encoding.')
     parser.add_argument('--torope_time_split', type=float, default=0.5,
                         help='Fraction of RoPE planes for time encoding (default 0.5)')
     return parser.parse_args()
@@ -1712,12 +1703,11 @@ def main():
     split_pos_list = shard_data['split_pos_list']
     neg_l0_list = shard_data.get('neg_l0_list')
     side_features_lists = {}
-    if args.use_time_gap and 'time_gaps_list' in shard_data:
-        side_features_lists['time_gaps'] = shard_data['time_gaps_list']
-    if args.use_action_level and 'action_levels_list' in shard_data:
-        side_features_lists['action_levels'] = shard_data['action_levels_list']
-    if args.use_torope and 'timestamps_list' in shard_data:
-        side_features_lists['timestamps'] = shard_data['timestamps_list']
+    from ntp.features import REGISTRY as _FEAT_REG
+    for key, fdef in _FEAT_REG.items():
+        list_key = f'{key}_list'
+        if list_key in shard_data:
+            side_features_lists[key] = shard_data[list_key]
     sf_desc = ', '.join(side_features_lists.keys()) if side_features_lists else 'none'
     log(is_main, f"  Rank {local_rank}: loaded {len(tokens_list):,} seqs from shard"
                  + (f" (with ENTP neg data)" if neg_l0_list is not None else "")
@@ -1856,8 +1846,7 @@ def main():
                 top_k=cfg.get('top_k', 2),
                 expert_dim=cfg.get('expert_dim', 1024),
                 max_seq_len=cfg.get('max_seq_len', max_seq_len),
-                n_time_buckets=cfg.get('n_time_buckets', 0),
-                n_action_levels=cfg.get('n_action_levels', 0),
+                active_features=cfg.get('active_features', []),
                 use_segment_emb=cfg.get('use_segment_emb', False),
                 use_torope=cfg.get('use_torope', False),
                 torope_time_split=cfg.get('torope_time_split', 0.5),
