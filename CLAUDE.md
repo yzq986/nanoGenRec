@@ -274,15 +274,41 @@ exp-040.sh   /tmp/exp040.log   EXP-040 complete!
 3. 未完成：报告进度（grep "step \|EXP-" LOG | tail -3），继续等待
 4. 出错（log 有 Traceback/Error/exitcode : 1）：告知用户，state 改为 error，停止
 
-**早停检查 — 如发现以下任意情况，立即 kill 进程（pkill -f "<脚本名>"），更新 status=stopped，告知用户：**
+**早停检查 — 如发现以下任意情况，立即执行 early-stop 流程（见下），告知用户：**
 - log 中出现 Traceback / Error / exitcode : 1（非 SIGTERM）
 - 连续 3 次检查 step 数字没有增加（训练卡住）
 - reward_mean 持续为 0 超过 50 steps（reward 信号消失）
 - advantage_mean 绝对值 > 50（数值爆炸）
 - clip_fraction > 0.99 且持续 20+ steps（策略崩溃）
 
+**R@500 早停检查 — 每次有新的 inline eval 结果时执行：**
+- 从 log 中 grep 所有 `item_recall@500:` 行，提取数值列表（去重相邻重复，每 epoch 最多取 1 个值）
+- 计算历史最佳值 best_r500，取最新值 latest_r500
+- 如果 best_r500 >= 0.45 且 latest_r500 < best_r500 - 0.10：触发早停（R@500 下跌超过 10pp）
+- 如果 best_r500 < 0.45 但 latest_r500 < 0.30 且已跑了 >= 2 个 epoch：触发早停（基础性能不及格）
+- 否则：报告 "R@500: latest=X.XX best=X.XX"，继续等待
+
+实现提取的 bash 命令：
+```bash
+grep 'item_recall@500:' LOG | awk '{print $2}' | python3 -c "
+import sys
+vals=[float(l) for l in sys.stdin]
+deduped=[]
+for v in vals:
+    if not deduped or abs(v-deduped[-1])>1e-9:
+        deduped.append(v)
+if deduped:
+    print('best={:.4f} latest={:.4f} n_evals={}'.format(max(deduped),deduped[-1],len(deduped)))
+"
+```
+
+**Early-stop 流程：**
+  a. pkill -f "<current脚本名>" 并 pkill -f "torchrun.*<实验名关键词>"
+  b. 更新 queue_state.json status=stopped
+  c. 告知用户（说明触发原因和最后的 R@500 数字）
+  d. 不启动下一个实验，保持 cron 存活
+
 **效果预警 — 告知用户但不自动停止（由用户决定是否继续）：**
-- inline eval R@500 明显低于前序 checkpoint（差距 > 10pp）
 - reward_mean 在 100 steps 后仍 < 0.1
 
 （后续实验可在此追加新的早停/预警条件）
