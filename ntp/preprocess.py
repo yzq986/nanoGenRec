@@ -98,6 +98,8 @@ def save_shard(sequences, path):
     has_features = 'time_gaps' in sequences[0]
     all_time_gaps = [] if has_features else None
     all_action_levels = [] if has_features else None
+    has_timestamps = 'timestamps' in sequences[0]
+    all_timestamps = [] if has_timestamps else None
 
     for seq in sequences:
         all_tokens.extend(seq['tokens'])
@@ -115,6 +117,8 @@ def save_shard(sequences, path):
         if has_features:
             all_time_gaps.extend(seq['time_gaps'])
             all_action_levels.extend(seq['action_levels'])
+        if has_timestamps:
+            all_timestamps.extend(seq['timestamps'])
 
     arrays = dict(
         tokens=np.array(all_tokens, dtype=np.int32),
@@ -130,6 +134,8 @@ def save_shard(sequences, path):
     if has_features:
         arrays['time_gaps'] = np.array(all_time_gaps, dtype=np.int8)
         arrays['action_levels'] = np.array(all_action_levels, dtype=np.int8)
+    if has_timestamps:
+        arrays['timestamps'] = np.array(all_timestamps, dtype=np.float32)
 
     np.savez_compressed(path, **arrays)
 
@@ -147,6 +153,7 @@ def load_shard(path):
 
     has_neg = 'neg_l0_flat' in data
     has_features = 'time_gaps' in data.files
+    has_timestamps = 'timestamps' in data.files
 
     if has_neg:
         neg_flat = data['neg_l0_flat']
@@ -155,12 +162,14 @@ def load_shard(path):
 
     time_gaps_all = data['time_gaps'] if has_features else None
     action_levels_all = data['action_levels'] if has_features else None
+    timestamps_all = data['timestamps'] if has_timestamps else None
 
     tokens_list = []
     split_pos_list = []
     neg_l0_list = [] if has_neg else None
     time_gaps_list = [] if has_features else None
     action_levels_list = [] if has_features else None
+    timestamps_list = [] if has_timestamps else None
 
     for i in range(len(offsets) - 1):
         start, end = int(offsets[i]), int(offsets[i + 1])
@@ -176,6 +185,8 @@ def load_shard(path):
         if has_features:
             time_gaps_list.append(time_gaps_all[start:end].tolist())
             action_levels_list.append(action_levels_all[start:end].tolist())
+        if has_timestamps:
+            timestamps_list.append(timestamps_all[start:end].tolist())
 
     result = {
         'tokens_list': tokens_list,
@@ -186,6 +197,8 @@ def load_shard(path):
     if has_features:
         result['time_gaps_list'] = time_gaps_list
         result['action_levels_list'] = action_levels_list
+    if has_timestamps:
+        result['timestamps_list'] = timestamps_list
     return result
 
 
@@ -201,8 +214,10 @@ def load_shard_full(path):
     eval_cids_flat = data['eval_cids_flat']
     eval_cids_offsets = data['eval_cids_offsets']
     has_features = 'time_gaps' in data.files
+    has_timestamps = 'timestamps' in data.files
     time_gaps_all = data['time_gaps'] if has_features else None
     action_levels_all = data['action_levels'] if has_features else None
+    timestamps_all = data['timestamps'] if has_timestamps else None
 
     sequences = []
     for i in range(len(offsets) - 1):
@@ -219,6 +234,8 @@ def load_shard_full(path):
         if has_features:
             seq['time_gaps'] = time_gaps_all[start:end].tolist()
             seq['action_levels'] = action_levels_all[start:end].tolist()
+        if has_timestamps:
+            seq['timestamps'] = timestamps_all[start:end].tolist()
         sequences.append(seq)
     return sequences
 
