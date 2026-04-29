@@ -1283,12 +1283,11 @@ def train_packed(
                 tg_sample = batch_sf['time_gaps'][0, :8].tolist()
                 log(is_main, f"  [sanity] train  time_gaps[0,:8] = {tg_sample}")
             if 'timestamps' in batch_sf:
-                ts_row = batch_sf['timestamps'][0]
-                nonzero_vals = ts_row[ts_row != 0].tolist()
-                ts_preview = nonzero_vals[:4] if nonzero_vals else ts_row[:4].tolist()
-                label = "first nonzero vals" if nonzero_vals else "all zero (seq[0])"
-                log(is_main, f"  [sanity] train  timestamps[0] {label}: {[f'{v:.2f}' for v in ts_preview]}")
-                if float(batch_sf['timestamps'].max()) == 0.0:
+                ts_all = batch_sf['timestamps']
+                ri = torch.randint(ts_all.shape[0], (1,)).item()
+                ts_preview = ts_all[ri, :8].tolist()
+                log(is_main, f"  [sanity] train  timestamps[rand={ri},:8] = {[f'{v:.2f}' for v in ts_preview]}")
+                if float(ts_all.max()) == 0.0:
                     log(is_main, "  [WARNING] use_torope=True but timestamps are ALL ZERO (batch max=0) — "
                                  "train-infer mismatch! preprocess-ntp may be missing timestamps.")
             elif use_torope:
