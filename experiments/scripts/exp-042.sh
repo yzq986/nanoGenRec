@@ -173,13 +173,9 @@ if [ "${START_FROM}" -le 1 ]; then
     git commit -m "EXP-042 Stage1 SFT complete: M-tier baseline" || echo "Nothing to commit"
     ./push.sh
 
-    # Early stop check: SFT R@500 >= 0.55
-    if ! check_r500 "${SFT_OUT}" "0.55" "SFT"; then
-        echo "  !! EARLY STOP: SFT R@500 < 55%, M-tier not promising. Stopping."
-        echo "EXP-042 stopped at Stage 1 (SFT early stop)."
-        exit 0
-    fi
-    echo "  Early stop check PASSED — continuing to SP-DPO."
+    echo "  Stage 1 complete — stopping as requested (NTP only)."
+    echo "EXP-042 complete!"
+    exit 0
 fi
 
 # ════════════════════════════════════════════════════════════════
