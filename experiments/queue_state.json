@@ -1,8 +1,8 @@
 {
   "current": "exp-044.sh",
-  "log": "/tmp/exp044b.log",
+  "log": "/tmp/exp044c.log",
   "done_string": "EXP-044 complete!",
   "status": "running",
-  "started_at": "2026-04-29 16:47",
-  "pid": 308413
+  "started_at": "2026-04-29 17:06",
+  "pid": 321510
 }
