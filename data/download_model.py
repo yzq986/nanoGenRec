@@ -4,7 +4,7 @@
     python run.py download-model --model qwen3-vl-2b
     python run.py download-model --model qwen3-8b
 
-会自动启用 hf_transfer (如已安装) 以加速大文件下载。
+hf_transfer 默认禁用 (某些环境下会卡死)，使用普通 HTTP 下载。
 """
 
 import argparse
@@ -24,14 +24,8 @@ def main():
 
     hf_name = args.hf_name or DISTRIBUTED_MODEL_CONFIGS[args.model][0]
 
-    # 尝试启用 hf_transfer (rust 后端, 快 & 更稳)
-    try:
-        import hf_transfer  # noqa: F401
-        os.environ.setdefault('HF_HUB_ENABLE_HF_TRANSFER', '1')
-        print('[hf_transfer] enabled')
-    except ImportError:
-        print('[hf_transfer] not installed; falling back to python downloader')
-        print('              pip install hf_transfer  # 推荐安装')
+    # 禁用 hf_transfer (rust 后端在某些环境下会卡死)
+    os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '0'
 
     from huggingface_hub import snapshot_download
     print(f'Downloading {hf_name} ...')
