@@ -1,8 +1,8 @@
 {
-  "current": "exp-044b.sh",
-  "log": "/tmp/exp044b.log",
-  "done_string": "EXP-044B complete!",
+  "current": "exp-046.sh",
+  "log": "/tmp/exp046.log",
+  "done_string": "EXP-046 complete!",
   "status": "running",
-  "pid": 436579,
-  "next_queue": ["exp-046.sh", "exp-045.sh"]
+  "pid": 461557,
+  "next_queue": ["exp-045.sh"]
 }

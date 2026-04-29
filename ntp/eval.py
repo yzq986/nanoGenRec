@@ -484,8 +484,11 @@ class SemanticIDPredictionMetric(BaseMetric):
             os.path.join(ntp_checkpoint, 'probe.pt'),
             map_location='cpu', weights_only=False,
         )
-        probe_config = ckpt['config']
+        probe_config = dict(ckpt['config'])
         model_type = probe_config.pop('model_type', 'probe')
+        # Strip legacy keys that no longer exist in NTPModel.__init__
+        for _legacy in ('n_time_buckets', 'n_action_levels', 'parallel'):
+            probe_config.pop(_legacy, None)
 
         if model_type == 's-tier':
             probe = NTPModel(**probe_config).to(device)

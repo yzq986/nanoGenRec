@@ -151,8 +151,10 @@ def load_model_from_checkpoint(ckpt_path, device):
     ckpt = torch.load(
         os.path.join(ckpt_path, 'probe.pt'),
         map_location=device, weights_only=False)
-    cfg = ckpt['config']
+    cfg = dict(ckpt['config'])
     model_type = cfg.pop('model_type', 'probe')
+    for _legacy in ('n_time_buckets', 'n_action_levels', 'parallel'):
+        cfg.pop(_legacy, None)
 
     if model_type == 's-tier':
         model = NTPModel(**cfg)

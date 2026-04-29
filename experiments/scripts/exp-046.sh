@@ -85,9 +85,6 @@ train_eval() {
     echo "  [Eval] ${NAME}"
     torchrun --nproc_per_node="${N_GPUS}" run.py eval-ntp \
         --checkpoint "${OUTPUT}" \
-        --sid_cache "${SID_CACHE}" \
-        --date_start "${DATE_START}" \
-        --date_end "${DATE_END}" \
         --n_recall 1000
 }
 
@@ -99,9 +96,6 @@ echo "============================================================"
 echo "  参考 EXP-043 结果，不重训。"
 torchrun --nproc_per_node="${N_GPUS}" run.py eval-ntp \
     --checkpoint "${CKPT_DIR}/exp043-s-0.6b" \
-    --sid_cache "${SID_CACHE}" \
-    --date_start "${DATE_START}" \
-    --date_end "${DATE_END}" \
     --n_recall 1000
 
 # ── Config B: +gate_attn ─────────────────────────────────────

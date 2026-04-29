@@ -22,10 +22,41 @@
       "use_segment_emb": true,
       "use_torope": true
     },
-    "git_commit": "38ca5d1abb9e",
+    "git_commit": "e4cade807cd4",
     "name": "exp044b-torope-ts05-notg",
-    "registered_at": "2026-04-29T18:30:42.869159",
-    "results": {}
+    "registered_at": "2026-04-29T18:54:58.889223",
+    "results": {
+      "avg_loss": 6.17376,
+      "depth_acc_beam": [
+        0.019,
+        0.006,
+        0.005
+      ],
+      "depth_hit@10": [
+        0.1106,
+        0.0414,
+        0.0158
+      ],
+      "depth_hit@10_indep": [
+        0.1101,
+        0.4659,
+        0.1626
+      ],
+      "item_recall@10": 0.043,
+      "item_recall@100": 0.14,
+      "item_recall@50": 0.093,
+      "item_recall@500": 0.307,
+      "layer_ppl": [
+        721.7635,
+        115.0717,
+        1334.7765
+      ],
+      "n_eval_items": 49166,
+      "n_eval_positions": 148078,
+      "n_recall_samples": 1000,
+      "ppl": 479.9876,
+      "target_sid_found_rate": 0.308
+    }
   },
   "44101a26d27e": {
     "backfilled": true,
@@ -50,10 +81,41 @@
       "use_segment_emb": true,
       "use_torope": true
     },
-    "git_commit": "38ca5d1abb9e",
+    "git_commit": "e4cade807cd4",
     "name": "exp044b-torope-ts025",
-    "registered_at": "2026-04-29T18:30:42.865880",
-    "results": {}
+    "registered_at": "2026-04-29T18:54:58.883387",
+    "results": {
+      "avg_loss": 6.147416,
+      "depth_acc_beam": [
+        0.017,
+        0.01,
+        0.01
+      ],
+      "depth_hit@10": [
+        0.1107,
+        0.0369,
+        0.0144
+      ],
+      "depth_hit@10_indep": [
+        0.1103,
+        0.4526,
+        0.1741
+      ],
+      "item_recall@10": 0.047,
+      "item_recall@100": 0.165,
+      "item_recall@50": 0.114,
+      "item_recall@500": 0.347,
+      "layer_ppl": [
+        713.3813,
+        118.5532,
+        1211.2853
+      ],
+      "n_eval_items": 49166,
+      "n_eval_positions": 148078,
+      "n_recall_samples": 1000,
+      "ppl": 467.508,
+      "target_sid_found_rate": 0.349
+    }
   },
   "c72439b2c17f": {
     "backfilled": true,
@@ -78,9 +140,9 @@
       "use_segment_emb": true,
       "use_torope": false
     },
-    "git_commit": "38ca5d1abb9e",
+    "git_commit": "e4cade807cd4",
     "name": "exp043-s-0.6b",
-    "registered_at": "2026-04-29T18:30:42.856582",
+    "registered_at": "2026-04-29T18:54:58.877296",
     "results": {
       "avg_loss": 3.277825,
       "depth_acc_beam": [
@@ -137,9 +199,9 @@
       "use_segment_emb": false,
       "use_torope": false
     },
-    "git_commit": "38ca5d1abb9e",
+    "git_commit": "e4cade807cd4",
     "name": "exp020-hard-lam03",
-    "registered_at": "2026-04-29T18:30:42.847751",
+    "registered_at": "2026-04-29T18:54:58.874276",
     "results": {
       "avg_loss": 2.791025,
       "depth_acc_beam": [
