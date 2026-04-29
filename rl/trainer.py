@@ -785,8 +785,7 @@ def train_grpo(
     a2po=False,             # True → A2PO: amplify neg-adv penalty for hard negatives
     a2po_alpha=1.0,         # A2PO gate scale
     nll_reg=0.0,            # NLL regularization weight: add -nll_reg * log p(best) per group
-    time_gaps_list=None,    # side features: list of int lists (same len as tokens)
-    action_levels_list=None,
+    side_features_lists=None,  # dict[str, list[list]] — auto-detected from shard by caller
     ref_checkpoint=None,    # if set, load ref model from here instead of sft_checkpoint
     max_steps=None,
     wandb_run=None,
@@ -859,8 +858,7 @@ def train_grpo(
     # ── NTP DataLoader ──
     ntp_dataset = UnifiedSequenceDataset(
         ntp_tokens_list, ntp_split_pos_list,
-        time_gaps_list=time_gaps_list,
-        action_levels_list=action_levels_list,
+        side_features_lists=side_features_lists,
     )
     ntp_loader = DataLoader(
         ntp_dataset,
@@ -882,14 +880,15 @@ def train_grpo(
 
     algo = 'ECPO' if delta > 0.0 else 'GRPO'
     beam_mode = 'on-policy' if on_policy_beam else 'off-policy'
-    has_features = time_gaps_list is not None or action_levels_list is not None
+    sf_keys = ntp_dataset._sf_keys   # ordered list of feature names in the batch
+    has_features = bool(sf_keys)
     log(is_main, f"  Training ({algo}): {n_batches} steps, NTP batch={batch_size}, "
                  f"GRPO batch={grpo_batch_size}, G={group_size}, "
                  f"rl_ratio={rl_data_ratio}, λ={grpo_weight}, ε={eps}"
                  + (f", δ={delta}" if delta > 0.0 else "")
                  + (f", A2PO α={a2po_alpha}" if a2po else "")
                  + (f", nll_reg={nll_reg}" if nll_reg > 0.0 else "")
-                 + (f", side_features=True" if has_features else "")
+                 + (f", side_features={sf_keys}" if has_features else "")
                  + f", lr={lr}, beam={beam_mode}")
 
     policy_model.train()
@@ -1110,8 +1109,10 @@ def train_grpo(
         padded = ntp_batch[0].to(device, non_blocking=True)
         lengths = ntp_batch[1].to(device, non_blocking=True)
         split_positions = ntp_batch[2].to(device, non_blocking=True)
-        ntp_time_gaps = ntp_batch[3].to(device, non_blocking=True) if has_features and len(ntp_batch) > 3 else None
-        ntp_action_levels = ntp_batch[4].to(device, non_blocking=True) if has_features and len(ntp_batch) > 4 else None
+        # Side features: batch tail tensors in sf_keys order → build dict
+        ntp_sf = {}
+        for i, key in enumerate(sf_keys):
+            ntp_sf[key] = ntp_batch[3 + i].to(device, non_blocking=True)
         T = padded.shape[1]
 
         input_tokens = padded[:, :-1]
@@ -1124,8 +1125,7 @@ def train_grpo(
             input_tokens,
             packed_targets=target_tokens,
             packed_mask=train_mask,
-            time_gaps=ntp_time_gaps[:, :-1] if ntp_time_gaps is not None else None,
-            action_levels=ntp_action_levels[:, :-1] if ntp_action_levels is not None else None,
+            side_features={k: v[:, :-1] for k, v in ntp_sf.items()} or None,
         )
         ntp_loss.backward()
         del padded, input_tokens, target_tokens, valid_mask, train_mask
@@ -2066,11 +2066,13 @@ def grpo_main():
     shard_data = load_shard(shard_path)
     tokens_list = shard_data['tokens_list']
     split_pos_list = shard_data['split_pos_list']
-    time_gaps_list = shard_data.get('time_gaps_list')
-    action_levels_list = shard_data.get('action_levels_list')
-    sf_names = ([f for f, l in [('time_gap', time_gaps_list), ('action_level', action_levels_list)] if l is not None])
+    from ntp.features import REGISTRY as _FEAT_REG
+    sf_lists = {}
+    for key in _FEAT_REG:
+        if f'{key}_list' in shard_data:
+            sf_lists[key] = shard_data[f'{key}_list']
     log(is_main, f"  NTP shard: {len(tokens_list):,} seqs"
-                 + (f", side features: {'+'.join(sf_names)}" if sf_names else "")
+                 + (f", side features: {list(sf_lists.keys())}" if sf_lists else "")
                  + f" (rank {local_rank})")
 
     # ── Build context pool (eval portion of the shard) ──
@@ -2085,11 +2087,8 @@ def grpo_main():
             if len(ctx) >= n_sid:
                 start = max(0, len(ctx) - 510)
                 ctx_tokens = list(ctx[start:])
-                ctx_sf = {}
-                if time_gaps_list is not None:
-                    ctx_sf['time_gaps'] = list(time_gaps_list[i][:ctx_len][start:])
-                if action_levels_list is not None:
-                    ctx_sf['action_levels'] = list(action_levels_list[i][:ctx_len][start:])
+                ctx_sf = {key: list(vals[i][:ctx_len][start:])
+                          for key, vals in sf_lists.items()}
                 context_pool.append((ctx_tokens, ctx_sf))
     log(is_main, f"  Context pool: {len(context_pool):,} contexts")
 
@@ -2229,8 +2228,7 @@ def grpo_main():
         a2po=getattr(args, 'a2po', False),
         a2po_alpha=getattr(args, 'a2po_alpha', 1.0),
         nll_reg=getattr(args, 'nll_reg', 0.0),
-        time_gaps_list=time_gaps_list,
-        action_levels_list=action_levels_list,
+        side_features_lists=sf_lists,
         ref_checkpoint=getattr(args, 'ref_checkpoint', None),
         max_steps=max_steps,
         wandb_run=wandb_run,

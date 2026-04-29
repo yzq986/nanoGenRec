@@ -124,8 +124,7 @@ class NTPProbe(nn.Module):
                 item_embeddings=None,
                 contrastive_weight: float = 0.0,
                 contrastive_temp: float = 0.07,
-                time_gaps=None,
-                action_levels=None):
+                side_features=None):
         """
         Args:
             input_tokens: (B, seq_len) history SID tokens

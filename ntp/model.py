@@ -250,15 +250,17 @@ def constrained_beam_search(
             input_tokens, ctx_side_features=ctx_side_features,
             ctx_timestamps=ctx_timestamps)
 
-    def _step_sf(n_tok):
-        """Build step side-feature dict with tensors of shape (n_tok, 1)."""
+    def _step_sf(n_tok, seq_len=1):
+        """Build step side-feature dict via registry; shape (n_tok, seq_len)."""
         sf = {}
-        if 'time_gaps' in gen_sf and gen_sf['time_gaps'] is not None and hasattr(model, 'time_gap_emb'):
-            sf['time_gaps'] = torch.full((n_tok, 1), gen_sf['time_gaps'],
-                                         dtype=torch.long, device=device)
-        if 'action_levels' in gen_sf and gen_sf['action_levels'] is not None and hasattr(model, 'action_emb'):
-            sf['action_levels'] = torch.full((n_tok, 1), gen_sf['action_levels'],
-                                              dtype=torch.long, device=device)
+        for key, val in gen_sf.items():
+            fdef = _FEATURE_REGISTRY.get(key)
+            if fdef is None or fdef.inject != 'embed_add':
+                continue
+            if val is None or not hasattr(model, f'{key}_emb'):
+                continue
+            dtype = torch.long if fdef.dtype == 'long' else torch.float32
+            sf[key] = torch.full((n_tok, seq_len), val, dtype=dtype, device=device)
         return sf or None
 
     # ── Phase 1: beam init ──
@@ -269,13 +271,7 @@ def constrained_beam_search(
         step_kv = [c.clone() for c in ctx_kv_caches]
         step_kv_pos = ctx_kv_pos
         step_kv_ts  = ctx_kv_ts
-        pfx_sf = {}
-        if 'time_gaps' in gen_sf and gen_sf['time_gaps'] is not None and hasattr(model, 'time_gap_emb'):
-            pfx_sf['time_gaps'] = torch.full((B, P), gen_sf['time_gaps'],
-                                              dtype=torch.long, device=device)
-        if 'action_levels' in gen_sf and gen_sf['action_levels'] is not None and hasattr(model, 'action_emb'):
-            pfx_sf['action_levels'] = torch.full((B, P), gen_sf['action_levels'],
-                                                  dtype=torch.long, device=device)
+        pfx_sf = _step_sf(B, P)
         current_logits, step_kv, step_kv_pos, step_kv_ts = model.forward_cached(
             generated_tokens=prefix, kv_caches=step_kv,
             step_side_features=pfx_sf or None,
@@ -423,10 +419,14 @@ def constrained_sampling(
 
     def _step_sf(n):
         sf = {}
-        if 'time_gaps' in gen_sf and gen_sf['time_gaps'] is not None and hasattr(model, 'time_gap_emb'):
-            sf['time_gaps'] = torch.full((n, 1), gen_sf['time_gaps'], dtype=torch.long, device=device)
-        if 'action_levels' in gen_sf and gen_sf['action_levels'] is not None and hasattr(model, 'action_emb'):
-            sf['action_levels'] = torch.full((n, 1), gen_sf['action_levels'], dtype=torch.long, device=device)
+        for key, val in gen_sf.items():
+            fdef = _FEATURE_REGISTRY.get(key)
+            if fdef is None or fdef.inject != 'embed_add':
+                continue
+            if val is None or not hasattr(model, f'{key}_emb'):
+                continue
+            dtype = torch.long if fdef.dtype == 'long' else torch.float32
+            sf[key] = torch.full((n, 1), val, dtype=dtype, device=device)
         return sf or None
 
     # ── Sample n_samples paths independently ──
@@ -1068,6 +1068,17 @@ class NTPModel(nn.Module):
         else:
             return self.pos_emb(positions)
 
+    def _apply_embed_add_sf(self, x: torch.Tensor, sf: dict) -> torch.Tensor:
+        """Add registered embed_add features to an already-embedded tensor."""
+        for key, val in sf.items():
+            fdef = _FEATURE_REGISTRY.get(key)
+            if fdef is None or fdef.inject != 'embed_add':
+                continue
+            emb = getattr(self, f'{key}_emb', None)
+            if emb is not None and val is not None:
+                x = x + emb(val)
+        return x
+
     def embed_with_features(
         self,
         tokens: torch.Tensor,        # (B, T)
@@ -1085,15 +1096,7 @@ class NTPModel(nn.Module):
             'torope' features (timestamps) are handled in _forward_packed, not here.
         """
         x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
-        sf = side_features or {}
-        for key, val in sf.items():
-            fdef = _FEATURE_REGISTRY.get(key)
-            if fdef is None or fdef.inject != 'embed_add':
-                continue
-            emb = getattr(self, f'{key}_emb', None)
-            if emb is not None and val is not None:
-                x = x + emb(val)
-        return x
+        return self._apply_embed_add_sf(x, side_features or {})
 
     def _transformer_forward(
         self,
@@ -1230,10 +1233,7 @@ class NTPModel(nn.Module):
             x = self._embed_tokens_at_offset(new_tokens, offset)
             positions = torch.arange(offset, offset + T_new, device=device).unsqueeze(0)
             x = x + self._get_pos_emb(positions)
-            if 'time_gaps' in step_sf and step_sf['time_gaps'] is not None and hasattr(self, 'time_gap_emb'):
-                x = x + self.time_gap_emb(step_sf['time_gaps'])
-            if 'action_levels' in step_sf and step_sf['action_levels'] is not None and hasattr(self, 'action_emb'):
-                x = x + self.action_emb(step_sf['action_levels'])
+            x = self._apply_embed_add_sf(x, step_sf)
 
             # TO-RoPE: pass full KV positions/timestamps so RoPE angles are correct
             if self.use_torope:
