@@ -460,6 +460,7 @@ DISTRIBUTED_MODEL_CONFIGS = {
     "qwen3-4b":     ("Qwen/Qwen3-Embedding-4B",   2560, 32, False),
     "qwen3-8b":     ("Qwen/Qwen3-Embedding-8B",   4096, 16, False),
     "qwen3-vl-2b":  ("Qwen/Qwen3-VL-Embedding-2B", 2048, 8, True),
+    "qwen3-vl-8b":  ("Qwen/Qwen3-VL-Embedding-8B", 4096, 4, True),
 }
 
 
