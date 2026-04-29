@@ -1,0 +1,41 @@
+{
+  "name": "exp041b-entp02",
+  "model_type": "probe",
+  "n_params": 7489024,
+  "n_active_params": 7489024,
+  "total_tokens": 138055536,
+  "total_flops": 6203407334621184,
+  "sid_cache": "experiments/sid_cache/exp013-4096x3-12d-binary",
+  "eval": {
+    "ppl": 50.3566,
+    "layer_ppl": [
+      391.6899,
+      28.107,
+      11.75
+    ],
+    "avg_loss": 3.919131,
+    "depth_hit@10": [
+      0.188,
+      0.141,
+      0.1384
+    ],
+    "depth_hit@10_indep": [
+      0.1872,
+      0.6914,
+      0.7697
+    ],
+    "depth_acc_beam": [
+      0.02,
+      0.017,
+      0.017
+    ],
+    "target_sid_found_rate": 0.462,
+    "n_eval_positions": 148196,
+    "n_eval_items": 49192,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.08,
+    "item_recall@50": 0.183,
+    "item_recall@100": 0.257,
+    "item_recall@500": 0.461
+  }
+}
