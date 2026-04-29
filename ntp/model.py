@@ -279,6 +279,12 @@ def constrained_beam_search(
             input_tokens, ctx_side_features=ctx_side_features,
             ctx_timestamps=ctx_timestamps)
 
+    # Carry-forward timestamp for generated tokens: use last ctx timestamp
+    # (target item timestamp unknown at inference time → assume same as last ctx item)
+    gen_timestamp = None
+    if model.use_torope and ctx_timestamps is not None:
+        gen_timestamp = ctx_timestamps[:, -1:]  # (B, 1) — last ctx token's timestamp
+
     def _step_sf(n_tok, seq_len=1):
         """Build step side-feature dict via registry; shape (n_tok, seq_len)."""
         sf = {}
@@ -292,6 +298,12 @@ def constrained_beam_search(
             sf[key] = torch.full((n_tok, seq_len), val, dtype=dtype, device=device)
         return sf or None
 
+    def _step_ts(n_tok):
+        """Build step_timestamp for TO-RoPE; carry-forward last ctx timestamp."""
+        if gen_timestamp is None:
+            return None
+        return gen_timestamp.expand(n_tok, -1)  # (n_tok, 1)
+
     # ── Phase 1: beam init ──
     if prefix is not None:
         P = prefix.size(1)
@@ -304,6 +316,7 @@ def constrained_beam_search(
         current_logits, step_kv, step_kv_pos, step_kv_ts = model.forward_cached(
             generated_tokens=prefix, kv_caches=step_kv,
             step_side_features=pfx_sf or None,
+            step_timestamp=_step_ts(B),
             kv_positions_cache=step_kv_pos, kv_timestamps_cache=step_kv_ts)
     else:
         beams = torch.zeros(B, 1, 0, dtype=torch.long, device=device)
@@ -321,12 +334,13 @@ def constrained_beam_search(
         if step > start_step:
             last_tokens = beams[:, :, -1].reshape(B * n_beams, 1)
             sf_step = _step_sf(B * n_beams)
-            # All beams share the same positions — take first row and expand
+            # All beams share the same positions/timestamps — take first row and expand
             kv_pos_step = step_kv_pos[:1].expand(B * n_beams, -1) if step_kv_pos is not None else None
             kv_ts_step  = step_kv_ts[:1].expand(B * n_beams, -1)  if step_kv_ts  is not None else None
             current_logits, step_kv, step_kv_pos, step_kv_ts = model.forward_cached(
                 generated_tokens=last_tokens, kv_caches=step_kv,
                 step_side_features=sf_step,
+                step_timestamp=_step_ts(B * n_beams),
                 kv_positions_cache=kv_pos_step, kv_timestamps_cache=kv_ts_step)
 
         log_probs = F.log_softmax(

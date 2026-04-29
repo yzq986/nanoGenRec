@@ -323,16 +323,22 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
 
         # Build side feature tensors for context (if available)
         ctx_sf_tensors = None
+        ctx_timestamps = None
         if 'ctx_side_features' in item:
             ctx_sf_tensors = {}
             for k, v in item['ctx_side_features'].items():
                 fdef = _FEAT_REG.get(k)
                 dtype = torch.float32 if (fdef and fdef.dtype == 'float') else torch.long
-                ctx_sf_tensors[k] = torch.tensor(v, dtype=dtype, device=device).unsqueeze(0)
+                t = torch.tensor(v, dtype=dtype, device=device).unsqueeze(0)
+                if k == 'timestamps':
+                    ctx_timestamps = t  # TO-RoPE path: pass separately
+                else:
+                    ctx_sf_tensors[k] = t
 
         beams, scores, _ = constrained_beam_search(
             probe, ctx, sid_trie, beam_size=recall_beam_size,
-            ctx_side_features=ctx_sf_tensors,
+            ctx_side_features=ctx_sf_tensors or None,
+            ctx_timestamps=ctx_timestamps,
             gen_side_features=item.get('gen_side_features'))
 
         # Check if target SID appears in any beam

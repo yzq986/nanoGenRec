@@ -1282,8 +1282,13 @@ def train_packed(
             if 'timestamps' in batch_sf:
                 ts_sample = batch_sf['timestamps'][0, :8].tolist()
                 log(is_main, f"  [sanity] train  timestamps[0,:8] = {ts_sample}")
+                nonzero = sum(1 for v in ts_sample if v != 0.0)
+                if nonzero == 0:
+                    log(is_main, "  [WARNING] use_torope=True but timestamps are ALL ZERO — "
+                                 "train-infer mismatch! preprocess-ntp may be missing timestamps.")
             elif use_torope:
-                log(is_main, f"  [sanity] train  timestamps = zeros (not in pipeline)")
+                log(is_main, "  [WARNING] use_torope=True but 'timestamps' not in shard data — "
+                             "train-infer mismatch! beam search will use zeros at inference time.")
 
         if dry_run and step >= 1:
             log(is_main, f"  Dry run complete (2 steps, loss={total_loss/2:.4f})")

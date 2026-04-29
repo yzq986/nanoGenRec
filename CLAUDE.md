@@ -116,6 +116,21 @@ Three remotes are configured:
 TO-RoPE 的 `timestamps`（连续实数小时）走单独路径（不加到 embedding，而是传给 attention 的 RoPE 时间分量）。
 **所有路径（训练和推理）必须通过同一个入口注入特征**，否则会产生 train-infer 不一致。
 
+### ⚠️ Train-Infer 不一致：设计实验前必须检查
+
+**凡是训练时注入了某个特征，推理（beam search）必须同样注入，否则实验结果无效，不要浪费 GPU。**
+
+已踩坑：
+- **EXP-023/024**：`time_gaps`/`action_levels` 训练时有，beam search incremental 步骤没传 → R@500 崩溃。修复：EXP-025。
+- **EXP-044B**：`timestamps`（TO-RoPE）训练时传真实 rel_hours，beam search 生成步骤没传 `step_timestamp` → timestamps=0 → attention pattern 完全不同 → R@500 32%（应有 ~60%+）。修复：`constrained_beam_search` 现已 carry-forward ctx 最后一个 timestamp。
+
+**检查清单（设计新特征实验时）**：
+1. 训练时该特征是否非零？（看 `[sanity]` log，或直接看 shard 数据）
+2. `constrained_beam_search` 调用处是否传了对应参数？
+   - `embed_add` 特征 → `gen_side_features` dict
+   - `timestamps` → `ctx_timestamps`（由 beam search 内部 carry-forward）
+3. 如果是新架构路径（如 TO-RoPE），`_step_sf` / `_step_ts` 是否覆盖了该路径？
+
 ### Side Features 统一用 dict 传递
 
 所有 API 接受 `side_features: dict[str, Tensor]`，key 为特征名：
