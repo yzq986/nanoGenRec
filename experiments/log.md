@@ -39,6 +39,52 @@
 
 ---
 
+## EXP-043: Embedding Model Size Comparison — S-tier & M-tier × 0.6B/4B/8B SID
+
+**Date**: 2026-04-29
+**Status**: completed
+
+### Background
+当前 SID tokenizer 使用 Qwen3-0.6B embedding（exp013 SID，旧版）。EXP-026 构建了三套新 SID cache（0.6B/4B/8B，14d），本实验对比三种 embedding 规模对 NTP 性能的影响，同时验证 S-tier vs M-tier 模型在不同 SID 下的表现。
+
+### Design
+- **Variable**: Embedding model size (Qwen3-0.6B / 4B / 8B) × NTP model tier (S-tier / M-tier)
+- **Fixed**: 14d 数据，full features (time_gap + action_level + segment_emb)
+- **SID cache**: exp026-{0.6b,4b,8b}-14d
+- **Baseline**: exp036-full-features (exp013 SID, S-tier, R@500=59.0%)
+
+### Results
+
+| Config | R@10 | R@500 | PPL | L0 PPL | Wall |
+|--------|------|-------|-----|--------|------|
+| **exp036-full-features** (old baseline) | — | 59.0% | — | — | — |
+| exp043-s-0.6b | 11.4% | 61.2% | 26.52 | 390.2 | 8min |
+| exp043-s-4b | 9.7% | 64.3% | 22.49 | 322.2 | 8min |
+| exp043-s-8b | 10.2% | **64.7%** | 20.66 | 279.6 | 8min |
+| exp043-m-0.6b | **14.5%** | 70.2% | 18.54 | 322.9 | 23min |
+| exp043-m-4b | 14.2% | 70.4% | 16.55 | 268.1 | 23min |
+| exp043-m-8b | 13.0% | 69.7% | **16.14** | 240.9 | 23min |
+
+### Analysis
+
+1. **M-tier 大幅领先 S-tier**：M-tier R@500 全部在 70% 附近，比 S-tier（61-65%）高 5-9pp。M-tier active params ~71.6M vs S-tier ~17.5M，模型规模在这个范围仍有显著收益。
+
+2. **Embedding 规模对 R@500 的影响有限但有规律**：
+   - S-tier：0.6B→4B +3.1pp，4B→8B +0.4pp。4B 是明显拐点，8B 边际收益小。
+   - M-tier：0.6B→4B +0.2pp，4B→8B -0.7pp。M-tier 对 SID 质量不敏感，可能模型本身能弥补 tokenizer 差异。
+
+3. **PPL 随 embedding 规模单调下降**：8B embedding 的 L0 PPL 最低（240.9 vs 390.2），说明更大 embedding 让 item 分布更分离、L0 预测更容易。但 PPL 提升未完全转化为 R@500 提升（beam search 候选质量受多因素影响）。
+
+4. **R@10 规律异常**：S-tier 中 8B 比 4B 略高（10.2% vs 9.7%），但均低于 0.6B（11.4%）；M-tier 中 0.6B 最高（14.5%）。R@10 衡量 top beam 候选精度，可能与 SID collision rate 有关（8B collision=5.44% 最高，影响精确 item 定位）。
+
+5. **最优配置**：M-tier + 4B SID（exp043-m-4b）R@500=70.4% 为最优，兼顾 R@10 和 R@500。M-tier + 0.6B SID 次之（70.2%），成本更低（0.6B embedding 更小）。
+
+### Next Steps
+- EXP-044：TO-RoPE vs absolute pos emb，基于 S-tier + 0.6B SID
+- M-tier RL 链路：以 exp043-m-0.6b 为 SFT 起点，接 SP-DPO
+
+---
+
 ## EXP-041B: ENTP-Loss v2 — Session-Level Negatives (behavior_v2 数据)
 
 **Date**: 2026-04-29
