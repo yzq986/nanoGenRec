@@ -45,3 +45,6 @@ eval_results_with_behavior/
 sid_prediction_results/
 comparison_report/
 comparison_report_with_behavior/
+
+# Session-local scheduler lock file
+.claude/scheduled_tasks.lock
