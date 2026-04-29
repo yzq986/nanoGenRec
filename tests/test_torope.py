@@ -189,7 +189,7 @@ def test_torope_model_no_learnable_pos_emb():
     assert not hasattr(model, 'pos_emb'), "Should not have learnable pos_emb with TO-RoPE"
     assert not hasattr(model, 'item_pos_emb'), "Should not have item_pos_emb with TO-RoPE"
     assert not hasattr(model, 'layer_pos_emb'), "Should not have layer_pos_emb with TO-RoPE"
-    assert not hasattr(model, 'time_gap_emb'), "Should not have time_gap_emb with TO-RoPE"
+    # time_gap_emb coexists with TO-RoPE when n_time_buckets > 0 (complementary signals)
     # RoPE buffers registered
     assert hasattr(model, 'torope_freq_idx'), "Missing torope_freq_idx buffer"
     assert hasattr(model, 'torope_inv_freq_time'), "Missing torope_inv_freq_time buffer"

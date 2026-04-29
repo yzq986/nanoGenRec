@@ -998,9 +998,9 @@ class NTPModel(nn.Module):
                 self.pos_emb = nn.Embedding(self.max_seq_len, embed_dim)
 
         # Side information embeddings
-        # With TO-RoPE: time is encoded via RoPE, so time_gap_emb is skipped.
-        # action_emb is still additive (not positional), always included if requested.
-        if n_time_buckets > 0 and not use_torope:
+        # time_gap_emb and TO-RoPE time planes are complementary: bucket emb captures
+        # coarse categorical gap; RoPE time planes encode continuous relative ordering.
+        if n_time_buckets > 0:
             self.time_gap_emb = nn.Embedding(n_time_buckets, embed_dim)
         if n_action_levels > 0:
             self.action_emb = nn.Embedding(n_action_levels, embed_dim)
