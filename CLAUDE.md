@@ -9,6 +9,30 @@ Every time a coding task finishes (implementation complete, no more pending chan
 
 Do not ask for confirmation — just do it after each coding round.
 
+## gr conda env 标准配置
+
+`/home/dev/.conda/envs/gr` — 所有训练/eval/preprocess 任务使用此环境。
+
+| 包 | 版本 |
+|----|------|
+| Python | 3.12.13 |
+| torch | 2.7.1+cu128 |
+| CUDA (driver) | 12.8 |
+| faiss-gpu | 1.14.1（GPU count=8） |
+| numpy | 2.4.4 |
+| pandas | 3.0.2 |
+| pyarrow | 24.0.0 |
+
+**重建方法**（如需从头搭）：
+```bash
+/root/miniconda3/bin/conda create -n gr python=3.12 -y
+/home/dev/.conda/envs/gr/bin/pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+/root/miniconda3/bin/conda install -n gr -c pkgs/main faiss-gpu=1.14.1 -y
+/home/dev/.conda/envs/gr/bin/pip install numpy pandas pyarrow PyYAML pytest -i https://mirrors.aliyun.com/pypi/simple/
+# 注意：conda 安装 faiss 后可能降 numpy 到 1.x，需强制重装：
+/home/dev/.conda/envs/gr/bin/pip install --force-reinstall "numpy>=2.0" -i https://mirrors.aliyun.com/pypi/simple/
+```
+
 ## Python module resolution
 
 The repo root (`gr-demo/`) is added directly to `sys.path`. All modules are imported without a
