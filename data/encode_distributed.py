@@ -4,14 +4,14 @@
     # 纯文本 (默认日期范围)
     torchrun --nproc_per_node=8 -m data.encode_distributed --model qwen3-0.6b
 
-    # 图文 VL (qwen3-vl-2b)
+    # 图文 VL (qwen3-vl-2b, 推荐配置)
     torchrun --nproc_per_node=8 -m data.encode_distributed --model qwen3-vl-2b
 
-    # 指定日期范围
+    # 指定日期范围 + 正序
     torchrun --nproc_per_node=8 -m data.encode_distributed \
-        --model qwen3-0.6b --date_start 2026-01-01 --date_end 2026-04-15
+        --model qwen3-0.6b --date_start 2026-01-01 --date_end 2026-04-15 --oldest_first
 
-逐日期从新到旧处理。每个日期内:
+逐日期处理 (默认新→旧, --oldest_first 反转)。每个日期内:
   1. 逐文件读 content_id，按 ID 级别判断是否已缓存，跳过已缓存的 cid
   2. sha256(content_id) % world_size 分配到对应 rank
   3. 编码后每个 rank 追加到自己的 shard_{rank}.npy
@@ -40,7 +40,7 @@ NUM_SHARDS = 8  # 固定 shard 数，与 8xA100 对齐
 # vision tokens = pixels / IMAGE_FACTOR² (=1024)
 # max_images=1 → per-image 4096 tokens → max_pixels = 4096 * 1024 = 4,194,304
 VL_MAX_IMAGES = 1
-VL_MAX_PIXELS = 4_194_304  # ≈ 2048x2048, 4096 vision tokens 上限
+VL_MAX_PIXELS = 1_048_576  # ≈ 1024x1024, 1024 vision tokens
 VL_IMAGE_TIMEOUT = 3
 VL_IMAGE_RETRIES = 2
 VL_IMAGE_WORKERS = 16
@@ -459,8 +459,8 @@ DISTRIBUTED_MODEL_CONFIGS = {
     "qwen3-0.6b":   ("Qwen/Qwen3-Embedding-0.6B", 1024, 64, False),
     "qwen3-4b":     ("Qwen/Qwen3-Embedding-4B",   2560, 32, False),
     "qwen3-8b":     ("Qwen/Qwen3-Embedding-8B",   4096, 16, False),
-    "qwen3-vl-2b":  ("Qwen/Qwen3-VL-Embedding-2B", 2048, 8, True),
-    "qwen3-vl-8b":  ("Qwen/Qwen3-VL-Embedding-8B", 4096, 4, True),
+    "qwen3-vl-2b":  ("Qwen/Qwen3-VL-Embedding-2B", 2048, 128, True),
+    "qwen3-vl-8b":  ("Qwen/Qwen3-VL-Embedding-8B", 4096, 64, True),
 }
 
 
