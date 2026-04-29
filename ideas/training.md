@@ -1052,3 +1052,74 @@ TCA4Rec 提出 **显式 token-level CF alignment**:
 2. SASRec CF 模型的质量是否足够? 论文用的是 academic datasets (19K users)，我们规模大很多
 3. SID token 空间远小于 LLM vocab → 前缀匹配的 valid item set 在 L1 层可能很大 (每个 L1 token 对应 ~5000 items)
 4. 与 IDEA-flexcode-0 的 CF 模型可以共享，但 TCA 的 CF 信号注入方式更轻量 (只改 loss)
+
+---
+
+## IDEA-climber-0: TAMIP — Time-Aware Multi-Item Prediction + Consumption Lag 诊断
+
+**优先级**: P1
+**来源**: Climber-Pilot (NetEase Cloud Music, arxiv 2602.13581, Feb 2026)
+**状态**: 待讨论 — Consumption Lag 诊断可立即跑, TAMIP 训练范式需改 NTP loss
+
+### 核心思想
+
+**1. Consumption Lag (诊断级洞见)**
+
+大规模推荐的曝光是**批量并行**的：一次 request 给用户同时曝光 m 个 items。但 interaction log 把这 m 个 items 记为**序列** `{i_1, i_2, ..., i_m}` — 这个"顺序"是日志生成的机械产物, **不是真实用户意图的因果链**。
+
+论文论断: NTP 训练在这种数据上会学到**虚假的序列相关性** (spurious sequential pattern), 即把"同次曝光的 item 先后出现"当作真实 causal 信号来学。这是 NTP 训练的隐形偏差。
+
+**2. TAMIP (Time-Aware Multi-Item Prediction)**
+
+修正方案两个组件:
+- **多分支预测 backbone**: 在 shared user representation `h_n` 之上构建 K 个独立 transformer 分支, 每个分支预测 `i_{n+1}, i_{n+2}, ..., i_{n+K}`。K=1 退化为标准 NTP
+- **Time-Aware Masking**: 训练 attention mask 识别"窄时间窗 Δτ 内共同出现"的 item 对, 屏蔽它们之间的 causal attention (允许非因果平行 attention)
+
+训练损失: `L_TAMIP = Σ_{k=1..K} L(i_{n+k} | S_n, time-mask)`
+
+**3. CGSA (Condition-Guided Sparse Attention, SFT 阶段)**
+
+SFT 阶段加 condition instruction tokens (音乐流派/语言/freshness 等业务约束), attention mask 在 generation 强制符合约束。
+
+**4. 结果**: NetEase Cloud Music 在线 A/B **+4.24% 核心业务指标**
+
+### 与当前项目的关联
+
+**Consumption Lag 观察对我们极为重要** — 我们 behavior 数据结构与论文一样, 日志 ordering 不保证反映真实因果。可能已影响 EXP-036/EXP-020 等 baseline 的 NTP loss quality。
+
+**TAMIP 适配**:
+- 改 `ntp/train.py` 为 multi-SID prediction: 预测下 K 个 item 的 SID
+- 用户行为 timestamp 做 masking — EXP-044B 已接通 `rel_hours` pipeline, 可复用
+
+**CGSA 适配**: 当前无 business constraint, 未来上线控制多样性时采纳
+
+### 实验设计草案
+
+**Phase 0 — Consumption Lag 诊断 (0.5 天)**:
+1. 统计 NTP 训练数据中 (user, item_k, item_{k+1}) 的 timestamp gap
+2. Δt 分布有显著峰值在极短处 (<1 min) → 强 Consumption Lag 证据
+3. 报告相邻 item 中 "同窗口 (Δt<5min)" 占比
+
+**Phase 1 — TAMIP K=2**:
+1. `ntp/model.py::_forward_packed` 加第二个 prediction head
+2. `L = L_{NTP, i_{n+1}} + α · L_{NTP, i_{n+2}}` (α=0.5 默认)
+3. 对比 baseline NTP K=1 (R@500=66.2%) vs TAMIP K=2 / K=3
+
+**Phase 2 — Time-Aware Mask** (依赖 EXP-044B timestamp pipeline):
+1. Mask 规则: `|t_i - t_j| < Δτ` 阻止 causal attention
+2. Δτ 扫描 {1m, 5m, 30m, 2h}
+
+### 关键问题
+
+1. **数据端**: EXP-044B `rel_hours` pipeline 已接通, 可直接复用 timestamp
+2. **K 值选择**: K=2-4, K 越大开销越大
+3. **与 IDEA-stamp-0 (MTP) 重叠**: stamp-0 是"多 step 预测同 item 内 tokens"; TAMIP 是"多 step 预测后续 items"。两者正交, 可组合
+4. **Consumption Lag 可能被 IDEA-feat-0 (TimeGap bucket, ✅ EXP-036) 吸收**: TimeGap 间接编码 gap, TAMIP 显式训练目标修正。Phase 0 诊断后决定
+
+### 相关 idea
+
+- IDEA-stamp-0 (Semantic Pruning + MTP): 正交 (item 内 vs item 间)
+- IDEA-feat-0 (TimeGap Bucket, ✅ EXP-036): 间接编码 lag
+- IDEA-torope-0 (Time-and-Order RoPE): 时间差调制 position
+- IDEA-dualgr-0 (ENTP-Loss): 负样本机制
+- IDEA-lac-0 (LAC, ✅ EXP-025/036): action 延迟避免泄漏

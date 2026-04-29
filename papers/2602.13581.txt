@@ -1,0 +1,1580 @@
+Climber-Pilot: A Non-Myopic Generative Recommendation
+Model Towards Better Instruction-Following
+Da Guo
+NetEase Cloud Music
+Hangzhou, China
+guoda@corp.netease.com
+Shijia Wang
+NetEase Cloud Music
+Hangzhou, China
+wangshijia1@corp.netease.com
+Qiang Xiao∗
+NetEase Cloud Music
+Hangzhou, China
+hzxiaoqiang@corp.netease.com
+Yintao Ren
+NetEase Cloud Music
+Hangzhou, China
+renyintao@corp.netease.com
+Weisheng Li
+NetEase Cloud Music
+Hangzhou, China
+liweisheng01@corp.netease.com
+Songpei Xu
+NetEase Cloud Music
+Hangzhou, China
+xusongpei@corp.netease.com
+Ming Yue
+NetEase Cloud Music
+Hangzhou, China
+yueming03@corp.netease.com
+Bin Huang
+NetEase Cloud Music
+Hangzhou, China
+huangbin02@corp.netease.com
+Guanlin Wu
+NetEase Cloud Music
+Hangzhou, China
+wuguanlin03@corp.netease.com
+Chuanjiang Luo
+NetEase Cloud Music
+Hangzhou, China
+luochuanjiang03@corp.netease.com
+Abstract
+Generative retrieval has emerged as a promising paradigm in recom-
+mender systems, offering superior sequence modeling capabilities
+over traditional dual-tower architectures. However, in large-scale
+industrial scenarios, such models often suffer from inherent myopia:
+due to single-step inference and strict latency constraints, they tend
+to collapse diverse user intents into locally optimal predictions, fail-
+ing to capture long-horizon and multi-item consumption patterns.
+Moreover, real-world retrieval systems must follow explicit retrieval
+instructions, such as category-level control and policy constraints.
+Incorporating such instruction-following behavior into generative
+retrieval remains challenging, as existing conditioning or post-hoc
+filtering approaches often compromise relevance or efficiency. In
+this work, we present Climber-Pilot, a unified generative retrieval
+framework to address both limitations. First, we introduce Time-
+Aware Multi-Item Prediction (TAMIP), a novel training paradigm
+designed to mitigate inherent myopia in generative retrieval. By
+distilling long-horizon, multi-item foresight into model parame-
+ters through time-aware masking, TAMIP alleviates locally optimal
+predictions while preserving efficient single-step inference. Sec-
+ond, to support flexible instruction-following retrieval, we propose
+∗Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+Condition-Guided Sparse Attention (CGSA), which incorporates
+business constraints directly into the generative process via sparse
+attention, without introducing additional inference steps. Extensive
+offline experiments and online A/B testing at NetEase Cloud Music,
+one of the largest music streaming platforms, demonstrate that
+Climber-Pilot significantly outperforms state-of-the-art baselines,
+achieving a 4.24% lift of the core business metric.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Generative Recommendation, Retrieval, Instruction Following, Rec-
+ommender System
+ACM Reference Format:
+Da Guo, Shijia Wang, Qiang Xiao, Yintao Ren, Weisheng Li, Songpei Xu,
+Ming Yue, Bin Huang, Guanlin Wu, and Chuanjiang Luo. 2018. Climber-Pilot:
+A Non-Myopic Generative Recommendation Model Towards Better Instruction-
+Following. In Proceedings of Make sure to enter the correct conference title
+from your rights confirmation email (Conference acronym ’XX). ACM, New
+York, NY, USA, 9 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Large-scale recommender systems rely on retrieval models to ef-
+ficiently narrow down a massive item corpus into a small set of
+candidates for downstream ranking. In industrial settings, retrieval
+is required to operate under strict latency constraints while serving
+billions of requests per day, making both efficiency and robustness
+first-order concerns. Traditional retrieval systems are predomi-
+nantly built upon dual-tower architectures [4, 27, 32], which inde-
+pendently encode users and items and perform candidate selection
+arXiv:2602.13581v1  [cs.IR]  14 Feb 2026
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Guo et al.
+via vector similarity search. While computationally efficient, such
+architectures fundamentally limit the expressive capacity of re-
+trieval models, as rich and heterogeneous user interaction histories
+must be compressed into a single static representation.
+Generative retrieval [14, 17, 26] has recently emerged as a promis-
+ing alternative paradigm, redefining candidate generation as a con-
+ditional sequence modeling problem. By autoregressively modeling
+user interaction sequences, generative retrievers are able to cap-
+ture fine-grained temporal dependencies and complex behavioral
+patterns that are difficult to express in embedding-based retrieval
+frameworks. Moreover, generative approaches enable end-to-end
+optimization without relying on approximate nearest-neighbor
+search during inference, offering a unified modeling framework for
+retrieval.
+Despite their advantages, generative retrieval models face signif-
+icant challenges when deployed in large-scale industrial systems.
+One fundamental limitation is what we refer to as inherent my-
+opia [9, 15, 22]. In practice, latency constraints typically restrict
+generative retrievers to single-step inference at serving time. Con-
+sequently, most existing approaches are trained with next-item
+prediction objectives, encouraging the model to optimize for im-
+mediate relevance rather than long-horizon user intent [16]. This
+training-inference mismatch often leads to locally optimal predic-
+tions, where diverse future interests are collapsed into a narrow set
+of highly probable items, limiting both exploration and coverage.
+An equally critical challenge arises from the operational re-
+quirements of industrial retrieval systems. Beyond relevance, re-
+trieval models are often required to follow explicit retrieval in-
+structions during candidate generation [1], such as category-level
+constraints, policy rules, or business-driven control signals. In tradi-
+tional retrieval pipelines, these requirements are typically addressed
+through heuristic filtering or rule-based post-processing. However,
+such approaches are poorly suited to generative retrieval models.
+Naively conditioning generation on control signals often provides
+insufficient precision, while post-hoc filtering can degrade rele-
+vance or introduce additional inference overhead, undermining the
+efficiency advantages of generative retrieval.
+Addressing these challenges requires rethinking where and how
+complexity is handled in generative retrieval systems. Rather than
+introducing multi-step inference or relying on pipeline-level heuris-
+tics, we argue that the key lies in shifting complexity from inference
+to training, and from post-hoc constraint handling to model-internal
+inductive biases. Following this principle, we propose Climber-Pilot,
+a unified generative retrieval framework designed for large-scale
+industrial deployment. Climber-Pilot enables generative retrievers
+to capture long-horizon, multi-item user intent [7] and to follow
+explicit retrieval instructions, while preserving the efficiency of
+single-step inference.
+Climber-Pilot achieves this through two complementary design
+choices. First, it distills long-horizon, multi-item foresight into
+model parameters during training by explicitly modeling batch-
+based exposure and delayed consumption patterns. This training-
+time distillation mitigates the myopic behavior induced by single-
+step objectives, allowing the model to internalize future-oriented
+signals without increasing inference complexity. Second, Climber-Pilot
+embeds retrieval instructions directly into the generative process
+through attention-level control, enabling constraints to influence
+candidate generation in a fine-grained and efficient manner, without
+resorting to post-hoc filtering.
+We evaluate Climber-Pilot in a large-scale industrial recommen-
+dation system through extensive offline experiments and online
+A/B testing. The results demonstrate that Climber-Pilot consistently
+outperforms state-of-the-art generative retrieval baselines in both
+retrieval quality and controllability, delivering significant improve-
+ments in core business metrics under strict latency constraints. Our
+contributions can be summarized as follows:
+• We identify inherent myopia as a fundamental limitation of
+generative retrieval under single-step inference, and reveal that
+consumption lag in batch exposure settings further exacerbates
+this issue in industrial systems.
+• We propose a training-time distillation paradigm that enables
+generative retrievers to internalize long-horizon, multi-item
+user intent without increasing inference complexity.
+• We introduce an attention-level conditioning framework that
+supports explicit instruction-following during generation, while
+allowing delayed consumption signals to be incorporated into
+the retrieval process.
+• We validate the proposed framework through extensive offline
+experiments and large-scale online deployment in a real-world
+production system.
+2
+Related Work
+Sequential recommendation models, exemplified by SASRec [18]
+and BERT4Rec [28], have established the standard for capturing
+long-range dependencies in user behavior via self-attention mecha-
+nisms. Consequently, the paradigm has shifted toward generative
+recommendation frameworks such as P5 [10] and VQ-Rec [13],
+which reformulate retrieval as a sequence-to-sequence genera-
+tion task. Industrial adaptations like OneRec [6] and HSTU [33]
+have further demonstrated the scalability of this approach in high-
+throughput environments.
+Despite these advancements, generative retrieval models pre-
+dominantly rely on the Next Item Prediction (NIP) objective. Driven
+by the greedy nature of NIP optimization, model predictions tend to
+collapse toward high-frequency "next" items, which leads to issues
+with diversity and long-term engagement. Although traditional
+multi-interest models like MIND [20] and ComiRec [3] address
+diversity through static capsule routing, they lack the capacity to
+model dynamic interest trajectories within a generative framework.
+LUM [31] and PinRec [2] used the in-context learning capabilities
+of generative architectures to explore conditioned retrieval. How-
+ever, their approaches are primarily limited to adjusting retrieval
+results based on coarse-grained features, such as action types. Cru-
+cially, they fail to incorporate the diverse and complex business
+requirements—such as specific genres, languages, or item fresh-
+ness—directly into the retrieval model. This limitation indicates
+a lack of genuine Instruction Following capability, significantly
+restricting their applicability in sophisticated industrial scenarios
+where flexible, policy-aware recommendation is imperative.
+
+
+Climber-Pilot: A Non-Myopic Generative Recommendation Model Towards Better Instruction-Following
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+TAMIP Branch 
+﻿
+K
+User 
+Sequence
+Shared
+Sequence
+Encoder
+i
+​1
+i
+​2
+i
+​3
+e
+​1
+e
+​2
+i
+​n
+e
+​n
+RMSNorm
+Casual Self-Attention
+with Time-Aware Masking
+RMSNorm
+Feed-Forward Network
+i
+​1
+i
+​2
+i
+​3
+i
+​4
+i
+​5
+i6
+i
+​7
+i
+​8
+i
+​2
+i
+​3
+i
+​4
+i
+​5
+i
+​6
+i
+​7
+i
+​8
+Within a Narrow Time Window 
+﻿
+Δτ
+Causual Masked
+Time-Aware Masked
+Attend
+h
+​1
+h
+​2
+h
+​3
+h
+​n
+h
+​
+1
+(1)
+h
+​
+2
+(1)
+h
+​
+3
+(1)
+i
+​1
+i
+​2
+i
+​3
+i
+​4
+i
+​5
+i
+​6
+i
+​7
+i
+​8
+c
+​1
+c
+​2
+c
+​3
+c
+​4
+c
+​5
+c
+​6
+c
+​7
+c
+​8
+Masked By CGSA
+CGSA Masked
+h
+​
+n
+(1)
+Labels
+RMSNorm
+Condition-Guided 
+Sparse Attention
+RMSNorm
+Feed-Forward Network
+Embedding Layer
+e
+​3
+﻿
+⋯
+⋯
+⋯
+⋯
+TAMIP Branch 1
+TAMIP Branch 2
+Condition
+Instruct
+Parallel
+TAMIP 
+Branches
+i
+​1
+i
+​2
+i
+​3
+i
+​4
+i
+​5
+i
+​6
+h
+​
+1
+(1)
+h
+​
+2
+(1)
+h
+​
+3
+(1)
+i
+​2
+i
+​3
+i
+​4
+i
+​5
+i
+​6
+i
+​7
+h
+​
+4
+(1)
+h
+​
+5
+(1)
+h
+​
+6
+(1)
+h
+​
+1
+(2) h
+​
+2
+(2) h
+​
+3
+(2)
+i
+​8
+i
+​3
+i
+​4
+i
+​5
+i
+​6
+i
+​7
+h
+​
+4
+(2) h
+​
+5
+(2) h
+​
+6
+(2)
+TAMIP Branch
+﻿
+L
+​
+TAMIP
+(1)
+L
+​
+TAMIP
+(2)
+Labels
+Outputs
+i
+​1
+i
+​2
+i
+​3
+i
+​4
+i
+​5
+i
+​6
+h
+​
+1
+(1) h
+​
+2
+(1) h
+​
+3
+(1)
+i
+​8
+TAMIP Branch with CGSA
+h
+​
+4
+(1) h
+​
+5
+(1) h
+​
+6
+(1)
+Shared Sequence Encoder
+Labels
+Outputs
+c
+​8
+h
+​
+1
+(2) h
+​
+2
+(2) h
+​
+3
+(2)
+i
+​8
+h
+​
+4
+(2) h
+​
+5
+(2)
+TAMIP Branch with CGSA
+Inputs
+TAMIP Branch
+Shared Sequence Encoder
+Inputs
+User Sequence
+User Sequence
+Condition Instruct
+﻿
+L
+​(i
+​ ∣
+TAMIP
+(1)
+8
+S
+​, c
+​)
+7
+8
+L
+​(i
+​ ∣
+TAMIP
+(2)
+8
+S
+​, c
+​)
+6
+8
+(a) Model Architecture
+(c) SFT Pipeline
+i
+​7
+i
+​8
+i
+​8
+h
+​
+7
+(1)
+i
+​7
+h
+​
+7
+(1)
+h
+​
+6
+(2)
+(b) Pre-Training Pipeline
+Labels
+i
+​8
+During
+SFT
+Condition-Guided Sparse Attention
+Casual Self-Attention with Time-Aware Masking
+During
+Pre-Training
+Figure 1: Overview of the Climber-Pilot framework. (a) Model Architecture. This part details the Time-Aware mask employed
+in the TAMIP module and illustrates the working mechanism of CGSA. During the SFT stage, the TAMIP branch adopts CGSA
+to enable instruction-following capability. (b) Pre-Training Pipeline. (c) SFT Pipeline.
+3
+Method
+3.1
+Framework Overview
+In this section, we propose a novel sequential recommendation
+framework, Climber-Pilot, which follows a two-stage pre-training
+and fine-tuning paradigm. During the pre-training stage, the model
+learns to capture future interest representations of users via a next-
+item prediction objective. To alleviate the myopia issue inherent
+in generative architectures, we propose the Time-Aware Multi-
+Item Prediction method. Subsequently, in the fine-tuning stage,
+the model is optimized using a conditioned next-item prediction
+approach. By introducing conditional signals (e.g., music genres),
+we guide the model to learn interest representations within fine-
+grained subcategories, thereby enabling targeted recall. The overall
+training pipeline is illustrated in Figure 1.
+3.2
+General Retrieval Capability Pre-Training
+3.2.1
+Sequence Encoding. Let 𝑆𝑛= {𝑖1,𝑖2, . . . ,𝑖𝑛} denote the histor-
+ical interaction sequence of user𝑢, where 𝑖𝑘∈I represents the 𝑘-th
+item interacted with by the user. To derive a comprehensive repre-
+sentation for each item𝑖𝑘, we concatenate a learnable ID embedding
+with its corresponding category feature embeddings. We utilize a
+hash-based embedding table for ID storage. Consequently, the raw
+interaction sequence 𝑆𝑛is transformed into a dense embedding
+sequence: E𝑛= {e1, e2, . . . , e𝑛} ∈R𝑛×𝑑, where e𝑘denotes the fused
+embedding vector of item 𝑖𝑘and 𝑑is the embedding dimension.
+The embedding sequence E𝑛is fed into the encoder. Following
+[30], we employ a multi-layer Transformer architecture incorporat-
+ing adjusted relative attention bias and a causal mask. This design
+prevents information leakage from future positions and yields a se-
+quence of contextualized hidden states H𝑛= {h1, . . . , h𝑛} ∈R𝑛×𝑑.
+3.2.2
+Time-Aware Multi-Item Prediction. The standard next item
+prediction paradigm suffers from an Inherent Myopia problem [22].
+In the domain of NLP, a prevalent strategy to mitigate such my-
+opia is to extend the prediction horizon via Multi-Token Prediction
+(MTP) [11] objectives. However, directly applying multi-item ob-
+jectives in industrial settings is challenging due to a misalignment
+between batch serving and sequential logging. As noted by [21],
+items within the same retrieval request have no intra-request causal
+dependencies—causality exists only across requests. Yet interaction
+logs mechanically serialize these co-exposed items into a dense se-
+quence. Formally, for a single request 𝑟, 𝑚items are exposed to the
+user simultaneously, yet interaction logs record them as a serialized
+sequence {𝑖1,𝑖2, . . . ,𝑖𝑚}, imposing an artificial ordering that does
+not reflect true user intent progression. We term this phenomenon
+Consumption Lag: models trained on such logs learn spurious
+sequential patterns from what is fundamentally a parallel process.
+Consequently, the model overfits to artificial within-batch patterns.
+These observations indicate that standard sequence modeling is
+insufficient for batch-based retrieval.
+To fundamentally alleviate this limitation, we introduce Time-
+Aware Multi-Item Prediction. Structurally, TAMIP is composed of
+two integral parts: a multi-branch prediction backbone designed for
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Guo et al.
+expanded foresight, and a pivotal Time-Aware Masking mechanism
+that serves as the core improvement to filter spurious correlations.
+Formally, to extend the model’s foresight, we construct 𝐾parallel
+projection branches on top of the shared user representation h𝑛.
+Each branch is implemented as a single Transformer layer with
+independent (non-shared) parameters, transforming the shared
+input h𝑛into a step-specific representation h(𝑘)
+𝑛, responsible for
+predicting the item 𝑖𝑛+𝑘. In this setting, the case of 𝐾= 1 aligns
+with the standard NIP objective.
+However, the naive multi-step prediction is vulnerable to the
+aforementioned consumption lag. To eliminate this contamination
+and force the model to learn genuine long-term dependencies, we
+introduce the Time-Aware Masking mechanism (illustrated in Fig-
+ure 1(a)).
+To align with the batch serving mechanism used in online pro-
+duction environments, our model predicts the target sequence
+{𝑖𝑛+1, . . . ,𝑖𝑛+𝐾} in a single pass. Consequently, the temporal visibil-
+ity for all prediction heads is anchored to the timestamp of the first
+target item,𝜏𝑛+1. Therefore, we impose a shared temporal constraint
+on both the backbone encoder and all TAMIP prediction branches.
+We define a safe margin Δ𝜏, empirically set to the average of logged
+serving time intervals, amounting to 15 minutes in our production
+system. Specifically, we explicitly mask any historical interaction 𝑖𝑗
+whose timestamp 𝜏𝑗falls within the interval [𝜏𝑛+1 −Δ𝜏,𝜏𝑛+1]. For-
+mally, given a user sequence 𝑆with timestamps 𝜏, the time-aware
+attention mask 𝑀temp ∈R𝑛×𝑛is defined as:
+𝑀temp(𝑖, 𝑗) =
+(
+−∞
+if 𝜏𝑗∈[𝜏𝑛+1 −Δ𝜏,𝜏𝑛+1]
+0
+otherwise.
+(1)
+This mask is integrated into the self-attention mechanism along-
+side the standard causal mask 𝑀causal, which forbids positions from
+attending to future tokens (i.e., 𝑀causal(𝑖, 𝑗) = −∞if 𝑗> 𝑖and 0
+otherwise). Let 𝑄, 𝐾,𝑉∈R𝑛×𝑑𝑘denote the query, key, and value
+matrices linearly projected from the hidden states, where 𝑑𝑘is the
+projection dimension. The final attention computation is formu-
+lated as:
+Attention(𝑄, 𝐾,𝑉) = softmax
+𝑄𝐾⊤
+√𝑑𝑘
++ 𝑀causal + 𝑀temp
+
+𝑉.
+(2)
+Note that employing 𝜏𝑛+1 in 𝑀temp does not introduce data leak-
+age: this timestamp is solely used to mask out recent interactions,
+thereby simulating the information horizon available at inference
+time. No label-specific features beyond the temporal cutoff are
+exposed to the model.
+By strictly prohibiting information flow from temporally proxi-
+mal tokens, TAMIP prevents the model from relying on short-term
+behavioral bursts or batch-induced artifacts. Instead, it compels the
+model to infer future intents based on historical context, thereby
+effectively alleviating inherent myopia and enhancing the model’s
+ability to follow long-term user interest trajectories.
+3.2.3
+TAMIP Loss Formulation. For each TAMIP branch𝑘∈{1, . . . , 𝐾},
+we predict the item 𝑖𝑛+𝑘conditioned on the augmented represen-
+tation h(𝑘)
+𝑛
+∈R𝑑. Since computing the full softmax over a massive
+item space is computationally intractable, we adopt a sampled soft-
+max strategy [24] shared across all prediction heads. The loss for
+the 𝑘-th prediction head is defined as:
+L(𝑘)
+TAMIP(𝑖𝑛+𝑘| 𝑆𝑛) = −log
+exp(𝜙(h(𝑘)
+𝑛, e𝑛+𝑘))
+exp(𝜙(h(𝑘)
+𝑛, e𝑛+𝑘)) + Í
+𝑗∈N exp(𝜙(h(𝑘)
+𝑛, e𝑗))
+,
+(3)
+where 𝑆𝑛= {𝑖1, . . . ,𝑖𝑛} represents the user interaction history,
+𝜙(a, b) = a⊤b denotes the inner product scoring function, e𝑛+𝑘∈R𝑑
+is the embedding of the target item at step 𝑛+ 𝑘, and N represents
+the shared in-batch negative set.
+The overall pre-training objective LPT aggregates contributions
+from all 𝐾TAMIP branches:
+LPT =
+𝐾
+∑︁
+𝑘=1
+L(𝑘)
+TAMIP.
+(4)
+By optimizing this objective on massive user behavior corpora, we
+conduct a pre-training stage that endows the model with general
+retrieval capabilities. Crucially, the proposed TAMIP strategy effec-
+tively alleviates the inherent myopia of generative architectures by
+enforcing multi-step foresight.
+3.3
+Instruction Following via SFT
+While TAMIP-based pre-training endows the model with the capa-
+bility to anticipate future user interests, the lack of explicit instruction-
+following capabilities hinders the Climber-Pilot model from ad-
+dressing the diverse and dynamic requirements of industrial sys-
+tems. Drawing upon the SFT paradigm from LLMs [12], we concep-
+tualize specific industrial retrieval conditions—such as genres, lan-
+guages, new releases, or classics—as the equivalent of instructions.
+Consequently, we reframe these conditional retrieval requirements
+as distinct instruction-following tasks. To achieve this, we construct
+condition-specific SFT datasets and propose a novel Condition-
+Guided Sparse Attention mechanism. This process effectively trans-
+forms the model from an unconditional generator into a controllable
+and instruction-aware retriever.
+By conditioning the model on explicit prompts, we enable dy-
+namic, task-specific candidate generation. This design offers a sig-
+nificant efficiency advantage: a single unified model can now re-
+place multiple specialized retrieval pipelines simply by varying
+the prompt. Consequently, this consolidation drastically reduces
+deployment complexity and maintenance costs.
+3.3.1
+Construction of Condition-Specific Retrieval Datasets. We
+construct the SFT dataset by collecting high-quality online user
+interaction logs that align with specific retrieval conditions. These
+conditions encompass diverse scenarios, such as retrieving items
+from the "New Songs" candidates or targeting items with specific
+attributes (e.g., the Rock tag). Formally, we denote the set of these
+retrieval conditions as C. For each target item in the SFT dataset,
+its corresponding condition is denoted as 𝑐∈C.
+We formulate the task as an instruction-following problem. In
+this setup, the retrieval condition 𝑐serves as an explicit instruction,
+guiding the model to predict the target item 𝑖𝑛+1 based on the user
+sequence {𝑖1, . . . ,𝑖𝑛}. Note that the task remains non-trivial due to
+the large cardinality of the item pool associated with each condition,
+effectively mitigating data leakage risks.
+Second, we repurpose TAMIP’s multi-branch structure in SFT.
+In the pre-training phase, TAMIP uses a single context to predict a
+
+
+Climber-Pilot: A Non-Myopic Generative Recommendation Model Towards Better Instruction-Following
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+future trajectory (𝑖𝑛+1, . . . ,𝑖𝑛+𝐾). In the SFT phase, however, we
+shift this paradigm: we utilize multiple truncated context win-
+dows—specifically {𝑖1, . . . ,𝑖𝑛−𝐾+1} through {𝑖1, . . . ,𝑖𝑛}—as inputs
+for separate branches. Each branch, conditioned on its specific con-
+text length and 𝑐𝑛+1 (the retrieval condition associated with 𝑖𝑛+1),
+is trained to predict the identical target item 𝑖𝑛+1. As illustrated in
+Figure 1(c), this design enables the reuse of a single instruction con-
+dition 𝑐𝑛+1 across all 𝐾TAMIP branches, significantly improving
+computational efficiency during training. Meanwhile, since each
+branch processes contexts of varying lengths, the model retains its
+capacity to capture multi-horizon dependencies—preserving the
+myopia-alleviating benefits established during pre-training.
+3.3.2
+Condition-Guided Sparse Attention Mechanism. User behav-
+iors are inherently multimodal and noisy. Standard Multi-Head
+Attention (MHA) aggregates signals globally. This often accumu-
+lates noise from irrelevant categories, diluting the specific intent
+required for retrieval. To address this, we propose the Condition-
+Guided Sparse Attention (CGSA) mechanism. Unlike standard MHA,
+CGSA utilizes the instruction 𝑐to actively denoise the context. It
+steers the model to focus exclusively on historical behaviors seman-
+tically aligned with 𝑐.
+To enforce this compliance, we construct a sparse mask 𝑀sparse ∈
+R𝑛×𝑛that restricts attention connections to relevant items. Formally,
+for a sequence of length 𝑛, the attention mask at position (𝑖, 𝑗) is
+defined as:
+𝑀sparse(𝑖, 𝑗) =
+(
+0,
+if C(item𝑗) = 𝑐
+−∞,
+otherwise,
+(5)
+where C(·) maps an item to its category space, and 𝑐represents
+the target instruction condition.
+The CGSA mechanism explicitly filters the long-term user his-
+tory by zeroing out attention weights on items that do not match
+the target instruction, thereby denoising the behavioral sequence
+and focusing the model on condition-relevant interactions.
+We apply CGSA exclusively to the final TAMIP branches while re-
+taining the same attention mask configuration as in the pre-training
+stage for the first 𝐿Transformer layers. This choice is primarily
+motivated by computational efficiency: the shared 𝐿-layer backbone
+can be computed once and reused across multiple condition-specific
+branches, enabling efficient batched multi-condition inference. An-
+other benefit of reusing the pre-training attention mask in the first 𝐿
+layers is that it preserves the rich semantic representations learned
+during pre-training.
+3.3.3
+SFT Optimization. Initializing with pre-trained weights al-
+lows the model to retain general retrieval capabilities, and the
+objective evolves from unconditional prediction to instruction-
+conditioned retrieval.
+In this stage, the proposed model is optimized to retrieve the
+ground-truth item 𝑖𝑛+1 constrained by condition 𝑐𝑛+1. Crucially, the
+CGSA mechanism is activated during this phase, filtering out noise
+and steering the TAMIP branches to focus on instruction-relevant
+items of users’ interaction sequence.
+To mitigate catastrophic forgetting of the general preferences
+learned during pre-training, a reduced learning rate was adopted.
+The SFT optimization specifically targets the multi-branch predic-
+tion capability. Specifically, for branch 𝑘= 1, the model uses the
+full history 𝑆𝑛; for branch 𝑘= 𝐾, it uses the shortest history 𝑆𝑛−𝐾+1.
+Formally, the loss function is defined as:
+LSFT =
+𝐾
+∑︁
+𝑘=1
+L(𝑘)
+TAMIP(𝑖𝑛+1 | 𝑆𝑛−𝑘+1,𝑐𝑛+1),
+(6)
+where 𝑆𝑛−𝑘+1 represents the truncated history window for the
+𝑘-th TAMIP branch, 𝑐𝑛+1 denotes the target instruction and 𝐾is
+the number of TAMIP branches. This objective enforces the model
+to align its predictions with the explicit condition 𝑐𝑛+1.
+3.4
+Deployment Detail
+﻿
+i
+​1
+i
+​2
+i
+​n
+User Sequence
+Shared Sequence Encoder
+KV Cache
+c
+​2
+CGSA
+CGSA
+CGSA
+c
+​3
+c
+​1
+Union
+﻿
+h(c
+​)
+1
+﻿
+h(c
+​)
+3
+Ranking
+System
+﻿
+h(c
+​)
+2
+Candidate Set 1
+Candidate Set 2
+Candidate Set 3
+ANN
+Search
+Final Result
+ANN
+Search
+ANN
+Search
+Pre-Computed Recall Instructions
+Figure 2: Illustration of the Climber-Pilot inference process.
+The detail of the deployment of Climber-Pilot is illustrated in
+Figure 2. We train our model on a cluster of 8×A100 GPUs using
+a behavioral corpus of 45B interactions, and deploy the inference
+service via the TensorRT [5] framework. When a user initiates a
+request, the system synchronously fetches the behavior sequence
+and retrieves the cached recall instructions {𝑐1, . . . ,𝑐𝑃}, where 𝑃
+denotes the number of pre-computed instructions.
+3.4.1
+Pre-Computed Recall Instructions. To enable efficient instruction-
+following inference, we pre-compute the top-𝑃interest categories
+for each user based on their recent interaction history. Specifically,
+we aggregate the user’s behavioral signals over a sliding window
+and identify the most frequently engaged categories (e.g., Hip-Hop,
+New Releases, English songs). These category labels are then con-
+verted into recall instructions {𝑐1, . . . ,𝑐𝑃} and cached for real-time
+retrieval. This design decouples the instruction generation from the
+online serving path, ensuring that the model can dynamically adapt
+to user preferences without incurring additional latency during
+inference.
+3.4.2
+Batched Multi-Condition Inference. Inspired by Climber [30],
+we propose Batched Multi-Condition Inference to achieve high
+throughput under strict latency constraints. Since the CGSA mech-
+anism affects only the final branches, we can bundle all 𝑃conditions
+into a single inference pass.
+The computation proceeds in two steps. First, the initial 𝐿shared
+Transformer blocks process the user sequence only once, and the
+resulting intermediate representations are cached. Subsequently,
+these cached representations are reused across the final layer for
+all 𝑃conditions branches. This design effectively avoids redundant
+computation for the heavy backbone network.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Guo et al.
+4
+Experiments
+4.1
+Experimental Setup
+Table 1: Statistics of the processed datasets. “Avg. 𝑛” denotes
+the average sequence length per user.
+Dataset
+#Users
+#Items
+Avg. 𝑛
+Amazon-Sports
+18,357
+35,598
+8.32
+Amazon-Beauty
+22,363
+12,101
+8.87
+Amazon-Toys
+19,412
+11,924
+8.63
+Industrial
+>40M
+>6M
+>100
+4.1.1
+Datasets. We conduct experiments on two large-scale datasets:
+(1) Amazon Benchmarks, including Amazon-Sports, Amazon-Beauty,
+and Amazon-Toys. (2) Industrial, an industrial-scale dataset derived
+from real-world user interaction logs of the NetEase Cloud Music
+platform. Table 1 summarizes the main statistics for both datasets.
+To evaluate the instruction-following capability of Climber-Pilot,
+we further curate a dedicated SFT dataset from online logs that
+does not overlap with the pre-training corpus. In all offline exper-
+iments regarding controllable generation, we adopt music genre
+and language as representative conditional signals.
+4.1.2
+Implementation Details and Metrics.
+Model Architecture. The proposed model is instantiated using
+a 3-layer Transformer [29] backbone. We set the embedding di-
+mension to 𝑑= 128 for the industrial dataset and 𝑑= 32 for the
+Amazon datasets. Since additional TAMIP branches introduce extra
+computational overhead during both training and inference, we
+set 𝐾= 2 to balance efficiency and the core objective of validating
+TAMIP’s effectiveness in alleviating myopia.
+Training Configuration. All models are using the Adam opti-
+mizer [19] with a learning rate of 5 × 10−4 and a weight decay of
+1×10−6. The batch size is fixed to 256. For the SFT stage, we adopt a
+reduced learning rate of 1×10−5 to mitigate catastrophic forgetting
+of pre-trained knowledge. The time-aware masking margin Δ𝜏is
+set to 15 minutes for the industrial dataset, corresponding to the
+average logged request interval.
+Evaluation Metrics. To assess the retrieval quality during the
+candidate generation phase, we adopt Hit Rate at 𝐾(HR@𝐾) as
+the primary metric, with 𝐾∈{10, 20, 50}. Specifically, we treat the
+last item of each sequence as the ground-truth label and utilize the
+preceding interaction history to generate the user interest represen-
+tation. To simulate large-scale retrieval, we construct a FAISS-based
+index[8] over the entire item corpus and perform ANN search to
+retrieve the top-𝐾candidates. Formally, HR@𝐾is defined as:
+HR@𝐾=
+1
+|D|
+| D|
+∑︁
+𝑖=1
+I[rank(𝑦𝑖) ≤𝐾],
+(7)
+where D denotes the test set, 𝑦𝑖represents the ground-truth item
+for the 𝑖-th instance, and I[·] is the indicator function.
+4.2
+Pre-training Evaluation: General Retrieval
+via TAMIP
+A comprehensive comparison was conducted between Climber-Pilot
+and several SOTA models, including both sequential recommenda-
+tion and generative retrieval baselines, on an industrial dataset and
+three public Amazon datasets. To ensure a fair comparison with
+standard baselines, we evaluated the pre-trained Climber-Pilot uti-
+lizing solely its primary TAMIP branch (targeting the immediate
+next item, i.e., 𝑖𝑛+1), excluding auxiliary long-term TAMIP branches
+used during training.
+As presented in Table 2, Climber-Pilot consistently demonstrates
+superior performance across all metrics. We attribute this signifi-
+cant improvement to the proposed TAMIP mechanism. While tra-
+ditional SOTA models rely on the standard NIP paradigm, which
+often suffers from inherent myopia due to a narrow focus on im-
+mediate supervision, Climber-Pilot effectively mitigates this issue
+by incorporating multi-interval supervision to learn robust user
+preferences.
+4.3
+Ablation Study: TAMIP for Alleviating
+Myopia
+We verify the effectiveness of TAMIP in alleviating inherent myopia
+by comparing it with NIP and MIP (Multi-Item Prediction without
+time-aware masking) on the Climber-Pilot architecture. As shown
+in Figure 3, we use retrieval results at time step 𝑡to predict user
+interests over the subsequent 10 steps (𝑡+ 1, . . . ,𝑡+ 10).
+Two key findings emerge from the results. First, NIP exhibits a
+pronounced performance decline as the prediction horizon extends,
+confirming the presence of inherent myopia caused by its greedy,
+single-step optimization objective. MIP partially mitigates this issue
+with modest gains in initial-step Hit Rate and a gentler downward
+trend, yet still suffers from noticeable long-term decay.
+Second, TAMIP yields a dual advantage: it significantly elevates
+the overall performance baseline while maintaining remarkable
+stability. We attribute this improvement to the time-aware masking
+mechanism, which effectively filters out artificial within-batch pat-
+terns and forces the model to rely on genuine long-term behavioral
+signals.
+4.4
+SFT Evaluation: Instruction Following via
+CGSA
+In this section, we evaluate the instruction-following retrieval ca-
+pabilities of Climber-Pilot on the industrial dataset. We configure
+the evaluation task as follows: given a user interaction sequence
+𝑆𝑛= {𝑖1, . . . ,𝑖𝑛}, we utilize the attribute (e.g., genre or language) of
+the ground-truth next item 𝑖𝑛+1 as the explicit instruction signal
+𝑐𝑛+1.
+Our evaluation relies on two critical perspectives: (1) Recom-
+mendation Accuracy, measured by the HR@𝐾and (2) Instruction
+Adherence, quantified by the Condition Compliance Rate.
+Condition Compliance@𝐾(CC@𝐾) formally quantifies the model’s
+ability to translate explicit user intents or business constraints into
+the retrieved candidate set. Let R𝐾denote the set of top-𝐾items
+retrieved via ANN search [23]. We define CC@𝐾as the proportion
+
+
+Climber-Pilot: A Non-Myopic Generative Recommendation Model Towards Better Instruction-Following
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 2: Pre-training evaluation: overall performance comparison on multiple datasets. Best results are in bold, second-best are
+underlined.
+Model
+Industrial
+Amazon-Sports
+Amazon-Beauty
+Amazon-Toys
+HR@50
+HR@20
+HR@10
+HR@50
+HR@20
+HR@10
+HR@50
+HR@20
+HR@10
+HR@50
+HR@20
+HR@10
+SASRec
+7.62%
+4.41%
+2.77%
+4.67%
+2.98%
+1.98%
+9.35%
+6.21%
+4.44%
+8.42%
+5.79%
+4.51%
+TIGER
+8.34%
+5.15%
+3.82%
+7.14%
+4.40%
+3.05%
+11.43%
+8.39%
+6.10%
+10.33%
+7.11%
+4.97%
+HSTU
+9.50%
+5.31%
+3.24%
+6.49%
+4.31%
+2.83%
+7.43%
+4.96%
+3.46%
+7.83%
+5.10%
+3.63%
+PinRec
+8.78%
+5.00%
+3.07%
+6.63%
+4.30%
+2.98%
+12.08%
+8.53%
+6.32%
+8.52%
+5.15%
+3.66%
+Climber-Pilot
+10.95%
+6.40%
+4.02%
+7.20%
+4.62%
+3.28%
+12.12%
+8.95%
+6.74%
+11.20%
+8.01%
+6.13%
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+Prediction Step
+5.00%
+6.00%
+7.00%
+8.00%
+9.00%
+10.00%
+11.00%
+HR@50
+(a) HR@50
+NIP
+MIP
+TAMIP
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+Prediction Step
+3.00%
+4.00%
+5.00%
+6.00%
+HR@20
+(b) HR@20
+NIP
+MIP
+TAMIP
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+Prediction Step
+1.50%
+2.00%
+2.50%
+3.00%
+3.50%
+4.00%
+HR@10
+(c) HR@10
+NIP
+MIP
+TAMIP
+Figure 3: Effectiveness of TAMIP in alleviating inherent myopia. We compare three training paradigms on the industrial dataset:
+NIP (red), MIP (orange), and TAMIP (blue). The TAMIP curves demonstrate remarkable long-term stability.
+of retrieved items that satisfy the specified condition 𝑐:
+CC@𝐾= 1
+𝐾
+∑︁
+𝑗∈R𝐾
+I [C(𝑗) = 𝑐] ,
+(8)
+where C(𝑗) represents the category associated with item 𝑗.
+To validate the effectiveness of the proposed CGSA module,
+we compare our approach against three conditional generation
+paradigms: PinRec [2], LUM [31], two existing controllable retrieval
+models originally designed for coarse-grained action types, and
+AdaLN-Zero [25], a conditioning mechanism from Diffusion Trans-
+formers (DiT). For a fair comparison, all conditioning variants are
+fine-tuned from the same pre-trained checkpoint.
+Table 3 summarizes the experimental results. We observe that
+the proposed CGSA achieves the highest performance across all
+HitRate metrics, demonstrating superior recommendation accu-
+racy. Regarding instruction adherence, although PinRec exhibits
+the highest CC, our proposed method maintains highly competitive
+performance.
+While PinRec and LUM were designed for coarse-grained action-
+type conditioning, CGSA is tailored to the sequential modeling
+characteristics of recommendation. By filtering out irrelevant items
+from historical sequences, CGSA removes behavioral noise unre-
+lated to the target condition. This yields two benefits: competitive
+CC show that CGSA satisfies business constraints, while higher
+Hit Rate indicates better alignment with user preferences. In prac-
+tice, CGSA does not merely comply with instructions—it jointly
+optimizes for both business requirements and user satisfaction.
+4.5
+Online A/B Testing
+4.5.1
+Overall Performance Comparison. We conducted a two-week
+online A/B test on NetEase Cloud Music, allocating 5% of live traffic
+to each model variant, across two distinct production scenarios:
+(1) General Recommendation, which provides music recommenda-
+tions retrieved from the entire item corpus; and (2) Genre-Specific
+Recommendation, which caters to users seeking music from a par-
+ticular category. We benchmarked against the production baseline
+(a Transformer-based architecture [20]) and SOTA models including
+SASRec [18] and HSTU [33], with results summarized in Table 4.
+In the unconstrained General scenario, Climber-Pilot (w/o SFT)
+already outperforms strong baselines. This indicates that our pre-
+training objective effectively mitigates the inherent myopic predic-
+tion bias, thereby capturing long-term user interests to enhance
+overall satisfaction.
+In the Genre-Specific scenario, the w/o SFT variant yields mar-
+ginal improvements—suggesting that raw sequence modeling is
+insufficient for satisfying strict constraints. In contrast, by feeding
+the target genre as the retrieval instruction, the full Climber-Pilot
+model achieves a significant lift of 4.10% in Like Rate. This demon-
+strates that SFT effectively equips the model with instruction-
+following capabilities to meet specific retrieval requirements.
+Notably, the introduction of SFT further amplifies user engage-
+ment in the General scenario, achieving a Like Rate improvement
+of 4.24%—more than doubling the 2.03% gain observed without
+SFT. In this setting, personalized instructions are constructed fol-
+lowing the strategy in Sec. 3.4.1. This empirical evidence suggests
+that instruction-following is not solely beneficial for Genre-Specific
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Guo et al.
+Table 3: SFT evaluation: performance comparison of conditional generation paradigms. The CGSA method demonstrates the
+highest HitRate and robust performance in Condition Compliance.
+Model
+HR@50
+HR@20
+HR@10
+CC@50
+CC@20
+CC@10
+PinRec
+13.82%
+9.16%
+6.29%
+81.69%
+84.30%
+85.57%
+LUM
+11.45%
+7.51%
+5.24%
+68.97%
+74.51%
+77.84%
+AdaLN-Zero
+15.84%
+10.27%
+6.88%
+75.49%
+80.41%
+80.96%
+CGSA
+18.53%
+11.69%
+7.73%
+78.58%
+80.07%
+81.75%
+Table 4: Online A/B testing results in production environ-
+ments. Improvements are reported as percentage lifts relative
+to the Production Baseline.
+Scenario
+Model
+Like Rate
+Total Listening Time
+General
+Baseline
+–
+–
+SASRec
+-0.38%
++1.00%
+HSTU
++0.85%
++3.05%
+Climber-Pilot (w/o SFT)
++2.03%
++3.86%
+Climber-Pilot
++4.24%
++3.25%
+Genre-Specific
+Climber-Pilot (w/o SFT)
++0.68%
+−0.38%
+Climber-Pilot
++4.10%
++0.56%
+cases; when coupled with user-adaptive instruction construction,
+SFT effectively enhances the model’s ability to interpret and match
+latent user intent, resulting in superior recommendation quality.
+Regarding inference efficiency, Climber-Pilot achieves an average
+online latency of 7.26 ms per request, compared to 6.94 ms for the
+production baseline—an overhead of less than 5%, which is negligi-
+ble relative to the substantial accuracy gains.
+Table 5: Relative improvement in exposure diversity (Genre
+and Language) across user activity levels.
+User Activity Level
+Genres
+Languages
+Low
++0.28%
++0.09%
+Middle
++1.87%
++2.28%
+High
++2.56%
++2.63%
+4.5.2
+Engagement Diversity Analysis. Table 5 presents the relative
+improvement in exposure diversity (Genre and Language) brought
+by Climber-Pilot. User activity levels are categorized into three
+groups (Low, Middle, High) based on internal business criteria.
+A notable trend is that the diversity gain scales with user activ-
+ity. Climber-Pilot significantly enhances the exploration breadth
+for high-activity users, with diversity metrics improving by over
+2%. This demonstrates that the instruction-following capability of
+Climber-Pilot not only boosts core business metrics, but also en-
+ables the system to better satisfy the multi-modal interests of active
+users.
+4.6
+Case Study
+To assess the instruction-following capability of Climber-Pilot, we
+present a case study of a user with mixed interests in Hip-Hop and
+Classic Hits. In the unconstrained setting, Climber-Pilot retrieves
+candidates reflecting both genres. Upon injecting genre instructions,
+the model generates recommendations strictly confined to the target
+genre.
+Crucially, this strict adherence does not compromise personal-
+ization. The instruction-guided recommendations exhibit overlap
+with the results from the unconstrained setting, demonstrating
+that Climber-Pilot successfully identifies the intersection of user
+interests and instructional constraints.
+These results validate our CGSA mechanism. By filtering out
+instruction-irrelevant interactions to ensure precision while selec-
+tively attending to context-relevant behaviors to maintain personal-
+ization, Climber-Pilot achieves both precision and personalization
+within a single unified model.
+Free Loop- Daniel Powter
+My Love - Westlife
+YOSEMITE - Travis Scott
+God's Plan - Drake
+Humble. - Kendrick Lamar
+Hip-
+Hop
+Hip-
+Hop
+Hip-
+Hop
+Better Man - Robbie Williams
+Classic
+Classic Hits
+Hip-Hop
+Mid-Age
+Classic
+R&B
+Hip-
+Hop
+Language Genre
+Freshness
+ENG
+ENG
+Mid-Age
+User Sequence
+Climber-Pilot
+Pre-Computed Recall Instructions
+w/o Instruct
+Instruct: Hip-Hop
+Instruct: Classic Hits
+Unconstrained Retrieval
+Instruction-Guided Retrieval
+w/ Instruct
+Die For You - The Weekend
+Humble. - Kendrick Lamar
+Better Man - Robbie Williams ENG
+Pop
+Classic
+Classic
+Figure 4: A case study demonstrating the instruction-
+following capability of Climber-Pilot.
+5
+Conclusion
+In this work, we identified inherent myopia and instruction-following
+inefficiency as fundamental challenges of generative retrieval mod-
+els under single-step inference and strict latency constraints in
+industrial recommender systems. To address these issues, we pro-
+posed Climber-Pilot, a unified framework that distills long-horizon,
+multi-item user intent during training and incorporates retrieval
+instructions directly into the generative process. Extensive offline
+experiments and large-scale online A/B testing in a production sys-
+tem demonstrate that Climber-Pilot consistently outperforms state-
+of-the-art baselines, achieving significant improvements in core
+business metrics while preserving efficient single-step inference.
+These results highlight the practical effectiveness of Climber-Pilot
+for deploying generative retrieval models in real-world, latency-
+sensitive recommendation systems.
+
+
+Climber-Pilot: A Non-Myopic Generative Recommendation Model Towards Better Instruction-Following
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+References
+[1] Himan Abdollahpouri, Robin Burke, and Bamshad Mobasher. 2019. Managing
+popularity bias in recommender systems with personalized re-ranking. arXiv
+preprint arXiv:1901.07555 (2019).
+[2] Prabhat Agarwal, Anirudhan Badrinath, Laksh Bhasin, Jaewon Yang, Edoardo
+Botta, Jiajing Xu, and Charles Rosenberg. 2025. Pinrec: Outcome-conditioned,
+multi-token generative retrieval for industry-scale recommendation systems.
+arXiv preprint arXiv:2504.10507 (2025).
+[3] Yukuo Cen, Jianwei Zhang, Xu Zou, Chang Zhou, Hongxia Yang, and Jie Tang.
+2020. Controllable multi-interest framework for recommendation. In Proceedings
+of the 26th ACM SIGKDD international conference on knowledge discovery & data
+mining. 2942–2951.
+[4] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep neural networks
+for youtube recommendations. In Proceedings of the 10th ACM conference on
+recommender systems. 191–198.
+[5] Pooya Davoodi, Chul Gwon, Guangda Lai, and Trevor Morris. 2019. Tensorrt
+inference with tensorflow. In GPU Technology Conference.
+[6] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[7] Tim Donkers, Benedikt Loepp, and Jürgen Ziegler. 2017. Sequential user-based
+recurrent neural network recommendations. In Proceedings of the eleventh ACM
+conference on recommender systems. 152–160.
+[8] Matthijs Douze, Alexandr Guzhva, Chengqi Deng, Jeff Johnson, Gergely Szilvasy,
+Pierre-Emmanuel Mazaré, Maria Lomeli, Lucas Hosseini, and Hervé Jégou. 2025.
+The faiss library. IEEE Transactions on Big Data (2025).
+[9] Ningya Feng, Junwei Pan, Jialong Wu, Baixu Chen, Ximei Wang, Qian Li, Xian
+Hu, Jie Jiang, and Mingsheng Long. 2024. Long-Sequence Recommendation
+Models Need Decoupled Embeddings. arXiv preprint arXiv:2410.02604 (2024).
+[10] Shijie Geng, Shuchang Liu, Zuohui Fu, Yingqiang Ge, and Yongfeng Zhang. 2022.
+Recommendation as language processing (rlp): A unified pretrain, personalized
+prompt & predict paradigm (p5). In Proceedings of the 16th ACM conference on
+recommender systems. 299–315.
+[11] Fabian Gloeckle, Badr Youbi Idrissi, Baptiste Rozière, David Lopez-Paz, and
+Gabriel Synnaeve. 2024. Better & faster large language models via multi-token
+prediction. arXiv preprint arXiv:2404.19737 (2024).
+[12] Beliz Gunel, Jingfei Du, Alexis Conneau, and Ves Stoyanov. 2020. Supervised
+contrastive learning for pre-trained language model fine-tuning. arXiv preprint
+arXiv:2011.01403 (2020).
+[13] Yupeng Hou, Zhankui He, Julian McAuley, and Wayne Xin Zhao. 2023. Learning
+vector-quantized item representation for transferable sequential recommenders.
+In Proceedings of the ACM Web Conference 2023. 1162–1171.
+[14] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating long
+semantic ids in parallel for recommendation. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V. 2. 956–966.
+[15] Hongtao Huang, Chengkai Huang, Junda Wu, Tong Yu, Julian McAuley, and
+Lina Yao. 2025. Listwise Preference Diffusion Optimization for User Behavior
+Trajectories Prediction. arXiv preprint arXiv:2511.00530 (2025).
+[16] Eugene Ie, Vihan Jain, Jing Wang, Sanmit Narvekar, Ritesh Agarwal, Rui Wu,
+Heng-Tze Cheng, Tushar Chandra, and Craig Boutilier. 2019. SlateQ: A Tractable
+Decomposition for Reinforcement Learning with Recommendation Sets.. In IJCAI,
+Vol. 19. 2592–2599.
+[17] Clark Mingxuan Ju, Liam Collins, Leonardo Neves, Bhuvesh Kumar, Louis Yufeng
+Wang, Tong Zhao, and Neil Shah. 2025. Generative Recommendation with Seman-
+tic IDs: A Practitioner’s Handbook. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management. 6420–6425.
+[18] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[19] Diederik P Kingma. 2014. Adam: A method for stochastic optimization. arXiv
+preprint arXiv:1412.6980 (2014).
+[20] Chao Li, Zhiyuan Liu, Mengmeng Wu, Yuchi Xu, Huan Zhao, Pipei Huang,
+Guoliang Kang, Qiwei Chen, Wei Li, and Dik Lun Lee. 2019. Multi-interest
+network with dynamic routing for recommendation at Tmall. In Proceedings of
+the 28th ACM international conference on information and knowledge management.
+2615–2623.
+[21] Zida Liang, Changfa Wu, Dunxian Huang, Weiqiang Sun, Ziyang Wang, Yuliang
+Yan, Jian Wu, Yuning Jiang, Bo Zheng, Ke Chen, et al. 2025. Tbgrecall: A generative
+retrieval model for e-commerce recommendation scenarios. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+5863–5870.
+[22] Xiaohao Liu, Xiaobo Xia, Weixiang Zhao, Manyi Zhang, Xianzhi Yu, Xiu Su,
+Shuo Yang, See-Kiong Ng, and Tat-Seng Chua. 2025. L-MTP: Leap Multi-Token
+Prediction Beyond Adjacent Context for Large Language Models. arXiv preprint
+arXiv:2505.17505 (2025).
+[23] Yu A Malkov and Dmitry A Yashunin. 2018. Efficient and robust approximate
+nearest neighbor search using hierarchical navigable small world graphs. IEEE
+transactions on pattern analysis and machine intelligence 42, 4 (2018), 824–836.
+[24] Nikil Pancha, Andrew Zhai, Jure Leskovec, and Charles Rosenberg. 2022. Pinner-
+former: Sequence modeling for user representation at pinterest. In Proceedings
+of the 28th ACM SIGKDD conference on knowledge discovery and data mining.
+3702–3712.
+[25] William Peebles and Saining Xie. 2023. Scalable diffusion models with transform-
+ers. In Proceedings of the IEEE/CVF international conference on computer vision.
+4195–4205.
+[26] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[27] Yelong Shen, Xiaodong He, Jianfeng Gao, Li Deng, and Grégoire Mesnil. 2014.
+Learning semantic representations using convolutional neural networks for web
+search. In Proceedings of the 23rd international conference on world wide web.
+373–374.
+[28] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential recommendation with bidirectional encoder rep-
+resentations from transformer. In Proceedings of the 28th ACM international
+conference on information and knowledge management. 1441–1450.
+[29] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. Advances in neural information processing systems 30 (2017).
+[30] Songpei Xu, Shijia Wang, Da Guo, Xianwen Guo, Qiang Xiao, Bin Huang, Guanlin
+Wu, and Chuanjiang Luo. 2025. Climber: Toward efficient scaling laws for large
+recommendation models. In Proceedings of the 34th ACM International Conference
+on Information and Knowledge Management. 6193–6200.
+[31] Bencheng Yan, Shilei Liu, Zhiyuan Zeng, Zihao Wang, Yizhen Zhang, Yujin Yuan,
+Langming Liu, Jiaqi Liu, Di Wang, Wenbo Su, et al. 2025. Unlocking Scaling Law
+in Industrial Recommendation Systems with a Three-step Paradigm based Large
+User Model. arXiv preprint arXiv:2502.08309 (2025).
+[32] Xinyang Yi, Ji Yang, Lichan Hong, Derek Zhiyuan Cheng, Lukasz Heldt, Aditee
+Kumthekar, Zhe Zhao, Li Wei, and Ed Chi. 2019. Sampling-bias-corrected neural
+modeling for large corpus item recommendations. In Proceedings of the 13th ACM
+conference on recommender systems. 269–277.
+[33] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Jiayuan He, et al. 2024. Actions speak louder than
+words: trillion-parameter sequential transducers for generative recommendations.
+In Proceedings of the 41st International Conference on Machine Learning. 58484–
+58509.
