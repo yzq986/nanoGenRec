@@ -1229,6 +1229,18 @@ def train_packed(
         step_tokens = int(lengths.sum().item()) * world_size
         total_tokens += step_tokens
 
+        # Sanity print on first step: show what positions/timestamps actually enter the model
+        if step == 0 and is_main:
+            S = input_tokens.size(1)
+            train_pos = torch.arange(S, device=input_tokens.device)
+            log(is_main, f"  [sanity] train  positions[:8]  = {train_pos[:8].tolist()}")
+            log(is_main, f"  [sanity] train  positions[-4:]  = {train_pos[-4:].tolist()}")
+            if use_time_gap and batch_time_gaps is not None:
+                tg_sample = batch_time_gaps[0, :8].tolist()
+                log(is_main, f"  [sanity] train  time_gaps[0,:8] = {tg_sample}")
+            if use_torope:
+                log(is_main, f"  [sanity] train  timestamps      = zeros (continuous ts not in pipeline yet)")
+
         if dry_run and step >= 1:
             log(is_main, f"  Dry run complete (2 steps, loss={total_loss/2:.4f})")
             break
@@ -1561,6 +1573,17 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
               flush=True)
 
     # ── Beam search recall (split 5K across ranks) ──
+    # Sanity: show the first eval context's positions so we can verify train/infer alignment
+    if is_main and eval_sequences:
+        _s0 = eval_sequences[0]
+        _ctx_len = _s0['split_pos']
+        _ctx_pos = list(range(_ctx_len))
+        print(f"  [sanity] eval   ctx positions[:8]  = {_ctx_pos[:8]}")
+        print(f"  [sanity] eval   ctx positions[-4:] = {_ctx_pos[max(0,_ctx_len-4):]}")
+        print(f"  [sanity] eval   ctx len={_ctx_len}, gen positions start at {_ctx_len}")
+        if probe.use_torope:
+            print(f"  [sanity] eval   timestamps = zeros (ctx_timestamps not passed to beam search)")
+
     log(is_main, f"  Building sid_to_items from {sid_cache_dir}")
     sid_to_items = _build_sid_to_items(sid_cache_dir)
     sid_trie = SIDTrie(sid_to_items, n_layers)
