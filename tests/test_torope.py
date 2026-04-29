@@ -75,22 +75,30 @@ def test_build_torope_freqs_shapes():
     """Returned tensors have the expected shapes for various split ratios."""
     head_dim, max_len = 32, 64
 
-    freq_idx, inv_freq_time, n_idx, n_time = build_torope_freqs(
+    freq_idx, inv_freq_time, freq_layer, n_idx, n_time, n_layer = build_torope_freqs(
         head_dim, max_len, time_split_ratio=0.5)
     half = head_dim // 2
-    assert n_idx + n_time == half, f"planes sum mismatch: {n_idx}+{n_time} != {half}"
+    assert n_idx + n_time + n_layer == half, \
+        f"planes sum mismatch: {n_idx}+{n_time}+{n_layer} != {half}"
     assert freq_idx.shape == (max_len, n_idx), f"freq_idx shape {freq_idx.shape}"
     assert inv_freq_time.shape == (n_time,), f"inv_freq_time shape {inv_freq_time.shape}"
+    assert freq_layer.shape[1] == n_layer, f"freq_layer shape {freq_layer.shape}"
 
-    # Zero split — all planes for index
-    freq_idx0, inv_freq0, ni0, nt0 = build_torope_freqs(head_dim, max_len, time_split_ratio=0.0)
-    assert ni0 == half - 1 and nt0 == 1  # max(1, ...) ensures at least 1 time plane
-    print(f"  [PASS] build_torope_freqs shapes (n_idx={n_idx}, n_time={n_time})")
+    # 3-dim mode: time=0.4, layer=0.2
+    freq_idx3, inv_t3, fl3, ni3, nt3, nl3 = build_torope_freqs(
+        head_dim, max_len, time_split_ratio=0.4, layer_split_ratio=0.2)
+    assert ni3 + nt3 + nl3 == half
+
+    # Zero layer split — all planes for idx+time (backward compat)
+    freq_idx0, inv_freq0, fl0, ni0, nt0, nl0 = build_torope_freqs(
+        head_dim, max_len, time_split_ratio=0.0)
+    assert ni0 == half - 1 and nt0 == 1 and nl0 == 0
+    print(f"  [PASS] build_torope_freqs shapes (n_idx={n_idx}, n_time={n_time}, n_layer={n_layer})")
 
 
 def test_build_torope_freqs_values():
     """freq_idx[0] is all zeros (position 0 has no rotation)."""
-    freq_idx, _, _, _ = build_torope_freqs(16, 32, time_split_ratio=0.5)
+    freq_idx, _, _, _, _, _ = build_torope_freqs(16, 32, time_split_ratio=0.5)
     assert (freq_idx[0] == 0.0).all(), "Position 0 should have zero angle"
     # Monotonically increasing angles for position 1 vs 0
     assert (freq_idx[1] > 0.0).all(), "Position 1 should have positive angles"
@@ -104,12 +112,13 @@ def test_build_torope_freqs_values():
 def test_apply_torope_output_shape():
     """apply_torope preserves q/k shape."""
     B, H, T, Dh = 2, 4, 6, 16
-    freq_idx, inv_freq_time, n_idx, n_time = build_torope_freqs(Dh, T + 4)
+    freq_idx, inv_freq_time, freq_layer, n_idx, n_time, n_layer = build_torope_freqs(Dh, T + 4)
     q = torch.randn(B, H, T, Dh)
     k = torch.randn(B, H, T, Dh)
     pos = torch.arange(T).unsqueeze(0).expand(B, -1)
     ts  = torch.zeros(B, T)
-    qr, kr = apply_torope(q, k, pos, pos, freq_idx, inv_freq_time, n_idx, n_time,
+    qr, kr = apply_torope(q, k, pos, pos, freq_idx, inv_freq_time, freq_layer,
+                          n_idx, n_time, n_layer,
                           timestamps_q=ts, timestamps_k=ts)
     assert qr.shape == q.shape and kr.shape == k.shape
     print(f"  [PASS] apply_torope output shape {qr.shape}")
@@ -119,16 +128,16 @@ def test_apply_torope_zero_timestamps_equals_standard_rope():
     """With zero timestamps, time planes have cos=1, sin=0 → identity for time part.
     Index planes behave like standard RoPE."""
     B, H, T, Dh = 1, 2, 8, 16
-    freq_idx, inv_freq_time, n_idx, n_time = build_torope_freqs(Dh, T + 4)
+    freq_idx, inv_freq_time, freq_layer, n_idx, n_time, n_layer = build_torope_freqs(Dh, T + 4)
     q = torch.randn(B, H, T, Dh)
     k = torch.randn(B, H, T, Dh)
     pos = torch.arange(T).unsqueeze(0)
     ts  = torch.zeros(B, T)
 
-    qr, kr = apply_torope(q, k, pos, pos, freq_idx, inv_freq_time, n_idx, n_time,
+    qr, kr = apply_torope(q, k, pos, pos, freq_idx, inv_freq_time, freq_layer,
+                          n_idx, n_time, n_layer,
                           timestamps_q=ts, timestamps_k=ts)
 
-    # Time planes: ts=0 → angles=0 → cos=1, sin=0 → identity (no rotation)
     start = n_idx * 2
     assert torch.allclose(qr[..., start:start + n_time * 2],
                           q[..., start:start + n_time * 2], atol=1e-6), \
@@ -139,16 +148,18 @@ def test_apply_torope_zero_timestamps_equals_standard_rope():
 def test_apply_torope_different_timestamps_differ():
     """Non-zero timestamps produce different output than zero timestamps."""
     B, H, T, Dh = 1, 2, 8, 16
-    freq_idx, inv_freq_time, n_idx, n_time = build_torope_freqs(Dh, T + 4)
+    freq_idx, inv_freq_time, freq_layer, n_idx, n_time, n_layer = build_torope_freqs(Dh, T + 4)
     q = torch.randn(B, H, T, Dh)
     k = torch.randn(B, H, T, Dh)
     pos = torch.arange(T).unsqueeze(0)
     ts_zero = torch.zeros(B, T)
-    ts_nonzero = torch.rand(B, T) * 24.0  # up to 24 hours
+    ts_nonzero = torch.rand(B, T) * 24.0
 
-    qr_zero, _ = apply_torope(q, k, pos, pos, freq_idx, inv_freq_time, n_idx, n_time,
+    qr_zero, _ = apply_torope(q, k, pos, pos, freq_idx, inv_freq_time, freq_layer,
+                              n_idx, n_time, n_layer,
                               timestamps_q=ts_zero, timestamps_k=ts_zero)
-    qr_ts, _   = apply_torope(q, k, pos, pos, freq_idx, inv_freq_time, n_idx, n_time,
+    qr_ts, _   = apply_torope(q, k, pos, pos, freq_idx, inv_freq_time, freq_layer,
+                              n_idx, n_time, n_layer,
                               timestamps_q=ts_nonzero, timestamps_k=ts_nonzero)
 
     diff = (qr_ts - qr_zero).abs().max().item()
@@ -159,19 +170,19 @@ def test_apply_torope_different_timestamps_differ():
 def test_apply_torope_rotation_is_reversible():
     """Rotating by angle and then by negative angle recovers original."""
     B, H, T, Dh = 1, 2, 4, 16
-    freq_idx, inv_freq_time, n_idx, n_time = build_torope_freqs(Dh, T + 4)
+    freq_idx, inv_freq_time, freq_layer, n_idx, n_time, n_layer = build_torope_freqs(Dh, T + 4)
     q = torch.randn(B, H, T, Dh)
     k = q.clone()
     pos = torch.arange(T).unsqueeze(0)
     ts_fwd = torch.rand(B, T) * 10.0
 
-    qr, _ = apply_torope(q, k, pos, pos, freq_idx, inv_freq_time, n_idx, n_time,
+    qr, _ = apply_torope(q, k, pos, pos, freq_idx, inv_freq_time, freq_layer,
+                         n_idx, n_time, n_layer,
                          timestamps_q=ts_fwd, timestamps_k=ts_fwd)
-    q_recovered, _ = apply_torope(qr, qr, pos, pos, freq_idx, inv_freq_time, n_idx, n_time,
+    q_recovered, _ = apply_torope(qr, qr, pos, pos, freq_idx, inv_freq_time, freq_layer,
+                                   n_idx, n_time, n_layer,
                                    timestamps_q=-ts_fwd, timestamps_k=-ts_fwd)
 
-    # Only time planes are reversible by negating ts; index planes need negated positions
-    # Check just time planes
     start = n_idx * 2
     diff = (q_recovered[..., start:start + n_time * 2] -
             q[..., start:start + n_time * 2]).abs().max().item()
