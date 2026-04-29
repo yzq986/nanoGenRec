@@ -1,0 +1,748 @@
+GateSID: Adaptive Gating for Semantic-Collaborative Alignment
+in Cold-Start Recommendation
+Hai Zhu∗
+zhuhai@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+HangZhou, China
+Yantao Yu
+yuyantao.yyt@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+HangZhou, China
+Lei Shen
+kenny.sl@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+HangZhou, China
+Bing Wang*
+lingfeng.wb@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+HangZhou, China
+Xiaoyi Zeng
+yuanhan@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+HangZhou, China
+Abstract
+In cold-start scenarios, the scarcity of collaborative signals for
+new items exacerbates the Matthew effect. This not only under-
+mines platform diversity, but also poses a persistent challenge in
+practice. Existing methods typically augment collaborative signals
+with semantic information. However, they often face a collabora-
+tive–semantic trade off: collaborative signals work well for popular
+items but degrade on cold-start items, while excessive reliance on
+semantics will ignore collaborative differences. To address these
+limitations, we propose GateSID, a framework that introduces an
+adaptive gating network to dynamically balance semantic and col-
+laborative signals based on item maturity. First, we discretize multi-
+modal features into hierarchical Semantic ID via Residual Quantized
+VAE. Then we propose two components: (1) Gating-Fused Shared
+Attention, which fuses intra-modal attention distributions with
+item-level weights derived from embeddings and statistical fea-
+tures; (2) Gate-Regulated Contrastive Alignment, which adaptively
+calibrates cross-modal alignment and enforces strong semantic-
+behavior mapping for cold-start items while relaxing constraints for
+popular items to preserve their reliable collaborative signals. Com-
+prehensive offline experiments on large scale industrial datasets
+demonstrate GateSID’s superiority. Online A/B test demonstrates
+the practical effectiveness of GateSID: it achieves GMV +2.6% , CTR
++1.1%, and Order +1.6%, with less than 5 ms of additional latency.
+CCS Concepts
+• Information systems →Recommender systems.
+∗Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+Keywords
+Recommender Systems; Multimodal Recommendation; Gate Net-
+work; Vector Quantization
+1
+Introduction
+Recommendation systems heavily rely on historical user–item in-
+teraction data to capture user preferences [2, 3, 19, 28]. Although
+collaborative filtering–based models excel at modeling frequent
+interactions, they inherently suffer from a severe Matthew effect
+[12, 20, 23]. For cold-start items, the scarcity of interaction signals
+prevents the model from learning robust representations, resulting
+in persistent underexposure. As shown in Figure 1a, we analyze the
+L2 norm distribution of item embeddings for all items versus new
+items. The results reveal that 20% of new items have embeddings
+with an L2 norm of zero, due to extremely sparse user interac-
+tions. This sparsity severely undermines the ability of collaborative
+signals to learn meaningful representations for cold-start items.
+0.0
+0.5
+1.0
+1.5
+2.0
+L2 Norm
+0%
+10%
+20%
+30%
+40%
+50%
+Ratio (%)
+Total Item
+New Item
+(a) L2 norm distribution of all
+items and new items.
+-40
+-20
+0
+20
+40
+t-SNE Dim 1
+-40
+-20
+0
+20
+t-SNE Dim 2
+Collaborative
+Multimodal
+SID
+(b) Distributions of three types
+of embedding.
+Figure 1: Analysis of three types of embeddings.
+To reduce over-reliance on collaborative signals, recent work
+[1, 6–8, 14, 22] has leveraged the rich multimodal content of items,
+such as titles, images, and descriptions. Advances in multimodal
+models [18] now enable these unstructured data to be encoded
+into high quality semantic embeddings. However, directly applying
+these fixed multimodal embeddings to recommendation systems en-
+counters two key challenges: (1) representation non-trainability,
+where fixed embeddings cannot adapt well to downstream tasks;
+arXiv:2603.22916v1  [cs.IR]  24 Mar 2026
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+and (2) modality gap, which refers to the mismatch between se-
+mantic and collaborative representations. As shown in Figure 1b,
+collaborative and multimodal embeddings still exhibit distinct spa-
+tial distributions. To address this, a growing body of research
+[10, 16, 24–26] has introduced Semantic ID (SID), an effective mech-
+anism for injecting semantic information into recommendation
+systems. This approach draws inspiration from vector quantization
+[4, 13], where continuous embeddings are mapped to a finite set of
+learnable codebooks and support fine-tuning in downstream tasks.
+However, SID is not a silver bullet. In practice, naively merging
+SID sequences with collaborative signals often leads to a collabo-
+rative–semantic trade off: collaborative signals perform well for
+popular items but fail on cold-start ones, while over reliance on
+semantics can erase their behavioral differences. Existing SID-based
+methods suffer from rigid or insufficient fusion strategies between
+collaborative and semantic signals. PCR-CA [16] adopts a static
+average of the two representations, ignoring their varying impor-
+tance between items. COINS [26] introduces a gating mechanism
+but applies it independently to the collaborative signal, without
+explicit cross-modal interaction. SaviorRec [24] introduces a bidi-
+rectional target attention mechanism but uses a coarse interaction
+that ignores the differences between popular and cold-start items.
+To address the limitations of rigid fusion strategies in existing
+SID-based methods, we introduce GateSID, a framework designed
+for item-level adaptive integration of content and behavior. The
+key novelty of GateSID lies in its item-level adaptive fusion of at-
+tention distributions. Specifically, GateSID employs a gating-fused
+shared attention mechanism to modulate information flow between
+collaborative and semantic sequences. By jointly processing item
+embeddings and statistical features, it dynamically generates adap-
+tive weights to balance these signals. Furthermore, we propose
+gate-regulated contrastive alignment to bridge the modality gap.
+This mechanism enforces stronger semantic–behavioral alignment
+for cold-start items while relaxing the constraint for popular items,
+thereby preserving the precision of their collaborative signals. We
+summarize the main contributions of GateSID as follows.
+• We propose a gating-fused shared attention mechanism that
+uses a gating network to dynamically balance semantic and
+collaborative signals.
+• We design a gate-regulated contrastive alignment that adap-
+tively strengthens semantic-behavioral alignment for cold-
+start items while relaxing it for popular items to preserve
+their collaborative signals.
+• We conduct extensive offline experiments and ablation stud-
+ies to demonstrate the effectiveness of GateSID, and further
+validate its performance through online A/B tests.
+2
+Methodology
+Figure 2 illustrates the overall architecture of GateSID, which com-
+prises three key modules. (1) Semantic ID construction: multimodal
+embeddings are discretized into hierarchical semantic IDs using a
+residual quantized VAE; (2) Gating-fused shared attention: a gating
+network dynamically fuses collaborative and semantic signals, with
+fusion weights conditioned on item features; and (3) Gate-regulated
+contrastive alignment: a contrastive learning based on the gate
+weights explicitly aligns semantic and collaborative embeddings.
+2.1
+Semantic ID Construction
+First, to obtain rich multimodal item representations, we employ
+Qwen-VL [18] to encode the textual and visual content of each
+item. We then adopt a Residual Quantized Variational Autoencoder
+(RQ-VAE) [27] to discretize these multimodal embeddings into a
+hierarchical sequence of semantic tokens. Specifically, RQ-VAE
+uses stacked codebooks to perform residual quantization: the first
+quantizer selects the closest code to the input vector, and each
+subsequent quantizer encodes the residual from the previous stage.
+This process iterates across multiple layers, yielding a compact
+Semantic ID for each item. Semantic ID for item 𝑖is defined as:
+S𝑖= ⟨𝑠𝑖,1,𝑠𝑖,2,𝑠𝑖,3,𝑠𝑖,4⟩,
+𝑠𝑖,𝑘∈{1, 2, . . . , 256},
+(1)
+where 𝑠𝑖,𝑘denotes the index in the 𝑘-th codebook. In our settings,
+RQ-VAE uses 4 residual layers, each with a codebook of size 256. To
+integrate the SID into the ranking model, each token 𝑠𝑖,𝑘is mapped
+via an independent embedding matrix E𝑘and concatenated:
+esid
+𝑖
+= Concat  
+E1(𝑠𝑖,1), E2(𝑠𝑖,2), E3(𝑠𝑖,3), E4(𝑠𝑖,4)
+
+(2)
+This structure preserves the hierarchical semantic while providing
+a fine-tuned embedding representation for downstream task.
+2.2
+Gating-Fused Shared Attention (GFSA)
+Previous methods used only static averaging or cross-modal in-
+teractions. Direct injection of semantic embeddings from another
+modality can contaminate the collaborative signals of popular items
+with semantic noise. In this section, we propose gating-fused shared
+attention. First, we compute a fusion weight 𝑤based on collab-
+orative embedding and statistical features (e.g., online duration,
+one-week exposure, and one-week clicks).
+𝑤= 𝜎 MLP([𝑒𝑖𝑡𝑒𝑚
+𝑖
+⊕F 𝑠𝑡𝑎𝑡
+𝑖
+])
+(3)
+where 𝑒𝑖𝑡𝑒𝑚
+𝑖
+is item embedding, F 𝑠𝑡𝑎𝑡
+𝑖
+represents statistical features,
+𝜎is the sigmoid function and ⊕denotes the concatenation operator.
+let the user’s SID sequence be Hsid = {esid
+𝑖1 , esid
+𝑖2 , . . . , esid
+𝑖𝐿} ∈R𝐿×𝑑.
+GFSA first computes intra-modal attention distributions indepen-
+dently within Hsid and Hitem:
+𝑆sid = Softmax
+ (esid
+targetW𝑄′)(HsidW𝐾′)⊤
+√
+𝑑
+!
+(4)
+𝑆item = Softmax
+ (eitem
+targetW𝑄′)(HitemW𝐾′)⊤
+√
+𝑑
+!
+(5)
+Then, the weights 𝑤output by the gating network are combined
+to form a fused attention distribution.
+𝑆fused = 𝑤· 𝑆sid + (1 −𝑤) · 𝑆item.
+(6)
+We clarify that GFSA does not implement explicit cross atten-
+tion (e.g., SaviorRec) where queries from one modality attend to
+keys/values of another. Instead, GateSID uses 𝑆fused to both Hsid
+and Hitem sequences yields the refined representations:
+hsid = 𝑆fusedHsid,
+hitem = 𝑆fusedHitem.
+(7)
+These vectors are concatenated and integrated into the final ranking
+layer. This design preserves modality-specific value representations
+while adaptively regulating attention distributions.
+
+
+GateSID: Adaptive Fusion of Semantic and Collaborative Signals
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+SID Embedding Table
+ID Embedding Table
+Target-Aware Attention Score 
+Gating-Fused Shared Attention 
+Gate Input
+𝑤⋅𝑆!"# + 1 −𝑤⋅𝑆"$%&
+Pos pair
+Neg pairs
+𝑤
+:SID Embedding
+:Item Embedding
+:SID Code
+:Mutimodal Embedding
+GFSA
+Target-Aware 
+Attention Score 
+GRCA
+:Item ID
+Figure 2: Overview of the GateSID framework which consists of three components: (1) Semantic ID Construction ; (2) Gating-
+Fused Shared Attention (GFSA); (3) Gate-Regulated Contrastive Alignment (GRCA).
+2.3
+Gate-Regulated Contrastive Alignment
+(GRCA)
+Unlike traditional static alignment [17, 21], gate-regulated con-
+trastive alignment dynamically calibrates the cross-modal super-
+vision intensity based on the item’s state. For a mini-batch B, we
+treat the SID embedding 𝑒𝑠𝑖𝑑
+𝑖
+and the collaborative embedding 𝑒𝑖𝑡𝑒𝑚
+𝑖
+of the same item 𝑖as positive pairs. instance-wise contrastive loss
+ℓ(𝑖)
+𝑐𝑙
+is formulated as:
+ℓ(𝑖)
+𝑐𝑙
+= −log
+exp(sim(𝑒𝑠𝑖𝑑
+𝑖
+,𝑒𝑖𝑡𝑒𝑚
+𝑖
+)/𝜏)
+Í
+𝑗∈B exp(sim(𝑒𝑠𝑖𝑑
+𝑖
+,𝑒𝑖𝑡𝑒𝑚
+𝑗
+)/𝜏)
+(8)
+Crucially, we argue that the necessity of alignment varies: cold-
+start items require stronger semantic-to-behavioral mapping, while
+popular items should maintain their well-established collaborative
+structures. Therefore, we utilize the gating weight 𝑤𝑖to regulate
+contrastive strength:
+L𝑐𝑙=
+1
+|B|
+∑︁
+𝑖∈B
+𝑤𝑖· ℓ(𝑖)
+𝑐𝑙
+(9)
+The final training objective integrates this regulated alignment loss
+with the primary ranking loss L𝑟𝑎𝑛𝑘:
+L𝑡𝑜𝑡𝑎𝑙= L𝑟𝑎𝑛𝑘+ 𝜆L𝑐𝑙
+(10)
+where 𝜆is a balancing coefficient. When 𝑤𝑖is large (cold-start),
+the model aggressively bridges the modality gap; when 𝑤𝑖is small
+(popular), the model relaxes the constraint to preserve the purity
+of collaborative signals.
+3
+Experiments
+3.1
+Experiments Settings
+3.1.1
+Datasets. We evaluate on large-scale industrial datasets with
+over 1 billion production logs. Following a realistic online setup, we
+use a time-based split, reserving the most recent day for validation
+and testing. We consider two tasks, click (CTR) and pay (CTCVR),
+and report AUC and GAUC to measure overall and intra-user rank-
+ing performance.
+3.1.2
+Baselines. We compare GateSID with competitive baselines,
+including COINS [26], PCR-CA [16], URL4DR [9], SPM-SID [15],
+SaviorRec [24] and QARM [5]. Ensure that all models are evaluated
+under identical data partitions and training protocols to maintain a
+fair comparison.
+3.1.3
+Implement Details. The RQ-VAE uses 4 residual layers, each
+with a codebook of size 256 and embedding dimension 64, trained
+for 10 epochs with batch size 4096. The ranking model employs
+AdamW with batch size 4096, SID embeddings of dimension 32,
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+Table 1: The AUC(%,↑) and GAUC(%,↑) results of GateSID and baselines on popular items and new items. New items are those
+that have been online for fewer than 20 days. popular items are those that have been online for more than 300 days.
+New items
+Popular Items
+CTR_AUC
+CTCVR_AUC
+CTR_GAUC
+CTCVR_GAUC
+CTR_AUC
+CTCVR_AUC
+CTR_GAUC
+CTCVR_GAUC
+Base (wo SID)
+0.6829
+0.8301
+0.5967
+0.6218
+0.6965
+0.8463
+0.6221
+0.6483
+COINS
+0.6853
+0.8336
+0.5971
+0.6250
+0.6988
+0.8488
+0.6233
+0.6495
+PCR-CA
+0.6847
+0.8328
+0.5988
+0.6266
+0.6991
+0.8481
+0.6227
+0.6482
+URL4DR
+0.6852
+0.8327
+0.5985
+0.6253
+0.6989
+0.8484
+0.6242
+0.6496
+SPM-SID
+0.6832
+0.8316
+0.5959
+0.6254
+0.6966
+0.8476
+0.6223
+0.6494
+SaviorRec
+0.6853
+0.8337
+0.5978
+0.6287
+0.6987
+0.8488
+0.6238
+0.6506
+QARM
+0.6864
+0.8346
+0.5981
+0.6286
+0.7003
+0.8482
+0.6232
+0.6501
+GateSID
+0.6869
+0.8350
+0.5984
+0.6306
+0.7005
+0.8498
+0.6259
+0.6541
+Table 2: The AUC(%,↑) and GAUC(%,↑) results of GateSID and
+baselines on all items. "w/o" is short for "without".
+CTR_AUC
+CTCVR_AUC
+CTR_GAUC
+CTCVR_GAUC
+Base (wo SID)
+0.6953
+0.8449
+0.6562
+0.7129
+COINS
+0.6980
+0.8477
+0.6572
+0.7136
+PCR-CA
+0.6977
+0.8472
+0.6570
+0.7145
+URL4DR
+0.6977
+0.8469
+0.6591
+0.7159
+SPM-SID
+0.6955
+0.8459
+0.6567
+0.7144
+SaviorRec
+0.6990
+0.8490
+0.6593
+0.7202
+QARM
+0.6986
+0.8491
+0.6591
+0.7205
+GateSID
+0.6996
+0.8495
+0.6602
+0.7216
+w/o GRCA
+0.6988
+0.8486
+0.6600
+0.7192
+w/o GFSA
+0.6974
+0.8458
+0.6582
+0.7141
+balancing coefficient 𝜆= 0.1 and a 3-layer ReLU MLP for joint CTR
+and CTCVR prediction.
+3.2
+Overall Performance
+As shown in Tables 2, all SID-enhanced methods outperform the
+base model, which also demonstrates the gain of semantic informa-
+tion. However, only GateSID consistently surpasses all baselines
+across every metric. In the set of all items, GateSID still achieves a
++0.1% gain in CTR AUC and a +0.2% gain in CTCVR GAUC over
+the second-best method.
+Table 1 reveals an important insight: For new items, GateSID’s ad-
+vantage is modest, with only a +0.04% improvement over QARM in
+CTCVR AUC, suggesting that most SID-enhanced methods already
+effectively leverage semantic signals when collaborative signals is
+scarce. In contrast, GateSID demonstrates its true strength on pop-
+ular items, delivering a substantial +0.4% gain in CTCVR AUC over
+QARM. This demonstrates that GateSID successfully preserved
+the robust collaborative representations of popular items while
+providing semantic information for new items.
+3.3
+Ablation Studies
+As shown in Table 2, removing GFSA causes a substantial drop of
+0.37% in CTCVR AUC. Compared with SaviorRec, which relies on
+fixed cross-modal interactions. SaviorRec achieves lower AUC and
+GAUC than GateSID, demonstrating the advantage of item-level
+fusion over fixed interaction. GRCA further enhances performance
+Table 3: Ablation studies of different gating network inputs
+and architectures.
+Gate input
+Model
+CTCVR_AUC
+CTCVR_GAUC
+𝑒𝑖𝑡𝑒𝑚
+Gate
+0.8489
+0.7206
+F 𝑠𝑡𝑎𝑡
+Gate
+0.8484
+0.7184
+𝑒𝑖𝑡𝑒𝑚⊕F 𝑠𝑡𝑎𝑡
+Gate
+0.8491
+0.7216
+𝑒𝑖𝑡𝑒𝑚⊕F 𝑠𝑡𝑎𝑡
+Avg
+0.8472
+0.7165
+by aligning semantic and collaborative representations. In Figure 1b,
+we sampled 10,000 item embeddings and their corresponding SID
+embeddings and visualized them using t-SNE [11]. It shows that
+SID embeddings better align with item representations, confirming
+its effectiveness in bridging the modality gap.
+Table 3 shows that the full gate input, which combines item
+embeddings and statistical features, achieves the best performance.
+More importantly, our dynamic gating method outperforms the
+static averaging method (Avg in Table 3) by 0.51% in CTCVR GAUC,
+validating the advantages of context-aware fusion.
+Figures 3a and 3b illustrate GateSID’s adaptive fusion strategy
+across the item lifecycle. As items mature from cold start to matu-
+rity, the semantic gate weight declines steadily from above 0.8 to
+below 0.5, which explains the CTR AUC gains in Figure 3a. When
+collaborative signals are sparse, high semantic weights provide the
+strongest boost, yielding a 0.21% improvement in CTR AUC at 5
+days online. As interactions accumulate, the model increasingly
+relies on collaborative signals, yet still maintains a consistent gain
+of 0.07% in CTR AUC for mature items.
+3.4
+Online A/B Test
+To quantify the incremental gain of GateSID in a live environment,
+we conducted a two-week online A/B test with 20% of total traffic.
+GateSID achieves GMV +2.6%, CTR +1.1% , and Order +1.6%, with
+less than 5 ms of additional latency.
+4
+Conclusion
+In this paper, we propose GateSID, a novel framework that enables
+item-level adaptive integration of content and behavior. First, gated-
+fusion shared attention module dynamically adjusts the informa-
+tion flow between collaborative sequences and semantic sequences
+
+
+GateSID: Adaptive Fusion of Semantic and Collaborative Signals
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+5
+10
+20
+50
+100
+300
+500 >500
+Online Days
+0.68
+0.70
+0.72
+0.74
+0.76
+CTR AUC
++0.21pt
++0.18pt
++0.06pt
++0.06pt
++0.08pt+0.07pt
++0.08pt+0.07pt
+Base
+GateSID
+(a) CTR AUC for items with dif-
+ferent online days.
+5
+10
+20
+50
+100
+300
+500
+>500
+Online Days
+0.5
+0.6
+0.7
+0.8
+0.9
+Semantic Weight
+GateSID
+(b) Gate weight for items with dif-
+ferent online days.
+Figure 3: Comparison and visualization of different embed-
+ding representations.
+through a gated network. Second, gate-regulated contrastive align-
+ment boosts semantic-behavior alignment for cold-start items and
+reduces it for popular items to preserve their collaborative sig-
+nals. Extensive offline experiments and online A/B test confirm its
+effectiveness in real-world production environments.
+References
+[1] Yong Bai, Rui Xiang, Kaiyuan Li, Yongxiang Tang, Yanhua Cheng, Xialong Liu,
+Peng Jiang, and Kun Gai. 2025. Chime: A compressive framework for holistic
+interest modeling. arXiv preprint arXiv:2504.06780 (2025).
+[2] Jianxin Chang, Chenbin Zhang, Zhiyi Fu, Xiaoxue Zang, Lin Guan, Jing Lu, Yiqun
+Hui, Dewei Leng, Yanan Niu, Yang Song, et al. 2023. TWIN: TWo-stage interest
+network for lifelong user behavior modeling in CTR prediction at kuaishou. In
+Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining. 3785–3794.
+[3] Qiwei Chen, Huan Zhao, Wei Li, Pipei Huang, and Wenwu Ou. 2019. Behavior
+sequence transformer for e-commerce recommendation in alibaba. In Proceedings
+of the 1st international workshop on deep learning practice for high-dimensional
+sparse data. 1–4.
+[4] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[5] Kun Gai, Wei Yuan, Guorui Zhou, Xinchen Luo, Xu Zhang, Jiaqi Zhang, Rui
+Huang, Jiangxia Cao, Shiyao Wang, Jinkai Yu, Zhaojie Liu, Hezheng Lin, Yichen
+Zheng, Tianyu Sun, Qigen Hu, Changqing Qiu, Zhiheng Yan, Jingming Zhang,
+Simin Zhang, and Mingxing Wen. 2024. QARM: Quantitative Alignment Multi-
+Modal Recommendation at Kuaishou. arXiv:2411.11739 https://arxiv.org/abs/
+2411.11739
+[6] Christian Ganhör, Marta Moscati, Anna Hausberger, Shah Nawaz, and Markus
+Schedl. 2024. A multimodal single-branch embedding network for recommenda-
+tion in cold-start and missing modality scenarios. In Proceedings of the 18th ACM
+Conference on Recommender Systems. 380–390.
+[7] Guoqing Hu, An Zhang, Shuo Liu, Zhibo Cai, Xun Yang, and Xiang Wang. 2025.
+Alphafuse: Learn id embeddings for sequential recommendation in null space
+of language embeddings. In Proceedings of the 48th International ACM SIGIR
+Conference on Research and Development in Information Retrieval. 1614–1623.
+[8] Kaiyuan Li, Rui Xiang, Yong Bai, Yongxiang Tang, Yanhua Cheng, Xialong Liu,
+Peng Jiang, and Kun Gai. 2025. Bbqrec: Behavior-bind quantization for multi-
+modal sequential recommendation. arXiv preprint arXiv:2504.06636 (2025).
+[9] Guanyu Lin, Zhigang Hua, Tao Feng, Shuang Yang, Bo Long, and Jiaxuan You.
+2025. Unified semantic and ID representation learning for deep recommenders.
+arXiv preprint arXiv:2502.16474 (2025).
+[10] Ziwei Liu, Yejing Wang, Qidong Liu, Zijian Zhang, Chong Chen, Wei Huang,
+and Xiangyu Zhao. 2025. The Best of the Two Worlds: Harmonizing Semantic
+and Hash IDs for Sequential Recommendation. arXiv preprint arXiv:2512.10388
+(2025).
+[11] Laurens van der Maaten and Geoffrey Hinton. 2008. Visualizing data using t-SNE.
+Journal of machine learning research 9, Nov (2008), 2579–2605.
+[12] Van-Khang Nguyen, Duc-Hoang Pham, Huy-Son Nguyen, Cam-Van Thi Nguyen,
+Hoang-Quynh Le, and Duc-Trong Le. 2025. Multi-modal Adaptive Mixture of
+Experts for Cold-start Recommendation. In Proceedings of the 34th ACM Interna-
+tional Conference on Information and Knowledge Management. 5053–5057.
+[13] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[14] Xiang-Rong Sheng, Feifan Yang, Litong Gong, Biao Wang, Zhangming Chan,
+Yujing Zhang, Yueyao Cheng, Yong-Nan Zhu, Tiezheng Ge, Han Zhu, et al.
+2024. Enhancing Taobao Display Advertising with Multimodal Representations:
+Challenges, Approaches and Insights. In Proceedings of the 33rd ACM International
+Conference on Information and Knowledge Management. 4858–4865.
+[15] Anima Singh, Trung Vu, Nikhil Mehta, Raghunandan Keshavan, Maheswaran
+Sathiamoorthy, Yilin Zheng, Lichan Hong, Lukasz Heldt, Li Wei, Devansh Tandon,
+et al. 2024. Better generalization with semantic ids: A case study in ranking for
+recommendations. In Proceedings of the 18th ACM Conference on Recommender
+Systems. 1039–1044.
+[16] Bin Tan, Wangyao Ge, Yidi Wang, Xin Liu, Jeff Burtoft, Hao Fan, and Hui Wang.
+2025. PCR-CA: Parallel Codebook Representations with Contrastive Alignment
+for Multiple-Category App Recommendation. arXiv preprint arXiv:2508.18166
+(2025).
+[17] Chen Wang, Liangwei Yang, Zhiwei Liu, Xiaolong Liu, Mingdai Yang, Yueqing
+Liang, and Philip S Yu. 2023. Collaborative semantic alignment in recommenda-
+tion systems. arXiv preprint arXiv:2310.09400 (2023).
+[18] Peng Wang, Shuai Bai, Sinan Tan, Shijie Wang, Zhihao Fan, Jinze Bai, Keqin
+Chen, Xuejing Liu, Jialin Wang, Wenbin Ge, et al. 2024. Qwen2-vl: Enhancing
+vision-language model’s perception of the world at any resolution. arXiv preprint
+arXiv:2409.12191 (2024).
+[19] Ruoxi Wang, Rakesh Shivanna, Derek Cheng, Sagar Jain, Dong Lin, Lichan Hong,
+and Ed Chi. 2021. Dcn v2: Improved deep & cross network and practical lessons
+for web-scale learning to rank systems. In Proceedings of the web conference 2021.
+1785–1797.
+[20] Shoujin Wang, Liang Hu, Yan Wang, Longbing Cao, Quan Z Sheng, and Mehmet
+Orgun. 2019.
+Sequential recommender systems: challenges, progress and
+prospects. arXiv preprint arXiv:2001.04830 (2019).
+[21] Yinwei Wei, Xiang Wang, Qi Li, Liqiang Nie, Yan Li, Xuanping Li, and Tat-Seng
+Chua. 2021. Contrastive learning for cold-start recommendation. In Proceedings
+of the 29th ACM international conference on multimedia. 5382–5390.
+[22] Bencheng Yan, Si Chen, Shichang Jia, Jianyu Liu, Yueran Liu, Chenghan Fu,
+Wanxian Guan, Hui Zhao, Xiang Zhang, Kai Zhang, et al. 2025. MIM: Multi-
+modal Content Interest Modeling Paradigm for User Behavior Modeling. arXiv
+preprint arXiv:2502.00321 (2025).
+[23] Wooseong Yang, Weizhi Zhang, Yuqing Liu, Yuwei Han, Yu Wang, Junhyun Lee,
+and Philip S Yu. 2025. Cold-Start Recommendation with Knowledge-Guided
+Retrieval-Augmented Generation. arXiv preprint arXiv:2505.20773 (2025).
+[24] Yining Yao, Ziwei Li, Shuwen Xiao, Boya Du, Jialin Zhu, Junjun Zheng, Xiangheng
+Kong, and Yuning Jiang. 2025. Saviorrec: Semantic-behavior alignment for cold-
+start recommendation. arXiv preprint arXiv:2508.01375 (2025).
+[25] Jun Zhang, Yi Li, Yue Liu, Changping Wang, Yuan Wang, Yuling Xiong, Xun Liu,
+Haiyang Wu, Qian Li, Enming Zhang, et al. 2025. GPR: Towards a Generative
+Pre-trained One-Model Paradigm for Large-Scale Advertising Recommendation.
+arXiv preprint arXiv:2511.10138 (2025).
+[26] Qihang Zhao, Zhongbo Sun, Xiaoyang Zheng, Xian Guo, Siyuan Wang, Zihan
+Liang, Mingcan Peng, Ben Chen, and Chenyi Lei. 2025. COINS: SemantiC Ids
+Enhanced COLd Item RepresentatioN for Click-through Rate Prediction in E-
+commerce Search. arXiv preprint arXiv:2510.12604 (2025).
+[27] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting large language models by integrating
+collaborative semantics for recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). IEEE, 1435–1448.
+[28] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD international conference
+on knowledge discovery & data mining. 1059–1068.

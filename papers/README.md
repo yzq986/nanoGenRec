@@ -45,3 +45,4 @@
 | 2602.11410 | CADET: Context-Conditioned Ads CTR Prediction With a Decoder-Only Transformer | David Pardoe et al. (LinkedIn) | 2026-02-11 | [pdf](2602.11410.pdf) | [txt](2602.11410.txt) | IDEA-cadet-0 |
 | 2602.13581 | Climber-Pilot: A Non-Myopic Generative Recommendation Model Towards Better Instruction-Following | Da Guo et al. (NetEase Cloud Music) | 2026-02-14 | [pdf](2602.13581.pdf) | [txt](2602.13581.txt) | IDEA-climber-0 |
 | 2602.23964 | RAD-DPO: Robust Adaptive Denoising DPO for Generative Retrieval in E-commerce | Zhiguo Chen et al. (JD.com) | 2026-02-27 | [pdf](2602.23964.pdf) | [txt](2602.23964.txt) | IDEA-raddpo-0 |
+| 2603.22916 | GateSID: Adaptive Gating for Semantic-Collaborative Alignment in Cold-Start Recommendation | Hai Zhu et al. | 2026-03-24 | [pdf](2603.22916.pdf) | [txt](2603.22916.txt) | IDEA-gatesid-0 |
