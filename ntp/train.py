@@ -1433,9 +1433,12 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
             probe_config['active_features'] = probe.active_features
         if hasattr(probe, 'use_rope') and probe.use_rope:
             probe_config['use_rope'] = True
-            probe_config['torope_time_split'] = probe.torope_time_split
-            if getattr(probe, 'torope_layer_split', 0.0) > 0:
-                probe_config['torope_layer_split'] = probe.torope_layer_split
+            # Save full rope_dims spec so eval can reconstruct exactly
+            probe_config['rope_dims'] = [
+                {'name': d.name, 'split_ratio': d.split_ratio,
+                 'source': d.source, 'base': d.base, 'max_val': d.max_val}
+                for d in probe.rope_dims
+            ]
         if getattr(probe.layers[0], 'attn_gate', None) is not None:
             probe_config['use_gate_attn'] = True
     else:

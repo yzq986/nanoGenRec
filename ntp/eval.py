@@ -498,9 +498,21 @@ class SemanticIDPredictionMetric(BaseMetric):
         # Strip legacy keys that no longer exist in NTPModel.__init__
         for _legacy in ('n_time_buckets', 'n_action_levels', 'parallel'):
             probe_config.pop(_legacy, None)
-        # Backward compat: old checkpoints store use_torope; new ones store use_rope.
-        # NTPModel accepts both, but if only use_rope is in config, convert to use_torope.
-        if 'use_rope' in probe_config and 'use_torope' not in probe_config:
+        # Resolve rope config: new checkpoints store rope_dims as list of dicts.
+        # Old checkpoints store use_torope + split floats; convert those to use_torope kwarg.
+        if 'rope_dims' in probe_config:
+            from ntp.model import RopeDimSpec as _RDS
+            raw_dims = probe_config.pop('rope_dims')
+            probe_config.pop('use_rope', None)
+            probe_config.pop('use_torope', None)
+            probe_config['rope_dims'] = [
+                _RDS(name=d['name'], split_ratio=d['split_ratio'],
+                     source=d['source'], base=d.get('base', 10000.0),
+                     max_val=d.get('max_val', 0))
+                for d in raw_dims
+            ]
+        elif 'use_rope' in probe_config and 'use_torope' not in probe_config:
+            # Old checkpoint: use_rope=True + torope_time_split/torope_layer_split
             probe_config['use_torope'] = probe_config.pop('use_rope')
 
         if model_type == 's-tier':
