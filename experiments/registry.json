@@ -1,0 +1,176 @@
+{
+  "35d32cec620d": {
+    "backfilled": true,
+    "config": {
+      "action_l2_only": false,
+      "batch_size": 4096,
+      "contrastive_dim": 128,
+      "contrastive_temp": 0.07,
+      "contrastive_weight": 0.0,
+      "date_end": "2026-03-31",
+      "date_start": "2026-03-18",
+      "entp_weight": 0.0,
+      "lr": null,
+      "max_seq_len": 512,
+      "min_action_level": 1,
+      "model": "s-tier",
+      "n_eval_target": 50000,
+      "n_items": 10,
+      "sid_cache_name": "exp026-0.6b-14d",
+      "torope_time_split": 0.5,
+      "use_gate_attn": false,
+      "use_segment_emb": true,
+      "use_torope": true
+    },
+    "git_commit": "38ca5d1abb9e",
+    "name": "exp044b-torope-ts05-notg",
+    "registered_at": "2026-04-29T18:30:42.869159",
+    "results": {}
+  },
+  "44101a26d27e": {
+    "backfilled": true,
+    "config": {
+      "action_l2_only": false,
+      "batch_size": 4096,
+      "contrastive_dim": 128,
+      "contrastive_temp": 0.07,
+      "contrastive_weight": 0.0,
+      "date_end": "2026-03-31",
+      "date_start": "2026-03-18",
+      "entp_weight": 0.0,
+      "lr": null,
+      "max_seq_len": 512,
+      "min_action_level": 1,
+      "model": "s-tier",
+      "n_eval_target": 50000,
+      "n_items": 10,
+      "sid_cache_name": "exp026-0.6b-14d",
+      "torope_time_split": 0.25,
+      "use_gate_attn": false,
+      "use_segment_emb": true,
+      "use_torope": true
+    },
+    "git_commit": "38ca5d1abb9e",
+    "name": "exp044b-torope-ts025",
+    "registered_at": "2026-04-29T18:30:42.865880",
+    "results": {}
+  },
+  "c72439b2c17f": {
+    "backfilled": true,
+    "config": {
+      "action_l2_only": false,
+      "batch_size": 4096,
+      "contrastive_dim": 128,
+      "contrastive_temp": 0.07,
+      "contrastive_weight": 0.0,
+      "date_end": "2026-03-31",
+      "date_start": "2026-03-18",
+      "entp_weight": 0.0,
+      "lr": null,
+      "max_seq_len": 512,
+      "min_action_level": 1,
+      "model": "s-tier",
+      "n_eval_target": 50000,
+      "n_items": 10,
+      "sid_cache_name": "exp026-0.6b-14d",
+      "torope_time_split": 0.5,
+      "use_gate_attn": false,
+      "use_segment_emb": true,
+      "use_torope": false
+    },
+    "git_commit": "38ca5d1abb9e",
+    "name": "exp043-s-0.6b",
+    "registered_at": "2026-04-29T18:30:42.856582",
+    "results": {
+      "avg_loss": 3.277825,
+      "depth_acc_beam": [
+        0.029,
+        0.019,
+        0.018
+      ],
+      "depth_hit@10": [
+        0.1837,
+        0.1666,
+        0.1655
+      ],
+      "depth_hit@10_indep": [
+        0.183,
+        0.8145,
+        0.8474
+      ],
+      "item_recall@10": 0.114,
+      "item_recall@100": 0.359,
+      "item_recall@50": 0.27,
+      "item_recall@500": 0.612,
+      "layer_ppl": [
+        390.1505,
+        10.6675,
+        4.552
+      ],
+      "n_eval_items": 49166,
+      "n_eval_positions": 148078,
+      "n_recall_samples": 1000,
+      "ppl": 26.518,
+      "target_sid_found_rate": 0.615
+    }
+  },
+  "f8e0bfe25e8c": {
+    "backfilled": true,
+    "config": {
+      "action_l2_only": false,
+      "batch_size": 4096,
+      "contrastive_dim": 128,
+      "contrastive_temp": 0.07,
+      "contrastive_weight": 0.0,
+      "date_end": "2026-03-31",
+      "date_start": "2026-03-18",
+      "entp_weight": 0.0,
+      "lr": null,
+      "max_seq_len": 512,
+      "min_action_level": 1,
+      "model": "probe",
+      "n_eval_target": 50000,
+      "n_items": 10,
+      "sid_cache_name": "exp020-hard-lam03",
+      "torope_time_split": 0.5,
+      "use_gate_attn": false,
+      "use_segment_emb": false,
+      "use_torope": false
+    },
+    "git_commit": "38ca5d1abb9e",
+    "name": "exp020-hard-lam03",
+    "registered_at": "2026-04-29T18:30:42.847751",
+    "results": {
+      "avg_loss": 2.791025,
+      "depth_acc_beam": [
+        0.045,
+        0.024,
+        0.024
+      ],
+      "depth_hit@10": [
+        0.2381,
+        0.2167,
+        0.2151
+      ],
+      "depth_hit@10_indep": [
+        0.2371,
+        0.8936,
+        0.9457
+      ],
+      "item_recall@10": 0.141,
+      "item_recall@100": 0.432,
+      "item_recall@50": 0.327,
+      "item_recall@500": 0.662,
+      "layer_ppl": [
+        280.386,
+        6.0378,
+        2.6011
+      ],
+      "n_eval_items": 49104,
+      "n_eval_positions": 147902,
+      "n_recall_samples": 1000,
+      "ppl": 16.2977,
+      "target_sid_found_rate": 0.663
+    }
+  }
+}

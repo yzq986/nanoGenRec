@@ -1,0 +1,15 @@
+name: exp044b
+description: "TO-RoPE with real timestamps — 3 configs"
+base: _base.yaml
+
+ntp_data_name: exp044b-0.6b-14d         # separate preprocess (with timestamps)
+# NTP data uses separate preprocessed dir
+# Configs defined in exp-044b.sh:
+#   B: use_torope=true, torope_time_split=0.5, use_segment_emb=true
+#   C: use_torope=true, torope_time_split=0.25, use_segment_emb=true
+#   D: use_torope=true, torope_time_split=0.5, use_segment_emb=true (no time_gap ablation)
+
+# Representative config (B):
+use_segment_emb: true
+use_torope: true
+torope_time_split: 0.5

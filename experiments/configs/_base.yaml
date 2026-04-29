@@ -1,0 +1,38 @@
+# Base config — shared across all NTP experiments
+# Override any of these in per-experiment yaml files
+
+# ── Data ──────────────────────────────────────────────────────
+sid_cache_name: exp026-0.6b-14d          # directory name only (not full path)
+ntp_data_name: null                      # null = auto (same as sid_cache_name). Set explicitly when preprocess params differ
+date_start: "2026-03-18"
+date_end: "2026-03-31"
+
+# preprocess
+n_items: 10
+max_seq_len: 512
+n_eval_target: 50000
+action_l2_only: false
+min_action_level: 1
+# shift_features is permanently false (validated in EXP-024/025)
+
+# ── Model ─────────────────────────────────────────────────────
+model: s-tier
+use_segment_emb: false
+use_torope: false
+torope_time_split: 0.5
+use_gate_attn: false
+
+# ── Training ──────────────────────────────────────────────────
+batch_size: 4096
+lr: null                  # null = auto (model-dependent default)
+entp_weight: 0.0
+contrastive_weight: 0.0
+contrastive_temp: 0.07
+contrastive_dim: 128
+seed: 42
+
+# ── Paths (excluded from hash) ────────────────────────────────
+# These are resolved at runtime from environment / CLAUDE.md conventions
+# sid_cache:     experiments/sid_cache/<sid_cache_name>
+# behavior_path: /mnt/workspace/gr-demo-behavior-cache
+# output_dir:    experiments/ntp_checkpoints/<name>
