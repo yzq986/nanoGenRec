@@ -116,10 +116,11 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
             padded[i, :len(toks)] = torch.tensor(toks, dtype=torch.long)
 
         # Side features — pad all features present in both the shard and the model
+        # Include both embed_add and rope features (timestamps needed for RoPE teacher-forced eval)
         from ntp.features import REGISTRY as _FEAT_REG
         sf_padded: Dict[str, torch.Tensor] = {}
         for key, fdef in _FEAT_REG.items():
-            if fdef.inject != 'embed_add':
+            if fdef.inject not in ('embed_add', 'rope', 'torope'):
                 continue
             if key not in batch_seqs[0]:
                 continue
