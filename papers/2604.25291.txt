@@ -1,0 +1,1784 @@
+From Local Indices to Global Identifiers: Generative Reranking
+for Recommender Systems via Global Action Space
+Pengyue Jia1*, Xiaobei Wang2*, Yingyi Zhang1*, Shuchang Liu2, Yupeng Hou3, Hailan Yang2
+Xu Gao2, Xiaopeng Li1, Yejing Wang1, Julian McAuley3, Xiang Li2, Lantao Hu2
+Yongqi Liu2, Kaiqiao Zhan2, Han Li2, Kun Gai2, Xiangyu Zhao1
+1City University of Hong Kong, 2Kuaishou Technology, 3University of California San Diego
+jia.pengyue@my.cityu.edu.hk,liushuchang@kuaishou.com,xianzhao@cityu.edu.hk
+Abstract
+In modern recommender systems, list-wise reranking serves as a
+critical phase within the multi-stage pipeline, finalizing the exposed
+item sequence and directly impacting user satisfaction by modeling
+complex intra-list item dependencies. Existing methods typically
+formulate this task as selecting indices from the local input list.
+However, this approach suffers from a semantically inconsistent
+action space: the same output neuron (logits) represents different
+items across different samples, preventing the model from establish-
+ing a stable, intrinsic understanding of the items. To address this,
+we propose GloRank (Global Action Space Ranker), a generative
+framework that shifts reranking from selecting local indices to gener-
+ating global identifiers. Specifically, we represent items as sequences
+of discrete tokens and reformulate reranking as a token genera-
+tion task. This design effectively decouples the scoring mechanism
+from the variable input order, ensuring that items are evaluated
+against a consistent global standard. We further enhance this with
+a two-stage optimization pipeline: a supervised pre-training phase
+to initialize the model with high-quality demonstrations, followed
+by a reinforcement learning-based post-training phase to directly
+maximize list-wise utility. Extensive experiments on two public
+benchmarks and a large-scale industrial dataset, coupled with on-
+line A/B tests, demonstrate that GloRank consistently outperforms
+state-of-the-art baselines and achieves superior robustness in cold-
+start scenarios.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Recommender Systems, List-wise Reranking, Generative Recom-
+mendations
+ACM Reference Format:
+Pengyue Jia1*, Xiaobei Wang2*, Yingyi Zhang1*, Shuchang Liu2, Yupeng
+Hou3, Hailan Yang2, Xu Gao2, Xiaopeng Li1, Yejing Wang1, Julian McAuley3,
+∗Both authors contributed equally to this work.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+Xiang Li2, Lantao Hu2, and Yongqi Liu2, Kaiqiao Zhan2, Han Li2, Kun Gai2,
+Xiangyu Zhao1. 2018. From Local Indices to Global Identifiers: Generative
+Reranking for Recommender Systems via Global Action Space. In Proceed-
+ings of Make sure to enter the correct conference title from your rights confir-
+mation email (Conference acronym ’XX). ACM, New York, NY, USA, 12 pages.
+https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+In modern recommender systems, list-wise reranking [26, 33] is
+typically applied as the final step of a multi-stage recommendation
+pipeline [5, 12, 24]. While the retrieval and intermediate ranking
+phases primarily aim to filter the candidate pool, the reranking
+stage is dedicated to optimizing the collective utility of the list by
+modeling intra-list item dependencies. Therefore, the reranking
+stage can be formulated as a combination optimization problem [3,
+45], which selects and orders 𝐾items from a candidate set of size 𝑁,
+creating a permutation space of size 𝑁!/(𝑁−𝐾)!, where 𝑁typically
+ranges from dozens to hundreds in industrial settings. In such
+cases, this factorial complexity renders the search for an optimal
+item combination computationally intractable, particularly under
+strict latency constraints. Moreover, user feedback is observed only
+for the single displayed list, which makes supervision extremely
+sparse with respect to the underlying permutation space [26]. These
+characteristics make it difficult to design reranking models that are
+both effective and stable during training.
+To address these challenges, existing approaches first studied
+generator-only methods [3, 22, 33] that focus on directly producing
+a ranked list, typically by employing autoregressive models or gen-
+erative decoding strategies. These approaches are characterized by
+their end-to-end simplicity and direct generation capability. More
+recently, based on the intuition that discriminating high-quality
+lists is easier than directly generating them, the generator-evaluator
+paradigm has gained prominence in industrial systems [36, 38, 42].
+In this framework, the process is decoupled into two phases: a
+generator or multiple generators first propose a set of candidate
+list permutations, and a separate evaluator subsequently selects
+the optimal sequence based on a list-wise value function, thereby
+explicitly modeling inter-item interactions in the generated list.
+Despite these advances, existing architectures [42, 45] typically
+operate within a position-dependent action space. In this for-
+mulation, the model learns to select items based on their relative
+indices (e.g., the 𝑘-th candidate) rather than their intrinsic identi-
+ties. This creates a semantically inconsistent mapping: the same
+output neuron (logit) corresponds to completely different items
+across different samples, depending on the randomized input order,
+as shown in Figure 1. Consequently, the model struggles to capture
+arXiv:2604.25291v1  [cs.IR]  28 Apr 2026
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Jia et al.
+Model
+Semantically
+Inconsistent
+Action Space
+Sample 1   Candidates
+User History
+Sample 2   Candidates
+Action
+Space
+Logits
+Model
+User History
+Figure 1: Semantic Inconsistency in Action Spaces.
+the intrinsic utility of specific items (e.g., “the iPhone is desirable”).
+Instead, it tends to overfit spurious patterns associated with the
+indices themselves (e.g., memorizing “the 3rd position is statistically
+preferable”), leading to poor generalization.
+To overcome this, we argue that robust reranking requires a
+paradigm shift from selecting local indices to generating global iden-
+tifiers. We need an architecture where the action of selecting an
+item is defined by its fixed semantic identity, independent of its
+temporary position in the candidate list. However, implementing
+this global identifier generation paradigm is non-trivial: industrial
+corpora often scale to millions of items, rendering a flat global
+vocabulary computationally prohibitive for standard generative
+models. This raises a fundamental challenge: How can we efficiently
+anchor reranking in a consistent global space while bypassing the
+scalability bottlenecks of a massive vocabulary?
+To answer this question, we propose GloRank (Global Action
+Space Ranker), a novel generative framework redefines reranking
+by moving from local index selection to global identifier generation.
+Specifically, we employ Semantic IDs (SIDs) [11] to represent items
+as sequences of discrete tokens derived from item attributes. This
+transformation maps the million-scale item corpus into a compact,
+fixed global vocabulary. Consequently, the reranking task is refor-
+mulated from selecting dynamic local indices to generating static
+global identifiers. This not only ensures that the model learns a stable
+evaluation standard that directly correlates with item semantics, but
+also is beneficial for improving cross-stage modeling consistency
+since SIDs are widely adopted in retrieval stages in many modern
+designs [9, 35]. To ensure training stability and maximize perfor-
+mance, we introduce a two-stage optimization pipeline (inspired
+by the modern training framework of large recommendation mod-
+els [45, 50]) adapted to the reranking task. A supervised pre-training
+phase first initializes the model by imitating high-quality reference
+lists, and a reinforcement learning-based post-training phase then
+refines the model to directly optimize list-wise rewards. In addition,
+we further design a constrained decoding scheme, which main-
+tains generation trees over the candidate sets, ensuring valid and
+non-duplicated output items. We conduct both offline and online
+experiments to verify the effectiveness of GloRank compared to
+state-of-the-art baselines. In summary, the main contributions of
+this work are as follows:
+• We identify the semantically inconsistent action space as a funda-
+mental bottleneck in existing reranking paradigms. We analyze
+how their reliance on dynamic relative indices causes the seman-
+tic meaning of output nodes to vary with input order, preventing
+the model from establishing a stable valuation standard for items.
+• We propose GloRank , a simple and effective generative reranking
+framework that advocates for a paradigm shift from local index
+selection to global identifier generation, by modeling the output
+space in a fixed global vocabulary, training with a two-stage
+paradigm, and inference with constrained decoding.
+• Extensive experiments on two public benchmarks and a large-
+scale industrial dataset, coupled with online A/B tests, demon-
+strate that GloRank consistently outperforms state-of-the-art
+baselines in standard evaluation and achieves superior robust-
+ness in cold-start scenarios.
+2
+Theoretical Analysis
+This section analyzes an optimization instability in list-wise rerank-
+ing that originates from the semantic definition of the action space
+at the output layer. We show that, under (candidate) position-
+dependent action spaces, the supervision signal received by a fixed
+output parameter row becomes stochastic even when the target item
+identity is fixed. This induces an additional, irreducible variance
+term in the output-layer gradients, resulting in training instability.
+In contrast, anchoring supervision in a globally consistent item
+space removes this mapping-induced variance, leaving only the
+variance caused by the encoder representation itself.
+2.1
+List-wise Reranking Setup
+Let V denote the global item universe. For each request with con-
+text𝑥, the reranking stage receives a candidate set C = {𝑣1, . . . , 𝑣𝑁} ⊂
+V and outputs an ordered list 𝑅= [𝑟1, . . . ,𝑟𝐾], where 𝐾≤𝑁. We
+consider an autoregressive list-wise generator with step-level dis-
+tribution 𝑝𝜃(𝑟𝑡| 𝑥, C,𝑟<𝑡), trained by minimizing the sum of step
+losses (e.g., cross-entropy) over a target list 𝑅∗:
+L(𝜃) =
+𝐾
+∑︁
+𝑡=1
+ℓ
+
+z(𝑡)
+𝜃,𝑦(𝑡)
+,
+(1)
+where z(𝑡)
+𝜃
+∈R𝐴denotes the output logits of 𝑝𝜃and 𝐴denotes the
+size of the action space. Typically, the output logits are calculated
+from a hidden state:
+z(𝑡)
+𝜃(𝜎) = W h(𝑡)
+𝜎,
+(2)
+where h(𝑡)
+𝜎
+= ℎ(𝑡)
+𝜙(𝑥, 𝜎(C),𝑟<𝑡) ∈R𝑑is the hidden state before
+output, W ∈R𝐴×𝑑is the output-layer parameter matrix, and 𝜎
+denotes a permutation of the candidate list used to form the ordered
+input 𝜎(C). We explicitly allow h(𝑡)
+𝜎
+to depend on 𝜎(for example,
+due to position embeddings and attention over ordered inputs).
+For cross-entropy, the gradient with respect to W is
+∇W ℓ z(𝑡) (𝜎),𝑦(𝑡) (𝜎) =
+
+𝑝(𝑡) (𝜎) −e𝑦(𝑡) (𝜎)
+ 
+h(𝑡)
+𝜎
+⊤
+,
+(3)
+where 𝑝(𝑡) (𝜎) = softmax(z(𝑡) (𝜎)) and e𝑦is one-hot vector of 𝑦.
+To isolate the instability caused by the action-space semantics
+(which determines where supervision is applied in W), we analyze
+the label-dependent component of the output-layer gradient:
+G(𝑡)
+label(𝜎) ≜−e𝑦(𝑡) (𝜎)
+
+h(𝑡)
+𝜎
+⊤
+.
+(4)
+We measure the variance of a random matrix X by the squared
+Frobenius deviation:
+Var𝜎(X) ≜E𝜎
+
+∥X −E𝜎[X]∥2
+𝐹
+
+.
+(5)
+
+
+From Local Indices to Global Identifiers: Generative Reranking for Recommender Systems via Global Action Space
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+2.2
+Semantic Inconsistency and Output-Layer
+Variance
+In many existing list-wise reranking architectures [33, 45], the ac-
+tion space is defined over local candidate indices, with 𝐴= 𝑁.
+Under this formulation, the semantic meaning of each output di-
+mension depends on the input ordering: the same output row of W
+corresponds to different items across different permutations.
+Consider a fixed generation step 𝑡and a fixed semantic target
+item 𝑟∗
+𝑡∈C. Under a permutation 𝜎, the supervised label is the
+position of this item in the permuted list:
+𝑦(𝑡)
+loc (𝜎) = pos𝜎(𝑟∗
+𝑡) ∈{1, . . . , 𝑁}.
+(6)
+Equivalently, define the indicator variable for whether the target
+item appears at position 𝑗:
+𝐼(𝑡)
+𝑗
+(𝜎) ≜I
+
+𝑦(𝑡)
+loc (𝜎) = 𝑗
+
+.
+(7)
+When 𝜎is sampled uniformly over permutations, 𝐼(𝑡)
+𝑗
+is Bernoulli
+with
+P
+
+𝐼(𝑡)
+𝑗
+= 1
+
+= 1
+𝑁.
+(8)
+We now focus on the label-dependent update received by a fixed
+output parameter row. Let w⊤
+𝑗be the 𝑗-th row of W. From Eq. (4),
+the label-dependent gradient contribution to w𝑗is
+g(𝑡)
+𝑗,loc(𝜎) ≜−I
+
+𝑦(𝑡)
+loc (𝜎) = 𝑗
+
+h(𝑡)
+𝜎
+= −𝐼(𝑡)
+𝑗
+(𝜎) h(𝑡)
+𝜎.
+(9)
+This term has an “on–off” form: the row w𝑗receives supervision
+for the fixed target item 𝑟∗
+𝑡only when the target happens to be at
+position 𝑗. Here, g𝑗(𝜎) denotes the gradient vector associated with
+the 𝑗-th row of W (up to transpose). For notational simplicity, we
+treat it as a vector in R𝑑, since all subsequent analysis depends only
+on its Euclidean norm.
+Proposition 2.1 (Irreducible mapping-induced variance un-
+der local indices). Fix a step 𝑡and a target item 𝑟∗
+𝑡. Assume
+𝜎is uniform over permutations so that P(𝐼(𝑡)
+𝑗
+= 1) = 1/𝑁. Let
+𝝁(𝑡)
+𝑗
+≜E𝜎
+h
+h(𝑡)
+𝜎
+| 𝐼(𝑡)
+𝑗
+= 1
+i
+. If 𝝁(𝑡)
+𝑗
+≠0, then the label-dependent
+gradient to row w𝑗has strictly positive variance:
+Var𝜎
+
+g(𝑡)
+𝑗,loc
+
+≥
+1
+𝑁
+
+1 −1
+𝑁
+𝝁(𝑡)
+𝑗
+
+2
+2 > 0.
+(10)
+Proof. We apply the law of total variance conditioning on 𝐼(𝑡)
+𝑗
+:
+Var𝜎
+
+g(𝑡)
+𝑗,loc
+
+= E𝐼(𝑡)
+𝑗
+h
+Var
+
+g(𝑡)
+𝑗,loc | 𝐼(𝑡)
+𝑗
+i
++ Var𝐼(𝑡)
+𝑗
+
+E
+h
+g(𝑡)
+𝑗,loc | 𝐼(𝑡)
+𝑗
+i
+= 1
+𝑁
+h
+Var
+
+h(𝑡)
+𝜎
+| 𝐼(𝑡)
+𝑗
+= 1
+i
++ Var𝐼(𝑡)
+𝑗
+
+E
+h
+g(𝑡)
+𝑗,loc | 𝐼(𝑡)
+𝑗
+i
+≥Var𝐼(𝑡)
+𝑗
+
+E
+h
+g(𝑡)
+𝑗,loc | 𝐼(𝑡)
+𝑗
+i
+(11)
+From Eq. (9), we have
+E
+h
+g(𝑡)
+𝑗,loc | 𝐼(𝑡)
+𝑗
+= 0
+i
+= 0,
+E
+h
+g(𝑡)
+𝑗,loc | 𝐼(𝑡)
+𝑗
+= 1
+i
+= −𝝁(𝑡)
+𝑗.
+Therefore, E
+h
+g(𝑡)
+𝑗,loc | 𝐼(𝑡)
+𝑗
+i
+is a Bernoulli-driven random vector that
+equals −𝝁(𝑡)
+𝑗
+with probability 𝑝= 1/𝑁and equals 0 with probability
+1 −𝑝. This mapping-induced variance equals
+Var𝐼(𝑡)
+𝑗
+
+E
+h
+g(𝑡)
+𝑗,loc | 𝐼(𝑡)
+𝑗
+i
+= 1
+𝑁
+
+1 −1
+𝑁
+ 𝝁(𝑡)
+𝑗
+
+2
+2 > 0.
+(12)
+Combining with Eq. (11) yields Eq. (10).
+□
+Interpretation. Proposition 2.1 states that, regardless of the target
+item index being fixed or not, a fixed output row w𝑗receives an
+unstable supervision signal because the mapping from items to
+output rows depends on 𝜎. Additionally, this mapping-induced
+variance does not disappear even when h(𝑡)
+𝜎
+is invariant to 𝜎, and
+it remains strictly positive as long as the target item can appear at
+multiple positions under the permutation distribution.
+2.3
+Stability Under Global Item Spaces
+We now consider an alternative formulation in which the action
+space is defined over a fixed global item space. Each item 𝑣∈V is
+assigned a unique identifier ID(𝑣), and the supervised label becomes
+invariant to permutations of C:
+𝑦(𝑡)
+glo = ID(𝑟∗
+𝑡).
+(13)
+Since each row of W now corresponds to a global label, the label-
+dependent gradient contribution to the target row is stable with
+g(𝑡)
+glo (𝜎) ≜−h(𝑡)
+𝜎,
+(14)
+which is independent of how the candidate list is permuted.
+Corollary 2.2 (Zero mapping-induced variance under global
+labels). Fix a step 𝑡and a target item 𝑟∗
+𝑡. Under global labels in
+Eq. (13), the mapping-induced variance is zero, and only the encoding
+variance remains for the corresponding 𝜎. In particular,
+Var𝜎
+
+g(𝑡)
+glo
+
+= Var𝜎
+
+h(𝑡)
+𝜎
+
+.
+(15)
+Ideally, the encoder considers the candidates as an unordered
+set and h(𝑡) becomes agnostic to the permutation 𝜎, then Eq.(15)
+reduces to zero.
+Discussion. Comparing Eq. (10) and Eq. (15), the local position-
+dependent formulation incurs an additional variance term that
+comes from the stochastic assignment between items and output
+rows. Anchoring supervision in a globally consistent item space
+removes this mapping-induced variance and leaves only the vari-
+ance that is intrinsic to the encoder representation h(𝑡)
+𝜎. In the
+next section, we describe how GloRank realizes globally anchored
+supervision efficiently at scale while still selecting from the local
+candidate set.
+3
+Methodology
+In this section, we present GloRank, a novel generative frame-
+work designed to resolve the semantic inconsistency of position-
+dependent action spaces by shifting the reranking paradigm from
+local index selection to global identifier generation. Figure 2 illus-
+trates the overall framework. Specifically, we first introduce the
+tokenization mechanism in Section 3.1, which efficiently constructs
+the stable global action space by transforming items into Semantic
+IDs (SIDs). Next, in Section 3.2, we elaborate on the backbone ar-
+chitecture, which reformulates list-wise reranking as a sequence
+generation task to capture complex inter-item dependencies. We
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Jia et al.
+Tokenization
+Architecture
+Pre-training
+Post-training
+Transformer Encoder
+b
+c
+a
+b
+c
+...
+a
+b
+c
+a
+b
+c
+...
+a
+rank
+sep
+sep
+Transformer Decoder
+BOS
+b
+c
+a
+a
+b
+...
+c
+b
+c
+a
+a
+b
+...
+c
+EOS
+Tokenizer
+ Textual Description
+<a_21>
+<b_12>
+<c_05>
+Item
+Candidate Items (N Items)
+History Items
+Generated Items
+Model
+Input
+Output List
+Input
+List 1
+List 2
+List 3
+List 4
+Model
+Reward
+Model
+Generated Items
+0.81
+0.92
+0.65
+0.33
+GRPO
+...
+Sampled
+Permutations
+Evaluator / Rule-based
+Selection
+List with 
+Best Score
+Optimization
+CE Loss
+List 1
+List 2
+List 3
+List n
+Item 1
+Item K
+Constrained
+Decoding
+Rewards
+Figure 2: Overview of GloRank.
+then present our decoupled optimization pipeline in Section 3.3,
+comprising a supervised pre-training phase (Section 3.3.1) that ini-
+tializes the policy with high-quality demonstrations, and a reward-
+driven post-training phase (Section 3.3.2) that directly maximizes
+list-wise utility. Finally, in Section 3.4, we detail the prefix-tree
+constrained decoding algorithm, which effectively bridges the gap
+between the global action space and local candidate sets, ensuring
+that generated outputs strictly adhere to candidate constraints.
+3.1
+Tokenization
+To materialize the concept of a global item space within a rerank-
+ing framework, we require an item representation scheme that is
+both globally consistent and computationally efficient. Traditional
+atomic IDs, which assign a unique ID to every item, suffer from
+high dimensionality, lacking of semantic continuity, and insufficient
+representation learning for cold-start IDs [35]. These limitations
+make atomic item IDs unsuitable for modeling the large-scale global
+vocabulary required by our approach. To overcome this, we adopt
+RQ-based Semantic IDs [7, 50] to map items into a compact, hierar-
+chical discrete space. As illustrated in the tokenization module of
+Figure 2, this process consists of two key steps: semantic serializa-
+tion and residual quantization.
+3.1.1
+Semantic Serialization. To capture the semantics of an
+item 𝑣∈V, we aggregate its textual attributes—such as title and
+description—into a unified text sequence 𝑇𝑣using a predefined
+prompt template. This sequence is then fed into a pre-trained text
+encoder (e.g., Sentence-T5 [32], Qwen3-Embedding [46]) to obtain a
+dense semantic vector h𝑣= Encoder(𝑇𝑣), where h𝑣∈R𝐷encapsu-
+lates the global semantic information of the item and 𝐷represents
+the dimension of embeddings.
+3.1.2
+Residual Quantization. To transform this continuous vec-
+tor into discrete tokens suitable for generative modeling, we employ
+the Residual Quantization (RQ) technique (specifically RQ-VAE [35]
+or RQ-Kmeans [9, 49]). This method approximates the dense vector
+h𝑣through a multi-stage quantization process. At each stage 𝑚
+(where 1 ≤𝑚≤𝑀, 𝑀is the number of codebooks), the algorithm
+selects a code from a learned codebook C𝑚that minimizes the resid-
+ual error from the previous stage. Formally, let Q(·) denote the
+quantization function:
+𝑠𝑣= [𝑐1,𝑐2, . . . ,𝑐𝑀] = Q(h𝑣; ΘQ),
+(16)
+where 𝑠𝑣is the corresponding SID sequence that consists of 𝑀dis-
+crete tokens, and ΘQ represents the codebook parameters. Each
+token 𝑐𝑚corresponds to a semantic cluster at the𝑚-th level of gran-
+ularity. The resulting tokenizer ensures that the item 𝑣is uniquely
+identified by the sequence 𝑠𝑣, allowing us to reformulate item se-
+lection as a sequence generation task over a fixed, compact global
+vocabulary Vtoken = Ð𝑀
+𝑚=1 C𝑚.
+3.2
+Architecture
+To effectively capture the complex dependencies between items as
+well as patterns in the generated lists, GloRank employs a transformer-
+based encoder-decoder architecture as its backbone to encode the
+entire input as a sequence and capture inter-item dependencies
+during generation, following previous approaches [18, 35].
+3.2.1
+Input Construction. The input to the model is a serialized
+sequence of SIDs constructed using a specific prompt template. Let
+𝑆(·) denote the serialization function that maps a set of items to a
+concatenated SID sequence. Given the candidate set C and the user’s
+interaction history H, the input sequence 𝑋input is formulated as
+“𝑆(C)<sep>𝑆(H)<sep><rank>” where <sep> is a separator token
+distinguishing different context segments, and <rank> is a prompt
+token that signals the model to generate reranked lists.
+3.2.2
+Autoregressive Generation in Global Item Space. The
+encoder first processes 𝑋input into a sequence of continuous hidden
+states. Subsequently, the decoder generates the output sequence
+
+
+From Local Indices to Global Identifiers: Generative Reranking for Recommender Systems via Global Action Space
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+autoregressively. A critical distinction of GloRank is that the gener-
+ation occurs over the fixed global vocabulary Vtoken, rather than
+the selection of input indices in C.
+At each time step 𝑡, the decoder predicts the probability distri-
+bution of the next token 𝑦𝑡conditioned on the input 𝑋input and
+previously generated tokens 𝑦<𝑡:
+𝑃(𝑦𝑡|𝑦<𝑡,𝑋input) = Softmax(𝑊𝑜· ℎ𝑡),
+(17)
+where ℎ𝑡is the decoder’s hidden state at step 𝑡, and𝑊𝑜projects the
+state to the vocabulary size. The model continues to generate tokens
+until the maximum list length is reached. As we will describe in
+Section 3.4, the resulting sequence of tokens is then reshaped into
+item-level SIDs to form the final ordered list 𝑅through a constrained
+decoding method during inference.
+3.3
+Optimization
+As illustrated in Figure 2, our optimization pipeline is decoupled into
+two phases: (1) a supervised pre-training phase, which teaches the
+model to generate high-quality demonstrations; and (2) a reinforcement-
+based post-training phase, which further maximizes the list-wise
+utility through direct alignment with reward signals.
+3.3.1
+Pre-training. The primary objective of the pre-training
+phase is to help the model understand item semantics and basic
+reranking principles. A straightforward approach would be to train
+the model to reconstruct the historical lists exposed to users in the
+logs [26]. However, this approach heavily relies on the quality of
+the exposed list in the logged data, which may not be the optimal
+permutation. This means that reranking models, different from
+conventional retrieval models, require counterfactual knowledge
+about unseen lists and learn to distinguish between them.
+To mitigate this issue and provide high-quality supervision, we
+employ a strategy based on offline evaluation. Specifically, for each
+training instance consisting of user history H and a candidate set
+C, we first generate a set of candidate lists P = {𝑅1, 𝑅2, . . . , 𝑅𝐿}
+by sampling from the permutation space of C. We then employ
+a proxy scoring function 𝐸—which can be a list-wise evaluator
+or heuristic rules—to assign a score to each permutation. The
+permutation with the highest score is selected as the target (i.e.,
+𝑌∗= arg max𝑅∈P 𝐸(𝑅, H)). With the constructed target sequence
+𝑌∗= [𝑦∗
+1,𝑦∗
+2, . . . ,𝑦∗
+|𝑌∗|] as a sequence of discrete tokens, we optimize
+GloRank using the negative log-likelihood minimization objective
+in standard Next Token Prediction (NTP) tasks:
+Lpre = −
+|𝑌∗|
+∑︁
+𝑡=1
+log 𝑃(𝑦∗
+𝑡|𝑦∗
+<𝑡,𝑋input;𝜃).
+(18)
+3.3.2
+Post-training. While the pre-training phase endows the
+model with basic semantic understanding and reranking capabili-
+ties, it remains bounded by the quality of target labels in the offline
+data. To transcend these limitations and directly maximize the col-
+lective utility of the generated lists, we introduce a reinforcement
+learning (RL) based post-training phase. Specifically, we leverage
+Group Relative Policy Optimization (GRPO) [37] in our framework,
+which serves to align the model’s global generation capability with
+the specific objective of maximizing list-wise utility.
+Table 1: Dataset statistics.
+Dataset
+Users
+Items
+Interactions
+Lists
+MovieLens-1M
+6,020
+3,043
+995,154
+161,646
+Amazon Books
+35,732
+38,121
+1,960,674
+311,386
+Industrial Dataset
+200,775
+17,014
+5,173,698
+589,751
+3.4
+Inference with Constrained Decoding.
+During post-training and inference, GloRank generates the reranked
+list autoregressively. To ensure that the generated items strictly be-
+long to the current candidate set C without duplication, we employ
+a Trie-based constrained decoding strategy [19]. Specifically, for
+each request, we construct a prefix tree (Trie) from the SIDs of the
+candidate items. At each decoding step, we constrain the output
+probability distribution by masking out invalid tokens that do not
+appear in the Trie’s valid branches. Once an item is fully generated,
+we dynamically prune its corresponding path from the Trie to pre-
+vent repetition. Since the candidate set is typically much smaller
+than the entire item set (i.e., 𝑁≪|V|) in reranking scenarios, the
+overhead of Trie construction and masking is negligible.
+4
+Experiments
+Through both offline benchmarks and online industrial deploy-
+ments, we aim to answer the following research questions:
+• RQ1: How does GloRank compare against state-of-the-art rerank-
+ing baselines in standard offline evaluation settings?
+• RQ2: Can GloRank maintain its effectiveness when generating
+unseen lists under counterfactual evaluation?
+• RQ3: Is the proposed decoupled two-stage optimization pipeline
+essential for achieving optimal performance?
+• RQ4: How do variations in key hyperparameters influence the
+final performance of the model?
+• RQ5: Is the global action space necessary in modern generative
+recommendation frameworks?
+• RQ6: Does the model confer specific advantages in handling
+cold-start scenarios compared to traditional approaches?
+• RQ7: Is GloRank effective when deployed in a real-world, large-
+scale industrial production system?
+4.1
+Dataset and Evaluation Metrics
+Datasets. To comprehensively evaluate the performance of Glo-
+Rank, we conduct experiments on three datasets, including two
+widely used public benchmarks (following previous work [29, 45]),
+Amazon Books [30] and MovieLens-1M [14], and a large-scale In-
+dustrial dataset collected from a real-world e-commerce platform.
+Amazon Books and MovieLens-1M serve as standard testbeds to
+ensure reproducibility, while the Industrial dataset is employed to
+verify the effectiveness and robustness of our method in a practical
+production environment. The detailed statistics of these datasets
+are summarized in Table 1.
+Evaluation Metrics. We adopt standard list-wise metrics to as-
+sess the quality of the reranked lists, specifically Precision@K,
+NDCG@K, MAP@K, and F1@K. These metrics evaluate the recommen-
+dation performance from various perspectives, including accuracy
+and ranking position.
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Jia et al.
+Table 2: Overall experiments. The best results are highlighted in bold, and the second-best results are underlined. Rel. Improve-
+ment denotes the percentage improvement of the proposed method relative to the best-performing baseline.
+Methods
+Amazon Books
+MovieLens-1M
+Industrial Dataset
+Precision
+NDCG
+MAP
+F1
+Precision
+NDCG
+MAP
+F1
+Precision
+NDCG
+MAP
+F1
+Generator-
+Only
+DNN [5]
+60.28
+69.61
+58.58
+62.45
+56.86
+70.30
+59.28
+62.16
+32.80
+51.26
+41.02
+38.97
+DLCM [1]
+66.80
+75.88
+65.39
+69.28
+62.31
+73.87
+63.82
+67.96
+47.86
+73.03
+63.16
+56.89
+PRM [33]
+67.86
+76.88
+66.44
+70.42
+60.09
+72.85
+62.21
+65.51
+47.89
+67.09
+54.59
+56.88
+GoalRank [45]
+80.35
+84.88
+77.91
+83.44
+73.56
+83.43
+76.16
+80.15
+60.16
+88.08
+82.06
+71.48
+Generator-
+Evaluator
+PIER [38]
+71.14
+80.22
+71.62
+73.74
+62.74
+75.99
+65.98
+68.74
+56.69
+80.15
+70.52
+67.52
+NAR4Rec [36]
+70.08
+79.46
+70.69
+72.66
+62.81
+75.01
+65.42
+68.31
+51.93
+65.16
+53.13
+61.56
+MG-E-3 [42]
+68.76
+76.36
+65.82
+71.33
+55.51
+67.39
+55.52
+55.51
+48.53
+67.38
+54.89
+57.67
+MG-E-20 [42]
+72.99
+78.68
+68.66
+75.72
+58.66
+69.86
+58.60
+64.18
+51.58
+69.29
+57.26
+61.08
+MG-E-100 [42]
+77.21
+82.15
+73.78
+80.09
+60.64
+70.97
+59.93
+66.29
+53.21
+70.67
+58.80
+63.06
+GloRank
+83.75
+90.08
+85.10
+86.97
+75.79
+87.56
+81.19
+82.57
+62.56
+90.15
+84.84
+74.32
+Rel. Improvement
+↑4.23%
+↑6.13%
+↑9.23%
+↑4.23%
+↑3.03%
+↑4.95%
+↑6.60%
+↑3.02%
+↑3.99%
+↑2.35%
+↑3.39%
+↑3.97%
+4.2
+Baselines
+To evaluate the effectiveness of GloRank, we compare it against a
+diverse set of representative baselines. We categorize these methods
+into Generator-only approaches and Generator-Evaluator frame-
+works. (1) Generator-only Baselines: these methods employ a
+single model to directly generate the final ranked list, either through
+point-wise scoring or sequential generation, including DNN [5],
+DLCM [1], PRM [33], GoalRank [45]. (2) Generator-Evaluator
+Baselines: these frameworks decouple the reranking process into
+two phases: generators first produce a set of candidate permuta-
+tions, and a separate evaluator subsequently selects the optimal
+sequence, including PIER [38], NAR4Rec [36], MG-E [42].
+4.3
+Implementation Details
+To construct the SIDs, we first generate dense semantic vectors
+by serializing item metadata into a unified text sequence. For the
+Amazon Books dataset, we concatenate the title, categories,
+description, price, and brand fields. For MovieLens-1M, we uti-
+lize the title and genres. These sequences are encoded using
+the pre-trained Qwen3-embedding-4B [46] model to obtain high-
+quality item representations. For the quantization process, we em-
+ploy the RQ-Kmeans [49] algorithm with a hierarchical depth of
+𝑀= 4 and the codebook size 256. Our model backbone is built
+upon the Transformer-based Encoder-Decoder architecture, fol-
+lowing the configuration of standard T5 [34] models. We use the
+AdamW [28] optimizer for both training stages. In the supervised
+pre-training phase, we set the learning rate to 5e−4 with a weight
+decay of 0.01. In the post-training phase, we reduce the learning rate
+to 5e−6. For the GRPO process, we set the sampling temperature
+𝜏= 1.0 and the group size 20 to balance exploration and gradi-
+ent estimation variance. During the inference phase, we employ
+beam search decoding with a beam size of 20. Following previous
+work [29, 45], we configure the task to generate a list of length 6
+from a candidate set of 50 items. Accordingly, the cutoff 𝐾for all
+evaluation metrics is set to 6.
+4.4
+Overall Experiments (RQ1)
+To demonstrate the superior performance of GloRank, we compare
+it against state-of-the-art baselines across three datasets under the
+standard offline evaluation setting. We utilize the ground-truth
+evaluation metrics (specifically, the arithmetic mean of the target
+metrics) directly as the reward signal during the post-training phase.
+The comparative results are summarized in Table 2, from which
+we draw the following key observations: (1) GloRank consistently
+outperforms all baselines across all datasets and metrics. This vali-
+dates that anchoring the reranking process in a stable Global Item
+Space allows the model to learn a more robust and transferable
+valuation standard. (2) Generally, Generator-Evaluator methods
+outperform traditional Generator-only approaches (e.g., DLCM,
+PRM). This trend supports the prevailing view that decoupling gen-
+eration and evaluation enables a more exhaustive exploration of
+the permutation space, as the evaluator can explicitly model intra-
+list correlations that generators may miss. (3) GoalRank stands
+out as a formidable exception among Generator-only methods. By
+employing a group-relative optimization strategy similar to the
+one used in our post-training phase, GoalRank surpasses standard
+Generator-Evaluator methods. This indicates that advanced policy
+optimization can effectively bridge the gap between Generator-only
+and Generator-Evaluator paradigms. Nonetheless, GloRank still out-
+performs GoalRank, highlighting that the benefits of our framework
+stem not just from the optimization method, but from the global
+space formulation. (4) Regarding the MG-E variants, we observe
+that performance steadily improves as the number of generators in-
+creases (from MG-E-3 to MG-E-100). This confirms that expanding
+the search space via ensemble generation leads to better ranking
+quality. Nevertheless, GloRank achieves superior results with a sin-
+gle generative policy, bypassing the high computational overhead
+of running hundreds of parallel generators.
+4.5
+Counterfactual Experiments (RQ2)
+Standard offline evaluation relies on static historical logs, which
+inherently suffer from selection bias—we can only evaluate lists
+that were previously exposed by the logging policy. To rigorously
+assess GloRank and other generative solutions in a more realis-
+tic environment, we employ a simulation-based evaluation on the
+MovieLens-1M dataset, following established protocols [47], in addi-
+tion to the standard offline evaluation. Figure 3 presents the box plot
+of the reward scores achieved by different models in the simulator.
+
+
+From Local Indices to Global Identifiers: Generative Reranking for Recommender Systems via Global Action Space
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+DNN
+DLCM
+PRM
+GoalRank
+PIER
+NAR4Rec MGE-3 MGE-20MGE-100GloRank
+1
+2
+3
+4
+Score
+Figure 3: Score distribution comparison.
+We observe the following: (1) GloRank exhibits a significant perfor-
+mance advantage over all baselines. Its score distribution is notably
+higher, with both the median and the upper quartile far exceeding
+those of the strongest baselines. This indicates that GloRank is
+not only better on average but also possesses a higher ceiling for
+optimizing list utility. (2) Results are consistent with our offline
+evaluation. GoalRank and MG-E-100 remain the most competitive
+baselines. Their relatively strong performance confirms that model-
+ing list-wise interactions is crucial. However, they still fall short of
+GloRank, highlighting the limitations of position-dependent action
+spaces in exploring optimal policies.
+4.6
+Ablation Study (RQ3)
+To verify the necessity and effectiveness of the proposed decoupled
+two-stage optimization pipeline, we conduct an ablation study by
+comparing GloRank with two variants:
+• w/o pre: This variant skips the supervised pre-training phase
+and directly initializes the model with random weights for the
+reward-driven post-training.
+• w/o post: This variant employs only the pre-training phase.
+The experimental results on Amazon Books and MovieLens-1M are
+summarized in Table 3. From these results, we draw the following
+key observations: (1) First, both optimization stages contribute pos-
+itively to the final performance. Removing either stage leads to a
+degradation across all evaluation metrics on both datasets, confirm-
+ing that the combination of supervised learning and reward-based
+utility maximization is essential for an effective reranking frame-
+work. (2) Second, the pre-training phase serves as the fundamental
+cornerstone of GloRank. As observed, the w/o pre-training variant
+suffers a catastrophic performance drop (e.g., NDCG declines from
+90.08% to 24.13% on Amazon Books). This indicates that without
+the initialization provided by supervised learning on high-quality
+demonstrations, the model struggles to comprehend the basic se-
+mantics of items or the syntax of valid ranking lists. (3) Third, while
+the post-training phase yields consistent improvements, its impact
+is particularly pronounced on ranking-sensitive metrics such as
+NDCG and MAP. For instance, on the MovieLens-1M dataset, post-
+training boosts MAP by 2.34% (from 78.85% to 81.19%) and NDCG
+by 1.62% (from 85.94% to 87.56%), compared to smaller gains in
+Precision and F1. We attribute this phenomenon to the distinct
+objectives of the two phases: the pre-training phase primarily in-
+centivizes the model to distinguish positive items from the global
+pool, potentially underemphasizing the precise inter-item ordering
+Table 3: Ablation study. The best results are highlighted in
+bold, and the second-best results are underlined.
+Methods
+Amazon Books
+MovieLens-1M
+Precision
+NDCG
+MAP
+F1
+Precision
+NDCG
+MAP
+F1
+w/o pre
+20.85
+24.13
+14.00
+21.64
+18.53
+24.04
+14.19
+20.09
+w/o post
+83.44
+89.15
+83.68
+86.63
+75.51
+85.94
+78.85
+82.28
+Ours
+83.75
+90.08
+85.10
+86.97
+75.79
+87.56
+81.19
+82.57
+within the list. In contrast, the post-training phase facilitates direct
+interaction with the reward model, providing explicit feedback on
+list-wise utility.
+4.7
+Hyperparameter Analysis (RQ4)
+To assess the robustness of GloRank and identify optimal config-
+urations, we analyze the impact of four critical hyperparameters:
+the group size 𝐺, the number of training steps, and the KL regu-
+larization coefficient 𝛽during the post-training phase, as well as
+the beam size 𝐵during inference. The experimental results on the
+Amazon Books dataset are presented in Figure 4. Note that we con-
+duct experiments across all four metrics and observe that Precision
+exhibits trends highly consistent with F1, while MAP aligns closely
+with NDCG. Therefore, due to space limitations, we only present
+the results for Precision and MAP in this section.
+Impact of GRPO Configurations. First, regarding the Group
+Size (𝐺), we observe a consistent performance improvement across
+all metrics as 𝐺increases. This aligns with the theoretical foun-
+dation of GRPO: a larger group size provides more samples for
+estimating the group-relative baseline, thereby reducing the vari-
+ance of the advantage estimator and stabilizing the policy gradients.
+Second, regarding Training Steps, the model’s performance im-
+proves rapidly in the initial stages and eventually reaches a stable
+plateau. This indicates that GloRank converges efficiently without
+suffering from severe collapse. Third, regarding the KL Coefficient
+(𝛽) in the GRPO objective [37], we find that the best performance is
+achieved when 𝛽= 0 (i.e., removing the KL penalty). This observa-
+tion is consistent with recent papers [15, 27, 43]. We attribute this
+to the fact that strict adherence to the pre-trained reference policy
+limits the model’s exploration, whereas removing the constraint
+allows the policy to fully optimize for the ranking utility.
+Impact of Inference Beam Size. The analysis of Beam Size re-
+veals an interesting trade-off between set-based and rank-based met-
+rics. As the beam size increases, Precision@6 generally improves,
+suggesting that a broader search space helps the model identify a
+more accurate set of relevant items. However, MAP@6 exhibits an
+inverse trend, degrading slightly as the beam size grows. This phe-
+nomenon suggests that while larger beams find high-probability
+sequences that contain more relevant items, the autoregressive
+probability maximization does not strictly correlate with the opti-
+mal ordering required for MAP.
+4.8
+Impact of Global Action Space (RQ5)
+To answer RQ5 and verify the fundamental necessity of the global
+action space in modern generative frameworks, we compare Glo-
+Rank with a local action space (LAS) variant. Instead of generating
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Jia et al.
+83.6
+83.8
+Precision@6
+83.5
+84.0
+83.0
+83.5
+84.0
+83.6
+83.7
+1 5 10 15 20 25 30 35
+GRPO Group Size
+84.8
+85.0
+85.2
+MAP@6
+0
+400 8001200
+2000
+GRPO Steps
+84.0
+86.0
+0.00
+0.04
+0.08
+0.14
+KL Beta
+82.0
+84.0
+86.0
+5
+10 15 20 25 30 35
+Beam Size
+84.8
+85.0
+Figure 4: Hyperparameter analysis.
+Precision
+NDCG
+MAP
+F1
+0.2
+0.4
+0.6
+0.8
+Amazon Books
+Precision
+NDCG
+MAP
+F1
+0.2
+0.4
+0.6
+0.8
+MovieLens-1M
+LAS
+Ours
+Figure 5: Performance comparison between GloRank (Global
+Action Space) and the local action space variant (LAS).
+global SIDs, this variant is restricted to a position-dependent ac-
+tion space, forcing the model to generate local indices (e.g., tokens
+representing 1 to 𝑁) to select items based on their relative posi-
+tions in the input candidate list. Figure 5 visualizes the performance
+comparison across four metrics on two public datasets. The results
+reveal a substantial performance degradation for the local action
+space variant. This is because the local action space introduces
+noise during training, which hinders optimization and prevents
+stable convergence. Furthermore, empirical analysis indicates that
+the LAS variant tends to memorize high-frequency index combina-
+tions rather than selecting appropriate item sequences based on the
+context, leading to poor performance. This observation provides
+support for our theoretical analysis on semantic inconsistency.
+4.9
+Generalization to Unseen Items (RQ6)
+We conduct a specialized experiment to investigate the model’s
+robustness in handling cold-start scenarios—a perennial challenge
+in recommender systems where new items lack historical interac-
+tion data. We simulate a cold-start setting by randomly masking
+5% of the items in the test set from the Amazon Books training set.
+These items are removed entirely during the training phase but are
+retained in the test set. Figure 6 illustrates the performance com-
+parison between GloRank and the strongest baseline, GoalRank,
+under both normal and cold-start settings. From the results, we
+can see that GloRank demonstrates significantly superior robust-
+ness compared to GoalRank. While GoalRank suffers a catastrophic
+performance drop in the cold-start setting (e.g., MAP decreases
+GloRank
+GoalRank
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+0.838
+0.803
+0.818
+0.218
+-2.4%
+-72.9%
+Precision
+GloRank
+GoalRank
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+0.851
+0.834
+0.809
+0.097
+-4.9%
+-88.4%
+MAP
+Origin
+Cold Start
+Figure 6: Robustness comparison between GloRank and Goal-
+Rank under normal and cold-start scenarios.
+Table 4: Online A/B testing results.All improvements are
+statistically significant with student t-test 𝑝< 0.05.
+Metric
+Watch Time
+Effective View
+Like
+Comment
+Forward
+Imp.
++0.095%
++0.111%
++0.286%
++0.462%
++0.447%
+by over 88.4%), GloRank maintains a high level of accuracy with
+only a marginal decline. This validates that the global item space
+effectively transfers knowledge from seen to unseen items. Even
+if a specific item ID is novel, its constituent semantic tokens share
+similarities with known items, allowing the model to infer its utility
+based on content rather than memorized identity. In contrast, Goal-
+Rank relies on learning distinct embeddings for atomic IDs. When
+encountering an unseen item, the model must use a randomly initial-
+ized embedding, which acts as noise. Crucially, because reranking
+is a list-wise task that explicitly models inter-item correlations, this
+noise is not isolated to the unseen item itself. Instead, it propagates
+through the interactions, corrupting the contextual representation
+of the entire list and impairing the scoring of even the known items
+in the same batch.
+4.10
+Online Experiments (RQ7)
+To validate the practical effectiveness and robustness of GloRank in
+a real-world production environment, we conduct online A/B test-
+ing on a leading content platform. This platform serves over 400
+million Daily Active Users (DAU) and manages a corpus of tens
+of millions of items. We allocate 7.8% of the total live traffic to
+
+
+From Local Indices to Global Identifiers: Generative Reranking for Recommender Systems via Global Action Space
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+the experimental group, while a control group of equal size was
+served by GoalRank, the current state-of-the-art baseline deployed
+in the production system. The experiment was conducted over a
+period of 14 days to account for weekly fluctuations and ensure
+statistical significance. We focus on several core business metrics
+to evaluate user engagement and platform growth. As shown in
+Table 4, GloRank achieved consistent and significant improvements
+across all monitored metrics compared to the baseline. Specifically,
+the increase in Effective Views and Total Time Spent indicates that
+the reranked lists generated by GloRank effectively promote items
+that trigger both clicks and sustained consumption. Furthermore,
+we observe a growth in Active Devices by 0.030%, which suggests
+that GloRank also positively impacts user long-term retention and
+stickiness. These results confirm that by modeling the global action
+space, GloRank captures intrinsic user interests more accurately
+than position-dependent approaches.
+5
+Related Work
+5.1
+List-wise Reranking in Recommendations
+Reranking serves as the decisive final phase in the multi-stage rec-
+ommendation pipeline [10, 17, 23, 26, 31, 39, 41]. Formally, the task
+aims to select and order a target list of size 𝐾from a larger candidate
+set of size 𝑁(𝐾< 𝑁). Unlike the preceding ranking stage that pri-
+marily estimates point-wise relevance [8, 16], reranking explicitly
+models intra-list correlations, such as diversity and complemen-
+tarity, to maximize the collective utility of the generated sequence.
+Existing neural reranking approaches can be broadly categorized
+into two paradigms: Generator-only and Generator-Evaluator meth-
+ods. Generator-only methods [1, 3, 25, 33, 45] aim to directly output
+the final ranked list through a unified model. Representative works
+like DLCM [1] utilized RNNs to capture sequential dependencies.
+Subsequently, PRM [33] introduced the transformer architecture for
+reranking, leveraging self-attention mechanisms to explicitly model
+the mutual influence among all candidate items. More recently, Goal-
+Rank [45] revisited this paradigm from a one-stage perspective, em-
+ploying group-relative optimization to directly maximize list-wise
+rewards. Generator-Evaluator methods [36, 38, 42], in contrast, de-
+couple the task into two distinct phases: a generator first proposes
+high-quality candidate permutations, and an evaluator selects the
+best one. PIER [38] employs a SimHash-based generator followed by
+an omnidirectional context-aware evaluator. NAR4Rec [36] intro-
+duces a non-autoregressive generator with contrastive decoding to
+enhance efficiency. To further expand the search space, MG-E [42]
+utilizes an ensemble of multiple generators to produce diverse per-
+mutations for the evaluator. GloRank fundamentally diverges from
+these approaches by anchoring the reranking process in a Global
+Item Space. GloRank transforms list generation into a token pre-
+diction task over a fixed global vocabulary. This paradigm shift
+allows GloRank to apply a consistent, position-invariant estimation
+to local candidates.
+5.2
+Generative Recommendations
+Generative recommendation represents a paradigm shift from the
+traditional “retrieve-and-rank” strategy to a “next-item generation”
+framework. Unlike discriminative models that calculate matching
+scores for user-item pairs, generative models reformulate recom-
+mendation as a sequence generation task, predicting the next target
+item conditioned on the context history [4, 20, 40, 48]. Following
+recent comprehensive surveys, we discuss the advancements in
+this field from three decoupled perspectives: tokenization, architec-
+ture, and optimization. (1) Tokenization. Tokenization serves as the
+bridge between discrete items and the generative model. While early
+sequence models relied on random atomic IDs, modern generative
+approaches explore more semantic-rich representations. P5 [13] pro-
+poses a unified text-to-text framework that represents items using
+raw text tokens (e.g., titles) via natural language prompts. To ad-
+dress the inefficiency of text and the lack of semantics in atomic IDs,
+TIGER [35] introduces Semantic IDs, utilizing RQ-VAE to quantize
+item embeddings into hierarchical discrete tuples, thereby enabling
+the model to capture collaborative signals directly within the ID
+structure. (2) Architecture. The backbone architecture determines
+how the model processes item sequences and generates future inter-
+actions. The landscape is primarily divided into Encoder-Decoder
+and Decoder-only structures. M6-Rec [6] utilizes a standard Trans-
+former Encoder-Decoder to support multi-modal tasks including
+retrieval and explanation. In contrast, some work favor Decoder-
+only architectures for their superior scaling properties. For instance,
+HSTU [44] designs a high-performance generative architecture
+specifically optimized for sequential transduction in large-scale
+recommendation. Similarly, LLaRA [21] adapts the LlaMA archi-
+tecture to the recommendation domain, bridging the gap between
+pre-trained language knowledge and sequential user behavior. (3)
+Optimization. Optimization strategies in generative recommenda-
+tion focus on aligning the model’s generation probability with user
+preferences. Beyond the standard Next Token Prediction (NTP)
+objective, Instruction Tuning has emerged as a key technique to
+enhance generalization. TallRec [2] demonstrates that fine-tuning
+Large Language Models (LLMs) with recommendation-specific in-
+structions significantly improves performance in few-shot settings.
+Furthermore, researchers are increasingly exploring alignment tech-
+niques to ensure the generated recommendations satisfy complex
+utility constraints beyond simple accuracy. In contrast to these
+works, which primarily focus on next-item generation, GloRank tar-
+gets the reranking setting and reformulates reranking from local
+index selection to global identifier generation.
+6
+Conclusion
+In this paper, we propose GloRank, a novel generative framework
+that fundamentally addresses the limitations of existing position-
+dependent reranking paradigms. By identifying candidate-position
+coupling as a critical source of semantic misalignment and opti-
+mization instability, we advocate for a paradigm shift from local
+discrimination to global generation. Specifically, GloRank reformu-
+lates list-wise reranking as a sequence generation task over a fixed
+global vocabulary constrained by the candidates in the decoding
+tree. This design effectively anchors the scoring mechanism, en-
+suring consistent item evaluation independent of dynamic input
+permutations. To fully exploit this architecture, we devise a decou-
+pled optimization pipeline that combines supervised pre-training
+for semantic alignment with GRPO for utility maximization. Ex-
+tensive experiments on two public benchmarks and a large-scale
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Jia et al.
+industrial dataset, coupled with online A/B tests, demonstrate that
+GloRank consistently outperforms state-of-the-art baselines.
+
+
+From Local Indices to Global Identifiers: Generative Reranking for Recommender Systems via Global Action Space
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+References
+[1] Qingyao Ai, Keping Bi, Jiafeng Guo, and W. Bruce Croft. 2018. Learning a
+Deep Listwise Context Model for Ranking Refinement. In The 41st International
+ACM SIGIR Conference on Research & Development in Information Retrieval, SIGIR
+2018, Ann Arbor, MI, USA, July 08-12, 2018, Kevyn Collins-Thompson, Qiaozhu
+Mei, Brian D. Davison, Yiqun Liu, and Emine Yilmaz (Eds.). ACM, 135–144.
+doi:10.1145/3209978.3209985
+[2] Keqin Bao, Jizhi Zhang, Yang Zhang, Wenjie Wang, Fuli Feng, and Xiangnan
+He. 2023. TALLRec: An Effective and Efficient Tuning Framework to Align
+Large Language Model with Recommendation. In Proceedings of the 17th ACM
+Conference on Recommender Systems, RecSys 2023, Singapore, Singapore, September
+18-22, 2023, Jie Zhang, Li Chen, Shlomo Berkovsky, Min Zhang, Tommaso Di
+Noia, Justin Basilico, Luiz Pizzato, and Yang Song (Eds.). ACM, 1007–1014. doi:10.
+1145/3604915.3608857
+[3] Irwan Bello, Sayali Kulkarni, Sagar Jain, Craig Boutilier, Ed Huai-hsin Chi, Elad
+Eban, Xiyang Luo, Alan Mackey, and Ofer Meshi. 2018. Seq2Slate: Re-ranking and
+Slate Optimization with RNNs. CoRR abs/1810.02019 (2018). arXiv:1810.02019
+http://arxiv.org/abs/1810.02019
+[4] Junyi Chen, Lu Chi, Bingyue Peng, and Zehuan Yuan. 2024. Hllm: Enhancing
+sequential recommendations via hierarchical large language models for item and
+user modeling. arXiv preprint arXiv:2409.12740 (2024).
+[5] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep Neural Networks
+for YouTube Recommendations. In Proceedings of the 10th ACM Conference on
+Recommender Systems, Boston, MA, USA, September 15-19, 2016, Shilad Sen, Werner
+Geyer, Jill Freyne, and Pablo Castells (Eds.). ACM, 191–198. doi:10.1145/2959100.
+2959190
+[6] Zeyu Cui, Jianxin Ma, Chang Zhou, Jingren Zhou, and Hongxia Yang. 2022.
+M6-rec: Generative pretrained language models are open-ended recommender
+systems. arXiv preprint arXiv:2205.08084 (2022).
+[7] Marco Cuturi. 2013.
+Sinkhorn Distances: Lightspeed Computation of Opti-
+mal Transport. In Advances in Neural Information Processing Systems 26: 27th
+Annual Conference on Neural Information Processing Systems 2013. Proceed-
+ings of a meeting held December 5-8, 2013, Lake Tahoe, Nevada, United States,
+Christopher J. C. Burges, Léon Bottou, Zoubin Ghahramani, and Kilian Q.
+Weinberger (Eds.). 2292–2300. https://proceedings.neurips.cc/paper/2013/hash/
+af21d0c97db2e27e13572cbf59eb343d-Abstract.html
+[8] Sunhao Dai, Jiakai Tang, Jiahua Wu, Kun Wang, Yuxuan Zhu, Bingjun Chen,
+Bangyang Hong, Yu Zhao, Cong Fu, Kangle Wu, et al. 2025. Onepiece: Bringing
+context engineering and reasoning to industrial cascade ranking system. arXiv
+preprint arXiv:2509.18091 (2025).
+[9] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[10] Yufei Feng, Yu Gong, Fei Sun, Junfeng Ge, and Wenwu Ou. 2021. Revisit recom-
+mender system in the permutation prospective. arXiv preprint arXiv:2102.12057
+(2021).
+[11] Kairui Fu, Tao Zhang, Shuwen Xiao, Ziyang Wang, Xinming Zhang, Chenchi
+Zhang, Yuliang Yan, Junjun Zheng, Yu Li, Zhihong Chen, Jian Wu, Xiangheng
+Kong, Shengyu Zhang, Kun Kuang, Yu-Gang Jiang, and Bo Zheng. 2025. FORGE:
+Forming Semantic Identifiers for Generative Retrieval in Industrial Datasets.
+CoRR abs/2509.20904 (2025). arXiv:2509.20904 doi:10.48550/ARXIV.2509.20904
+[12] Luke Gallagher, Ruey-Cheng Chen, Roi Blanco, and J. Shane Culpepper. 2019.
+Joint Optimization of Cascade Ranking Models. In Proceedings of the Twelfth ACM
+International Conference on Web Search and Data Mining, WSDM 2019, Melbourne,
+VIC, Australia, February 11-15, 2019, J. Shane Culpepper, Alistair Moffat, Paul N.
+Bennett, and Kristina Lerman (Eds.). ACM, 15–23. doi:10.1145/3289600.3290986
+[13] Shijie Geng, Shuchang Liu, Zuohui Fu, Yingqiang Ge, and Yongfeng Zhang. 2022.
+Recommendation as Language Processing (RLP): A Unified Pretrain, Personalized
+Prompt & Predict Paradigm (P5). In RecSys ’22: Sixteenth ACM Conference on
+Recommender Systems, Seattle, WA, USA, September 18 - 23, 2022, Jennifer Golbeck,
+F. Maxwell Harper, Vanessa Murdock, Michael D. Ekstrand, Bracha Shapira,
+Justin Basilico, Keld T. Lundgaard, and Even Oldridge (Eds.). ACM, 299–315.
+doi:10.1145/3523227.3546767
+[14] F. Maxwell Harper and Joseph A. Konstan. 2016. The MovieLens Datasets:
+History and Context. ACM Trans. Interact. Intell. Syst. 5, 4 (2016), 19:1–19:19.
+doi:10.1145/2827872
+[15] Jingcheng Hu, Yinmin Zhang, Qi Han, Daxin Jiang, Xiangyu Zhang, and Heung-
+Yeung Shum. 2025. Open-reasoner-zero: An open source approach to scaling
+up reinforcement learning on the base model. arXiv preprint arXiv:2503.24290
+(2025).
+[16] Yanhua Huang, Yuqi Chen, Xiong Cao, Rui Yang, Mingliang Qi, Yinghao Zhu,
+Qingchang Han, Yaowei Liu, Zhaoyu Liu, Xuefeng Yao, et al. 2025. Towards
+Large-scale Generative Ranking. arXiv preprint arXiv:2505.04180 (2025).
+[17] Guangda Huzhang, Zhen-Jia Pang, Yongqing Gao, Yawen Liu, Weijie Shen, Wen-Ji
+Zhou, Qianying Lin, Qing Da, Anxiang Zeng, Han Yu, Yang Yu, and Zhi-Hua Zhou.
+2023. AliExpress Learning-to-Rank: Maximizing Online Model Performance
+Without Going Online. IEEE Trans. Knowl. Data Eng. 35, 2 (2023), 1214–1226.
+doi:10.1109/TKDE.2021.3098898
+[18] Clark Mingxuan Ju, Liam Collins, Leonardo Neves, Bhuvesh Kumar, Louis Yufeng
+Wang, Tong Zhao, and Neil Shah. 2025. Generative Recommendation with Seman-
+tic IDs: A Practitioner’s Handbook. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management, CIKM 2025, Seoul, Repub-
+lic of Korea, November 10-14, 2025, Meeyoung Cha, Chanyoung Park, Noseong
+Park, Carl Yang, Senjuti Basu Roy, Jessie Li, Jaap Kamps, Kijung Shin, Bryan
+Hooi, and Lifang He (Eds.). ACM, 6420–6425. doi:10.1145/3746252.3761612
+[19] Xiaoyu Kong, Leheng Sheng, Junfei Tan, Yuxin Chen, Jiancan Wu, An Zhang,
+Xiang Wang, and Xiangnan He. 2025. MiniOneRec: An Open-Source Frame-
+work for Scaling Generative Recommendation. CoRR abs/2510.24431 (2025).
+arXiv:2510.24431 doi:10.48550/ARXIV.2510.24431
+[20] Xiaopeng Li, Bo Chen, Junda She, Shiteng Cao, You Wang, Qinlin Jia, Haiying He,
+Zheli Zhou, Zhao Liu, Ji Liu, et al. 2025. A Survey of Generative Recommendation
+from a Tri-Decoupled Perspective: Tokenization, Architecture, and Optimization.
+(2025).
+[21] Jiayi Liao, Sihang Li, Zhengyi Yang, Jiancan Wu, Yancheng Yuan, Xiang Wang,
+and Xiangnan He. 2024. LLaRA: Large Language-Recommendation Assistant.
+In Proceedings of the 47th International ACM SIGIR Conference on Research and
+Development in Information Retrieval, SIGIR 2024, Washington DC, USA, July 14-18,
+2024, Grace Hui Yang, Hongning Wang, Sam Han, Claudia Hauff, Guido Zuccon,
+and Yi Zhang (Eds.). ACM, 1785–1795. doi:10.1145/3626772.3657690
+[22] Xiao Lin, Xiaokai Chen, Chenyang Wang, Hantao Shu, Linfeng Song, Biao Li,
+and Peng Jiang. 2024. Discrete Conditional Diffusion for Reranking in Rec-
+ommendation. In Companion Proceedings of the ACM on Web Conference 2024,
+WWW 2024, Singapore, Singapore, May 13-17, 2024, Tat-Seng Chua, Chong-Wah
+Ngo, Roy Ka-Wei Lee, Ravi Kumar, and Hady W. Lauw (Eds.). ACM, 161–169.
+doi:10.1145/3589335.3648313
+[23] Zhijie Lin, Zhuofeng Li, Chenglei Dai, Wentian Bao, Shuai Lin, Enyun Yu, Haox-
+iang Zhang, and Liang Zhao. 2025. GReF: A Unified Generative Framework
+for Efficient Reranking via Ordered Multi-token Prediction. In Proceedings of
+the 34th ACM International Conference on Information and Knowledge Manage-
+ment, CIKM 2025, Seoul, Republic of Korea, November 10-14, 2025, Meeyoung
+Cha, Chanyoung Park, Noseong Park, Carl Yang, Senjuti Basu Roy, Jessie Li,
+Jaap Kamps, Kijung Shin, Bryan Hooi, and Lifang He (Eds.). ACM, 5879–5887.
+doi:10.1145/3746252.3761540
+[24] Qi Liu, Kai Zheng, Rui Huang, Wuchao Li, Kuo Cai, Yuan Chai, Yanan Niu, Yiqun
+Hui, Bing Han, Na Mou, Hongning Wang, Wentian Bao, Yunen Yu, Guorui Zhou,
+Han Li, Yang Song, Defu Lian, and Kun Gai. 2025. RecFlow: An Industrial Full
+Flow Recommendation Dataset. In The Thirteenth International Conference on
+Learning Representations, ICLR 2025, Singapore, April 24-28, 2025. OpenReview.net.
+https://openreview.net/forum?id=vVHc8bGRns
+[25] Shuchang Liu, Qingpeng Cai, Zhankui He, Bowen Sun, Julian J. McAuley, Dong
+Zheng, Peng Jiang, and Kun Gai. 2023. Generative Flow Network for Listwise
+Recommendation. In Proceedings of the 29th ACM SIGKDD Conference on Knowl-
+edge Discovery and Data Mining, KDD 2023, Long Beach, CA, USA, August 6-
+10, 2023, Ambuj K. Singh, Yizhou Sun, Leman Akoglu, Dimitrios Gunopulos,
+Xifeng Yan, Ravi Kumar, Fatma Ozcan, and Jieping Ye (Eds.). ACM, 1524–1534.
+doi:10.1145/3580305.3599364
+[26] Weiwen Liu, Yunjia Xi, Jiarui Qin, Fei Sun, Bo Chen, Weinan Zhang, Rui Zhang,
+and Ruiming Tang. 2022. Neural Re-ranking in Multi-stage Recommender Sys-
+tems: A Review. In Proceedings of the Thirty-First International Joint Conference on
+Artificial Intelligence, IJCAI 2022, Vienna, Austria, 23-29 July 2022, Luc De Raedt
+(Ed.). ijcai.org, 5512–5520. doi:10.24963/IJCAI.2022/771
+[27] Zichen Liu, Changyu Chen, Wenjun Li, Penghui Qi, Tianyu Pang, Chao Du,
+Wee Sun Lee, and Min Lin. 2025. Understanding r1-zero-like training: A critical
+perspective. arXiv preprint arXiv:2503.20783 (2025).
+[28] Ilya Loshchilov and Frank Hutter. 2019. Decoupled Weight Decay Regularization.
+In 7th International Conference on Learning Representations, ICLR 2019, New Or-
+leans, LA, USA, May 6-9, 2019. OpenReview.net. https://openreview.net/forum?
+id=Bkg6RiCqY7
+[29] Wenyu Mao, Shuchang Liu, Hailan Yang, Xiaobei Wang, Xiaoyu Yang, Xu Gao,
+Xiang Li, Lantao Hu, Han Li, Kun Gai, et al. 2025. Denoising Neural Reranker for
+Recommender Systems. arXiv preprint arXiv:2509.18736 (2025).
+[30] Julian J. McAuley, Christopher Targett, Qinfeng Shi, and Anton van den Hengel.
+2015. Image-Based Recommendations on Styles and Substitutes. In Proceedings
+of the 38th International ACM SIGIR Conference on Research and Development in
+Information Retrieval, Santiago, Chile, August 9-13, 2015, Ricardo Baeza-Yates,
+Mounia Lalmas, Alistair Moffat, and Berthier A. Ribeiro-Neto (Eds.). ACM, 43–52.
+doi:10.1145/2766462.2767755
+[31] Yue Meng, Cheng Guo, Yi Cao, Tong Liu, and Bo Zheng. 2025. A Generative
+Re-ranking Model for List-level Multi-objective Optimization at Taobao. In Pro-
+ceedings of the 48th International ACM SIGIR Conference on Research and Develop-
+ment in Information Retrieval, SIGIR 2025, Padua, Italy, July 13-18, 2025, Nicola
+Ferro, Maria Maistro, Gabriella Pasi, Omar Alonso, Andrew Trotman, and Suzan
+Verberne (Eds.). ACM, 4213–4218. doi:10.1145/3726302.3731935
+[32] Jianmo Ni, Gustavo Hernández Ábrego, Noah Constant, Ji Ma, Keith B. Hall,
+Daniel Cer, and Yinfei Yang. 2022. Sentence-T5: Scalable Sentence Encoders from
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Jia et al.
+Pre-trained Text-to-Text Models. In Findings of the Association for Computational
+Linguistics: ACL 2022, Dublin, Ireland, May 22-27, 2022, Smaranda Muresan, Preslav
+Nakov, and Aline Villavicencio (Eds.). Association for Computational Linguistics,
+1864–1874. doi:10.18653/V1/2022.FINDINGS-ACL.146
+[33] Changhua Pei, Yi Zhang, Yongfeng Zhang, Fei Sun, Xiao Lin, Hanxiao Sun,
+Jian Wu, Peng Jiang, Junfeng Ge, Wenwu Ou, and Dan Pei. 2019. Personalized
+re-ranking for recommendation. In Proceedings of the 13th ACM Conference on
+Recommender Systems, RecSys 2019, Copenhagen, Denmark, September 16-20, 2019,
+Toine Bogers, Alan Said, Peter Brusilovsky, and Domonkos Tikk (Eds.). ACM,
+3–11. doi:10.1145/3298689.3347000
+[34] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang,
+Michael Matena, Yanqi Zhou, Wei Li, and Peter J. Liu. 2020. Exploring the
+Limits of Transfer Learning with a Unified Text-to-Text Transformer. J. Mach.
+Learn. Res. 21 (2020), 140:1–140:67. https://jmlr.org/papers/v21/20-074.html
+[35] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Kesha-
+van, Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah
+Samost, Maciej Kula, Ed H. Chi, and Mahesh Sathiamoorthy. 2023.
+Rec-
+ommender Systems with Generative Retrieval. In Advances in Neural Infor-
+mation Processing Systems 36: Annual Conference on Neural Information Pro-
+cessing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16,
+2023, Alice Oh, Tristan Naumann, Amir Globerson, Kate Saenko, Moritz Hardt,
+and Sergey Levine (Eds.).
+http://papers.nips.cc/paper_files/paper/2023/hash/
+20dcab0f14046a5c6b02b61da9f13229-Abstract-Conference.html
+[36] Yuxin Ren, Qiya Yang, Yichun Wu, Wei Xu, Yalong Wang, and Zhiqiang Zhang.
+2024. Non-autoregressive Generative Models for Reranking Recommendation.
+In Proceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining, KDD 2024, Barcelona, Spain, August 25-29, 2024, Ricardo Baeza-Yates
+and Francesco Bonchi (Eds.). ACM, 5625–5634. doi:10.1145/3637528.3671645
+[37] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei
+Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. 2024. Deepseekmath: Pushing
+the limits of mathematical reasoning in open language models. arXiv preprint
+arXiv:2402.03300 (2024).
+[38] Xiaowen Shi, Fan Yang, Ze Wang, Xiaoxu Wu, Muzhi Guan, Guogang Liao,
+Yongkang Wang, Xingxing Wang, and Dong Wang. 2023. PIER: Permutation-Level
+Interest-Based End-to-End Re-ranking Framework in E-commerce. In Proceedings
+of the 29th ACM SIGKDD Conference on Knowledge Discovery and Data Mining,
+KDD 2023, Long Beach, CA, USA, August 6-10, 2023, Ambuj K. Singh, Yizhou Sun,
+Leman Akoglu, Dimitrios Gunopulos, Xifeng Yan, Ravi Kumar, Fatma Ozcan, and
+Jieping Ye (Eds.). ACM, 4823–4831. doi:10.1145/3580305.3599886
+[39] Shuli Wang, Xue Wei, Senjie Kou, Chi Wang, Wenshuai Chen, Qi Tang, Yinhua
+Zhu, Xiong Xiao, and Xingxing Wang. 2025. NLGR: Utilizing Neighbor Lists
+for Generative Rerank in Personalized Recommendation Systems. In Companion
+Proceedings of the ACM on Web Conference 2025, WWW 2025, Sydney, NSW, Aus-
+tralia, 28 April 2025 - 2 May 2025, Guodong Long, Michale Blumestein, Yi Chang,
+Liane Lewin-Eytan, Zi Helen Huang, and Elad Yom-Tov (Eds.). ACM, 530–537.
+doi:10.1145/3701716.3715251
+[40] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable Item Tokenization for Generative
+Recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management, CIKM 2024, Boise, ID, USA, October
+21-25, 2024, Edoardo Serra and Francesca Spezzano (Eds.). ACM, 2400–2409.
+doi:10.1145/3627673.3679569
+[41] Yunjia Xi, Weiwen Liu, Jieming Zhu, Xilong Zhao, Xinyi Dai, Ruiming Tang,
+Weinan Zhang, Rui Zhang, and Yong Yu. 2022. Multi-Level Interaction Reranking
+with User Behavior History. In SIGIR ’22: The 45th International ACM SIGIR
+Conference on Research and Development in Information Retrieval, Madrid, Spain,
+July 11 - 15, 2022, Enrique Amigó, Pablo Castells, Julio Gonzalo, Ben Carterette,
+J. Shane Culpepper, and Gabriella Kazai (Eds.). ACM, 1336–1346. doi:10.1145/
+3477495.3532026
+[42] Hailan Yang, Zhenyu Qi, Shuchang Liu, Xiaoyu Yang, Xiaobei Wang, Xiang
+Li, Lantao Hu, Han Li, and Kun Gai. 2025. Comprehensive List Generation
+for Multi-Generator Reranking. In Proceedings of the 48th International ACM
+SIGIR Conference on Research and Development in Information Retrieval, SIGIR
+2025, Padua, Italy, July 13-18, 2025, Nicola Ferro, Maria Maistro, Gabriella Pasi,
+Omar Alonso, Andrew Trotman, and Suzan Verberne (Eds.). ACM, 2298–2308.
+doi:10.1145/3726302.3729933
+[43] Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue,
+Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, et al. 2025. Dapo: An open-
+source llm reinforcement learning system at scale. arXiv preprint arXiv:2503.14476
+(2025).
+[44] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Jiayuan He, Yinghai Lu, and Yu Shi. 2024. Actions Speak
+Louder than Words: Trillion-Parameter Sequential Transducers for Generative
+Recommendations. In Forty-first International Conference on Machine Learning,
+ICML 2024, Vienna, Austria, July 21-27, 2024. OpenReview.net. https://openreview.
+net/forum?id=xye7iNsgXn
+[45] Kaike Zhang, Xiaobei Wang, Shuchang Liu, Hailan Yang, Xiang Li, Lantao Hu,
+Han Li, Qi Cao, Fei Sun, and Kun Gai. 2025. GoalRank: Group-Relative Optimiza-
+tion for a Large Ranking Model. CoRR abs/2509.22046 (2025). arXiv:2509.22046
+doi:10.48550/ARXIV.2509.22046
+[46] Yanzhao Zhang, Mingxin Li, Dingkun Long, Xin Zhang, Huan Lin, Baosong Yang,
+Pengjun Xie, An Yang, Dayiheng Liu, Junyang Lin, Fei Huang, and Jingren Zhou.
+2025. Qwen3 Embedding: Advancing Text Embedding and Reranking Through
+Foundation Models. arXiv preprint arXiv:2506.05176 (2025).
+[47] Kesen Zhao, Shuchang Liu, Qingpeng Cai, Xiangyu Zhao, Ziru Liu, Dong
+Zheng, Peng Jiang, and Kun Gai. 2023.
+KuaiSim: A Comprehensive Sim-
+ulator for Recommender Systems. In Advances in Neural Information Pro-
+cessing Systems 36: Annual Conference on Neural Information Processing Sys-
+tems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023,
+Alice Oh, Tristan Naumann, Amir Globerson, Kate Saenko, Moritz Hardt,
+and Sergey Levine (Eds.).
+http://papers.nips.cc/paper_files/paper/2023/hash/
+8c7f8f98f9a8f5650922dd4545254f28-Abstract-Datasets_and_Benchmarks.html
+[48] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming Chen,
+and Ji-Rong Wen. 2024. Adapting Large Language Models by Integrating Col-
+laborative Semantics for Recommendation. In 40th IEEE International Conference
+on Data Engineering, ICDE 2024, Utrecht, The Netherlands, May 13-16, 2024. IEEE,
+1435–1448. doi:10.1109/ICDE60146.2024.00118
+[49] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv preprint arXiv:2506.13695 (2025).
+[50] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, Pengfei Zheng, Qiang Luo, Qianqian
+Wang, Qigen Hu, Rui Huang, Ruiming Tang, Shiyao Wang, Shujie Yang, Tao
+Wu, Wuchao Li, Xinchen Luo, Xingmei Wang, Yi Su, Yunfan Wu, Zexuan Cheng,
+Zhanyu Liu, Zixing Zhang, Bin Zhang, Boxuan Wang, Chaoyi Ma, Chengru Song,
+Chenhui Wang, Chenglong Chu, Di Wang, Dongxue Meng, Dunju Zang, Fan
+Yang, Fangyu Zhang, Feng Jiang, Fuxing Zhang, Gang Wang, Guowang Zhang,
+Han Li, Honghui Bao, Hongyang Cao, Jiaming Huang, Jiapeng Chen, Jiaqiang
+Liu, Jinghui Jia, Kun Gai, Lantao Hu, Liang Zeng, Qiang Wang, Qidong Zhou,
+Rongzhou Zhang, Shengzhe Wang, Shihui He, Shuang Yang, Siyang Mao, Sui
+Huang, Tiantian He, Tingting Gao, Wei Yuan, Xiao Liang, Xiaoxiao Xu, Xugang
+Liu, Yan Wang, Yang Zhou, Yi Wang, Yiwu Liu, Yue Song, Yufei Zhang, Yunfeng
+Zhao, Zhixin Ling, and Ziming Li. 2025. OneRec-V2 Technical Report. CoRR
+abs/2508.20900 (2025). arXiv:2508.20900 doi:10.48550/ARXIV.2508.20900

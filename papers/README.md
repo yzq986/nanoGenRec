@@ -39,3 +39,5 @@
 | 2604.22169 | ReCast: Recasting Learning Signals for Reinforcement Learning in Generative Recommendation | Peiyan Zhang et al. (Huawei) | 2026-04-24 | [pdf](2604.22169.pdf) | [txt](2604.22169.txt) | IDEA-recast-0 |
 | 2604.18146 | Modular Representation Compression: Adapting LLMs for Efficient and Effective Recommendations | Yunjia Xi et al. (SJTU + Huawei Noah's Ark, SIGIR 2026) | 2026-04-20 | [pdf](2604.18146.pdf) | [txt](2604.18146.txt) | IDEA-marc-0 |
 | 2604.17878 | RankUp: Towards High-rank Representations for Large Scale Advertising Recommender Systems | Jin Chen et al. (Tencent Weixin) | 2026-04-20 | [pdf](2604.17878.pdf) | [txt](2604.17878.txt) | — (classic CTR ranker, 未归纳为 idea) |
+| 2604.25291 | From Local Indices to Global Identifiers: Generative Reranking via Global Action Space | Pengyue Jia et al. (Kuaishou + UCSD + CityU HK) | 2026-04-28 | [pdf](2604.25291.pdf) | [txt](2604.25291.txt) | IDEA-glorank-0 |
+| 2604.25834 | Action-Aware Generative Sequence Modeling for Short Video Recommendation | Wenhao Li et al. (Kuaishou, SIGIR 2026) | 2026-04-28 | [pdf](2604.25834.pdf) | [txt](2604.25834.txt) | IDEA-a2gen-0 |

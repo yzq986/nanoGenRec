@@ -1174,3 +1174,147 @@ QLA vs softmax attention: 序列从 6K→16K，层数 3→5，QPS +5%，NE -0.13
 3. Virtual seeds 数量 (128) vs 我们当前用户序列长度 (21-30 items) — 可能需要调小
 4. Generative reconstruction loss 在 SID 空间的适用性: SID 是离散 token，直接 MSE 不适用 → 需要在 embedding 空间做
 5. 存储成本: 128 seeds × 256 dim × fp16 = 64KB/user — 千万用户级 = 640GB，需要评估可行性
+
+---
+
+## IDEA-glorank-0: GloRank — SID-as-Global-Action-Space for 生成式 Reranking
+
+**优先级**: P2 (我们当前是 retrieval 阶段, 无 reranker stage)
+**来源**: GloRank (Kuaishou + UCSD + CityU HK, arxiv 2604.25291, Apr 2026)
+**状态**: 待讨论 — 主要作为未来 reranking stage 的参考; 其中 "global identifier + 2-stage SFT→RL" 训练范式可借鉴
+
+### 核心思想
+
+List-wise reranking 传统实现是从 N 个候选中按"位置索引 (k-th position)"选择 — 但这造成**语义不一致的 action space**: 同一 output logit 在不同样本下代表不同 item (取决于输入 candidate 的顺序)。作者给出严格理论分析:
+
+**数学核心 (Proposition 2.1)**: 假设 target 固定为 item `r*`, candidate 随机排列 σ, 则每行输出参数 `w_j` 收到的 label-dependent gradient 的 "mapping-induced variance" 下界:
+
+```
+Var_σ(g_j,loc) ≥ (1/N)(1-1/N) |μ_j|²_2   > 0   (不可消除)
+```
+
+即便 hidden state 完全稳定，这个 variance 永远存在，因为"target 到 output row 的映射" 随 σ 变化。
+
+**解决方案**:
+1. **Global action space**: 用 Semantic IDs (SID) 把 item 映射到固定全局 token 词表，reranker 输出 SID token 序列而非 local index
+2. **Corollary 2.2**: 在 global 空间下, `Var_σ(g_glo) = Var_σ(h^t_σ)`, 完全消除 mapping-induced variance
+3. **两阶段训练**:
+   - **SFT pre-training**: 用高质量 reference list 做 behavior cloning
+   - **RL post-training**: 直接优化 list-wise reward
+4. **Constrained decoding**: 在 candidate 集合上构建 generation trie，确保输出有效且不重复
+
+### 与当前项目的关联
+
+**当前项目没有独立的 reranker stage** (end-to-end generative retrieval)，所以 GloRank 主体应用场景不适用。但有三个 insight 对我们有借鉴：
+
+1. **"Global identifier" 范式本质上是我们 retrieval 的原生设计** — NTP 输出就是全局 SID token，天然没有 mapping-induced variance 问题。这个理论验证了我们路线的正确性
+2. **Two-stage SFT→RL 训练** — 和 EXP-020 (NTP+DPO joint) 思路一致; GloRank 用 list-wise reward 做 RL，对标 IDEA-rankgr-0 / IDEA-gr4ad-3
+3. **Constrained generation trie over candidates** — 我们 `SIDTrie` + `constrained_beam_search` 已有等价实现; GloRank 是"在给定 N 个候选之上做受限生成"，可复用
+
+### 实验设计草案
+
+**当前阶段不执行**, P2 存档. 若未来引入 reranker stage:
+
+**Phase 1**: 用 EXP-020 checkpoint 输出 beam=500 候选 → 训练小型 SID-based reranker → SFT (top-10 by reward) → RL (list-wise NDCG)
+
+**Phase 2**: 对比 local-index vs global-SID reranker 的 gradient variance 和训练稳定性，验证论文理论
+
+### 关键问题
+
+1. 当前 R@500=66.2%，是否真需要 reranker stage? ROI 不明确
+2. Reranker backbone 计算开销 vs 在线 latency
+3. List-wise reward 在我们 NTP 数据下定义困难 (缺 dwell time / interaction rate 标注)
+
+### 相关 idea
+
+- IDEA-oneranker-0 (Tencent WeiXin 统一 generation+ranking): GloRank 是 rerank-only 的 SID 版本
+- IDEA-rankgr-0 (淘宝 Listwise DPO + Rescore): Listwise RL 套路
+- IDEA-gr4ad-3 (GR4AD RSPO): NDCG-inspired RL reward
+- IDEA-nsgr-0 (Meituan Next-Scale): 另一种粗到细生成式 reranking
+
+---
+
+## IDEA-a2gen-0: A2Gen — Action-Aware Generative Sequence (输出用户动作序列)
+
+**优先级**: P1
+**来源**: A2Gen (Kuaishou Beijing, arxiv 2604.25834, SIGIR 2026, 400M DAU 全流量部署)
+**状态**: 待讨论 — 和已完成的 IDEA-feat-1 (action 输入特征) 是两个不同方向, A2Gen 把 action 作为输出
+
+### 核心思想
+
+传统推荐模型把 video 当作"单一 item + binary 标签"，忽略了：
+
+1. **短视频多片段异质**: 用户在不同片段上态度不同（Like 的是 Messi, 不是 Ronaldo）
+2. **Action timing 区分意图**: Like 在视频高潮时段 → Follow 率 ↑3.3×, Collect 率 ↑1.52×; 随意早期 Like 多为噪音
+3. **Action 顺序差异**: `Follow→Like` 序列 vs `Like→Follow` 用户 watch time 差 1.28×, comment rate 差 1.66×
+
+**A2Gen 架构**: 对每个候选 item 生成完整的 **(action_type, timing)** 序列, 而非预测 binary 标签:
+
+- **CAM (Context-aware Attention Module)**: MHA + 把 item context 融进 query + 每 head 过 gating 学 task-specific 重要度 + MLP 后处理
+- **HSE (Hierarchical Sequence Encoder)**: 两层 — Action-dim (每 item 内的 action 序列) → Item-dim (用户历史 item 序列)，嵌套 CAM
+- **AAG (Action-seq Autoregressive Generator)**: 自回归生成 `{(A_i, T_i)}`, T_i 用回归预测相对时间占比
+
+**Loss**:
+```
+L = α·L_cls(action type 多分类) + β·L_reg(timing MSE) + γ·L_order(禁止反序 max(T_p - T_q, 0)²)
+```
+默认 α=1, β=1, γ=0.1.
+
+**在线落地四个累加策略 (Kuaishou 400M DAU 全流量)**:
+| 策略 | Watch Time | Interaction | LT7 |
+|------|-----------|-------------|-----|
+| Model Replacement (A2Gen 替换 PLE) | +0.11% | +2.1% | — |
+| Action Timing Aware (靠后 Like 升权, 过滤早期随意 Like) | +0.13% | +3.5% | +0.12% |
+| Action Sequence Aware (`Follow→Like` 升权) | +0.10% | +1.4% | — |
+| Action Timing Distribution Aware (峰值附近样本升权) | — | +1.1% | +0.042% |
+| **累计** | **+0.34%** | **+8.1%** | **+0.162%** |
+
+### 与当前项目的关联
+
+**这是我们 action level 研究线的重要扩展**:
+
+- **IDEA-feat-1 (ActionType 输入特征, ✅ EXP-036)**: 把 action 作为**输入**注入 NTP (L0/L1/L2 按 behavior type 分级 + time_gap)
+- **A2Gen**: 把 action 作为**输出**, 生成 action 序列而非 SID 序列
+
+**关键差异**:
+- A2Gen 是 reranking stage 模型（上游已给 N 个候选），不是 retrieval
+- A2Gen 不生成 SID, 生成的是"动作序列"，输入 item ID 是原子 ID
+- 我们的 NTP 是 retrieval, 直接生成 SID
+
+**最可移植的部分**: 在线策略 2/3/4 本质是 **item-level action statistics 作为后处理 ranking signal**，可独立于 A2Gen 架构实现，不需要输出架构改动。
+
+### 实验设计草案
+
+**Phase 1 — Action statistics aggregation (数据端, 独立做)**:
+
+新增 `data/item_action_stats.parquet`:
+| item_id | late_like_ratio | follow_like_seq_rate | timing_peak_alignment |
+|---------|----------------|---------------------|----------------------|
+
+从 NTP 训练数据计算 (user 行为 timestamps + behavior types 我们已有)。
+
+**Phase 2 — 输入端 action statistics 特征 (类似 feat-1 扩展)**:
+
+1. 给 `NTPModel` 加三个 `nn.Embedding` (bucket 化的三个统计量)
+2. `embed_with_features(tokens, positions, time_gaps, action_levels, late_like_bucket, follow_like_bucket, timing_peak_bucket)`
+3. 对比 baseline (feat-0/1/2 only) vs baseline + A2Gen 统计特征
+4. 预期收益: R@500 +0.3~0.8pp (A2Gen 单策略线上提升幅度)
+
+**Phase 3 — 输出端 action sequence 预测 (大改动, 远期)**:
+
+Vocab 扩展 + 分 SID-pred / action-cls / timing-reg 三个 head. 收益未必比 Phase 1+2 更大，留远期。
+
+### 关键问题
+
+1. **"Action" 在我们数据集里的含义**: 我们数据来自商品行为 (click/cart/purchase), 没有 Like/Follow/Collect 的对应 — 先 audit 当前 behavior 类别
+2. **Action timing 是否有信号**: 我们 event 有 timestamp, 但"在 session/item 内的相对时间"不存在于当前 schema, 要确认
+3. **与 IDEA-feat-1 正交性**: feat-1 是 action type embedding (L0/L1/L2 per item); A2Gen 是 item-aggregated action statistics. 两者可叠加
+4. **Phase 1 工作量**: 重做数据 pipeline + 3 个聚合统计量 ≈ 1 周; 只做 Phase 2 baseline 可压到 2-3 天
+5. **商品 retrieval 场景收益上限未知**: A2Gen 线上数字来自短视频, 我们场景可能较小
+
+### 相关 idea
+
+- IDEA-feat-1 (ActionType 输入特征, ✅ EXP-036): 输入端 action vs A2Gen 输出端, 正交
+- IDEA-onelive-0 (OneLive BOS 时间注入): 也用 action + 时间, 但 feature level
+- IDEA-lac-0 (LAC 延迟 action): action 作为 context token
+- IDEA-mbgr-0 (MBGR 多业务 GR): 多 task 联合, Phase 3 多任务思路类似
