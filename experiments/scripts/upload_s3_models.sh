@@ -11,7 +11,7 @@ set -euo pipefail
 
 IDAAS="/mnt/workspace/alibaba-cloud-idaas/alibaba-cloud-idaas"
 S3_BASE="s3://example-bucket/zachery"
-HF_CACHE="${HF_HUB_CACHE:-${HF_HOME:-${HOME}/.cache/huggingface}/hub}"
+HF_CACHE="/home/dev/.cache/huggingface/hub"
 
 usage() {
     echo "Usage: bash $0 <model>"
