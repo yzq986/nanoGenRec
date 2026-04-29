@@ -178,6 +178,8 @@ def build_torchrun_cmd(resolved: dict, name: str, n_gpus: int,
         cmd.append("--use_segment_emb")
     if resolved.get("use_torope"):
         cmd += ["--use_torope", "--torope_time_split", str(resolved["torope_time_split"])]
+        if resolved.get("torope_layer_split", 0.0) > 0:
+            cmd += ["--torope_layer_split", str(resolved["torope_layer_split"])]
     if resolved.get("use_gate_attn"):
         cmd.append("--use_gate_attn")
     if dry_run:

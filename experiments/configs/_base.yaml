@@ -20,6 +20,7 @@ model: s-tier
 use_segment_emb: false
 use_torope: false
 torope_time_split: 0.5
+torope_layer_split: 0.0
 use_gate_attn: false
 
 # ── Training ──────────────────────────────────────────────────

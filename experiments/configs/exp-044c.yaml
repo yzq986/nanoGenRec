@@ -1,0 +1,19 @@
+name: exp044c
+description: "TO-RoPE item-pos fix + optional 3-dim RoPE (order, time, layer)"
+base: _base.yaml
+
+sid_cache_name: exp026-0.6b-14d
+ntp_data_name: exp044b-0.6b-14d         # reuse 044B data (timestamps already present)
+
+use_segment_emb: true
+use_torope: true
+
+# Configs (torope_time_split / torope_layer_split vary per run):
+#   A: torope_time_split=0.25, torope_layer_split=0.0   (2-dim + item-pos fix)
+#   B: torope_time_split=0.50, torope_layer_split=0.0   (2-dim ts=0.5 + pos fix)
+#   C: torope_time_split=0.25, torope_layer_split=0.15  (3-dim layer=0.15)
+#   D: torope_time_split=0.25, torope_layer_split=0.25  (3-dim layer=0.25)
+#
+# Representative config (C):
+torope_time_split: 0.25
+torope_layer_split: 0.15

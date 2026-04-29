@@ -1285,10 +1285,13 @@ def train_packed(
             if 'timestamps' in batch_sf:
                 ts_sample = batch_sf['timestamps'][0, :8].tolist()
                 log(is_main, f"  [sanity] train  timestamps[0,:8] = {ts_sample}")
-                nonzero = sum(1 for v in ts_sample if v != 0.0)
-                if nonzero == 0:
-                    log(is_main, "  [WARNING] use_torope=True but timestamps are ALL ZERO — "
+                # Check batch-wide: first seq item always has rel_hours=0, use batch max
+                ts_max = float(batch_sf['timestamps'].max())
+                if ts_max == 0.0:
+                    log(is_main, "  [WARNING] use_torope=True but timestamps are ALL ZERO (batch max=0) — "
                                  "train-infer mismatch! preprocess-ntp may be missing timestamps.")
+                else:
+                    log(is_main, f"  [sanity] train  timestamps batch_max={ts_max:.2f}h  (first-item zeros are expected)")
             elif use_torope:
                 log(is_main, "  [WARNING] use_torope=True but 'timestamps' not in shard data — "
                              "train-infer mismatch! beam search will use zeros at inference time.")
