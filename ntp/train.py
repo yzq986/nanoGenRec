@@ -345,23 +345,28 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
         for toks in user_tokens:
             flat.extend(toks)
 
-        # Compute time_gaps (action_levels = 1 for all since fake bitmap)
+        # Compute time_gaps, action_levels, and continuous timestamps (relative hours)
         time_gaps = []
         action_levels = []
+        timestamps = []  # relative hours from first item, one value per token position
+        t0_seq = float(user_ts[0])
         for i in range(n):
             if i == 0:
                 bucket = 0
             else:
                 delta = float(user_ts[i] - user_ts[i - 1])
                 bucket = _compute_time_gap_bucket(delta)
+            rel_hours = (float(user_ts[i]) - t0_seq) / 3600.0
             for _ in range(n_layers):
                 time_gaps.append(bucket)
                 action_levels.append(1)
+                timestamps.append(rel_hours)
 
         if shift_features:
             L = n_layers
             time_gaps = [0] * L + time_gaps[:-L]
             action_levels = [0] * L + action_levels[:-L]
+            timestamps = [0.0] * L + timestamps[:-L]
 
         sequences.append({
             'tokens': flat,
@@ -370,6 +375,7 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
             'neg_l0': user_neg_l0,
             'time_gaps': time_gaps,
             'action_levels': action_levels,
+            'timestamps': timestamps,
         })
 
         if split_item_idx == n:
@@ -526,6 +532,8 @@ def _build_sequences_from_behavior_v2(behavior_v2_data, content_to_tokens,
 
         time_gaps = []
         action_levels = []
+        timestamps = []  # relative hours from first item, one value per token position
+        t0_seq = float(user_ts[0])
         for i in range(n):
             if i == 0:
                 bucket = 0
@@ -533,9 +541,11 @@ def _build_sequences_from_behavior_v2(behavior_v2_data, content_to_tokens,
                 delta = float(user_ts[i] - user_ts[i - 1])
                 bucket = _compute_time_gap_bucket(delta)
             level = _action_bitmap_to_level(int(user_actions[i]))
+            rel_hours = (float(user_ts[i]) - t0_seq) / 3600.0
             for _ in range(n_layers):
                 time_gaps.append(bucket)
                 action_levels.append(level)
+                timestamps.append(rel_hours)
 
         if action_l2_only:
             for i in range(len(action_levels)):
@@ -546,6 +556,7 @@ def _build_sequences_from_behavior_v2(behavior_v2_data, content_to_tokens,
             L = n_layers
             time_gaps = [0] * L + time_gaps[:-L]
             action_levels = [0] * L + action_levels[:-L]
+            timestamps = [0.0] * L + timestamps[:-L]
 
         sequences.append({
             'tokens': flat,
@@ -554,6 +565,7 @@ def _build_sequences_from_behavior_v2(behavior_v2_data, content_to_tokens,
             'neg_l0': user_neg_l0,
             'time_gaps': time_gaps,
             'action_levels': action_levels,
+            'timestamps': timestamps,
         })
 
         if split_item_idx == n:
@@ -758,9 +770,12 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
 class UnifiedSequenceDataset(torch.utils.data.Dataset):
     """Dataset of unified per-user sequences with split_pos."""
 
+    # Keys that should be loaded as float32; all others default to long.
+    _FLOAT_KEYS = {'timestamps'}
+
     def __init__(self, tokens_list, split_pos_list, neg_l0_list=None,
                  sid_to_embedding=None, n_sid_layers=None,
-                 time_gaps_list=None, action_levels_list=None):
+                 side_features_lists=None):
         """
         Args:
             tokens_list: list of 1D token lists (variable length)
@@ -768,16 +783,18 @@ class UnifiedSequenceDataset(torch.utils.data.Dataset):
             neg_l0_list: optional list of 2D lists (n_items, K) neg L0 tokens
             sid_to_embedding: optional dict mapping SID tuple → mean embedding (np array)
             n_sid_layers: number of SID layers (needed to chunk tokens into SID tuples)
-            time_gaps_list: optional list of 1D int lists (same length as tokens)
-            action_levels_list: optional list of 1D int lists (same length as tokens)
+            side_features_lists: dict[str, list[list]] of per-token side features.
+                Known keys: "time_gaps" (long), "action_levels" (long),
+                "timestamps" (float32 relative hours).
         """
         self.tokens_list = tokens_list
         self.split_pos_list = split_pos_list
         self.neg_l0_list = neg_l0_list
         self.sid_to_embedding = sid_to_embedding
         self.n_sid_layers = n_sid_layers
-        self.time_gaps_list = time_gaps_list
-        self.action_levels_list = action_levels_list
+        self.side_features_lists = side_features_lists or {}
+        # Preserve insertion order so collate can reconstruct keys
+        self._sf_keys = list(self.side_features_lists.keys())
 
     def __len__(self):
         return len(self.tokens_list)
@@ -802,11 +819,10 @@ class UnifiedSequenceDataset(torch.utils.data.Dataset):
                     embs[i] = emb
             item = item + (torch.from_numpy(embs),)
 
-        # Side features: time_gaps, action_levels
-        if self.time_gaps_list is not None:
-            item = item + (torch.tensor(self.time_gaps_list[idx], dtype=torch.long),)
-        if self.action_levels_list is not None:
-            item = item + (torch.tensor(self.action_levels_list[idx], dtype=torch.long),)
+        # Side features in declared order (collate reconstructs by position)
+        for key in self._sf_keys:
+            dtype = torch.float32 if key in self._FLOAT_KEYS else torch.long
+            item = item + (torch.tensor(self.side_features_lists[key][idx], dtype=dtype),)
 
         return item
 
@@ -817,8 +833,12 @@ def unified_collate_fn(batch):
     Tuple elements after (tokens, split_pos) are detected by type:
     - ndim==2 + dtype==long → neg_l0 (n_items, K)
     - ndim==2 + dtype==float32 → item_embs (n_items, E)
-    - ndim==1 + dtype==long → side feature (time_gaps or action_levels)
-    Side features appear in order: time_gaps first, then action_levels.
+    - ndim==1 + any dtype → side feature (in declaration order from dataset)
+
+    The last element of the returned tuple is always a dict[str, Tensor] of
+    side features if any were declared, otherwise an empty dict.
+    The dict is keyed by the sf_keys injected via ``make_collate_fn``.
+    When called as a bare function (legacy), side features are unnamed.
     """
     n_elems = len(batch[0])
     seqs = [b[0] for b in batch]
@@ -827,7 +847,7 @@ def unified_collate_fn(batch):
     # Classify remaining elements
     neg_l0s = None
     item_embs_list = None
-    side_features = []  # list of lists of 1D tensors
+    sf_tensors = []   # list of (feat_list, dtype) in appearance order
 
     for elem_idx in range(2, n_elems):
         sample = batch[0][elem_idx]
@@ -835,8 +855,8 @@ def unified_collate_fn(batch):
             neg_l0s = [b[elem_idx] for b in batch]
         elif sample.ndim == 2 and sample.dtype == torch.float32:
             item_embs_list = [b[elem_idx] for b in batch]
-        elif sample.ndim == 1 and sample.dtype == torch.long:
-            side_features.append([b[elem_idx] for b in batch])
+        elif sample.ndim == 1:
+            sf_tensors.append(([b[elem_idx] for b in batch], sample.dtype))
 
     lengths = torch.tensor([len(s) for s in seqs], dtype=torch.long)
     split_pos = torch.tensor(split_positions, dtype=torch.long)
@@ -880,9 +900,9 @@ def unified_collate_fn(batch):
             item_embs_padded[i, :emb.size(0)] = emb
         result.append(item_embs_padded)
 
-    # Pad side features (1D long tensors, same length as tokens → pad to max_len)
-    for feat_list in side_features:
-        feat_padded = torch.zeros(len(seqs), max_len, dtype=torch.long)
+    # Pad and collect side features — appended as individual tensors in order
+    for feat_list, dtype in sf_tensors:
+        feat_padded = torch.zeros(len(seqs), max_len, dtype=dtype)
         for i, feat in enumerate(feat_list):
             feat_padded[i, :len(feat)] = feat
         result.append(feat_padded)
@@ -993,8 +1013,7 @@ def train_packed(
     contrastive_dim=0,
     sid_to_embedding=None,
     dry_run=False,
-    time_gaps_list=None,
-    action_levels_list=None,
+    side_features_lists=None,
     use_segment_emb=False,
     use_torope=False,
     torope_time_split=0.5,
@@ -1013,15 +1032,16 @@ def train_packed(
         contrastive_temp: InfoNCE temperature τ.
         contrastive_dim: projection dimension for contrastive head.
         sid_to_embedding: dict mapping SID tuple → mean embedding (for contrastive).
+        side_features_lists: dict[str, list[list]] of per-token side features.
+            Known keys: "time_gaps" (long), "action_levels" (long),
+            "timestamps" (float32 relative hours).
     """
+    sf_lists = side_features_lists or {}
 
     # Determine contrastive item embedding dimension from sid_to_embedding
     _contrastive_item_dim = 0
     if contrastive_weight > 0 and sid_to_embedding is not None:
         _contrastive_item_dim = next(iter(sid_to_embedding.values())).shape[0]
-
-    use_time_gap = time_gaps_list is not None
-    use_action_level = action_levels_list is not None
 
     if model_type == 's-tier':
         use_moe = n_experts >= 2
@@ -1030,9 +1050,9 @@ def train_packed(
         if contrastive_weight > 0:
             _extra_kwargs['contrastive_dim'] = contrastive_dim
             _extra_kwargs['contrastive_item_dim'] = _contrastive_item_dim
-        if use_time_gap:
+        if 'time_gaps' in sf_lists:
             _extra_kwargs['n_time_buckets'] = 16
-        if use_action_level:
+        if 'action_levels' in sf_lists:
             _extra_kwargs['n_action_levels'] = 4
         if use_segment_emb:
             _extra_kwargs['use_segment_emb'] = True
@@ -1107,19 +1127,17 @@ def train_packed(
             warnings.filterwarnings('ignore', message='.*find_unused_parameters.*')
         model = DDP(model, device_ids=[local_rank], **ddp_kwargs)
 
-    n_side_features = int(use_time_gap) + int(use_action_level)
-    if n_side_features > 0:
-        log(is_main, f"  Side features: time_gap={use_time_gap}, "
-                      f"action_level={use_action_level}, segment_emb={use_segment_emb}")
+    if sf_lists:
+        log(is_main, f"  Side features: {list(sf_lists.keys())}, segment_emb={use_segment_emb}")
 
     # Data is already pre-sharded (one shard per rank from preprocess-ntp)
     dataset = UnifiedSequenceDataset(
         tokens_list, split_pos_list, neg_l0_list,
         sid_to_embedding=sid_to_embedding if contrastive_weight > 0 else None,
         n_sid_layers=n_layers if contrastive_weight > 0 else None,
-        time_gaps_list=time_gaps_list,
-        action_levels_list=action_levels_list,
+        side_features_lists=sf_lists,
     )
+    sf_keys = dataset._sf_keys  # preserve key order for batch unpacking
     train_loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -1158,7 +1176,8 @@ def train_packed(
         # Base: (padded, lengths, split_pos)
         # +ENTP: ... + (neg_padded, neg_mask)
         # +contrastive: ... + (item_embs,)
-        # +side features: ... + (time_gaps,) + (action_levels,)
+        # +side features (long): ... + (time_gaps,) + (action_levels,)
+        # +timestamps (float32): ... + (timestamps,)
         batch = list(batch)
         padded, lengths, split_positions = batch[0], batch[1], batch[2]
         idx = 3
@@ -1166,8 +1185,6 @@ def train_packed(
         neg_padded = None
         neg_mask_batch = None
         batch_item_embs = None
-        batch_time_gaps = None
-        batch_action_levels = None
 
         if use_entp:
             neg_padded = batch[idx].to(device, non_blocking=True)
@@ -1178,12 +1195,10 @@ def train_packed(
             batch_item_embs = batch[idx].to(device, non_blocking=True)
             idx += 1
 
-        if use_time_gap:
-            batch_time_gaps = batch[idx].to(device, non_blocking=True)
-            idx += 1
-
-        if use_action_level:
-            batch_action_levels = batch[idx].to(device, non_blocking=True)
+        # Unpack side features in key order (same order dataset emits them)
+        batch_sf = {}
+        for key in sf_keys:
+            batch_sf[key] = batch[idx].to(device, non_blocking=True)
             idx += 1
 
         padded = padded.to(device, non_blocking=True)
@@ -1203,6 +1218,9 @@ def train_packed(
         # i+1 < split_pos, i.e. i < split_pos - 1.
         train_mask = valid_mask & (arange < (split_positions.unsqueeze(1) - 1))
 
+        # Shift side features by 1 (input = tokens[:-1])
+        model_sf = {k: v[:, :-1] for k, v in batch_sf.items()}
+
         loss = model(
             input_tokens,
             packed_targets=target_tokens,
@@ -1213,8 +1231,7 @@ def train_packed(
             item_embeddings=batch_item_embs,
             contrastive_weight=contrastive_weight,
             contrastive_temp=contrastive_temp,
-            time_gaps=batch_time_gaps[:, :-1] if batch_time_gaps is not None else None,
-            action_levels=batch_action_levels[:, :-1] if batch_action_levels is not None else None,
+            side_features=model_sf or None,
         )
 
         optimizer.zero_grad()
@@ -1235,11 +1252,14 @@ def train_packed(
             train_pos = torch.arange(S, device=input_tokens.device)
             log(is_main, f"  [sanity] train  positions[:8]  = {train_pos[:8].tolist()}")
             log(is_main, f"  [sanity] train  positions[-4:]  = {train_pos[-4:].tolist()}")
-            if use_time_gap and batch_time_gaps is not None:
-                tg_sample = batch_time_gaps[0, :8].tolist()
+            if 'time_gaps' in batch_sf:
+                tg_sample = batch_sf['time_gaps'][0, :8].tolist()
                 log(is_main, f"  [sanity] train  time_gaps[0,:8] = {tg_sample}")
-            if use_torope:
-                log(is_main, f"  [sanity] train  timestamps      = zeros (continuous ts not in pipeline yet)")
+            if 'timestamps' in batch_sf:
+                ts_sample = batch_sf['timestamps'][0, :8].tolist()
+                log(is_main, f"  [sanity] train  timestamps[0,:8] = {ts_sample}")
+            elif use_torope:
+                log(is_main, f"  [sanity] train  timestamps = zeros (not in pipeline)")
 
         if dry_run and step >= 1:
             log(is_main, f"  Dry run complete (2 steps, loss={total_loss/2:.4f})")
@@ -1691,12 +1711,17 @@ def main():
     tokens_list = shard_data['tokens_list']
     split_pos_list = shard_data['split_pos_list']
     neg_l0_list = shard_data.get('neg_l0_list')
-    time_gaps_list = shard_data.get('time_gaps_list') if args.use_time_gap else None
-    action_levels_list = shard_data.get('action_levels_list') if args.use_action_level else None
+    side_features_lists = {}
+    if args.use_time_gap and 'time_gaps_list' in shard_data:
+        side_features_lists['time_gaps'] = shard_data['time_gaps_list']
+    if args.use_action_level and 'action_levels_list' in shard_data:
+        side_features_lists['action_levels'] = shard_data['action_levels_list']
+    if args.use_torope and 'timestamps_list' in shard_data:
+        side_features_lists['timestamps'] = shard_data['timestamps_list']
+    sf_desc = ', '.join(side_features_lists.keys()) if side_features_lists else 'none'
     log(is_main, f"  Rank {local_rank}: loaded {len(tokens_list):,} seqs from shard"
                  + (f" (with ENTP neg data)" if neg_l0_list is not None else "")
-                 + (f" (time_gap)" if time_gaps_list is not None else "")
-                 + (f" (action_level)" if action_levels_list is not None else ""))
+                 + (f" (side_features: {sf_desc})" if side_features_lists else ""))
     log(is_main, f"  Layers: {n_layers}, n_items: {n_items}, max_seq_len: {max_seq_len}")
 
     n_train = prep_meta['n_seqs']
@@ -1905,8 +1930,7 @@ def main():
             contrastive_dim=args.contrastive_dim,
             sid_to_embedding=sid_to_embedding,
             dry_run=args.dry_run,
-            time_gaps_list=time_gaps_list,
-            action_levels_list=action_levels_list,
+            side_features_lists=side_features_lists,
             use_segment_emb=args.use_segment_emb,
             use_torope=args.use_torope,
             torope_time_split=args.torope_time_split,

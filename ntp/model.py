@@ -194,10 +194,8 @@ def constrained_beam_search(
     prefix: torch.Tensor = None,
     ctx_kv_caches=None,
     initial_logits: torch.Tensor = None,
-    ctx_time_gaps: torch.Tensor = None,
-    ctx_action_levels: torch.Tensor = None,
-    gen_time_gap: int = None,
-    gen_action_level: int = None,
+    ctx_side_features: Optional[Dict] = None,
+    gen_side_features: Optional[Dict] = None,
     sampling_temperature: float = 0.0,
     ctx_timestamps: torch.Tensor = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, list]:
@@ -213,10 +211,10 @@ def constrained_beam_search(
         prefix: (B, P) optional fixed prefix tokens.
         ctx_kv_caches: pre-computed KV caches for the context.
         initial_logits: (B, C) logits from the last context position.
-        ctx_time_gaps: (B, T) time gap buckets for context tokens.
-        ctx_action_levels: (B, T) action levels for context tokens.
-        gen_time_gap: scalar int, time_gap bucket for generated tokens.
-        gen_action_level: scalar int, action_level for generated tokens.
+        ctx_side_features: dict of context side features, e.g.
+            {"time_gaps": (B,T) long, "action_levels": (B,T) long}.
+        gen_side_features: dict of scalar side features for generated tokens, e.g.
+            {"time_gaps": int, "action_levels": int}.
         sampling_temperature: if > 0, use constrained sampling instead of
             beam search. Each of the beam_size candidates is drawn
             independently from the trie-masked policy distribution at
@@ -232,6 +230,7 @@ def constrained_beam_search(
     B = input_tokens.size(0)
     device = input_tokens.device
     L = trie.n_layers
+    gen_sf = gen_side_features or {}
 
     # ── Phase 0: context encoding (or reuse) ──
     use_kv_cache = hasattr(model, 'forward_cached')
@@ -246,21 +245,19 @@ def constrained_beam_search(
 
     if ctx_kv_caches is None:
         initial_logits, ctx_kv_caches, ctx_kv_pos, ctx_kv_ts = model.forward_cached(
-            input_tokens, ctx_time_gaps=ctx_time_gaps,
-            ctx_action_levels=ctx_action_levels,
+            input_tokens, ctx_side_features=ctx_side_features,
             ctx_timestamps=ctx_timestamps)
 
-    # ── Build step feature tensors for generated tokens ──
-    _has_tg = gen_time_gap is not None and hasattr(model, 'time_gap_emb')
-    _has_al = gen_action_level is not None and hasattr(model, 'action_emb')
-
-    def _step_features(n_tok):
-        """Return step_time_gap, step_action_level tensors for n_tok tokens."""
-        stg = torch.full((n_tok, 1), gen_time_gap, dtype=torch.long,
-                         device=device) if _has_tg else None
-        sal = torch.full((n_tok, 1), gen_action_level, dtype=torch.long,
-                         device=device) if _has_al else None
-        return stg, sal
+    def _step_sf(n_tok):
+        """Build step side-feature dict with tensors of shape (n_tok, 1)."""
+        sf = {}
+        if 'time_gaps' in gen_sf and gen_sf['time_gaps'] is not None and hasattr(model, 'time_gap_emb'):
+            sf['time_gaps'] = torch.full((n_tok, 1), gen_sf['time_gaps'],
+                                         dtype=torch.long, device=device)
+        if 'action_levels' in gen_sf and gen_sf['action_levels'] is not None and hasattr(model, 'action_emb'):
+            sf['action_levels'] = torch.full((n_tok, 1), gen_sf['action_levels'],
+                                              dtype=torch.long, device=device)
+        return sf or None
 
     # ── Phase 1: beam init ──
     if prefix is not None:
@@ -270,13 +267,16 @@ def constrained_beam_search(
         step_kv = [c.clone() for c in ctx_kv_caches]
         step_kv_pos = ctx_kv_pos
         step_kv_ts  = ctx_kv_ts
-        stg_pfx = torch.full((B, P), gen_time_gap, dtype=torch.long,
-                             device=device) if _has_tg else None
-        sal_pfx = torch.full((B, P), gen_action_level, dtype=torch.long,
-                             device=device) if _has_al else None
+        pfx_sf = {}
+        if 'time_gaps' in gen_sf and gen_sf['time_gaps'] is not None and hasattr(model, 'time_gap_emb'):
+            pfx_sf['time_gaps'] = torch.full((B, P), gen_sf['time_gaps'],
+                                              dtype=torch.long, device=device)
+        if 'action_levels' in gen_sf and gen_sf['action_levels'] is not None and hasattr(model, 'action_emb'):
+            pfx_sf['action_levels'] = torch.full((B, P), gen_sf['action_levels'],
+                                                  dtype=torch.long, device=device)
         current_logits, step_kv, step_kv_pos, step_kv_ts = model.forward_cached(
             generated_tokens=prefix, kv_caches=step_kv,
-            step_time_gap=stg_pfx, step_action_level=sal_pfx,
+            step_side_features=pfx_sf or None,
             kv_positions_cache=step_kv_pos, kv_timestamps_cache=step_kv_ts)
     else:
         beams = torch.zeros(B, 1, 0, dtype=torch.long, device=device)
@@ -293,13 +293,13 @@ def constrained_beam_search(
 
         if step > start_step:
             last_tokens = beams[:, :, -1].reshape(B * n_beams, 1)
-            stg_step, sal_step = _step_features(B * n_beams)
+            sf_step = _step_sf(B * n_beams)
             # All beams share the same positions — take first row and expand
             kv_pos_step = step_kv_pos[:1].expand(B * n_beams, -1) if step_kv_pos is not None else None
             kv_ts_step  = step_kv_ts[:1].expand(B * n_beams, -1)  if step_kv_ts  is not None else None
             current_logits, step_kv, step_kv_pos, step_kv_ts = model.forward_cached(
                 generated_tokens=last_tokens, kv_caches=step_kv,
-                step_time_gap=stg_step, step_action_level=sal_step,
+                step_side_features=sf_step,
                 kv_positions_cache=kv_pos_step, kv_timestamps_cache=kv_ts_step)
 
         log_probs = F.log_softmax(
@@ -380,10 +380,8 @@ def constrained_sampling(
     n_samples: int = 64,
     ctx_kv_caches=None,
     initial_logits: torch.Tensor = None,
-    ctx_time_gaps: torch.Tensor = None,
-    ctx_action_levels: torch.Tensor = None,
-    gen_time_gap: int = None,
-    gen_action_level: int = None,
+    ctx_side_features: Optional[Dict] = None,
+    gen_side_features: Optional[Dict] = None,
     temperature: float = 1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, list]:
     """Trie-constrained ancestral sampling — every candidate is a real SID.
@@ -396,18 +394,16 @@ def constrained_sampling(
     Assumes B=1 (one context at a time, same as constrained_beam_search).
 
     Args:
-        model:          NTPModel with forward_cached().
-        input_tokens:   (1, T) context tokens.
-        trie:           SIDTrie for validity masking.
-        n_samples:      number of independent candidates to draw.
-        ctx_kv_caches:  pre-computed context KV caches (or None to encode).
-        initial_logits: (1, C) logits at last context position.
-        ctx_time_gaps:  (1, T) time gap buckets for context tokens.
-        ctx_action_levels: (1, T) action levels for context tokens.
-        gen_time_gap:   scalar int, time_gap for generated tokens.
-        gen_action_level: scalar int, action_level for generated tokens.
-        temperature:    softmax temperature. 1.0 = policy distribution,
-                        <1 = sharper (less explore), >1 = more uniform.
+        model:             NTPModel with forward_cached().
+        input_tokens:      (1, T) context tokens.
+        trie:              SIDTrie for validity masking.
+        n_samples:         number of independent candidates to draw.
+        ctx_kv_caches:     pre-computed context KV caches (or None to encode).
+        initial_logits:    (1, C) logits at last context position.
+        ctx_side_features: dict of context side features (e.g. time_gaps, action_levels).
+        gen_side_features: dict of scalar side features for generated tokens.
+        temperature:       softmax temperature. 1.0 = policy distribution,
+                           <1 = sharper (less explore), >1 = more uniform.
 
     Returns:
         beams:  (1, n_unique, n_layers) — deduplicated sampled SIDs
@@ -416,22 +412,20 @@ def constrained_sampling(
     """
     device = input_tokens.device
     L = trie.n_layers
+    gen_sf = gen_side_features or {}
 
     # ── Encode context (or reuse cached) ──
     if ctx_kv_caches is None:
         initial_logits, ctx_kv_caches, _, _ = model.forward_cached(
-            input_tokens, ctx_time_gaps=ctx_time_gaps,
-            ctx_action_levels=ctx_action_levels)
+            input_tokens, ctx_side_features=ctx_side_features)
 
-    _has_tg = gen_time_gap is not None and hasattr(model, 'time_gap_emb')
-    _has_al = gen_action_level is not None and hasattr(model, 'action_emb')
-
-    def _feat(n):
-        stg = torch.full((n, 1), gen_time_gap, dtype=torch.long,
-                         device=device) if _has_tg else None
-        sal = torch.full((n, 1), gen_action_level, dtype=torch.long,
-                         device=device) if _has_al else None
-        return stg, sal
+    def _step_sf(n):
+        sf = {}
+        if 'time_gaps' in gen_sf and gen_sf['time_gaps'] is not None and hasattr(model, 'time_gap_emb'):
+            sf['time_gaps'] = torch.full((n, 1), gen_sf['time_gaps'], dtype=torch.long, device=device)
+        if 'action_levels' in gen_sf and gen_sf['action_levels'] is not None and hasattr(model, 'action_emb'):
+            sf['action_levels'] = torch.full((n, 1), gen_sf['action_levels'], dtype=torch.long, device=device)
+        return sf or None
 
     # ── Sample n_samples paths independently ──
     # paths[i] = list of token indices, one per layer
@@ -451,10 +445,9 @@ def constrained_sampling(
     for step in range(L):
         if step > 0:
             last_tok = sampled_tokens[-1].unsqueeze(1)  # (n_samples, 1)
-            stg, sal = _feat(n_samples)
             cur_logits, step_kv, _, _ = model.forward_cached(
                 generated_tokens=last_tok, kv_caches=step_kv,
-                step_time_gap=stg, step_action_level=sal)
+                step_side_features=_step_sf(n_samples))
             # cur_logits: (n_samples, C)
 
         C = cur_logits.size(-1)
@@ -1079,8 +1072,7 @@ class NTPModel(nn.Module):
         self,
         tokens: torch.Tensor,        # (B, T)
         positions: torch.Tensor,     # (B, T) or (1, T)
-        time_gaps: torch.Tensor = None,    # (B, T) optional
-        action_levels: torch.Tensor = None,  # (B, T) optional
+        side_features: Optional[Dict] = None,
     ) -> torch.Tensor:
         """Single source of truth for input embedding + side features injection.
 
@@ -1088,12 +1080,18 @@ class NTPModel(nn.Module):
         paths must call this instead of combining _embed_tokens + _get_pos_emb +
         feature embeddings manually.  Adding a new side feature means editing
         exactly this one function.
+
+        side_features: dict with optional keys:
+            "time_gaps"     — (B, T) long, bucket embedding
+            "action_levels" — (B, T) long, action level embedding
+            (timestamps lives in the TO-RoPE path, not here)
         """
         x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
-        if time_gaps is not None and hasattr(self, 'time_gap_emb'):
-            x = x + self.time_gap_emb(time_gaps)
-        if action_levels is not None and hasattr(self, 'action_emb'):
-            x = x + self.action_emb(action_levels)
+        sf = side_features or {}
+        if 'time_gaps' in sf and sf['time_gaps'] is not None and hasattr(self, 'time_gap_emb'):
+            x = x + self.time_gap_emb(sf['time_gaps'])
+        if 'action_levels' in sf and sf['action_levels'] is not None and hasattr(self, 'action_emb'):
+            x = x + self.action_emb(sf['action_levels'])
         return x
 
     def _transformer_forward(
@@ -1154,8 +1152,7 @@ class NTPModel(nn.Module):
 
     @torch.no_grad()
     def forward_cached(self, input_tokens=None, generated_tokens=None, kv_caches=None,
-                        ctx_time_gaps=None, ctx_action_levels=None,
-                        step_time_gap=None, step_action_level=None,
+                        ctx_side_features=None, step_side_features=None,
                         ctx_timestamps=None, step_timestamp=None,
                         kv_positions_cache=None, kv_timestamps_cache=None):
         """Inference-only forward with KV cache.
@@ -1166,10 +1163,9 @@ class NTPModel(nn.Module):
                 — encodes only *new* tokens using cached context.
 
         Args:
-            ctx_time_gaps: (B, T_ctx) time gap buckets (non-TO-RoPE path).
-            ctx_action_levels: (B, T_ctx) action levels.
-            step_time_gap: (B, T_new) time gap for incremental tokens.
-            step_action_level: (B, T_new) action level for incremental tokens.
+            ctx_side_features: dict of side features for context tokens, e.g.
+                {"time_gaps": (B,T_ctx) long, "action_levels": (B,T_ctx) long}.
+            step_side_features: dict of side features for new (generated) tokens.
             ctx_timestamps: (B, T_ctx) float timestamps in hours (TO-RoPE path).
             step_timestamp: (B, T_new) float timestamps for new tokens (TO-RoPE path).
             kv_positions_cache: (B, T_kv) positions already in KV cache (TO-RoPE incremental).
@@ -1180,6 +1176,9 @@ class NTPModel(nn.Module):
             kv_caches: list of per-layer caches for reuse.
             (kv_positions, kv_timestamps) — updated position/timestamp caches (TO-RoPE only).
         """
+        ctx_sf = ctx_side_features or {}
+        step_sf = step_side_features or {}
+
         if kv_caches is None:
             # Cold start — encode full sequence
             tokens = input_tokens
@@ -1189,18 +1188,18 @@ class NTPModel(nn.Module):
             device = tokens.device
             positions = torch.arange(T, device=device).unsqueeze(0)
 
-            tg = al = None
-            if ctx_time_gaps is not None:
-                T_ctx = ctx_time_gaps.size(1)
-                pad = torch.zeros(ctx_time_gaps.size(0), T - T_ctx,
-                                  dtype=torch.long, device=device)
-                tg = torch.cat([ctx_time_gaps, pad], dim=1)
-            if ctx_action_levels is not None:
-                T_ctx = ctx_action_levels.size(1)
-                pad = torch.zeros(ctx_action_levels.size(0), T - T_ctx,
-                                  dtype=torch.long, device=device)
-                al = torch.cat([ctx_action_levels, pad], dim=1)
-            x = self.embed_with_features(tokens, positions, tg, al)
+            # Pad each ctx side feature to full sequence length
+            padded_sf = {}
+            for key, feat in ctx_sf.items():
+                if feat is not None:
+                    T_ctx = feat.size(1)
+                    if T_ctx < T:
+                        pad = torch.zeros(feat.size(0), T - T_ctx,
+                                          dtype=feat.dtype, device=device)
+                        padded_sf[key] = torch.cat([feat, pad], dim=1)
+                    else:
+                        padded_sf[key] = feat
+            x = self.embed_with_features(tokens, positions, padded_sf)
 
             # TO-RoPE: build full timestamp tensor for context
             if self.use_torope:
@@ -1230,10 +1229,10 @@ class NTPModel(nn.Module):
             x = self._embed_tokens_at_offset(new_tokens, offset)
             positions = torch.arange(offset, offset + T_new, device=device).unsqueeze(0)
             x = x + self._get_pos_emb(positions)
-            if step_time_gap is not None and hasattr(self, 'time_gap_emb'):
-                x = x + self.time_gap_emb(step_time_gap)
-            if step_action_level is not None and hasattr(self, 'action_emb'):
-                x = x + self.action_emb(step_action_level)
+            if 'time_gaps' in step_sf and step_sf['time_gaps'] is not None and hasattr(self, 'time_gap_emb'):
+                x = x + self.time_gap_emb(step_sf['time_gaps'])
+            if 'action_levels' in step_sf and step_sf['action_levels'] is not None and hasattr(self, 'action_emb'):
+                x = x + self.action_emb(step_sf['action_levels'])
 
             # TO-RoPE: pass full KV positions/timestamps so RoPE angles are correct
             if self.use_torope:
@@ -1279,8 +1278,7 @@ class NTPModel(nn.Module):
         item_embeddings: Optional[torch.Tensor] = None,
         contrastive_weight: float = 0.0,
         contrastive_temp: float = 0.07,
-        time_gaps: Optional[torch.Tensor] = None,
-        action_levels: Optional[torch.Tensor] = None,
+        side_features: Optional[Dict] = None,
     ):
         """Forward pass — supports both legacy (sliding window) and packed modes.
 
@@ -1302,8 +1300,9 @@ class NTPModel(nn.Module):
             item_embeddings: (B, N_items, E) target item embeddings (for contrastive).
             contrastive_weight: weight α for contrastive loss.
             contrastive_temp: InfoNCE temperature τ.
-            time_gaps: (B, T) time gap bucket indices (optional side feature).
-            action_levels: (B, T) action level indices (optional side feature).
+            side_features: dict of optional side feature tensors, e.g.
+                {"time_gaps": (B,T) long, "action_levels": (B,T) long,
+                 "timestamps": (B,T) float hours}.
         """
         if packed_targets is not None:
             return self._forward_packed(
@@ -1313,8 +1312,7 @@ class NTPModel(nn.Module):
                 item_embeddings=item_embeddings,
                 contrastive_weight=contrastive_weight,
                 contrastive_temp=contrastive_temp,
-                time_gaps=time_gaps,
-                action_levels=action_levels,
+                side_features=side_features,
             )
 
         device = input_tokens.device
@@ -1364,8 +1362,7 @@ class NTPModel(nn.Module):
         item_embeddings: Optional[torch.Tensor] = None,
         contrastive_weight: float = 0.0,
         contrastive_temp: float = 0.07,
-        time_gaps: Optional[torch.Tensor] = None,
-        action_levels: Optional[torch.Tensor] = None,
+        side_features: Optional[Dict] = None,
     ) -> torch.Tensor:
         """LM-style forward on packed user sequences. Returns scalar loss.
 
@@ -1379,19 +1376,25 @@ class NTPModel(nn.Module):
             item_embeddings: (B, N_items, E) — target item embeddings.
             contrastive_weight: α for contrastive loss.
             contrastive_temp: InfoNCE temperature τ.
-            time_gaps: (B, S) — time gap bucket indices.
-            action_levels: (B, S) — action level indices.
+            side_features: dict of optional tensors, e.g.
+                {"time_gaps": (B,S) long, "action_levels": (B,S) long,
+                 "timestamps": (B,S) float hours for TO-RoPE}.
         Returns:
             loss: scalar
         """
+        sf = side_features or {}
         B, S = input_tokens.size()
         device = input_tokens.device
         L = self.n_sid_layers
 
         positions = torch.arange(S, device=device).unsqueeze(0)
-        x = self.embed_with_features(input_tokens, positions, time_gaps, action_levels)
+        x = self.embed_with_features(input_tokens, positions, sf)
         tp_pos = positions if self.use_torope else None
-        tp_ts = torch.zeros(1, S, device=device) if self.use_torope else None
+        if self.use_torope:
+            timestamps = sf.get('timestamps')
+            tp_ts = timestamps if timestamps is not None else torch.zeros(1, S, device=device)
+        else:
+            tp_ts = None
         hidden = self._transformer_forward(x, positions=tp_pos, timestamps=tp_ts)  # (B, S, D)
 
         # Flatten for efficient per-layer gather

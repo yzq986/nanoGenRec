@@ -72,6 +72,21 @@ Three remotes are configured:
 
 - **禁止用 `hash()` 做跨进程路由**：Python 3.3+ 默认随机化 `PYTHONHASHSEED`，每个进程的 `hash()` 结果不同。`torchrun` 的每个 rank 是独立进程，用 `hash(key) % n` 分配 shard 会导致 item 被静默丢弃或重复（已踩坑：4B embedding cache 33% 数据重复 + 大量 item 丢失）。必须用 `hashlib.sha256` 等确定性哈希。
 
+## 设计实验前必须确认数据 pipeline
+
+**在设计使用新特征的实验前，必须先确认 data pipeline 是否已包含该特征。**
+
+检查顺序：
+1. `ntp/preprocess.py`：`save_shard` / `load_shard` 是否存储 / 读取该特征？
+2. `ntp/train.py`：`build_unified_sequences` 是否填充该特征？`UnifiedSequenceDataset.side_features_lists` 是否传入？
+3. `ntp/model.py`：模型是否会用到该特征（`embed_with_features` / `_transformer_forward`）？
+
+如果任意一环缺失，必须**先接通 pipeline 或明确向用户说明"该特征当前传 0"**，再开始实验。
+绝对不能在实验跑完后发现特征全程为 0（等价于没加特征），却把结果当作有效对比。
+
+已踩坑：EXP-044 TO-RoPE 实验，timestamps 在代码里传了但全为 0（pipeline 未接通），
+导致 TO-RoPE vs baseline 的对比无效（两个都没有用真实时间戳）。
+
 ## Code quality
 
 - **不确定的 API 必须验证**：写 PyTorch / CUDA 等外部库调用时，先用 `Grep` 或 `WebSearch` 确认属性名和参数，不要凭记忆猜。已踩过的坑：`torch.cuda.get_device_properties().total_memory`（不是 `total_mem`）。
@@ -97,20 +112,31 @@ Three remotes are configured:
 
 ## Side Features 注入架构
 
-模型支持两类 side features：`time_gap`（时间间隔 bucket）和 `action_level`（行为级别）。
+模型支持两类 side features：`time_gaps`（时间间隔 bucket）和 `action_levels`（行为级别）。
+TO-RoPE 的 `timestamps`（连续实数小时）走单独路径（不加到 embedding，而是传给 attention 的 RoPE 时间分量）。
 **所有路径（训练和推理）必须通过同一个入口注入特征**，否则会产生 train-infer 不一致。
+
+### Side Features 统一用 dict 传递
+
+所有 API 接受 `side_features: dict[str, Tensor]`，key 为特征名：
+- `"time_gaps"` — `(B,T)` long，bucket embedding（加到 token embedding）
+- `"action_levels"` — `(B,T)` long，action level embedding（加到 token embedding）
+- `"timestamps"` — `(B,T)` float，连续小时（只在 `_forward_packed` / TO-RoPE 路径读取）
+
+训练数据侧：`side_features_lists: dict[str, list[list]]`，同名 key。
 
 ### 唯一入口：`model.embed_with_features`
 
 ```python
 # ntp/model.py
-def embed_with_features(self, tokens, positions, time_gaps=None, action_levels=None):
+def embed_with_features(self, tokens, positions, side_features=None):
     """Single source of truth for input embedding + side-feature injection."""
     x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
-    if time_gaps is not None and hasattr(self, 'time_gap_emb'):
-        x = x + self.time_gap_emb(time_gaps)
-    if action_levels is not None and hasattr(self, 'action_emb'):
-        x = x + self.action_emb(action_levels)
+    sf = side_features or {}
+    if 'time_gaps' in sf and sf['time_gaps'] is not None and hasattr(self, 'time_gap_emb'):
+        x = x + self.time_gap_emb(sf['time_gaps'])
+    if 'action_levels' in sf and sf['action_levels'] is not None and hasattr(self, 'action_emb'):
+        x = x + self.action_emb(sf['action_levels'])
     return x
 ```
 
@@ -118,30 +144,29 @@ def embed_with_features(self, tokens, positions, time_gaps=None, action_levels=N
 
 | 路径 | 文件 | 调用方式 |
 |------|------|---------|
-| NTP 训练 | `ntp/model.py:_forward_packed` | `model.embed_with_features(tokens, positions, tg, al)` |
-| KV-cached 推理 | `ntp/model.py:forward_cached` | `model.embed_with_features(tokens, positions, tg, al)` (cold start) |
-| DPO/GRPO log-prob 计算 | `rl/dpo.py:compute_sid_logprobs` | `model.embed_with_features(full_input, positions, tg, al)` |
-| Beam search | `ntp/model.py:constrained_beam_search` | 调用 `forward_cached`，透传 `ctx_time_gaps/ctx_action_levels` |
+| NTP 训练 | `ntp/model.py:_forward_packed` | `model.forward(..., side_features=sf)` |
+| KV-cached 推理 | `ntp/model.py:forward_cached` | `forward_cached(..., ctx_side_features=sf)` |
+| DPO/GRPO log-prob 计算 | `rl/dpo.py:compute_sid_logprobs` | `compute_sid_logprobs(..., ctx_side_features=sf, gen_side_features=sf)` |
+| Beam search | `ntp/model.py:constrained_beam_search` | `constrained_beam_search(..., ctx_side_features=sf, gen_side_features=sf)` |
 
 ### 新增 Side Feature 的标准步骤
 
 1. 在 `NTPModel.__init__` 里加 `nn.Embedding`（条件创建，不破坏无特征模型）
-2. 在 `embed_with_features` 里加一行 `if xxx is not None and hasattr(self, 'xxx_emb')`
-3. 在 `_forward_packed` 的调用处补参数（NTP 训练路径）
-4. 在 `forward_cached` 的调用处补参数（推理路径）
-5. 在 `compute_sid_logprobs` 的调用处补参数（DPO/GRPO 路径）
-6. 在 `rl/trainer.py` 的 `context_pool` 存储结构里加字段，在 `_grpo_step` 里传递
+2. 在 `embed_with_features` 里加一行 `if 'xxx' in sf and hasattr(self, 'xxx_emb')`
+3. 训练侧：在 `ntp/preprocess.py` 的 `save_shard`/`load_shard` 里增加存储/读取
+4. 训练侧：在 `ntp/train.py` 的 `build_unified_sequences` 里填充新字段，在 `main()` 里加入 `side_features_lists` dict
+5. 推理侧：在 `ntp/eval.py` 的 eval item 构造和 `constrained_beam_search` 调用处加入 key
 
 **不需要改 `_embed_tokens`、`_transformer_forward`、或任何下游 loss 函数。**
 
-### Context Pool 结构
+### Context Pool 结构（rl/trainer.py）
 
 ```python
 # rl/trainer.py — context_pool entry
-(ctx_tokens: List[int], ctx_time_gaps: List[int]|None, ctx_action_levels: List[int]|None)
+(ctx_tokens: List[int], ctx_side_features: dict[str, list])
 ```
 
-`_grpo_step` 对每个 context 做 carry-forward：`gen_action_level = ctx_al[-1]`（最后一个 context token 的 action_level），`gen_time_gap = 0`（目标 item 时间间隔未知时默认 0）。
+`_grpo_step` 对每个 context 做 carry-forward：`gen_side_features['action_levels'] = ctx_sf['action_levels'][-1]`，`gen_side_features['time_gaps'] = 0`（目标 item 时间间隔未知时默认 0）。
 
 ## GRPO/ECPO 训练踩坑记录（EXP-026）
 
