@@ -18,3 +18,4 @@ exp-043.sh  /tmp/exp043.log  EXP-043 complete!
 exp-044.sh  /tmp/exp044.log  EXP-044 complete!
 exp-045.sh  /tmp/exp045.log  EXP-045 complete!
 exp-044b.sh  /tmp/exp044b.log  EXP-044B complete!
+exp-046.sh  /tmp/exp046.log  EXP-046 complete!

@@ -1017,6 +1017,7 @@ def train_packed(
     use_segment_emb=False,
     use_torope=False,
     torope_time_split=0.5,
+    use_gate_attn=False,
 ):
     """Train NTPModel or NTPProbe with unified sequences (causal LM style).
 
@@ -1055,6 +1056,8 @@ def train_packed(
         if use_torope:
             _extra_kwargs['use_torope'] = True
             _extra_kwargs['torope_time_split'] = torope_time_split
+        if use_gate_attn:
+            _extra_kwargs['use_gate_attn'] = True
         model = NTPModel(
             n_clusters_per_layer=n_clusters_per_layer,
             n_sid_layers=n_layers,
@@ -1387,6 +1390,8 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
         if hasattr(probe, 'use_torope') and probe.use_torope:
             probe_config['use_torope'] = True
             probe_config['torope_time_split'] = probe.torope_time_split
+        if getattr(probe.layers[0], 'attn_gate', None) is not None:
+            probe_config['use_gate_attn'] = True
     else:
         probe_config = {
             'model_type': 'probe',
@@ -1493,6 +1498,8 @@ def parse_args():
                              'with split-by-dim rotary encoding.')
     parser.add_argument('--torope_time_split', type=float, default=0.5,
                         help='Fraction of RoPE planes for time encoding (default 0.5)')
+    parser.add_argument('--use_gate_attn', action='store_true', default=False,
+                        help='Enable GateAttention: sigmoid gate on attention output.')
     return parser.parse_args()
 
 
@@ -1850,6 +1857,7 @@ def main():
                 use_segment_emb=cfg.get('use_segment_emb', False),
                 use_torope=cfg.get('use_torope', False),
                 torope_time_split=cfg.get('torope_time_split', 0.5),
+                use_gate_attn=cfg.get('use_gate_attn', False),
             )
         else:
             probe = NTPProbe(
@@ -1923,6 +1931,7 @@ def main():
             use_segment_emb=args.use_segment_emb,
             use_torope=args.use_torope,
             torope_time_split=args.torope_time_split,
+            use_gate_attn=args.use_gate_attn,
         )
 
         # Update W&B config with model-specific info discovered during training

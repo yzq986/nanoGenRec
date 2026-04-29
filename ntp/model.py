@@ -780,6 +780,7 @@ class TransformerLayer(nn.Module):
         expert_dim: int = 1024,
         causal: bool = True,
         torope_params: Optional[dict] = None,
+        use_gate_attn: bool = False,
     ):
         super().__init__()
         self.causal = causal
@@ -791,6 +792,10 @@ class TransformerLayer(nn.Module):
         self.attn = nn.MultiheadAttention(
             embed_dim, n_heads, dropout=dropout, batch_first=True,
         )
+        # GateAttention: scalar sigmoid gate on attention output per position
+        # gate(x) = sigmoid(W_g x) ∈ (0,1)^D, applied as attn_out * gate(x_norm)
+        self.attn_gate = nn.Linear(embed_dim, embed_dim, bias=False) if use_gate_attn else None
+
         if use_moe:
             self.ffn = SparseMoEBlock(embed_dim, expert_dim, n_experts, top_k, dropout)
         else:
@@ -908,6 +913,8 @@ class TransformerLayer(nn.Module):
         else:
             attn_out, _ = self.attn(x_norm, x_norm, x_norm)
 
+        if self.attn_gate is not None:
+            attn_out = attn_out * torch.sigmoid(self.attn_gate(x_norm))
         x = x + attn_out
         x = x + self.ffn(self.norm2(x))
         if use_cache:
@@ -950,6 +957,7 @@ class NTPModel(nn.Module):
         use_segment_emb: bool = False,
         use_torope: bool = False,
         torope_time_split: float = 0.5,
+        use_gate_attn: bool = False,
     ):
         super().__init__()
         assert len(n_clusters_per_layer) == n_sid_layers
@@ -1016,6 +1024,7 @@ class NTPModel(nn.Module):
                 top_k=top_k, expert_dim=expert_dim,
                 causal=not parallel,
                 torope_params=torope_layer_params,
+                use_gate_attn=use_gate_attn,
             )
             for _ in range(n_transformer_layers)
         ])
