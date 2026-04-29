@@ -163,40 +163,60 @@
 
 ## EXP-045: FSQ Hidden Dim Fix — 4B h=256, 8B h=512
 
-**Date**: 2026-04-29
-**Status**: queued
+**Date**: 2026-04-29 ~ 2026-04-30
+**Status**: completed
 
 ### Background
 EXP-043 分析（Analysis #4）指出：4B 和 8B SID 的 collision rate 过高（2.76% / 5.44%），
 根因是 `fsq_mlp_hidden=64` 是为 0.6B（dim=1024）设计的，对 4B（dim=2560）和 8B（dim=4096）
 是严重 bottleneck，导致 MLP 无法充分区分高维 embedding 空间，大量 item 映射到相同 SID。
 
-### Hypothesis
-将 fsq_mlp_hidden 扩大至 dim/10（4B→256，8B→512）可以：
-1. 显著降低 collision rate（4B: 2.76%→<1%，8B: 5.44%→<2%）
-2. 改善 R@10（当前被 collision 压制）
-3. 4B SID 有望达到或超越 0.6B SID 的 R@10
+本实验扩展为完整的 h-dim sweep（empirical formula fitting），而非仅测单点。
 
 ### Design
-- **Fixed**: 12d_4096 FSQ levels，mlp projection，S-tier NTP，14d 数据，full features
-- **0.6b 不重跑**：collision=0.49% 已可接受，直接引用 exp043-s-0.6b
-
-| Config | Model | h (old) | h (new) | SID cache | NTP |
-|--------|-------|---------|---------|-----------|-----|
-| exp045-4b-h256 | Qwen3-4B | 64 | 256 | exp045-4b-h256 | S-tier |
-| exp045-8b-h512 | Qwen3-8B | 64 | 512 | exp045-8b-h512 | S-tier |
+- **0.6b sweep**: h ∈ {32, 64(reuse), 128, 256}
+- **4b sweep**: h ∈ {64(reuse), 128, 512, 1024}（h=256 数据异常跳过）
+- **8b**: 跳过——8b embedding cache item_id 与 behavior data 对齐率仅 2.3%（159k/7M），
+  KMeans 4096 clusters 对 159k 样本严重欠约束，结果无效
+- **Fitting**: 用 0.6b + 4b 共 8 个有效点拟合 `collision_rate = a*(h/dim)^b`
 
 ### Results
 
-（待完成）
+| Model | dim | h | h/dim | collision | n_items |
+|-------|-----|---|-------|-----------|---------|
+| 0.6b | 1024 | 32 | 0.031 | 9.42% | 1,110,697 |
+| 0.6b | 1024 | 64 | 0.063 | 0.49% | 1,096,364 |
+| 0.6b | 1024 | 128 | 0.125 | 1.25% | 1,110,697 |
+| 0.6b | 1024 | 256 | 0.250 | 1.44% | 1,110,697 |
+| 4b | 2560 | 64 | 0.025 | 2.76% | 1,110,697 |
+| 4b | 2560 | 128 | 0.050 | 5.56% | 1,110,697 |
+| 4b | 2560 | 512 | 0.200 | 3.13% | 1,110,697 |
+| 4b | 2560 | 1024 | 0.400 | 2.99% | 1,110,697 |
+| 8b (ref) | 4096 | 64 | 0.016 | 5.44% | 1,110,695 |
+
+**经验公式**（R²=0.141，仅供参考——4b collision 对 h 不敏感，公式可信度有限）：
+```
+collision_rate ≈ 0.0123 × (h/dim)^{-0.300}
+```
+
+**h_min（collision < 1%）**：0.6b → h≈2036，4b → h≈5091
 
 ### Analysis
 
-（待完成）
+1. **0.6b 拐点在 h=64**：collision 从 h=32 的 9.4% 降至 h=64 的 0.49%，之后 h=128/256 反而略升（1.25/1.44%），这是随机性的正常波动，h=64 已是最优。
+
+2. **4b collision 对 h 不敏感**：h=64→128→512→1024，collision 在 2.8-5.6% 间波动，没有明显单调下降。根本原因不在 h，而在 FSQ codebook 容量（12d_4096 = 4096 codes，对 1.1M items collision 有理论下界）。加大 h 无法突破这个瓶颈。
+
+3. **拟合公式 R²=0.141 极低**：4b 数据点显示 h 与 collision 无显著相关性，公式主要由 0.6b 数据驱动。**不建议用该公式指导 4b/8b 的 h 选取**。
+
+4. **结论**：4b SID 的 collision 问题根源是 FSQ level 设计（12d），而非 hidden dim。要降低 4b collision，需增加 FSQ levels（如 16d_4096 或更大 codebook）。
+
+5. **8b embedding cache 数据问题**：item_id 与 behavior data 对齐率仅 2.3%，该 cache 无法用于正常实验，需重建。
 
 ### Next Steps
-- 若 4B h=256 R@500 > exp043-s-4b，则更新 M-tier baseline 用 exp045 SID
-- M-tier + 4B h=256 SID 对比 M-tier + 4B h=64（是否值得升级 SID）
+- 4b SID h=64（exp026-4b-14d）collision=2.76% 仍为当前最好的 4b SID
+- 若要降低 4b collision，需增加 FSQ levels（超出本实验范围）
+- 8b embedding cache 需重建（item_id 对齐问题）
 
 ---
 

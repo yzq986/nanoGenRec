@@ -94,7 +94,8 @@ n = c['n_items']
 print(f'  done: collision={c["collision_rate"]:.4%}  n_items={n:,}  n_unique={c["n_unique_sids"]:,}  time={c["train_time_seconds"]:.0f}s')
 # Sanity: exp026 has ~1.1M items; full embedding cache has ~10M — catch data alignment bug
 if n > 3_000_000:
-    print(f'  [ERROR] n_items={n:,} >> expected ~1.1M — behavior_path filter not applied! Delete {\"${SID_DIR}\"} and fix.')
+    err = '  [ERROR] n_items={:,} >> expected ~1.1M — behavior_path filter not applied! Delete {} and fix.'.format(n, '${SID_DIR}')
+    print(err)
     sys.exit(1)
 PYCHECK
     echo ""
@@ -117,14 +118,12 @@ run_fsq "qwen3-4b" 512
 run_fsq "qwen3-4b" 1024
 echo ""
 
-# ── Step 3: 8b sweep (skip h=64, already in exp026) ──────────
-echo "=== Qwen3-8b (dim=4096) ==="
-# h=64: 复用 exp026-8b-14d
-run_fsq "qwen3-8b" 128
-run_fsq "qwen3-8b" 256
-run_fsq "qwen3-8b" 512
-run_fsq "qwen3-8b" 1024
-run_fsq "qwen3-8b" 2048
+# ── Step 3: 8b sweep — SKIPPED ───────────────────────────────
+# 8b embedding cache has item_id alignment issues vs behavior data:
+# only 159k/7M items match (2.3%), causing KMeans to be under-constrained
+# (4096 clusters on 159k items = ~39 pts/cluster → NaN centroids).
+# 8b sweep results are unreliable; formula fitted on 0.6b + 4b only.
+echo "=== Qwen3-8b (dim=4096) — SKIPPED (item_id alignment issue in cache) ==="
 echo ""
 
 # ── Step 4: 收集结果 + 拟合公式 ──────────────────────────────
@@ -143,16 +142,12 @@ CONFIGS = [
     # 4b
     ("qwen3-4b",   2560,   64, "experiments/sid_cache/exp026-4b-14d"),      # reuse
     ("qwen3-4b",   2560,  128, "experiments/sid_cache/exp045-4b-h128"),
-    ("qwen3-4b",   2560,  256, "experiments/sid_cache/exp045-4b-h256"),
+    # h=256 skipped (bad data: 7M items, behavior filter not applied)
     ("qwen3-4b",   2560,  512, "experiments/sid_cache/exp045-4b-h512"),
     ("qwen3-4b",   2560, 1024, "experiments/sid_cache/exp045-4b-h1024"),
-    # 8b
+    # 8b — skipped (item_id alignment issue, only 159k/7M items matched behavior filter)
     ("qwen3-8b",   4096,   64, "experiments/sid_cache/exp026-8b-14d"),      # reuse
-    ("qwen3-8b",   4096,  128, "experiments/sid_cache/exp045-8b-h128"),
-    ("qwen3-8b",   4096,  256, "experiments/sid_cache/exp045-8b-h256"),
-    ("qwen3-8b",   4096,  512, "experiments/sid_cache/exp045-8b-h512"),
-    ("qwen3-8b",   4096, 1024, "experiments/sid_cache/exp045-8b-h1024"),
-    ("qwen3-8b",   4096, 2048, "experiments/sid_cache/exp045-8b-h2048"),
+    # 8b skipped — item_id alignment issue
 ]
 
 rows = []
