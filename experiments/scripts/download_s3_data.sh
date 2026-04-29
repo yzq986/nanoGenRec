@@ -69,15 +69,15 @@ case "${DATASET}" in
         ;;
     emb-cache-0.6b)
         S3_PATH="s3://example-bucket/gr-demo/embedding_cache_backup/qwen3-0.6b"
-        LOCAL_DIR="${HOME}/gr_demo_cache/embedding_cache/qwen3-0.6b"
+        LOCAL_DIR="${EFS_BASE}/embedding_cache/qwen3-0.6b"
         ;;
     emb-cache-4b)
         S3_PATH="s3://example-bucket/gr-demo/embedding_cache_backup/qwen3-4b"
-        LOCAL_DIR="${HOME}/gr_demo_cache/embedding_cache/qwen3-4b"
+        LOCAL_DIR="${EFS_BASE}/embedding_cache/qwen3-4b"
         ;;
     emb-cache-8b)
         S3_PATH="s3://example-bucket/gr-demo/embedding_cache_backup/qwen3-8b"
-        LOCAL_DIR="${HOME}/gr_demo_cache/embedding_cache/qwen3-8b"
+        LOCAL_DIR="${EFS_BASE}/embedding_cache/qwen3-8b"
         ;;
     qwen3-emb-0.6b)
         S3_PATH="${S3_BASE}/models/Qwen3-Embedding-0.6B"
