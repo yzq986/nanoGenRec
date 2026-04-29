@@ -27,6 +27,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+export EFS_BASE="${EFS_BASE:-/mnt/workspace}"
 cd "${REPO_ROOT}"
 
 FORCE=false

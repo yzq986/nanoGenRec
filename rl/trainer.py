@@ -1086,7 +1086,7 @@ def train_grpo(
                 reward_metrics = reward_fn.metrics()
 
             del all_sids_t, ctx_padded, ctx_lengths, ctx_exp, len_exp
-            del tg_padded, al_padded, tg_exp, al_exp, gen_al_per_ctx
+            del sf_padded, sf_exp
             del policy_lp, ref_lp, rewards
 
         return loss_val, diag, reward_metrics

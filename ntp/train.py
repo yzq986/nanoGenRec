@@ -59,6 +59,28 @@ def log(is_main, msg):
         print(msg, flush=True)
 
 
+def compute_split_masks(lengths, split_positions, seq_len, device):
+    """Compute valid/train/eval boolean masks for packed sequences.
+
+    Args:
+        lengths:         (B,) actual sequence lengths
+        split_positions: (B,) index separating train / eval tokens
+        seq_len:         T — number of prediction positions (= padded_len - 1 for train)
+        device:          target device
+
+    Returns:
+        valid_mask: (B, T) — position i is valid if token[i+1] exists
+        train_mask: (B, T) — valid & token[i+1] is a training token (< split_pos)
+        eval_mask:  (B, T) — valid & token[i+1] is an eval token (>= split_pos)
+    """
+    arange = torch.arange(seq_len, device=device).unsqueeze(0)
+    valid_mask = arange < (lengths.unsqueeze(1) - 1)
+    sp = split_positions.unsqueeze(1) - 1
+    train_mask = valid_mask & (arange < sp)
+    eval_mask  = valid_mask & (arange >= sp)
+    return valid_mask, train_mask, eval_mask
+
+
 # ============================================================
 # Data preparation
 # ============================================================
@@ -869,11 +891,13 @@ def unified_collate_fn(batch):
 
     if neg_l0s is not None:
         K = neg_l0s[0].size(1)
-        n_layers = 3
+        n_layers = None
         for i, nl in enumerate(neg_l0s):
             if nl.size(0) > 0:
                 n_layers = lengths[i].item() // nl.size(0)
                 break
+        assert n_layers is not None and n_layers > 0, \
+            "unified_collate_fn: all neg_l0 samples are empty — cannot infer n_layers"
 
         S = max_len - 1
         neg_padded = torch.full((len(seqs), S, K), -1, dtype=torch.long)
@@ -1210,13 +1234,7 @@ def train_packed(
         input_tokens = padded[:, :-1]
         target_tokens = padded[:, 1:]
 
-        # Valid mask: position i is valid if i+1 < length
-        arange = torch.arange(T - 1, device=device).unsqueeze(0)
-        valid_mask = arange < (lengths.unsqueeze(1) - 1)
-
-        # Train mask: position i predicts token[i+1]. Token[i+1] is train when
-        # i+1 < split_pos, i.e. i < split_pos - 1.
-        train_mask = valid_mask & (arange < (split_positions.unsqueeze(1) - 1))
+        _, train_mask, _ = compute_split_masks(lengths, split_positions, T - 1, device)
 
         # Shift side features by 1 (input = tokens[:-1])
         model_sf = {k: v[:, :-1] for k, v in batch_sf.items()}

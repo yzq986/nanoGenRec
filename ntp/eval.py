@@ -26,6 +26,7 @@ import torch.nn.functional as F
 from metrics.base import BaseMetric, MetricResult
 from ntp.baseline import NTPProbe
 from ntp.model import NTPModel, SIDTrie, constrained_beam_search
+from ntp.train import compute_split_masks
 
 
 def _build_sid_to_items(sid_cache_dir):
@@ -135,11 +136,7 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
         T = input_tokens.size(1)
         input_sf = {k: v[:, :-1] for k, v in sf_padded.items()}
 
-        arange = torch.arange(T, device=device).unsqueeze(0)
-        valid_mask = arange < (lengths.unsqueeze(1) - 1)
-
-        # Eval mask: position i is eval when i+1 >= split_pos, i.e. i >= split_pos - 1
-        eval_mask = valid_mask & (arange >= (split_positions.unsqueeze(1) - 1))
+        _, _, eval_mask = compute_split_masks(lengths, split_positions, T, device)
 
         if not eval_mask.any():
             continue

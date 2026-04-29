@@ -187,6 +187,35 @@ class SIDTrie:
         return self.children[0].get((), set())
 
 
+def _build_trie_mask(
+    beams: torch.Tensor,    # (B, n_beams, step) CPU tensor of token indices so far
+    trie: 'SIDTrie',
+    step: int,
+    B: int,
+    n_beams: int,
+    n_vocab: int,
+    device,
+) -> torch.Tensor:
+    """Build boolean trie validity mask of shape (B*n_beams, n_vocab).
+
+    Groups beams by prefix to avoid redundant trie lookups.
+    """
+    mask = torch.zeros(B * n_beams, n_vocab, dtype=torch.bool, device=device)
+    prefix_to_valid: Dict[tuple, List[int]] = {}
+    for bi in range(B):
+        for ki in range(n_beams):
+            pfx = tuple(beams[bi, ki].tolist())
+            if pfx not in prefix_to_valid:
+                valid = trie.valid_tokens(step, pfx)
+                prefix_to_valid[pfx] = list(valid) if valid else []
+    for bi in range(B):
+        for ki in range(n_beams):
+            valid_list = prefix_to_valid[tuple(beams[bi, ki].tolist())]
+            if valid_list:
+                mask[bi * n_beams + ki, valid_list] = True
+    return mask
+
+
 @torch.no_grad()
 def constrained_beam_search(
     model,
@@ -304,27 +333,7 @@ def constrained_beam_search(
             current_logits.view(B, n_beams, -1), dim=-1)
         C = log_probs.size(-1)
 
-        # Build trie mask: group beams by prefix to minimize dict lookups
-        mask = torch.zeros(B * n_beams, C, dtype=torch.bool, device=device)
-        beams_cpu = beams.cpu()
-
-        prefix_to_valid: Dict[tuple, List[int]] = {}
-        for bi in range(B):
-            for ki in range(n_beams):
-                pfx = tuple(beams_cpu[bi, ki].tolist())
-                if pfx not in prefix_to_valid:
-                    valid = trie.valid_tokens(step, pfx)
-                    prefix_to_valid[pfx] = list(valid) if valid else []
-
-        for bi in range(B):
-            for ki in range(n_beams):
-                pfx = tuple(beams_cpu[bi, ki].tolist())
-                valid_list = prefix_to_valid[pfx]
-                if valid_list:
-                    idx = bi * n_beams + ki
-                    mask[idx, valid_list] = True
-
-        # Mask invalid tokens
+        mask = _build_trie_mask(beams.cpu(), trie, step, B, n_beams, C, device)
         log_probs = log_probs.masked_fill(
             ~mask.view(B, n_beams, C), float('-inf'))
 
@@ -546,25 +555,7 @@ def _constrained_beam_search_legacy(
         log_probs = F.log_softmax(logits, dim=-1)
         C = log_probs.size(-1)
 
-        mask = torch.zeros(B * n_beams, C, dtype=torch.bool, device=device)
-        beams_cpu = beams.cpu()
-
-        prefix_to_valid: Dict[tuple, List[int]] = {}
-        for bi in range(B):
-            for ki in range(n_beams):
-                pfx = tuple(beams_cpu[bi, ki].tolist())
-                if pfx not in prefix_to_valid:
-                    valid = trie.valid_tokens(step, pfx)
-                    prefix_to_valid[pfx] = list(valid) if valid else []
-
-        for bi in range(B):
-            for ki in range(n_beams):
-                pfx = tuple(beams_cpu[bi, ki].tolist())
-                valid_list = prefix_to_valid[pfx]
-                if valid_list:
-                    idx = bi * n_beams + ki
-                    mask[idx, valid_list] = True
-
+        mask = _build_trie_mask(beams.cpu(), trie, step, B, n_beams, C, device)
         log_probs = log_probs.masked_fill(~mask, float('-inf'))
         log_probs = log_probs.view(B, n_beams, C)
         candidate_scores = scores.unsqueeze(-1) + log_probs
