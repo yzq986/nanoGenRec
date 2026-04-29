@@ -256,7 +256,8 @@ gr_demo/
 ├── discussions/
 │   ├── README.md          # 深度技术讨论索引
 │   ├── 001-sp-dpo-vs-sft-vs-contrastive.md  # SP-DPO vs SFT vs 对比学习
-│   └── 002-rf-dpo-grpo-ecpo-progression.md  # RL 对齐完整递进路径
+│   ├── 002-rf-dpo-grpo-ecpo-progression.md  # RL 对齐完整递进路径
+│   └── 007-sid-l2-entropy-collision-floor-ppl.md  # L2 entropy → collision rate → floor PPL 理论推导
 ├── ideas/
 │   ├── README.md          # 索引 + 优先级总览 (62 ideas, 39 papers)
 │   ├── tokenizer.md       # 量化方法 (9 ideas)
@@ -554,6 +555,7 @@ L̂(N) = floor + b / N^0.456
 - **floor 由 tokenizer L2 entropy 决定**：4B SID L2=8.10 bits，FSQ 码本利用率最高 → floor 最低
 - **8B 反而差于 4B**：FSQ h=64 bottleneck 无法压缩 4096D 残差，L2 entropy 7.17 bits（71.6%），有效 FSQ 槽位仅 ~145
 - **M 档 (~55M active) 是性价比甜点** — 之后曲线趋于平坦；M-tier (71.6M) 已验证 R@500=70.4%
+- **Floor 可通过修复 tokenizer 直接降低**，与 NTP 模型大小无关；理论推导见 [Discussion 007](discussions/007-sid-l2-entropy-collision-floor-ppl.md)
 
 ![NTP Scaling Law](experiments/results/ntp/exp015-scaling-law.png)
 
