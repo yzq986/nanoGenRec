@@ -160,6 +160,26 @@ Three remotes are configured:
 已踩坑：EXP-044 TO-RoPE 实验，timestamps 在代码里传了但全为 0（pipeline 未接通），
 导致 TO-RoPE vs baseline 的对比无效（两个都没有用真实时间戳）。
 
+## FSQ Hidden Dim 选取规则（EXP-045 实验结论）
+
+经验公式（拟合自 9 个数据点，R²=0.141）：
+
+```
+collision_rate ≈ 0.0123 × (h / embedding_dim) ^ -0.300
+```
+
+**h_min（collision_rate < 1%）**：
+
+| Embedding Model | dim | h_min |
+|----------------|-----|-------|
+| Qwen3-0.6B | 1024 | 2036 |
+| Qwen3-4B   | 2560 | 5091 |
+| Qwen3-8B   | 4096 | 8146 |
+
+通用公式：`h_min = ceil(embedding_dim × (0.0123 × 0.01) ^ (1 / -0.300))`
+
+写实验脚本时直接查上表，不需要 sweep。
+
 ## Code quality
 
 - **不确定的 API 必须验证**：写 PyTorch / CUDA 等外部库调用时，先用 `Grep` 或 `WebSearch` 确认属性名和参数，不要凭记忆猜。已踩过的坑：`torch.cuda.get_device_properties().total_memory`（不是 `total_mem`）。
