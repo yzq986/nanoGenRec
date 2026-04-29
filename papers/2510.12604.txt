@@ -1,0 +1,696 @@
+COINS: SeMantiC Ids Enhanced COld Item RepresentatioN for
+Click-through Rate Prediction in E-commerce Search
+Qihang Zhao
+zhaoqh75@mail.ustc.edu.cn
+Kuaishou Inc.
+Hangzhou, Zhejiang, China
+Zhongbo Sun
+Kuaishou Technology
+Hangzhou, China
+sunzb17@gmail.com
+Xiaoyang Zheng
+Kuaishou Technology
+Hangzhou, China
+zhengxiaoyang@kuaishou.com
+Xian Guo
+Kuaishou Technology
+Beijing, China
+guoxian@kuaishou.com
+Siyuan Wang
+Kuaishou Technology
+Beijing, China
+wangsiyuan@kuaishou.com
+Zihan Liang
+Kuaishou Technology
+Hangzhou, China
+liangzihan@kuaishou.com
+Mingcan Peng
+Kuaishou Technology
+Beijing, China
+pengmingcan@kuaishou.com
+Ben Chen∗
+Kuaishou Technology
+Hangzhou, China
+chenben03@kuaishou.com
+Chenyi Lei
+Kuaishou Technology
+Hangzhou, China
+leichy@mail.ustc.edu.cn
+Abstract
+With the rise of modern search and recommendation platforms, in-
+sufficient collaborative information of cold-start items exacerbates
+the Matthew effect of existing platform items, challenging platform
+diversity and becoming a longstanding issue. Existing methods
+align items’ side content with collaborative information to transfer
+collaborative signals from high-popularity items to cold-start items.
+However, these methods fail to account for the asymmetry between
+collaboration and content, nor the fine-grained differences among
+items. To address these issues, we propose COINS, an item represen-
+tation enhancement approach based on fused alignment of semantic
+IDs. Specifically, we use RQ-OPQ encoding to quantize item content
+and collaborative information, followed by a two-step alignment:
+RQ encoding transfers shared collaborative signals across items,
+while OPQ encoding learns items’ differentiated information. Com-
+prehensive offline experiments on large-scale industrial datasets
+demonstrate COINS’s superiority, and rigorous online A/B tests
+confirm statistically significant improvements: item CTR +1.66%,
+buyers +1.57%, and order volume +2.17%.
+CCS Concepts
+• Information systems →Content ranking.
+Keywords
+Semantic Ids; Cold Start
+∗*corresponding author
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+ACM Reference Format:
+Qihang Zhao, Zhongbo Sun, Xiaoyang Zheng, Xian Guo, Siyuan Wang,
+Zihan Liang, Mingcan Peng, Ben Chen, and Chenyi Lei. 2018. COINS: Se-
+MantiC Ids Enhanced COld Item RepresentatioN for Click-through Rate Pre-
+diction in E-commerce Search. In Proceedings of Make sure to enter the correct
+conference title from your rights confirmation email (Conference acronym ’XX).
+ACM, New York, NY, USA, 5 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+E-commerce search recommendation systems have become core
+channels for connecting users and commodities, with continuous
+optimization in representation learning and matching efficiency
+to adapt to the rapid growth of platform scale. However, the item
+cold-start challenge has become increasingly prominent—newly
+added commodities (accounting for approximately 30% of monthly
+updates on our platforms) often face extreme sparsity of user inter-
+action data. Over 60% of these cold-start items receive fewer than
+5 clicks in their first week, lacking critical collaborative signals
+(e.g., user click preferences, purchase tendencies) that traditional
+recommendation methods rely on. This directly degrades search
+recommendation accuracy for cold items, making it an urgent need
+to develop efficient cold-start solutions compatible with existing
+industrial systems.
+Existing cold-start solutions fall into two paradigms. Generator-
+based methods [2–4, 6] synthesize cold-item representations via
+warm-item signals: meta-learning [4] pre-trains transferable gener-
+ators for few-sample adaptation, GANs [2] align cold embeddings
+with warm signal distributions, and VAEs [3] sample from learned
+warm-data distributions. Knowledge alignment-based methods [7–
+9, 12] bridge content and collaborative signals: contrastive learning
+optimizes [7] content encoders to match warm collaborative repre-
+sentations, while knowledge distillation [12] uses content features
+as a medium to transfer teacher-model (warm-item) knowledge to
+student models (cold-item).
+Despite the partial success of existing approaches, two critical
+limitations persist. First, for generative models: few-shot-based gen-
+erators independently generate representations for cold-start items,
+arXiv:2510.12604v4  [cs.IR]  15 Jan 2026
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zhao et al.
+CF Emb
+Content Emb
+CF Emb
+Content Emb
+CF Emb
+Content Emb
+A item
+A item
+B item
+B item
+B item
+B item
+A item
+A item
+A item
+B item
+C item
+Common 
+RQ
+A OPQ
+B OPQ
+(a)
+(b)
+(c)
+C OPQ
+C RQ
+Figure 1: Types of Knowledge alignment-based methods.
+yet they overlook temporal dynamics and temporal variations dur-
+ing feature transfer—this flaw readily induces distribution drift
+in the generated cold-start item embeddings. Second, for knowl-
+edge alignment-based methods: such approaches generally rely
+on the core assumption that item’s side content information and
+collaborative signals are consistent in the embedding space. Even
+though some improved variants attempt to learn the consistency
+between these two components prior to alignment, they still do not
+deviate from the knowledge alignment framework. Their core limi-
+tation remains in neglecting the unique fine-grained discriminative
+information of individual items, ultimately confining recommen-
+dation performance to a suboptimal level while failing to address
+the asymmetry between side information and collaborative signals
+that frequently arises in real-world scenarios, as illustrate in Figure
+1 (a) and (b).
+To alleviate these issues, this paper proposes a novel item repre-
+sentation fusion and enhancement method based on semantic IDs,
+termed COINS. Specifically, inspired by OneSearch [1]: a recently
+deployed end-to-end generative framework that has achieved suc-
+cessful application in e-commerce search. We leverage its proposed
+RQ-OPQ encoding (endowed with rich hierarchical semantic and
+collaborative signals) to enhance cold-start item representations.
+First, for the coarser-grained RQ encoding, we design an adaptive
+transfer mechanism to enable bidirectional transfer between high-
+frequency collaborative signals embedded in item IDs and dense
+semantic information within RQ encodings. Second, for the resid-
+ual vectors of items obtained via RQ hierarchical quantization (i.e.,
+OPQ encodings), which encapsulate the discriminative information
+of different items, we integrate such discriminative information
+into item representations through contrastive learning. Ultimately,
+the resulting item representations not only incorporate abundant
+content and collaborative information but also accurately capture
+the uniqueness of individual items, as illustrate in Figure 1 (c). The
+main contributions are as follows:
+• We propose an innovative adaptive transfer mechanism to
+achieve adaptive bidirectional alignment between the collab-
+orative information embedded in item IDs and the semantic
+information within RQ encodings;
+• We are the first to propose an OPQ encoding-based learning
+strategy for item discriminative information, enabling cold-
+start item representations to accurately capture their unique
+attributes;
+• We conduct comprehensive offline experiments and rigorous
+online A/B test, whose results fully validate the superiority
+of our proposed COINS method.
+2
+Methodology
+2.1
+Cold Start for Search
+Typically, the core of the cold-start problem lies in exploring how
+to predict user interaction behaviors for new items. In this work,
+we focus on the click-through rate (CTR) prediction task and inves-
+tigate how to improve the performance of cold-start tasks through
+the synergy between Semantic IDs generated by large search mod-
+els and collaborative signals. In this section, we first formally define
+the cold-start problem, then elaborate on the proposed COINS
+framework in detail. Formally, given a user U (user profile 𝑈𝑝), the
+user’s current search query Q, and the user’s historical behavior
+sequence 𝐻𝑈, cross features 𝐶, each sample in the CTR predic-
+tion task can be represented as 𝐼= (𝑖𝑑,𝑋), which includes a label
+𝑦∈{0, 1} (indicating whether the sample is clicked by the user):
+id denotes the random hash ID of the item, and 𝑋represents the
+multi-dimensional feature set of the item (including content fea-
+tures, metadata features, etc.). The goal of cold-start CTR estimation
+is to learn a discriminative model 𝑓to output the click probability
+of the sample:
+ˆ𝑦= 𝑓(𝑖𝑑,𝑋,𝑄, 𝐻𝑈,𝑈𝑝,𝐶;𝜃)
+(1)
+where 𝜃denotes the parameters of model f. The above model is
+optimized via the binary cross-entropy (BCE) loss:
+L𝐵𝐶𝐸= −1
+𝑁
+𝑁
+∑︁
+𝑖=1
+[𝑦𝑖log ˆ𝑦𝑖+ (1 −𝑦𝑖) log(1 −ˆ𝑦𝑖)]
+(2)
+Specifically, compared with warm items (items with sufficient in-
+teraction data), cold-start items suffer from scarce user interaction
+records, leading to the absence of statistical features (e.g., click
+frequency, conversion rate) and partial ID-related representations.
+This further results in difficulties in model convergence during
+training.
+2.2
+RQ-OPQ Encodings
+RQ-OPQ encoding is a core technical innovation proposed in Kuaishou’s
+end-to-end generative framework OneSearch for e-commerce search.
+This encoding method combines the advantages of Residual Quan-
+tization (RQ) and Optimized Product Quantization (OPQ), mod-
+eling item features from two dimensions: vertically (hierarchical
+semantics) and horizontally (unique features). Specifically, its imple-
+mentation process is as follows: First, a two-tower vector retrieval
+model optimized for content features and conversion signals is
+trained to generate the initial embedding of each item. Second,
+based on this initial embedding, the RQ-Kmeans algorithm is ap-
+plied to perform three-layer hierarchical encoding, which primarily
+focuses on capturing the core attributes and shared semantic in-
+formation of items. Third, for the residual information remaining
+after RQ encoding, the OPQ algorithm is used to conduct two-layer
+quantization encoding—this step is specifically designed to capture
+and quantize the differentiated fine-grained features of items. Fi-
+nally, each item is represented by a five-layer semantic ID (sid):
+𝐼𝑠𝑖𝑑= (𝑅𝑄1, 𝑅𝑄2, 𝑅𝑄3,𝑂𝑃𝑄1,𝑂𝑃𝑄2).
+2.3
+Semantic Ids Enhanced Item Representation
+In this section, we elaborate in detail on COINS, a cold-start item
+representation enhancement framework based on semantic IDs.
+
+
+COINS: SeMantiC Ids Enhanced COld Item RepresentatioN for Click-through Rate Prediction in E-commerce SearchConference acronym ’XX, June 03–05, 2018, Woodstock, NY
+RQ2 
+emb
+Embedding Lookup
+RQ3 
+emb
+RQ1 
+emb
+Adaptive 
+gate
+raw iid emb
+RQ1
+RQ2
+RQ3
+OPQ
+Raw iid
+common 
+features
+item
+features
+cross 
+features
+common emb
+item feature 
+emb
+Concat & DNN
+cross emb
+Fuse
+RQ emb
+item emb
+opq emb
+opq emb
+opq emb
+1 2 3 … N
+OPQ1
+ANN item emb
+-
+=
+RQ1 encoding 
+emb
+L1 item emb
+L1 item emb
+1 2 3 … N
+1 2 3 … N
+-
+=
+RQ2 encoding 
+emb
+L2 item emb
+L2 item emb
+RQ3 encoding 
+emb
+RES item emb
+-
+=
+RQ1
+RQ2
+RQ3
+OPQ2
+RQ-OPQ 
+Encoding
+\\sg
+\\sg
+Figure 2: The framework of COINS.
+This framework comprises two core modules: the first is an adaptive
+transfer and alignment mechanism between RQ encoding and item
+IDs, which aims to learn coarse-grained representations with both
+semantic information and collaborative signals; the second is an
+item discriminative information learning module based on OPQ
+encoding, through which fine-grained discriminative information
+is injected into item representations, as illustrated in Figure 2.
+2.3.1
+Adaptive Information Transfer via RQ Encoding. RQ encoding
+carries convergent semantic information of items, and different
+items may share partial codebooks. Meanwhile, the random hash
+IDs of items have accumulated abundant collaborative signals dur-
+ing the continuous incremental training of the original CTR model.
+Therefore, we perform bidirectional transfer between the collab-
+orative signals carried by item IDs and the semantic information
+contained in RQ encoding. Specifically, we first map the RQ encod-
+ing of items and item IDs to the same dimensional space, laying
+the foundation for subsequent information transfer:
+𝐼𝑅𝑄
+𝑒𝑚𝑏= 𝐹𝑢𝑠𝑒(𝑅𝑄1, 𝑅𝑄2, 𝑅𝑄3)
+(3)
+Notably, warm items have sufficient user interaction records, while
+the interaction data of cold-start items is extremely sparse. Thus,
+when performing item representation fusion and alignment, we
+design an adaptive transfer mechanism: specifically, we input con-
+text features, user profiles, and partial conversion features of items
+into an adaptive transfer gate network, which outputs correspond-
+ing weights T𝑔to achieve adaptive fusion and alignment between
+item IDs and item RQ codebooks. Additionally, we dynamically de-
+termine the effective weights of different representations through
+context 𝐶, user profile 𝑈𝑝, and item features 𝑋, ultimately generat-
+ing an item representation suitable for the current request:
+T𝑔= 𝐷𝑁𝑁(𝐶,𝑈𝑝,𝑋)
+(4)
+𝐼𝑐
+𝑒𝑚𝑏= T𝑔∗𝐼𝑖𝑑
+𝑒𝑚𝑏+ (1 −T𝑔) ∗𝐼𝑅𝑄
+𝑒𝑚𝑏
+(5)
+Meanwhile, the entire transfer process is constrained by the fol-
+lowing loss function: this process also introduces a transfer gate
+to ensure the directionality of information transfer. Specifically,
+for warm item representations, this mechanism tends to preserve
+the collaborative signal distribution of item IDs while transferring
+their collaborative information to RQ representations; for cold-start
+item representations, it injects the collaborative signals obtained
+through convergent transfer in RQ into item IDs, while preserving
+the semantic information distribution of their RQ encoding:
+L𝑡𝑟𝑎𝑛𝑠= T𝑔∗𝐾𝐿(𝑠𝑔(𝐼𝑖𝑑
+𝑒𝑚𝑏), 𝐼𝑅𝑄
+𝑒𝑚𝑏) + (1 −T𝑔)𝐾𝐿(𝐼𝑖𝑑
+𝑒𝑚𝑏,𝑠𝑔(𝐼𝑅𝑄
+𝑒𝑚𝑏)) (6)
+where 𝐾𝐿denotes KL divergence, 𝑠𝑔denotes stop gradient opera-
+tion.
+2.3.2
+Enhancing Item Differentiated Information with OPQ Encod-
+ing. OPQ encoding captures the differentiated features of items
+after hierarchical quantization, and can inject fine-grained infor-
+mation into item representations to highlight the uniqueness of
+different items. To further enhance the differentiated information
+representation capability of OPQ encoding, we introduce a con-
+trastive learning strategy. First, based on the similarity of OPQ
+codebook vectors, we select the Top-10 similar OPQ encodings as
+candidate positive OPQ encodings for each OPQ encoding. During
+the training phase, for any item 𝑖, items with candidate positive
+OPQ encodings of item 𝑖+ are filtered from the current training
+batch and designated as positive samples; meanwhile, the remain-
+ing items and additional randomly selected items 𝑖_ are used as
+negative samples to ensure significant differences between posi-
+tive and negative samples. We optimize OPQ encoding using the
+contrastive InfoNCE loss function. Assuming the positive sample
+set of item 𝑖is 𝑃, the negative sample set is 𝑁, the contrastive loss
+function is defined as:
+L𝑐𝑜𝑛𝑡= −log
+©­­
+«
+Í
+𝑖+∈𝑃exp
+
+sim(𝐼𝑖, 𝐼𝑖+)/𝜏
+
+Í
+𝑖+∈𝑃exp  sim(𝐼𝑖, 𝐼𝑖+)/𝜏 + Í
+𝑖−∈𝑁exp (sim(𝐼𝑖, 𝐼𝑖−)/𝜏)
+ª®®
+¬
+(7)
+where 𝑠𝑖𝑚(.) is OPQ embedding consine similarity of item pair
+, 𝜏is the temperature parameter. Finally, we obtained the item
+representation 𝐼𝑓
+𝑒𝑚𝑏to replace the 𝐼𝑖𝑑
+𝑒𝑚𝑏in the subsequent pipeline:
+𝐼𝑓
+𝑒𝑚𝑏= 𝐼𝑐
+𝑒𝑚𝑏+ 𝜆∗𝐼𝑂𝑃𝑄
+𝑒𝑚𝑏
+(8)
+The entire model is optimized through the following loss func-
+tion:
+L𝑡𝑜𝑡𝑎𝑙= L𝐵𝐶𝐸+ 𝛼1 ∗L𝑡𝑟𝑎𝑛𝑠+ 𝛼2 ∗L𝑐𝑜𝑛𝑡
+(9)
+3
+Experiment
+3.1
+Dataset
+We collected 91 days of real user logs from an online e-commerce
+platform, with the first 90 days for training and the last day for
+testing. The test set contains 500 million samples, and items are
+categorized by the following criteria: warm items are defined as
+those with clicks >3 or orders >0 within 7 days; cold-start items
+are those with impressions <200 within 7 days. This results in 400
+million cold-start samples and 100 million warm samples, whose
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zhao et al.
+Table 1: The offline performance of COINS.
+All
+Warm
+Cold
+AUC
+GAUC
+AUC
+GAUC
+AUC
+GAUC
+SPM_SID
+0.8663
+0.6322
+0.8649
+0.6319
+0.8400
+0.6203
+DAS
+0.8679
+0.6352
+0.8689
+0.6357
+0.8426
+0.6237
+SaviorRec
+0.8687
+0.6360
+0.8695
+0.6377
+0.8435
+0.6249
+COINS
+0.8725
+0.6394
+0.8741
+0.6405
+0.8528
+0.6301
+distribution aligns with the Pareto Principle — 20% of items account
+for 80% of the traffic.
+3.2
+Experiment Setup
+3.2.1
+Metrics. We use AUC and GAUC to evaluate the performance
+of CTR ranking models.
+3.2.2
+Implementation Details. To ensure experimental reproducibil-
+ity, the hyperparameter settings mentioned in the method section
+are listed below: Hyperparameters𝛼1 = 0.01 and 𝛼2 = 0.05 are set
+to control the consistency of the numerical magnitudes of the three
+loss functions; the temperature coefficient 𝜏= 0.1 is used to ensure
+distribution smoothness; the OPQ representation fusion coefficient
+𝜆is set to 0.5.
+3.2.3
+Baselines. Since our proposed COINS framework is based
+on semantic ids to enhance the representation of cold start items,
+we have selected some models that are also based on semantic ids
+or cold start as our baseline:
+SPM_SID [5]: hashing sub fragments of semantic ids sequences
+to adaptively obtain the semantics of different items.
+DAS [11]: Through joint training of semantic collaborative mod-
+els, use contrastive learning to synchronously optimize the quanti-
+zation and alignment process of semantic ids and item id.
+SaviorRec [10]: A cold start model based on multimodal infor-
+mation and semantic ids collaborative training to enhance item
+representation.
+3.3
+Offline Performance
+To verify the effectiveness of COINS in the click-through rate (CTR)
+prediction task, this section compares the performance of COINS
+with existing state-of-the-art methods (SPM_SID, DAS, SaviorRec)
+through offline experiments, as shown in Table 1. In the full-sample
+(All) scenario, COINS achieves the best performance in both AUC
+(+0.38pp) and GAUC (+0.34pp). This proves that COINS’s overall
+ranking ability and resistance to user bias are significantly supe-
+rior to baselines. In the warm item scenario, COINS still maintains
+a leading advantage, which indicates that even in scenarios with
+sufficient user interaction data, COINS can still optimize the rep-
+resentation quality of warm items and further improve prediction
+accuracy through the fusion of collaborative signals and semantic
+information in RQ-OPQ encodings. The cold-start item scenario
+is the core advantage area of COINS, The improvement margin is
+much higher than that in the full-sample and warm item scenarios.
+This result verifies the effectiveness of COINS’s design—by leverag-
+ing the discriminative information learning of OPQ encoding and
+the adaptive transfer of RQ encoding, COINS effectively solves the
+problem of scarce collaborative signals for cold-start items, making
+Table 2: The ablation study resluts of COINS.
+All
+Warm
+Cold
+AUC
+GAUC
+AUC
+GAUC
+AUC
+GAUC
+only sid
+0.8650
+0.6312
+0.8642
+0.6305
+0.8391
+0.6192
+iid+sid
+0.8671
+0.6331
+0.8681
+0.6335
+0.8401
+0.6215
+iid+RQ
+0.8702
+0.6371
+0.8725
+0.6378
+0.8479
+0.6277
+iid+OPQ
+0.8683
+0.6345
+0.8706
+0.6368
+0.8455
+0.6257
+COINS
+0.8725
+0.6394
+0.8741
+0.6405
+0.8528
+0.6301
+Table 3: The Online A/B testing resluts of COINS.
+All
+Cold
+Buyer
+Order Volume
+Buyer
+Order Volume
+base
+-
+-
+-
+-
+COINS
++1.720%
++2.230%
++3.512%
++9.639%
+it the current State-of-the-Art (SOTA) method for cold-start CTR
+prediction tasks.
+3.4
+Ablation Study
+To verify the function of each module in COINS, we conducted
+sufficient ablation experiments, and the experimental results are
+shown in the Table 2. Firstly, we directly replace the original ran-
+dom ID in base model by RQ-OPQ encodings (short for only sid).
+Although it achieves comparable overall performance to the base
+model, it exhibits inferior performance on warm items compared
+to the original model due to collaborative signal misalignment. Sec-
+ondly, we attempted to preserve random IDs and treat SIDs as a
+type of ID feature (short for iid+SID). This variant has a slight
+improvement compared to the base model, as the introduction of
+SID brings additional information increment, but it is still far in-
+ferior to the COINS model. Finally, we ablated the two modules
+of COINS (short for iid+RQ, iid+OPQ). Both variants can achieve
+significant benefits compared to the base model. By integrating the
+advantages of these two variants, COINS simultaneously learns the
+discriminative information and convergent semantic information
+of items, ultimately achieving the optimal performance.
+3.5
+Online A/B Testing
+To verify the efficiency of COINS’s online platform, we compared
+it with an online ranking model in the e-commerce mall search
+scenario through rigorous A/B testing. We conducted a 14 day
+experiment under real online traffic, with 5 days being the AA
+period and the remaining 9 days being the AB period. The base
+group and exp group were randomly assigned 7% of the overall
+real online traffic. The experimental results are shown in the Table
+3. Our experimental focus indicators are the buyers and order
+volume, and we also report the relevant indicators in the cold
+start scenario in the Table 3. Experiments have shown that COINS
+can increase the overall number of buyers by 1.72% and the order
+volume by 2.23%. Simultaneously, COINS significantly improves
+the cold start scenario (buyer number +3.512% and order volume
++9.639%) in mall ecommerce search.
+
+
+COINS: SeMantiC Ids Enhanced COld Item RepresentatioN for Click-through Rate Prediction in E-commerce SearchConference acronym ’XX, June 03–05, 2018, Woodstock, NY
+4
+Conclusion
+To address cold-start challenges in e-commerce, we propose COINS:
+it fuses item ID collaboration and semantics RQ via adaptive transfer,
+and enhances item differentiation with OPQ contrastive learning.
+Offline experiments and online A/B testing confirm its effectiveness
+(improving buyer +1.72%, order volume +2.23%). In future work, we
+will explore the fusion of multimodal semantics and collaborative
+signals to adapt to more complex cold-start scenarios.
+References
+[1] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong
+Xiao, Bowen Xue, Xuxin Zhang, Ying Yang, Huangyu Dai, Xing Xu, Tong Zhao,
+Mingcan Peng, Xiaoyang Zheng, Chao Wang, Qihang Zhao, Zhixin Zhai, Yang
+Zhao, Bochao Liu, Jingshan Lv, Xiao Liang, Yuqing Ding, Jing Chen, Chenyi
+Lei, Wenwu Ou, Han Li, and Kun Gai. 2025. OneSearch: A Preliminary Explo-
+ration of the Unified End-to-End Generative Framework for E-commerce Search.
+arXiv:2509.03236 [cs.IR] https://arxiv.org/abs/2509.03236
+[2] Hao Chen, Zefan Wang, Feiran Huang, Xiao Huang, Yue Xu, Yishi Lin, Peng He,
+and Zhoujun Li. 2022. Generative Adversarial Framework for Cold-Start Item
+Recommendation. In Proceedings of the 45th International ACM SIGIR Conference
+on Research and Development in Information Retrieval (Madrid, Spain) (SIGIR
+’22). Association for Computing Machinery, New York, NY, USA, 2565–2571.
+doi:10.1145/3477495.3531897
+[3] Menglin Kong, Li Fan, Shengze Xu, Xingquan Li, Muzhou Hou, and Cong Cao.
+2024. Collaborative Filtering in Latent Space: A Bayesian Approach for Cold-
+Start Music Recommendation. In Advances in Knowledge Discovery and Data
+Mining: 28th Pacific-Asia Conference on Knowledge Discovery and Data Mining,
+PAKDD 2024, Taipei, Taiwan, May 7–10, 2024, Proceedings, Part V (Taipei, Taiwan).
+Springer-Verlag, Berlin, Heidelberg, 105–117. doi:10.1007/978-981-97-2262-4_9
+[4] Yunze Luo, Yuezihan Jiang, Yinjie Jiang, Gaode Chen, Jingchi Wang, Kaigui
+Bian, Peiyi Li, and Qi Zhang. 2025. Online Item Cold-Start Recommendation
+with Popularity-Aware Meta-Learning. In Proceedings of the 31st ACM SIGKDD
+Conference on Knowledge Discovery and Data Mining V.1 (Toronto ON, Canada)
+(KDD ’25). Association for Computing Machinery, New York, NY, USA, 927–937.
+doi:10.1145/3690624.3709336
+[5] Anima Singh, Trung Vu, Nikhil Mehta, Raghunandan H. Keshavan, Maheswaran
+Sathiamoorthy, Yilin Zheng, Lichan Hong, Lukasz Heldt, Li Wei, Devansh Tandon,
+Ed H. Chi, and Xinyang Yi. 2024. Better Generalization with Semantic IDs: A
+Case Study in Ranking for Recommendations. In Proceedings of the 18th ACM
+Conference on Recommender Systems, RecSys 2024, Bari, Italy, October 14-18, 2024.
+ACM, 1039–1044. doi:10.1145/3640457.3688190
+[6] Manasi Vartak, Arvind Thiagarajan, Conrado Miranda, Jeshua Bratman, and Hugo
+Larochelle. 2017. A meta-learning perspective on cold-start recommendations for
+items. In Proceedings of the 31st International Conference on Neural Information
+Processing Systems (Long Beach, California, USA) (NIPS’17). Curran Associates
+Inc., Red Hook, NY, USA, 6907–6917.
+[7] Yinwei Wei, Xiang Wang, Qi Li, Liqiang Nie, Yan Li, Xuanping Li, and Tat-Seng
+Chua. 2021. Contrastive Learning for Cold-Start Recommendation. In Proceedings
+of the 29th ACM International Conference on Multimedia (Virtual Event, China)
+(MM ’21). Association for Computing Machinery, New York, NY, USA, 5382–5390.
+doi:10.1145/3474085.3475665
+[8] Xiaolong Xu, Hongsheng Dong, Lianyong Qi, Xuyun Zhang, Haolong Xiang,
+Xiaoyu Xia, Yanwei Xu, and Wanchun Dou. 2024. CMCLRec: Cross-modal Con-
+trastive Learning for User Cold-start Sequential Recommendation. In Proceedings
+of the 47th International ACM SIGIR Conference on Research and Development in In-
+formation Retrieval (Washington DC, USA) (SIGIR ’24). Association for Computing
+Machinery, New York, NY, USA, 1589–1598. doi:10.1145/3626772.3657839
+[9] Xiaolong Xu, Hongsheng Dong, Haolong Xiang, Xiyuan Hu, Xiaoyong Li, Xiaoyu
+Xia, Xuyun Zhang, Lianyong Qi, and Wanchun Dou. 2025. C2lRec: Causal
+Contrastive Learning for User Cold-start Recommendation with Social Variables.
+ACM Trans. Inf. Syst. 43, 6, Article 143 (Sept. 2025), 28 pages. doi:10.1145/3711858
+[10] Yining Yao, Ziwei Li, Shuwen Xiao, Boya Du, Jialin Zhu, Junjun Zheng, Xiangheng
+Kong, and Yuning Jiang. 2025. SaviorRec: Semantic-Behavior Alignment for Cold-
+Start Recommendation. arXiv preprint arXiv:2508.01375 (2025).
+[11] Wencai Ye, Mingjie Sun, Shaoyun Shi, Wang Peng, Wenjin Wu, and Peng Jiang.
+2025. DAS: Dual-Aligned Semantic IDs Empowered Industrial Recommender
+System. CoRR abs/2508.10584 (2025). arXiv:2508.10584 doi:10.48550/ARXIV.2508.
+10584
+[12] Ziyi Zhuang, Hanwen Du, Hui Han, Youhua Li, Junchen Fu, Joemon M. Jose, and
+Yongxin Ni. 2025. Bridging the Gap: Teacher-Assisted Wasserstein Knowledge
+Distillation for Efficient Multi-Modal Recommendation. In Proceedings of the
+ACM on Web Conference 2025 (Sydney NSW, Australia) (WWW ’25). Association
+for Computing Machinery, New York, NY, USA, 2464–2475. doi:10.1145/3696410.
+3714852
+Received 29 September 2025

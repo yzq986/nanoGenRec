@@ -984,3 +984,69 @@ DOS 针对 SID 学习的两个基本问题: (1) **Codebook-Generation Gap** — 
 3. **概率建模的额外好处**: GMM 的 per-cluster 方差信息可以用于 confidence estimation — 高方差 cluster 的 SID 不确定性高，可以传递给 NTP 做 uncertainty-aware training
 4. 当前 tokenizer 已确认 (MLP-FSQ h=64)，且 EXP-015 显示 irreducible loss 已接近 → tokenizer 改进的绝对收益可能有限
 5. **优先级低于 RL 对齐** (EXP-037/038/039) — 等 RL 链路稳定后，tokenizer 改进作为下一轮突破口
+
+---
+
+## IDEA-coins-0: COINS — RQ + OPQ 两阶段 SID 冷启动协同转移
+
+**优先级**: P2
+**来源**: COINS (arxiv 2510.12604, WWW 2026)
+**状态**: 待讨论 — 主场景为 CTR prediction 的 cold-item representation enhancement, 我们是 retrieval 端; 但 "RQ coarse 共享 + OPQ fine 差异化" 的两阶段思路可借鉴
+
+### 核心思想
+
+COINS 针对电商搜索中**冷启动 item 缺协同信号的 Matthew 效应**, 提出一个 RQ+OPQ 融合的 SID 表征方案。
+
+**核心 insight**: 单纯 "content-collaborative 对齐" 忽略了 **asymmetry** — 协同信号天然是粗粒度的 (按 item popularity 分层), content 信号天然是细粒度的 (每 item 独特)。强制对齐会模糊个体差异。
+
+**RQ-OPQ 两阶段编码**:
+1. **RQ (Residual Quantization) 阶段 — 共享协同信号转移**: RQ codes 捕获 items 之间的**共性结构**, 协同信号 (从高热 item 学到) 通过共享的粗粒度 codeword propagate 给冷 item
+2. **OPQ (Optimized Product Quantization) 阶段 — 差异化信息**: OPQ codes 编码**每 item 独特的精细信息**, 保留个体差异性
+
+两阶段对齐 = 冷 item 继承协同知识 + 保持个体特征。
+
+**在线 A/B (WWW 2026)**:
+- item CTR **+1.66%**
+- buyers **+1.57%**  
+- order volume **+2.17%**
+
+### 与当前项目的关联
+
+**背景复杂性**:
+- 我们 **IDEA-sid-0 (纯 OPQ SID)** 已 ❌ 关闭 — 纯 OPQ 在 behavior 质量上输给 MLP-FSQ (EXP-004)
+- COINS 是 **RQ + OPQ 叠加使用**, 不是纯 OPQ。RQ 层专门给冷启动 item 做协同信号传递, 不承担全 SID 结构
+
+**可借鉴角度**:
+- 对冷 item 的 representation 增强思路: 用 shared coarse coding (我们的 L0 KMeans) 做协同转移, 用 fine-grained coding (我们的 L2 MLP-FSQ) 做差异化 — 本质上我们现有 tokenizer 已是层级的, COINS 只是命名化了这个 分层的 collaborative-vs-differentiation 角色
+- **Cold-item 数据分布下的评估方法**: 单独 report cold item 子集的 Recall/CTR, 而不只是全体平均 — 我们 eval 还没做这个切分
+
+**差异**:
+- COINS 是 CTR prediction 场景 (ranking), 我们是 generative retrieval
+- COINS 有独立的 collaborative embedding 源 (user-item 交互图), 我们没有
+
+### 实验设计草案
+
+**P2 存档, 若未来做 cold-start 验证**:
+
+**Phase 1 — Cold item subset evaluation (零成本, 今天可做)**:
+1. 从 eval 数据按 interaction count 切分: cold (<5 interactions) / warm (5-50) / hot (>50)
+2. 对 EXP-020 checkpoint 分别报告 R@500 / R@10
+3. 预期: 现有 MLP-FSQ tokenizer 下, cold item recall 显著低于 hot item
+
+**Phase 2 — 只有在 Phase 1 发现 cold item 显著差距时才执行**:
+- 探索在现有 RKMeans 两层 + MLP-FSQ 第三层基础上, L0 增加"冷启动专属协同 code"的方案
+- 或者考虑引入 collaborative embedding 独立信号 (类似 IDEA-flexcode-0 的双码本)
+
+### 关键问题
+
+1. **应用场景错配**: COINS 是 CTR 排序端, 我们是 retrieval 端。CTR 场景里 item representation 与 user representation 做点积, retrieval 场景里 SID 是 generation target。角色不同, 移植成本高
+2. **与 IDEA-flexcode-0 (FlexCode 双码本 CF+Semantic) 重叠**: FlexCode 已是双码本分别编 CF/semantic, 路线相似。COINS 是 RQ+OPQ 同一 SID 序列的两阶段, FlexCode 是两个独立 codebook。前者更紧凑, 后者更灵活
+3. **与 IDEA-gatesid-0 (刚添加) 互补**: GateSID 在 representation 层做 per-item gating, COINS 在 tokenizer 层做 two-stage encoding。两者可组合
+4. **Cold item 定义**: interaction count 阈值需要根据我们数据分布决定
+
+### 相关 idea
+
+- IDEA-sid-0 (纯 OPQ): ❌ 已关闭, COINS 的 RQ-OPQ 叠加是不同路线
+- IDEA-flexcode-0 (FlexCode 双码本): 独立 CF + Semantic codebooks, 与 COINS 合一 SID 路线区别
+- IDEA-gatesid-0 (GateSID): representation 层 gating, 可组合
+- IDEA-adasid-0 (AdaSID Kuaishou): 自适应 collision 处理冷 item, 另一角度
