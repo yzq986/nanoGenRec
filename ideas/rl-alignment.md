@@ -782,3 +782,59 @@ ReCast 对我们的映射：
 - IDEA-sgrec-0 (A2PO): 思路相似 (负例加权)，ReCast 更激进 (只留一个负例)
 - IDEA-gpr-0 (HEPO): 层级 reward，ReCast 层级 ranking
 - EXP-026 GRPO/ECPO 踩坑记录 (CLAUDE.md 中已记): 本 idea 是对该场景的系统性修复
+
+---
+
+## IDEA-raddpo-0: RAD-DPO — Robust Adaptive Denoising DPO for SID 生成式检索
+
+**优先级**: P1
+**来源**: RAD-DPO (JD.com, arxiv 2602.23964, Feb 2026)
+**状态**: 待讨论 — 三个子改造可独立集成到现有 DPO pipeline
+
+### 核心思想
+
+RAD-DPO 识别标准 DPO 在 SID 生成式检索上的**三个结构性缺陷**，每个有对应修正。JD.com 核心搜索 A/B: **UCVR +0.34%**。
+
+**缺陷 1 — 共享 prefix 的 gradient 冲突**: SID 层级 (L0→L1→L2), 相似 item 共享前缀。DPO 同时惩罚 preferred 和 rejected 共享 prefix → 梯度冲突, 破坏 hierarchy。
+**修正**: **Token-Level Gradient Detachment** — 对共享 prefix 位置, rejected 路径做 stop-gradient, 只让 preferred 贡献梯度。
+
+**缺陷 2 — Noisy pseudo-negatives**: user click log 的 "未点击=negative" 可能是曝光位置抑制的伪负例。DPO 等权处理 → 被污染。
+**修正**: **Similarity-based Dynamic Reward Weighting** — 按 "rejected vs ground-truth 的 embedding cosine" 动态缩放 loss 权重; 相似度高 → 降权。
+
+**缺陷 3 — Multi-label squeezing**: 电商多正例 (多个 valid items), vanilla DPO 把概率集中到单个 chosen → 挤压其他 co-valid。
+**修正**: **Multi-Label Global Contrastive + Global SFT Loss** — 整个 Y_pos 集合 vs. negative 集合做全局对比, 搭配 global SFT loss 覆盖所有正例。
+
+### 与当前项目的关联
+
+直接针对我们 DPO 踩坑:
+
+| 我们踩坑 | RAD-DPO 对应修正 |
+|---------|---------------|
+| EXP-018 hard DPO PPL→50K+ forgetting | Gradient detachment 保护 prefix |
+| EXP-026 GRPO sparse reward, std≈0 | Similarity weighting 给弱信号缩放 |
+| EXP-020 只关注 top-1 reward | Multi-label contrastive 覆盖多正例 |
+
+可与 IDEA-align3-0 (Progressive DPO)、IDEA-onerec-3 (ECPO) 正交叠加。与 IDEA-recast-0 (ReCast) 部分重叠: ReCast 只留 i+/i- 两极, RAD-DPO 覆盖全部 Y_pos。
+
+### 实验设计草案
+
+**Phase 1** — Gradient Detachment (最易, 1 天): `rl/dpo.py::compute_sid_logprobs` 对共享 prefix position 的 rejected 路径做 detach, 在 EXP-020 baseline 上 relaxed re-train, 对比 PPL/R@K 看是否降低 forgetting。
+
+**Phase 2** — Similarity-based Reward Weighting: 用 Qwen3 embedding cosine 计算 loss weight `1 - max(0, cos - threshold)`, 扫 threshold {0.5, 0.7, 0.9}。
+
+**Phase 3** — Multi-Label Global Contrastive: 从 session-level 数据构造 Y_pos 多正例, 加 global contrastive loss; 加权 `L = L_DPO + α · L_contrastive`。
+
+### 关键问题
+
+1. Gradient detach 要精确匹配共享 prefix, 不能误 detach diverge 后的 token
+2. Similarity threshold 选择 — 太低误伤真负例, 太高无效
+3. Multi-label 数据可得性 — 需要 session-level 多正例重新导出
+4. 与 ReCast 二选一或组合: 稀疏 reward 场景 ReCast 更激进, dense reward RAD-DPO 更优
+
+### 相关 idea
+
+- IDEA-align3-0 (Progressive DPO): curriculum, 正交
+- IDEA-onerec-3 (ECPO): clipping, 正交
+- IDEA-recast-0 (ReCast): multi-label vs boundary 对比
+- IDEA-sgrec-0 (A2PO): 负例 gating 思路类似
+- IDEA-rpo-0 (RPO): global SFT loss 一致

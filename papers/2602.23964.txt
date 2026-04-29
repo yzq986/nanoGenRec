@@ -1,0 +1,919 @@
+RAD-DPO: Robust Adaptive Denoising Direct Preference
+Optimization for Generative Retrieval in E-commerce
+Zhiguo Chen∗
+JD.com
+Beijing, China
+chenzhiguo22@jd.com
+Guohao Sun∗
+Peking University
+Beijing, China
+sun_gh@stu.pku.edu.cn
+Yiming Qiu†
+JD.com
+Beijing, China
+qiuyiming3@jd.com
+Xingzhi Yao
+JD.com
+Beijing, China
+yaoxingzhi1@jd.com
+Mingming Li
+Institute of Information Engineering,
+Chinese Academy of Sciences
+Beijing, China
+limingming@iie.ac.cn
+Huimu Wang†
+JD.com
+Beijing, China
+wanghuimu1@jd.com
+Yangqi Zhang
+JD.com
+Beijing, China
+zhangyangqi1@jd.com
+Songlin Wang
+JD.com
+Beijing, China
+wangsonglin3@jd.com
+Sulong Xu
+JD.com
+Beijing, China
+xusulong@jd.com
+Abstract
+Generative Retrieval (GR) is rapidly transforming e-commerce
+search by replacing traditional multi-stage pipelines with the au-
+toregressive decoding of structured Semantic IDs (SIDs). Despite
+this architectural efficiency, aligning GR models with nuanced, real-
+world user preferences remains a critical challenge. While Direct
+Preference Optimization (DPO) offers an efficient alignment solu-
+tion, its direct application to structured SIDs suffers from three
+limitations: (i) it penalizes shared hierarchical prefixes, causing
+gradient conflicts; (ii) it is vulnerable to noisy pseudo-negatives
+from implicit feedback; and (iii) in multi-label queries with multiple
+relevant items, it exacerbates a probability "squeezing effect" among
+valid candidates. To address these issues, we propose RAD-DPO,
+which introduces token-level gradient detachment to protect prefix
+structures, similarity-based dynamic reward weighting to mitigate
+label noise, and a multi-label global contrastive objective integrated
+with global SFT loss to explicitly expand positive coverage. Ex-
+tensive offline evaluations and large-scale online A/B testing on
+JD.com’s core search engine demonstrate that RAD-DPO achieves
+significant improvements in both retrieval precision and training ef-
+ficiency, proving its robustness for massive industrial deployments.
+CCS Concepts
+• Information systems →Novelty in information retrieval;
+Information retrieval; Retrieval models and ranking;
+∗Equal contribution.
+†Corresponding author
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+SIGIR ’26, Melbourne, VIC, Australia
+© 2026 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2599-9/2026/07
+https://doi.org/10.1145/3805712.3808512
+Keywords
+Preference alignment, DPO, Generative retrieval
+ACM Reference Format:
+Zhiguo Chen, Guohao Sun, Yiming Qiu, Xingzhi Yao, Mingming Li, Huimu
+Wang, Yangqi Zhang, Songlin Wang, and Sulong Xu. 2026. RAD-DPO: Ro-
+bust Adaptive Denoising Direct Preference Optimization for Generative
+Retrieval in E-commerce. In Proceedings of the 49th International ACM SIGIR
+Conference on Research and Development in Information Retrieval (SIGIR
+’26), July 20–24, 2026, Melbourne, VIC, Australia. ACM, New York, NY, USA,
+6 pages. https://doi.org/10.1145/3805712.3808512
+1
+Introduction
+The landscape of Information Retrieval is experiencing a funda-
+mental paradigm shift towards end-to-end Generative Retrieval
+(GR) [13, 20, 2, 1, 5, 32, 31, 6, 11]. Unlike traditional multi-stage
+ranking pipelines, GR simplifies the architecture by formulating
+item retrieval directly as the autoregressive generation of struc-
+tured Semantic IDs (SIDs). To represent the vast corpus of items
+within this generative framework, techniques such as clustering
+(e.g., DSI [23] and NCI [24]) and quantization (e.g., RQ-Kmeans
+[5] and RQ-VAE [20]) have proven highly effective in constructing
+these SIDs. However, while the structural foundation of the ID
+space is well-established, robustly aligning these GR models with
+nuanced and dynamic user preferences remains a critical challenge.
+To address this alignment bottleneck, Direct Preference Opti-
+mization (DPO) has emerged as the prevailing paradigm [19, 16, 25,
+29, 28, 12, 27, 2, 5]. By circumventing the complex reward model
+training required in traditional reinforcement learning approaches,
+DPO offers a more direct and stable pathway to optimize genera-
+tion probabilities. Driven by the demands of large-scale systems,
+the DPO framework has recently undergone significant evolution.
+On one hand, researchers have developed reference-free variants
+[15, 9] to substantially improve computational efficiency. On the
+other hand, list-wise extensions [4, 7, 1] have been introduced to
+accommodate complex multi-negative scenarios, moving beyond
+arXiv:2602.23964v2  [cs.IR]  28 Apr 2026
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Zhiguo Chen et al.
+Standard DPO Limitations(Current Paradigm)
+Model
+[Cat A
+Sub B
+Item ID 1]
+[Cat A
+Sub B
+Item ID 2]
+Positive Item 𝑦!:
+Negative Item 𝑦":
+2.Data-driven Suppression: Rigid contrast 
+forces suppression of valid noisy items.
+3.Scope Suppression: Inefficient pairwise 
+comparison limits global view.
+Pairwise Contrast
+𝑦!
+𝑦"
+vs
+Structured Semantic IDs(SIDs):
+Proposed RAD-DPO Framework
+A. Multi-label Global Contrast(MLGC)
+B. Token-Level Gradient Detachment(TLGD)
+C. Representation-based Dynamic Reward Weighting(RDRW)
+𝑦!
+RAD-DPO
+Framework
+Shared prefix
+Pseudo-negative
+(Noise)
+1.Structural Suppression: Indiscriminate penalty on shared correct 
+prefix leads to gradient conflict.
+Unique suffix
+Noisy Data
+User
+query
+Global SFT Loss
+Softmax Global Preference Contrast
+𝒴𝓅ℴ𝓈= {𝑦$%, 𝑦$&, … }
+𝒴𝓃ℯℊ= {𝑦*%, 𝑦*&, … }
+ℒ𝒮ℱ𝒯= −- log 𝜋𝐲𝐱
+ℒ𝒫ℒ(Softmax over negatives)
+[Token 1…Token k]
+[Token k+1…]
+[Token 1…Token k]
+[Token k+1’…]
+Prefix of length k
+Positive y5:
+Negative y6:
+Prefix Masking: Truncates 
+negative gradients on 
+redundant prefixes, focusing 
+on divergence
+t ≤k
+t > k
+Stop-Gradient(SG):Gradient only affects tokens from t > k
+0.5
+1.0
+Q25
+Q75
+Hidden State
+h(y5, x)
+Hidden State
+h(y6, x)
+Cosine
+Similarity:
+sim(y", y#)
+Reweighted Contrast Term
+w(sim) A ( B𝑟+(x, 𝑦$) - B𝑟+(x, 𝑦*))
+Weight
+Dynamic Weight
+Function w(sim)
+w
+Quantile Anchors
+Adaptively filters noise by softening penalty for high-similarity pseudo-negatives.
+Gradient
+Figure 1: Overview of the RAD-DPO framework. It addresses standard DPO limitations via three core modules: Multi-label
+Global Contrast(MLGC), Token-Level Gradient Detachment (TLGD) and Representation-based Dynamic Reward Weighting
+(RDRW).
+simple pairwise comparisons to better capture relative preferences
+among multiple candidates.
+While e-commerce search environments provide abundant im-
+plicit preference logs (e.g., user clicks and orders) [14, 22, 30, 18],
+directly applying standard DPO to SIDs introduces a fundamental
+failure mode: the unintended suppression of positive semantic
+signals [21]. Standard DPO was originally designed for free-text
+generation, where output tokens are relatively independent. SIDs,
+by contrast, demand strict adherence to a predefined hierarchical
+taxonomy. Consequently, DPO’s uniform penalty mechanism be-
+comes overly blunt when applied to these structured identifiers,
+manifesting in three critical optimization bottlenecks:
+• Gradient Conflict on Shared Prefixes: Due to the strict hierar-
+chical nature of SIDs, items within the same broad category share
+identical prefix tokens [20]. In real-world e-commerce interac-
+tions, positive and negative items frequently fall under similar
+categories; empirically, 34.6% of our training pairs share the first
+SID token, and 1.9% share the first two. Because standard DPO
+operates at the sequence level, it penalizes the entire negative
+sequence indiscriminately. This forces the model to suppress
+shared, correct prefix tokens [19], creating simultaneous "push
+and pull" gradient signals that cause severe instability during
+taxonomy generation.
+• Vulnerability to Pseudo-Negatives: Implicit feedback in in-
+dustrial systems is notoriously noisy. Items that are exposed but
+unclicked are routinely treated as negative samples, yet this lack
+of interaction is often due to position bias, visual presentation,
+or mere click randomness rather than true irrelevance [10, 3, 33].
+Because standard DPO aggressively minimizes the likelihood of
+all designated negative samples, it heavily penalizes these mis-
+labeled "pseudo-negatives." This rigid over-correction severely
+distorts the semantic representations of otherwise valid items in
+the model’s latent space.
+• Inadequate Multi-Label Coverage: E-commerce search queries
+are intrinsically multi-label; a single user prompt typically cor-
+responds to multiple relevant items that could simultaneously
+satisfy the user’s intent. Standard DPO relies on narrow, pair-
+wise comparisons (one positive versus one negative). When this
+partial-order logic is applied to multi-positive contexts, boosting
+the probability of one valid candidate inevitably suppresses the
+probabilities of other concurrent valid candidates. This exacer-
+bates a probability "squeezing effect" [21], restricting the model’s
+global perspective and ultimately degrading overall ranking re-
+call.
+We propose the Robust Adaptive Denoising Direct Preference
+Optimization (RAD-DPO) framework (Figure 1) as a systematic so-
+lution against these suppression effects. RAD-DPO introduces three
+targeted modules corresponding to the aforementioned bottlenecks:
+First, Token-Level Gradient Detachment tackles gradient conflicts
+on shared prefixes by truncating conflicting backward signals
+from negative samples, thereby preserving structural integrity. Sec-
+ond, the model’s vulnerability to noisy pseudo-negatives is
+mitigated through Representation-based Dynamic Reward Weighting,
+which adaptively softens optimization penalties guided by semantic
+similarity. Finally, addressing inadequate multi-label coverage,
+Multi-label Global Contrast replaces myopic pairwise comparisons
+with a global objective that jointly maximizes the probability mass
+across all concurrent valid candidates.
+In summary, this work makes three primary contributions: (1)
+we formally identify the unintended suppression of positive signals
+as a critical failure mode when applying standard DPO to struc-
+tured generative retrieval; (2) we propose the RAD-DPO framework
+
+
+RAD-DPO: Robust Adaptive Denoising Direct Preference Optimization for Generative Retrieval in E-commerce
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Token
+1
+Token
+2
+Token
+n
+...
+SID
+Level 1
+SID
+Level 2
+SID
+Level 3
+SID
+Level 1 
+SID
+Level 2
+SID
+Level 3
+End
+Token
+Start
+Token
+End
+Token
+Input Prompt
+Positive Sample
+Separator
+Separator
+Negative Sample
+...
+...
+...
+...
+...
+...
+...
+...
+...
+...
+Visible
+Invisible
+Figure 2: Custom block-diagonal attention mask design for
+multi-label global contrast.
+to systematically mitigate prefix conflicts, data-driven noise, and
+narrow pairwise scopes; and (3) through extensive offline evalua-
+tions and rigorous online A/B testing on JD.com’s massive-scale
+search engine, we demonstrate that RAD-DPO translates theoretical
+robustness into significant real-world business revenue.
+2
+Methodology
+In this section, we present the proposed optimization framework
+designed for structured generation in e-commerce scenarios. The
+framework consists of three key components: Multi-label Prefer-
+ence Learning with Global Contrast, Token-Level Gradient Detach-
+ment, and Representation-based Dynamic Reward Weighting.
+2.1
+Multi-label Global Contrast (MLGC)
+To align generative retrieval with the complex multi-interest na-
+ture of e-commerce, we construct training samples from search
+interaction logs. For each session with prompt 𝑥, items clicked or
+ordered by the user form the positive set Y𝑝𝑜𝑠= {𝑦𝑤1,𝑦𝑤2, . . . }.
+The negative set Y𝑛𝑒𝑔is composed of items that were exposed but
+not clicked within the same session, augmented by random samples
+from the global candidate pool to ensure a robust contrastive signal.
+To balance efficiency and gradient stability, the number of negative
+samples is fixed to 𝑛(𝑛= 3 in our experiments).
+Traditional Pairwise DPO is restricted to handling single (𝑥,𝑦𝑤,𝑦𝑙)
+pairs, which leads to significant computational redundancy as the
+prompt 𝑥and positive sample 𝑦𝑤are repeatedly re-encoded for ev-
+ery negative candidate. Moreover, in multi-label scenarios, pairwise
+contrast can exacerbate a probability "squeezing effect" [21] among
+valid candidates. To address this, we design a hybrid multi-label
+contrastive loss:
+L𝑡𝑜𝑡𝑎𝑙= L𝑆𝐹𝑇+ L𝑃𝐿
+(1)
+Multi-label SFT Enhancement. To fully leverage information from
+multiple positive samples, we introduce a global SFT loss within
+the positive data cluster:
+L𝑆𝐹𝑇= −
+1
+|Y𝑝𝑜𝑠|
+∑︁
+𝑦∈Y𝑝𝑜𝑠
+log 𝜋𝜃(𝑦|𝑥)
+(2)
+Global Preference Contrast. We select the top-tier positive sample
+𝑦𝑤∗(e.g., the ordered item) from Y𝑝𝑜𝑠and contrast it with the en-
+tire negative pool Y𝑛𝑒𝑔simultaneously. Inspired by softmax-based
+preference learning [4, 7, 1], we employ a log-sum-exp operator to
+provide a list-wise contrastive signal. Notably, our formulation is
+reference-free: by utilizing length-normalized log-probabilities
+as implicit rewards ˆ𝑟𝜃(𝑥,𝑦) following SimPO [15], we eliminate
+the need for a frozen reference model. This reduces GPU memory
+footprint by nearly 50% and streamlines the training process. The
+preference loss is defined as:
+L𝑃𝐿(𝜃) = −log𝜎©­
+«
+𝛽· log
+∑︁
+𝑦𝑗∈Y𝑛𝑒𝑔
+exp(ˆ𝑟𝜃(𝑥,𝑦𝑤∗) −ˆ𝑟𝜃(𝑥,𝑦𝑗))ª®
+¬
+(3)
+where ˆ𝑟𝜃(𝑥,𝑦) is defined as:
+ˆ𝑟𝜃(𝑥,𝑦) = log 𝜋𝜃(𝑦|𝑥)
+|𝑦|
+.
+For efficient implementation, we concatenate the prompt with
+all candidates into a unified sequence and apply a custom block-
+diagonal attention mask (as illustrated in Figure 2). Crucially, we
+align the position IDs across all candidates to ensure they share
+the same relative positional encoding, thereby preventing potential
+information leakage where the model might distinguish samples
+based on their relative positions in the concatenated sequence. By
+rendering the prompt visible to all targets but keeping positive and
+negative candidates mutually invisible, this structure seamlessly
+supports session-level multi-label learning. Ultimately, it eliminates
+computational redundancy by processing all conditionally indepen-
+dent candidates in exactly one forward pass.
+2.2
+Token-Level Gradient Detachment (TLGD)
+In the generation of Semantic IDs (SIDs), positive and negative
+samples often exhibit strong hierarchical commonalities. For in-
+stance, items belonging to the same broad category but different
+sub-categories share the first 𝑘tokens (representing the category
+path). Standard DPO suppresses the generated probability of the
+entire negative sequence 𝑦𝑙. When 𝑦𝑤and 𝑦𝑙share a common pre-
+fix 𝑦𝑝𝑟𝑒𝑓𝑖𝑥, the gradient ∇𝜃log 𝜋𝜃(𝑦𝑝𝑟𝑒𝑓𝑖𝑥|𝑥) receives simultaneous
+push and pull signals. This conflict leads to oscillation during the
+generation of correct category paths and may damage the hierar-
+chical semantic representations acquired during pre-training.
+To resolve this conflict, we introduce a Prefix Masking mecha-
+nism. This mechanism dynamically truncates the gradient flow of
+redundant prefixes in negative samples, forcing the model to focus
+on the critical divergence points between positive and negative
+samples. We define an indicator function 1𝑑𝑖𝑓𝑓(𝑡):
+1𝑑𝑖𝑓𝑓(𝑡) =
+(
+0,
+if 𝑡≤𝑘(where 𝑦1:𝑘
+𝑤= 𝑦1:𝑘
+𝑙
+)
+1,
+otherwise
+(4)
+where𝑘represents the length of the longest common prefix between
+the positive and negative samples. We modify the calculation of
+the log-likelihood for the negative sample, denoted as log ˆ𝜋𝜃(𝑦𝑙|𝑥),
+by applying a gradient detachment operation:
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Zhiguo Chen et al.
+Table 1: Offline performance comparison on the test set. All DPO-based methods are trained on a subset of 30M search sessions
+for a fair comparison. Item-level metrics are evaluated after mapping generated SIDs back to corresponding SKUs. Halluc.
+denotes Hallucination Rate (lower is better).
+Halluc. ↓
+Item-level Metrics ↑
+SID-level Metrics ↑
+Method
+(Rate)
+R@10
+R@100
+R@500
+MRR
+R@8
+R@64
+R@128
+MRR
+SFT Baseline
+0.0575
+0.2958
+0.5433
+0.6670
+0.2415
+0.3755
+0.6139
+0.6775
+0.2859
+DPO
+0.0838
+0.2731
+0.5222
+0.6524
+0.2286
+0.3648
+0.6001
+0.6642
+0.2747
+SimPO
+0.0708
+0.3015
+0.5550
+0.6747
+0.2463
+0.3839
+0.6214
+0.6824
+0.2930
+ORPO
+0.0685
+0.3024
+0.5579
+0.6750
+0.2479
+0.3844
+0.6231
+0.6825
+0.2940
+RAD-DPO
+0.0652
+0.3048
+0.5593
+0.6794
+0.2481
+0.3888
+0.6247
+0.6864
+0.2947
+Ablation Studies
+w/o TLGD
+0.0647
+0.3025
+0.5586
+0.6783
+0.2470
+0.3872
+0.6237
+0.6864
+0.2939
+w/o RDRW
+0.0657
+0.3040
+0.5570
+0.6792
+0.2463
+0.3881
+0.6226
+0.6859
+0.2935
+w/o Multi-label SFT
+0.0654
+0.3031
+0.5572
+0.6773
+0.2455
+0.3848
+0.6221
+0.6849
+0.2928
+log ˆ𝜋𝜃(𝑦𝑙|𝑥) =
+𝐿
+∑︁
+𝑡=1
+
+𝑆𝐺
+
+(1 −1𝑑𝑖𝑓𝑓(𝑡)) log 𝜋𝜃(𝑦𝑡
+𝑙|𝑦<𝑡
+𝑙,𝑥)
+
++ 1𝑑𝑖𝑓𝑓(𝑡) log 𝜋𝜃(𝑦𝑡
+𝑙|𝑦<𝑡
+𝑙,𝑥)
+
+(5)
+where 𝑆𝐺[·] denotes the Stop-Gradient operation. This operation
+preserves the forward likelihood value while preventing gradients
+from back-propagating through the shared prefix tokens of negative
+samples.
+2.3
+Representation-based Dynamic Reward
+Weighting (RDRW)
+We address the issue of pseudo-negatives, a prevalent source of
+noise in industrial datasets, by leveraging semantic similarity de-
+rived from the model’s final hidden states. Let ℎ(𝑦,𝑥) be the final
+hidden layer vector when the model generates the End-of-Sequence
+(EOS) token. For each pair (𝑦𝑤,𝑦𝑙), we compute their cosine simi-
+larity:
+𝑠𝑖𝑚(𝑦𝑤,𝑦𝑙) =
+ℎ(𝑦𝑤,𝑥) · ℎ(𝑦𝑙,𝑥)
+∥ℎ(𝑦𝑤,𝑥)∥∥ℎ(𝑦𝑙,𝑥)∥
+(6)
+To ensure the weight adjustment has global awareness, we in-
+troduce a statistical warm-up phase. Initially, we cache similarity
+scores for the first 𝑁= 4096 pairs to construct a baseline distribu-
+tion S. Based on S, we calculate three key quartile anchors: the first
+quartile 𝑄25, the median 𝑄50, and the third quartile 𝑄75. While these
+anchors initially reflect the confusion level between positive and
+negative samples in the current model state, they are dynamically
+updated as training progresses to accurately capture the model’s
+shifting semantic representations.
+We design a piecewise smooth function to calculate the penalty
+weight 𝑤(𝑠𝑖𝑚) for negative samples. This function retains full
+penalty for distinct negatives while softening the penalty for highly
+ambiguous samples (potential pseudo-negatives):
+𝑤(𝑠𝑖𝑚) =
+
+
+1.0,
+𝑠𝑖𝑚< 𝑄25
+0.5 +
+0.5
+1+exp(𝜆·(𝑠𝑖𝑚−𝑄50)) ,
+𝑄25 ≤𝑠𝑖𝑚≤𝑄75
+0.5,
+𝑠𝑖𝑚> 𝑄75
+(7)
+where 𝜆is set to 12 to control the smoothness of the transition
+curve.
+Finally, the modified preference loss function is expressed as:
+L𝑃𝐿(𝜃) = −log𝜎
+ 
+𝛽· log
+∑︁
+𝑦𝑗∈Y𝑛𝑒𝑔
+exp  𝑤(𝑠𝑖𝑚)(ˆ𝑟𝜃(𝑥,𝑦𝑤∗) −ˆ𝑟𝜃(𝑥,𝑦𝑗))
+!
+(8)
+where ˆ𝑟𝜃is defined as:
+ˆ𝑟𝜃(𝑥,𝑦𝑤∗) = log 𝜋𝜃(𝑦𝑤∗|𝑥)
+|𝑦𝑤∗|
+,
+ˆ𝑟𝜃(𝑥,𝑦𝑗) = log ˆ𝜋𝜃(𝑦𝑗|𝑥)
+|𝑦𝑗|
+3
+Experiments
+3.1
+Experimental Setup
+Datasets. We utilize an industrial dataset from JD.com compris-
+ing 700M interaction logs over 8 days, partitioned into 7 days for
+training and the 8th day (𝑇+ 1) for testing. Input features encom-
+pass the query, user profiles, and historical click sequences. To
+capture query-relevant interests and mitigate noise, we employ
+the Search-based Interest Model (SIM [17]) paradigm with a "hard
+search" strategy to filter irrelevant items from the click history. The
+full 7-day dataset is utilized for Supervised Fine-Tuning (SFT), from
+which a high-quality subset of 30M search sessions is sampled for
+preference alignment. Crucially, while RAD-DPO models each sam-
+ple as a complete multi-label search session (e.g., containing both
+clicks and orders) to optimize global contrast, we decompose these
+sessions into distinct positive-negative pairs for the baseline DPO
+methods, ensuring a fair comparative evaluation of partial-order
+preference learning.
+
+
+RAD-DPO: Robust Adaptive Denoising Direct Preference Optimization for Generative Retrieval in E-commerce
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Table 2: Performance comparison of DPO methods on differ-
+ent base model sizes (SID-level metrics).
+Model
+Method
+R@8
+R@64
+R@128
+MRR
+0.6B
+SFT
+0.3482
+0.5783
+0.6343
+0.2672
+DPO
+0.3466
+0.5732
+0.6288
+0.2673
+RAD-DPO
+0.3658
+0.5867
+0.6425
+0.2796
+1.7B
+SFT
+0.3755
+0.6139
+0.6775
+0.2859
+DPO
+0.3589
+0.6001
+0.6642
+0.2747
+RAD-DPO
+0.3888
+0.6247
+0.6864
+0.2947
+4B
+SFT
+0.3992
+0.6600
+0.7235
+0.3080
+DPO
+0.3880
+0.6521
+0.7159
+0.2983
+RAD-DPO
+0.4178
+0.6722
+0.7341
+0.3161
+8B
+SFT
+0.4327
+0.6924
+0.7436
+0.3178
+DPO
+0.4128
+0.6837
+0.7381
+0.3152
+RAD-DPO
+0.4611
+0.6983
+0.7492
+0.3246
+Implementation Details. To construct SIDs, we filter the top
+170M items with clicks over the past two months. These items are
+embedded via BGE [26] and aggregated into 130M unique SIDs us-
+ing multi-resolution RQ-Kmeans [8] with 3-level codebooks (sizes:
+8192, 4096, 2048). We employ Qwen-1.7B as the backbone. Notably,
+all input features—including historical behavior sequences—are
+injected via structured prompts as SID tokens. Training proceeds
+in two stages: Supervised Fine-Tuning (SFT) on click/order paths,
+followed by Preference Alignment via RAD-DPO. Models are opti-
+mized on NVIDIA H100 GPUs with a learning rate of 1𝑒−6 and a
+batch size of 64.
+Evaluation Metrics. Offline ranking accuracy is evaluated using
+Recall@K and Mean Reciprocal Rank (MRR). Online performance
+is evaluated via large-scale A/B testing on millions of live users,
+focusing on User Conversion Rate (UCVR) as the key indicator.
+3.2
+Results and Discussion
+Overall Performance. As detailed in Table 1, RAD-DPO achieves
+consistent improvements in both Recall and MRR over the SFT
+baseline and standard DPO, confirming that mitigating the unin-
+tended suppression of positive signals is essential for generative
+retrieval. Beyond these top-line metrics, the framework exhibits
+remarkable scalability and data efficiency. Not only does its per-
+formance edge widen as model capacity increases from 0.6B to 8B
+parameters (Table 2), but it also sustains robust ranking quality even
+across reduced training scales (10M to 50M, Figure 3). Finally, RAD-
+DPO also lowers DPO’s hallucination rate by retaining token-level
+constraints and the SFT loss.
+Ablation Study. As detailed in Table 1, removing any core
+component of RAD-DPO leads to noticeable performance degrada-
+tion, validating their distinct contributions. Specifically, discarding
+Token-Level Gradient Detachment (w/o TLGD) drops the MRR, con-
+firming its effectiveness in resolving training oscillations caused by
+shared hierarchical prefixes. Furthermore, the performance decline
+without Dynamic Reward Weighting (w/o RDRW) underscores the
+disruptive impact of pseudo-negatives in raw industrial logs—a
+10M
+20M
+30M
+40M
+50M
+Training Data Size
+0.0%
+1.0%
+2.0%
+3.0%
+Relative Impr. (%)
+SFT (0%)
+R@64
+R@128
+MRR
+Figure 3: Impact of DPO training data scale on model perfor-
+mance. Results are presented as relative percentage improve-
+ments over the SFT baseline across key SID-level metrics,
+including Recall@K and Mean Reciprocal Rank (MRR).
+noise successfully neutralized by our adaptive penalty softening.
+Finally, removing the Multi-label Global Contrast (w/o MLGC) dis-
+tinctly reduces Recall, demonstrating that replacing myopic pair-
+wise comparisons with global multi-positive signals is essential for
+maximizing preference learning throughput.
+Online A/B Testing. To evaluate the real-world impact, we
+conducted online A/B testing on the core e-commerce search
+engine of JD.com, which serves hundreds of millions of daily
+users. RAD-DPO was implemented as a standalone generative re-
+trieval branch that bypasses traditional multi-stage retrieval and
+pre-ranking. Specifically, it directly generates item candidates that
+are then merged with outputs from other branches at the final
+ranking stage. Crucially, the 1.7B model meets strict industrial
+serving requirements, achieving a prediction latency of < 150ms
+(beam width=128) at 15 QPS on a single NVIDIA RTX 4090 GPU.
+This week-long functional ablation test demonstrated a consistent
++0.34% lift in User Conversion Rate (UCVR). Following this success,
+the model was re-trained on an extended dataset of hundreds of
+millions of logs and rebased with other production features for a
+formal full-scale launch.
+4
+Conclusion
+In this work, we proposed RAD-DPO to address the systematic sup-
+pression of positive semantic signals when applying standard DPO
+to Generative Retrieval in e-commerce search. By introducing multi-
+label global contrast, token-level gradient detachment, and dynamic
+reward weighting, our framework effectively resolves gradient con-
+flicts and neutralizes pseudo-negative noise. Extensive evaluations
+on a large-scale industrial e-commerce platform demonstrate that
+RAD-DPO significantly enhances retrieval precision, while the de-
+sign of a custom block-diagonal attention mask substantially boosts
+training efficiency. More importantly, online A/B testing confirms
+that it delivers measurable business conversion lifts while strictly
+meeting industrial serving latency requirements, offering a robust
+paradigm for structured preference alignment.
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Zhiguo Chen et al.
+References
+[1]
+Ben Chen et al. 2025. Onesearch: a preliminary exploration of the unified end-to-
+end generative framework for e-commerce search. arXiv preprint arXiv:2509.03236.
+[2]
+Jiahui Chen et al. 2025. Unisearch: rethinking search system with a unified
+generative architecture. arXiv preprint arXiv:2509.06887.
+[3]
+Jiawei Chen, Hande Dong, Xiang Wang, Fuli Feng, Meng Wang, and Xiang-
+nan He. 2023. Bias and debias in recommender system: a survey and future
+directions. ACM Transactions on Information Systems, 41, 3, 1–39.
+[4]
+Yuxin Chen, Junfei Tan, An Zhang, Zhengyi Yang, Leheng Sheng, Enzhi Zhang,
+Xiang Wang, and Tat-Seng Chua. 2024. On softmax direct preference optimiza-
+tion for recommendation. Advances in Neural Information Processing Systems,
+37, 27463–27489.
+[5]
+Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding,
+Qiang Luo, and Guorui Zhou. 2025. Onerec: unifying retrieve and rank with
+generative recommender and iterative preference alignment. arXiv preprint
+arXiv:2502.18965.
+[6]
+Kairui Fu et al. 2025. Forge: forming semantic identifiers for generative retrieval
+in industrial datasets. arXiv preprint arXiv:2509.20904.
+[7]
+Xian Guo, Ben Chen, Siyuan Wang, Ying Yang, Chenyi Lei, Yuqing Ding,
+and Han Li. 2025. Onesug: the unified end-to-end generative framework for
+e-commerce query suggestion. arXiv preprint arXiv:2506.06913.
+[8]
+Ruining He et al. 2025. Plum: adapting pre-trained language models for industrial-
+scale generative recommendations. arXiv preprint arXiv:2510.07784.
+[9]
+Jiwoo Hong, Noah Lee, and James Thorne. 2024. Orpo: monolithic preference
+optimization without reference model. In Proceedings of the 2024 Conference on
+Empirical Methods in Natural Language Processing, 11170–11189.
+[10]
+Thorsten Joachims, Laura Granka, Bing Pan, Helene Hembrooke, and Geri Gay.
+2017. Accurately interpreting clickthrough data as implicit feedback. In Acm
+Sigir Forum number 1. Vol. 51. Acm New York, NY, USA, 4–11.
+[11]
+Zhirui Kuai et al. 2024. Breaking the hourglass phenomenon of residual quanti-
+zation: enhancing the upper bound of generative retrieval. In Proceedings of the
+2024 Conference on Empirical Methods in Natural Language Processing: Industry
+Track, 677–685.
+[12]
+Jian Li, Shenglin Yin, Yujia Zhang, Alan Zhao, Xi Chen, Xiaohui Zhou, and
+Pengfei Xu. 2025. Ambiguity awareness optimization: towards semantic dis-
+ambiguation for direct preference optimization. In Proceedings of the 2025
+Conference on Empirical Methods in Natural Language Processing, 9064–9074.
+[13]
+Mingming Li, Huimu Wang, Zuxu Chen, Guangtao Nie, Yiming Qiu, Guoyu
+Tang, Lin Liu, and Jingwei Zhuo. 2024. Generative retrieval with preference
+optimization for e-commerce search. arXiv preprint arXiv:2407.19829.
+[14]
+Chenji Lu et al. 2025. Lore: a large generative model for search relevance. arXiv
+preprint arXiv:2512.03025.
+[15]
+Yu Meng, Mengzhou Xia, and Danqi Chen. 2024. Simpo: simple preference
+optimization with a reference-free reward. Advances in Neural Information
+Processing Systems, 37, 124198–124235.
+[16]
+Abhijnan Nath, Andrey Volozin, Saumajit Saha, Albert Aristotle Nanda, Galina
+Grunin, Rahul Bhotika, and Nikhil Krishnaswamy. 2025. Dpl: diverse preference
+learning without a reference model. In Proceedings of the 2025 Conference of the
+Nations of the Americas Chapter of the Association for Computational Linguistics:
+Human Language Technologies (Volume 1: Long Papers), 3727–3747.
+[17]
+Qi Pi, Guorui Zhou, Yujing Zhang, Zhe Wang, Lejian Ren, Ying Fan, Xiaoqiang
+Zhu, and Kun Gai. 2020. Search-based user interest modeling with lifelong
+sequential behavior data for click-through rate prediction. In Proceedings of the
+29th ACM International Conference on Information & Knowledge Management,
+2685–2692.
+[18]
+Yiming Qiu et al. 2022. Pre-training tasks for user intent detection and embed-
+ding retrieval in e-commerce search. In Proceedings of the 31st ACM International
+Conference on Information & Knowledge Management, 4424–4428.
+[19]
+Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano
+Ermon, and Chelsea Finn. 2023. Direct preference optimization: your language
+model is secretly a reward model. Advances in neural information processing
+systems, 36, 53728–53741.
+[20]
+Shashank Rajput et al. 2023. Recommender systems with generative retrieval.
+Advances in Neural Information Processing Systems, 36, 10299–10315.
+[21]
+Yi Ren and Danica J Sutherland. 2024. Learning dynamics of llm finetuning.
+arXiv preprint arXiv:2407.10490.
+[22]
+Jiakai Tang et al. 2025. Reaseq: unleashing world knowledge via reasoning for
+sequential modeling. arXiv preprint arXiv:2512.21257.
+[23]
+Yi Tay et al. 2022. Transformer memory as a differentiable search index. Ad-
+vances in neural information processing systems, 35, 21831–21843.
+[24]
+Yujing Wang et al. 2022. A neural corpus indexer for document retrieval. Ad-
+vances in Neural Information Processing Systems, 35, 25600–25614.
+[25]
+Junkang Wu, Yuexiang Xie, Zhengyi Yang, Jiancan Wu, Jinyang Gao, Bolin Ding,
+Xiang Wang, and Xiangnan He. 2024. 𝛽-DPO: Direct Preference Optimization
+with dynamic 𝛽. Advances in Neural Information Processing Systems, 37, 129944–
+129966.
+[26]
+Shitao Xiao, Zheng Liu, Peitian Zhang, and Niklas Muennighoff. 2023. C-pack:
+packaged resources to advance general chinese embedding. (2023). arXiv: 2309
+.07597 [cs.CL].
+[27]
+Teng Xiao, Yige Yuan, Huaisheng Zhu, Mingxiao Li, and Vasant G Honavar.
+2024. Cal-dpo: calibrated direct preference optimization for language model
+alignment. Advances in Neural Information Processing Systems, 37, 114289–
+114320.
+[28]
+Ning Yang, Hai Lin, Yibo Liu, Baoliang Tian, Guoqing Liu, and Haijun Zhang.
+2025. Token-importance guided direct preference optimization. arXiv preprint
+arXiv:2505.19653.
+[29]
+Yongcheng Zeng, Guoqing Liu, Weiyu Ma, Ning Yang, Haifeng Zhang, and
+Jun Wang. 2024. Token-level direct preference optimization. arXiv preprint
+arXiv:2404.11999.
+[30]
+Han Zhang, Yunjiang Jiang, Mingming Li, Haowei Yuan, Yiming Qiu, and Wen-
+Yun Yang. 2025. Pebr: a probabilistic approach to embedding based retrieval. In
+Proceedings of the 2025 Conference on Empirical Methods in Natural Language
+Processing: Industry Track, 2332–2342.
+[31]
+Jun Zhang et al. 2025. Gpr: towards a generative pre-trained one-model para-
+digm for large-scale advertising recommendation. arXiv preprint arXiv:2511.10138.
+[32]
+Kun Zhang et al. 2026. Onemall: one model, more scenarios–end-to-end genera-
+tive recommender family at kuaishou e-commerce. arXiv preprint arXiv:2601.21770.
+[33]
+Chuan Zhou, Lina Yao, Haoxuan Li, and Mingming Gong. 2025. Counterfactual
+implicit feedback modeling. In The Thirty-ninth Annual Conference on Neural
+Information Processing Systems.
+Company Portrait
+JD.com, Inc., also known as Jingdong, is a Chinese e-commerce
+company headquartered in Beijing. It is one of the two massive
+B2C online retailers in China by transaction volume and revenue,
+a member of the Fortune Global 500. When classified as a tech
+company, it is the largest in China by revenue and 7th in the world
+in 2021.
+Presenter profiles
+Zhiguo Chen is a researcher in the Department of Search and
+Recommendation at JD.com Beijing. His research focuses on in-
+formation retrieval, cross-modal alignment and natural language
+processing.
+Guohao Sun is a Master’s student at Peking University. His re-
+search interests lie at the intersection of Large Language Models
+and search-related technologies, with a secondary focus on rein-
+forcement learning. Currently, he is a research intern at JD.com.
