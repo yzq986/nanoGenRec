@@ -55,15 +55,36 @@
 
 ### SID Cache Metrics
 
-| SID Cache | Emb Dim | n_items | Collision | n_unique | L0 used/4096 | L0 avg/cluster | L0 max | L0 Gini | L01 unique |
-|-----------|---------|---------|-----------|----------|--------------|----------------|--------|---------|-----------|
-| exp026-0.6b | 1024 | 1,096,364 | **0.49%** | 1,090,941 | 4096/4096 | 267.7 | 1,015 | 0.320 | 625,356 |
-| exp026-4b   | 2560 | 1,110,697 | 2.76% | 1,080,028 | 4096/4096 | 271.2 | 1,062 | **0.288** | 626,950 |
-| exp026-8b   | 4096 | 1,110,695 | 5.44% | 1,050,238 | 4096/4096 | 271.2 | 1,318 | 0.303 | 604,630 |
+| SID Cache | Emb Dim | n_items | Collision | L0 entropy | L1 entropy | L2 entropy | Joint entropy | L0 Gini |
+|-----------|---------|---------|-----------|-----------|-----------|-----------|--------------|---------|
+| exp026-0.6b | 1024 | 1,096,364 | **0.49%** | 11.72 (97.6%) | 9.55 (79.6%) | **10.58 (91.2%)** | **20.05** | 0.320 |
+| exp026-4b   | 2560 | 1,110,697 | 2.76% | 11.80 (98.3%) | 10.60 (88.4%) | 8.10 (78.7%) | 20.02 | **0.288** |
+| exp026-8b   | 4096 | 1,110,695 | 5.44% | 11.78 (98.2%) | **10.95 (91.2%)** | 7.17 (71.6%) | 19.95 | 0.303 |
 
-- L0 所有 4096 个 cluster 均被使用（无空 cluster），码本利用率 100%
-- collision 随 embedding 维度升高反而增大：高维 embedding 在 4096×3 固定码本下分布更难对齐
-- 4B 的 L0 Gini 最低（0.288）→ cluster 分布最均匀；8B max=1318 远高于 0.6B(1015)，局部聚集更严重
+括号内为相对理论最大熵的利用率（L0/L1 理论 max=12 bits，L2 理论 max = log2(实际用到的 FSQ codes)）。
+
+**Entropy 分析**：
+- L0/L1 三个模型基本相当（KMeans 2层均匀分布）
+- **L2 entropy 随 embedding 维度急剧下降**：0.6B=10.58→4B=8.10→8B=7.17 bits。8B 的 FSQ 有效槽位仅 ~145 个（vs 0.6B 的 ~1500 个）
+- **根本原因**：FSQ MLP hidden=64 是为 0.6B (1024D) 设计的，对 4B/8B 的残差向量（2560D/4096D）bottleneck 不足，L2 层信息严重损失，导致大量 item 被映射到同一 FSQ code → collision 爆增
+
+### Scaling Law — Irreducible PPL Floor
+
+用 S-tier (N≈17.5M active) 和 M-tier (N≈71.6M active) 两点联立，反推各 SID 的 intrinsic floor（固定 scaling 指数 c=0.456，拟合 `L(N) = floor + b/N^c`）：
+
+| SID | Joint entropy | floor loss | **floor PPL** | scaling b |
+|-----|--------------|-----------|--------------|-----------|
+| exp013 (旧 0.6B) | — | 2.522 | **12.45** | 2055 |
+| exp026-0.6b | 20.05 bits | 2.523 | **12.46** | 1517 |
+| exp026-4b   | 20.02 bits | 2.466 | **11.78** | 1299 |
+| exp026-8b   | 19.95 bits | 2.507 | **12.26** | 1047 |
+
+**关键发现**：
+1. **4B SID floor 最低（PPL=11.78）**，是三者中理论上限最高的 tokenizer，比 0.6B 低 0.68 PPL。
+2. **8B SID floor 反而高于 4B（12.26 vs 11.78）**：L2 entropy 坍缩（7.17 bits）抵消了 embedding 质量提升，tokenizer 瓶颈更严重。
+3. **scaling 系数 b 随 embedding 规模单调下降**（2055→1517→1299→1047）：更好的 SID 让模型更快收敛，同等参数量的 loss 更低。
+4. **0.6B 的 floor 与旧 SID 几乎相同（12.46 vs 12.45）**，但 b 更小（收敛更快），实际 NTP 表现好于旧 SID。
+5. **若要发挥 8B embedding 的真实质量，需将 FSQ hidden 从 64 扩大到 ~256**，使 L2 entropy 恢复到 90%+ 利用率。
 
 ### Results
 
@@ -83,13 +104,16 @@
 
 2. **Embedding 规模对 R@500 的影响有限但有规律**：
    - S-tier：0.6B→4B +3.1pp，4B→8B +0.4pp。4B 是明显拐点，8B 边际收益小。
-   - M-tier：0.6B→4B +0.2pp，4B→8B -0.7pp。M-tier 对 SID 质量不敏感，可能模型本身能弥补 tokenizer 差异。
+   - M-tier：0.6B→4B +0.2pp，4B→8B -0.7pp。M-tier 对 SID 质量不敏感——模型更大可以部分弥补 tokenizer 的 L2 信息损失。
 
-3. **PPL 随 embedding 规模单调下降**：8B embedding 的 L0 PPL 最低（240.9 vs 390.2），说明更大 embedding 让 item 分布更分离、L0 预测更容易。但 PPL 提升未完全转化为 R@500 提升（beam search 候选质量受多因素影响）。
+3. **PPL 随 embedding 规模单调下降**：8B 的 L0 PPL 最低（240.9），说明更大 embedding 让 L0 cluster 更分离。但 PPL 提升未完全转化为 R@500（beam search 受 collision 和 L2 信息损失影响）。
 
-4. **R@10 规律异常**：S-tier 中 8B 比 4B 略高（10.2% vs 9.7%），但均低于 0.6B（11.4%）；M-tier 中 0.6B 最高（14.5%）。R@10 衡量 top beam 候选精度，可能与 SID collision rate 有关（8B collision=5.44% 最高，影响精确 item 定位）。
+4. **R@10 规律异常由 collision 解释**：0.6B collision 最低（0.49%），top-beam 精确命中率最高。8B collision=5.44%，大量 item 共享 SID，beam search 无法区分 → R@10 反而低。
 
-5. **最优配置**：M-tier + 4B SID（exp043-m-4b）R@500=70.4% 为最优，兼顾 R@10 和 R@500。M-tier + 0.6B SID 次之（70.2%），成本更低（0.6B embedding 更小）。
+5. **最优配置**：
+   - 当前：**M-tier + 4B SID**（R@500=70.4%，floor PPL=11.78 最低）
+   - 低成本替代：M-tier + 0.6B SID（R@500=70.2%，b 更小收敛更快）
+   - 8B SID 需扩大 FSQ hidden（64→256）修复 L2 entropy 坍缩后才能真正发挥优势
 
 ### Next Steps
 - EXP-044：TO-RoPE vs absolute pos emb，基于 S-tier + 0.6B SID
