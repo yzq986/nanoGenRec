@@ -91,11 +91,15 @@ def main():
     elif command == 'download-model':
         from data.download_model import main as download_model_main
         download_model_main()
+    elif command == 'sync-embeddings':
+        from data.sync_embeddings import main as sync_emb_main
+        sync_emb_main()
     else:
         print(f"Unknown command: {command}")
         print("Available commands: train, eval, eval-all, compare, hyperparam, "
               "preprocess-sid, preprocess-ntp, train-ntp, sp-dpo-prepare, rf-dpo-prepare, "
-              "sp-dpo-train, grpo-train, eval-ntp, alignment-eval, pack, migrate-shards, download-model")
+              "sp-dpo-train, grpo-train, eval-ntp, alignment-eval, pack, migrate-shards, "
+              "download-model, sync-embeddings")
         sys.exit(1)
 
 
