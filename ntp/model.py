@@ -1287,6 +1287,23 @@ class NTPModel(nn.Module):
         """Backward compat alias for use_rope."""
         return self.use_rope
 
+    @staticmethod
+    def _carry_forward_timestamps(ts: Optional[torch.Tensor], T: int, device) -> torch.Tensor:
+        """Return a (1, T) float timestamp tensor, carry-forwarding the last known value.
+
+        Never returns zeros for interior positions — 0 is out-of-distribution for any
+        position that isn't the very start of a session.
+        """
+        if ts is None:
+            return torch.zeros(1, T, device=device, dtype=torch.float)
+        ts = ts.float()
+        if ts.size(1) >= T:
+            return ts[:, :T]
+        # Pad by repeating the last value (carry-forward)
+        last = ts[:, -1:]
+        pad = last.expand(ts.size(0), T - ts.size(1))
+        return torch.cat([ts, pad], dim=1)
+
     def _build_rope_inputs(self, T: int, device, offset: int = 0):
         """Return (pos, timestamps, layers) for transformer forward — zero-overhead if not rope.
 
@@ -1385,9 +1402,8 @@ class NTPModel(nn.Module):
         x = self.embed_with_features(tokens, pos_raw, side_features)
         tf_pos, _, tf_lay = self._build_rope_inputs(T, device)
         if self.use_rope:
-            sf = side_features or {}
-            raw_ts = sf.get('timestamps')
-            tf_ts = raw_ts if raw_ts is not None else torch.zeros(1, T, device=device)
+            raw_ts = (side_features or {}).get('timestamps')
+            tf_ts = self._carry_forward_timestamps(raw_ts, T, device)
         else:
             tf_ts = None
         return self._transformer_forward(x, positions=tf_pos, timestamps=tf_ts, layers=tf_lay)
@@ -1482,16 +1498,10 @@ class NTPModel(nn.Module):
                         padded_sf[key] = feat
             x = self.embed_with_features(tokens, positions, padded_sf)
 
-            # RoPE: build full timestamp tensor for context
+            # RoPE: build full timestamp tensor for context (carry-forward when shorter than T)
             if self.use_rope:
-                if ctx_timestamps is not None:
-                    T_ctx = ctx_timestamps.size(1)
-                    ts_pad = torch.zeros(ctx_timestamps.size(0), T - T_ctx,
-                                         dtype=torch.float, device=device)
-                    timestamps = torch.cat([ctx_timestamps.float(), ts_pad], dim=1)
-                else:
-                    timestamps = torch.zeros(tokens.size(0), T,
-                                             dtype=torch.float, device=device)
+                timestamps = self._carry_forward_timestamps(ctx_timestamps, T, device)
+                timestamps = timestamps.expand(tokens.size(0), -1)
             else:
                 timestamps = None
 
@@ -1673,7 +1683,7 @@ class NTPModel(nn.Module):
         tp_pos, _, tp_lay = self._build_rope_inputs(S, device)
         if self.use_rope:
             raw_ts = sf.get('timestamps')
-            tp_ts = raw_ts if raw_ts is not None else torch.zeros(1, S, device=device)
+            tp_ts = self._carry_forward_timestamps(raw_ts, S, device).expand(B, -1)
         else:
             tp_ts = None
         hidden = self._transformer_forward(x, positions=tp_pos, timestamps=tp_ts, layers=tp_lay)

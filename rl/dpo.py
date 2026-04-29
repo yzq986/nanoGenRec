@@ -125,7 +125,7 @@ def compute_sid_logprobs(
     rope_pos, _, rope_lay = model._build_rope_inputs(T, device)
     if model.use_rope:
         raw_ts = full_sf.get('timestamps')
-        rope_ts = raw_ts if raw_ts is not None else torch.zeros(1, T, device=device)
+        rope_ts = model._carry_forward_timestamps(raw_ts, T, device).expand(B, -1)
     else:
         rope_ts = None
     hidden = model._transformer_forward(x, positions=rope_pos, timestamps=rope_ts, layers=rope_lay)
