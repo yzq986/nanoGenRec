@@ -972,6 +972,7 @@ class NTPModel(nn.Module):
             self.register_buffer('torope_inv_freq_time', inv_freq_time)
             self.torope_n_idx_planes = n_idx_planes
             self.torope_n_time_planes = n_time_planes
+            self.torope_time_split = torope_time_split
         else:
             if use_segment_emb:
                 max_n_items = self.max_seq_len // n_sid_layers + 1

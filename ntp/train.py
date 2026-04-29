@@ -1359,7 +1359,7 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
             probe_config['n_action_levels'] = probe.action_emb.num_embeddings
         if hasattr(probe, 'use_torope') and probe.use_torope:
             probe_config['use_torope'] = True
-            probe_config['torope_time_split'] = torope_time_split
+            probe_config['torope_time_split'] = probe.torope_time_split
     else:
         probe_config = {
             'model_type': 'probe',
