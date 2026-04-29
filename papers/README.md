@@ -42,3 +42,4 @@
 | 2604.25291 | From Local Indices to Global Identifiers: Generative Reranking via Global Action Space | Pengyue Jia et al. (Kuaishou + UCSD + CityU HK) | 2026-04-28 | [pdf](2604.25291.pdf) | [txt](2604.25291.txt) | IDEA-glorank-0 |
 | 2604.25834 | Action-Aware Generative Sequence Modeling for Short Video Recommendation | Wenhao Li et al. (Kuaishou, SIGIR 2026) | 2026-04-28 | [pdf](2604.25834.pdf) | [txt](2604.25834.txt) | IDEA-a2gen-0 |
 | 2604.25839 | Break the Inaccessible Boundary: Distilling Post-Conversion Content for User Retention Modeling (OCARM) | Tianbao Ma et al. (Kuaishou) | 2026-04-28 | [pdf](2604.25839.pdf) | [txt](2604.25839.txt) | — (RTB retention model, 两阶段 teacher-student 蒸馏解决 "feature leakage"; 当前 NTP 无 inaccessible-at-inference 特征, 未归纳为 idea) |
+| 2602.11410 | CADET: Context-Conditioned Ads CTR Prediction With a Decoder-Only Transformer | David Pardoe et al. (LinkedIn) | 2026-02-11 | [pdf](2602.11410.pdf) | [txt](2602.11410.txt) | IDEA-cadet-0 |

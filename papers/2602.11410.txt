@@ -1,0 +1,995 @@
+CADET: Context-Conditioned Ads CTR Prediction With a
+Decoder-Only Transformer
+David Pardoe∗
+Neil Daftary∗
+Miro Furtado∗
+Aditya Aiyer∗
+LinkedIn
+Mountain View, California, USA
+dpardoe@linkedin.com
+Yu Wang
+Liuqing Li
+Tao Song
+Lars Hertel
+LinkedIn
+Mountain View, California, USA
+ywang11@linkedin.com
+Young Jin Yun
+Senthil Radhakrishnan
+Zhiwei Wang†
+Tommy Li
+LinkedIn
+Mountain View, California, USA
+yyun@linkedin.com
+Khai Tran
+Ananth Nagarajan
+Ali Naqvi
+Yue Zhang
+LinkedIn
+Mountain View, California, USA
+khtran@linkedin.com
+Renpeng Fang
+Avi Romascanu
+Arjun Kulothungun
+Deepak Kumar
+LinkedIn
+Mountain View, California, USA
+refang@linkedin.com
+Praneeth Boda
+Fedor Borisyuk
+Ruoyan Wang∗
+LinkedIn
+Mountain View, California, USA
+rnwang@linkedin.com
+Abstract
+Click-through rate (CTR) prediction is fundamental to online ad-
+vertising systems. While Deep Learning Recommendation Models
+(DLRMs) with explicit feature interactions have long dominated this
+domain, recent advances in generative recommenders have shown
+promising results in content recommendation. However, adapting
+these transformer-based architectures to ads CTR prediction still
+presents unique challenges, including handling post-scoring con-
+textual signals, maintaining offline-online consistency, and scaling
+to industrial workloads.
+We present CADET (Context-Conditioned Ads Decoder-Only
+Transformer), an end-to-end decoder-only transformer for ads CTR
+prediction deployed at LinkedIn. Our approach introduces sev-
+eral key innovations: (1) a context-conditioned decoding architec-
+ture with multi-tower prediction heads that explicitly model post-
+scoring signals such as ad position, resolving the chicken-and-egg
+problem between predicted CTR and ranking; (2) a self-gated atten-
+tion mechanism that stabilizes training by adaptively regulating
+information flow at both representation and interaction levels; (3) a
+timestamp-based variant of Rotary Position Embedding (RoPE) that
+captures temporal relationships across timescales from seconds to
+months; (4) session masking strategies that prevent the model from
+learning dependencies on unavailable in-session events, address-
+ing train-serve skew; and (5) production engineering techniques
+including tensor packing, sequence chunking, and custom Flash
+Attention kernels that enable efficient training and serving at scale.
+In online A/B testing, CADET achieves a 11.04% CTR lift com-
+pared to the production LiRank [3] baseline model, a hybrid ensem-
+ble of DCNv2 [18] and sequential encoders. The system has been
+successfully deployed on LinkedIn’s advertising platform, serving
+the main traffic for homefeed sponsored updates.
+∗Authors contributed equally to this research.
+†Work done while at LinkedIn.
+CCS Concepts
+• Information systems →Computational advertising; Online
+advertising; • Computing methodologies →Neural networks;
+Deep learning.
+Keywords
+Click-Through Rate Prediction, Generative Recommenders, Online
+Advertising
+1
+Introduction
+LinkedIn is the world’s largest professional social network, serv-
+ing over one billion members globally, with a leading B2B-focused
+advertising platform. Homefeed sponsored updates represent the
+primary surface for LinkedIn ads, where click-through rate (CTR)
+prediction serves as the core model powering ad delivery and de-
+termining which ads are displayed to users. The accuracy and effi-
+ciency of CTR prediction therefore directly impacts both LinkedIn
+user experience and advertiser outcomes.
+Historically, Deep Learning Recommendation Model (DLRM)
+architectures [17, 24], which focus on explicit feature interaction
+learning, have dominated ads CTR prediction. These models typ-
+ically operate on individual ad impressions with a large number
+of engineered features. More recently, generative recommenders
+based on decoder-only transformers have demonstrated success in
+industrial applications [8, 10, 22], primarily in feed content recom-
+mendation and e-commerce domains. These models process user
+interaction sequences autoregressively, learning implicit temporal
+patterns.
+However, adapting decoder-only transformers to production-
+grade ads CTR prediction still presents unique challenges. First,
+post-scoring contextual signals such as ad position significantly in-
+fluence CTR but are unavailable at scoring time, creating a chicken-
+and-egg problem between predicted CTR and final ranking. Second,
+arXiv:2602.11410v1  [cs.LG]  11 Feb 2026
+
+
+Pardoe and Daftary, et al.
+online recommendation systems require strict offline-online con-
+sistency, yet tracking delays and session-level scoring create gaps
+between training and serving conditions. Third, production envi-
+ronments demand training stability and reproducibility to ensure
+reliable business metrics and support rapid experimentation. Fourth,
+industrial-scale advertising workloads require efficient training and
+inference systems capable of processing millions to billions of im-
+pressions daily.
+In this paper, we present CADET (Context-Conditioned Ads
+Decoder-Only Transformer), an end-to-end decoder-only trans-
+former for ads CTR prediction deployed at LinkedIn. Our approach
+addresses the above challenges through novel architectural innova-
+tions and production engineering techniques.
+Our key contributions are as follows:
+• Context-conditioned decoding architecture: A novel
+multi-tower decoding block that explicitly models post-
+scoring contextual signals (e.g., ad position) through 𝐾
+prediction heads, resolving the ranking dependency loop
+without iterative re-scoring.
+• Self-gated attention mechanism: An improved self-attention
+design with representation-level and interaction-level gat-
+ing that stabilizes training and mitigates pathological atten-
+tion behaviors, enabling reliable convergence at scale.
+• Temporal encoding with modified RoPE: A timestamp-
+based rotary positional encoding that captures time differ-
+ences ranging from seconds to months, replacing sequence
+position with event timestamps for ads-specific temporal
+modeling.
+• Session masking for offline-online consistency: Cus-
+tomized masking strategies that prevent the model from
+attending to unavailable in-session events during training,
+addressing train-serve skew caused by tracking delays.
+• Production engineering at scale: A comprehensive set of
+optimizations including tensor packing, sequence chunking,
+and custom Flash Attention kernels for multi-item scoring
+that enable efficient training on large-scale datasets and
+low-latency serving.
+The remainder of this paper is organized as follows. Section 2
+reviews related work on CTR prediction and sequence-based recom-
+mendation. Section 3 details the CADET architecture including the
+context-conditioned decoding block, self-gated attention, and mask-
+ing strategies. Section 4 describes productionization techniques for
+training and serving at scale. Section 5 presents experimental results
+including ablation studies and online A/B test metrics. Section 6 dis-
+cusses alternative approaches we considered. Section 7 concludes
+with a summary.
+2
+Related Work
+We discuss related work from two key areas: (1) ads CTR predic-
+tion and post-scoring context handling, and (2) sequence-based
+recommendation models.
+2.1
+Ad CTR Prediction and Post-Scoring
+Context
+Ads CTR prediction has been a fundamental task in online ad-
+vertising. Over the past decade, deep learning models such as
+DCN [17, 18], DIN [24] and DHEN [23] have become the domi-
+nant approach due to their enhanced capacity for automatic feature
+interaction learning.
+An interesting challenge in CTR prediction as well as other
+recommendation tasks is handling post-scoring contextual informa-
+tion, such as ad position or UI treatments, which can be unavailable
+at scoring time but influence user behavior. A simple approach
+treats position as a debiasing feature—including it during training
+but omitting it at inference time. More sophisticated methods in-
+volve counterfactual learning [1] to explicitly model position bias,
+or employing secondary factorized models [2] to capture context-
+dependent effects.
+2.2
+Sequence-Based Recommendation Models
+User activity data in recommendation systems can naturally be
+represented as sequences. Transformer architectures, which have
+achieved remarkable success in language and vision domains, have
+been adapted for recommendation tasks. Many works integrate
+transformers as sequence encoders within existing DLRM archi-
+tectures, which have been successfully deployed in industrial sys-
+tems [3, 20, 21].
+More recently, HSTU-style generative recommenders [22] refor-
+mulated recommendation as a generative paradigm, where trans-
+formers serve as the sole backbone architecture rather than being
+ensembled with DLRM models. These decoder-only models are
+trained autoregressively and support both retrieval (directly pre-
+dicting the next item) and ranking (performing discriminative tasks).
+Building on this paradigm, models like OneRec [8] perform end-to-
+end generation to predict the next item without requiring cascaded
+retrieval-ranking stages.
+3
+Enhancing Decoder-Only Transformer for
+Ads System
+3.1
+Overall Architecture
+Inspired by the HSTU ranking architecture [22], the full model
+processes interleaved ad impression and action sequences:
+Input Sequence Formulation: The input to our model consists of
+a concatenated sequence of static user features followed by inter-
+leaved impression and contextualized action tokens:
+x = [𝑀; 𝐼1, (𝐶1,𝐴1); 𝐼2, (𝐶2,𝐴2); . . . ; 𝐼𝐿−1, (𝐶𝐿−1,𝐴𝐿−1); 𝐼𝐿]
+(1)
+where:
+• 𝑀represents user static features (e.g., profile)
+• 𝐼𝑡represents the 𝑡-th impression features, a concatenation
+of:
+– Ad features (e.g., adId)
+– Request features (e.g., device type)
+– Other impression-related features
+• 𝐶𝑡represents post-scoring contextual features not available
+at online scoring time (e.g. ad position)
+• 𝐴𝑡represents the action taken on impression 𝑡(e.g., click)
+Decoder-Only Transformer: A decoder-only transformer processes
+the interleaved input sequence and predicts all the actions for each
+impression in one go during training time (i.e. teacher forcing).
+
+
+CADET: Context-Conditioned Ads CTR Prediction With a Decoder-Only Transformer
+(a) Overall architecture
+(b) Context-conditioned decoding block
+Figure 1: Architecture of the proposed model. (a) Overall architecture showing the interleaved impression-action sequence
+processing through the decoder-only transformer. (b) Detailed view of the context-conditioned decoding block with multiple
+prediction heads.
+Context-Conditioned Decoding Block: The decoder-only trans-
+former outputs a sequence of predictions paired with contextual
+metadata for each impression. For each impression, the decoding
+block produces 𝐾context-conditioned predictions:
+{ ˆ𝑦1, ˆ𝑦2, . . . , ˆ𝑦𝐾}
+(2)
+where ˆ𝑦𝑘represents the prediction for context bucket 𝑘(e.g., differ-
+ent ad positions). Through this context-conditioned decoding block,
+described in Section 3.3, the model learns to produce predictions
+conditioned on post-scoring contextual information.
+3.2
+CADET Transformer Block
+3.2.1
+Self-Gated Multi-Head Attention. To improve training stabil-
+ity and mitigate pathological attention behaviors in our proposed
+model, we introduce self-gated attention [6] that adaptively regu-
+lates information flow at both representation and interaction levels;
+see Figure 2. Unlike output-level gating used in prior work [14, 22],
+our approach applies gating before attention computation on input
+representations and query-key projections.
+Specifically, let𝑋∈R𝐵×𝐿×𝑑model denote the token representations
+at each layer of the decoder-only transformer, where 𝐵is batch size,
+𝐿is sequence length and 𝑑model is the model dimension. Queries
+𝑄and keys 𝐾are obtained through linear projections of 𝑋and
+preserve the same dimensionality, i.e., 𝑄, 𝐾∈R𝐵×𝐿×𝑑model
+𝑄= 𝑋𝑊𝑄
+𝐾= 𝑋𝑊𝐾,
+(3)
+where 𝑊𝑄,𝑊𝐾∈R𝑑model×𝑑model. We first apply a lightweight self-
+gating module to obtain gated representations, where the gate is
+conditioned on the representations themselves. This representation-
+level gating acts as adaptive feature selection, suppressing noisy
+or low-utility dimensions before attention computation, thereby
+improving activation scaling and gradient conditioning during train-
+ing.
+𝐺𝑎𝑡𝑒(𝑋) = 𝜎(𝑊gate
+𝑋
+𝑋),
+˜𝑋= 𝑋⊙𝐺𝑎𝑡𝑒(𝑋)
+(4)
+where 𝜎(·) is the sigmoid function, ⊙denotes element-wise multi-
+plication, and 𝑊gate
+𝑋
+∈R𝑑model×𝑑model.
+Figure 2: Detailed description of self-gated attention module
+In addition, we incorporate self-gating directly into the atten-
+tion mechanism by modulating the projected queries 𝑄and keys
+𝐾. This interaction-level gating explicitly regulates query-key
+interactions by constraining dot-product magnitudes, preventing
+dominant tokens from monopolizing attention and effectively miti-
+gating attention sink phenomena.
+𝐺𝑎𝑡𝑒(𝑄) = 𝜎(𝑊gate
+𝑄
+𝑄),
+˜𝑄= 𝑄⊙𝐺𝑎𝑡𝑒(𝑄)
+𝐺𝑎𝑡𝑒(𝐾) = 𝜎(𝑊gate
+𝐾
+𝐾),
+˜𝐾= 𝐾⊙𝐺𝑎𝑡𝑒(𝐾)
+(5)
+where 𝑊gate
+𝑄
+,𝑊gate
+𝐾
+∈R𝑑model×𝑑model.
+3.2.2
+Temporal Encoding. We encode temporal information using
+a modified form of Rotary Positional Embeddings (RoPE) [16]. In
+the original RoPE formulation, a query or key vector x ∈R𝑑is
+decomposed into 𝑑/2 two-dimensional components, and the 𝑖-th
+component is rotated by an angle
+𝛼𝑖(𝑝) = 𝑝· 𝜃𝑖,
+𝜃𝑖= 10000−2𝑖
+𝑑,
+
+
+Pardoe and Daftary, et al.
+where 𝑝denotes the item’s sequence position. The dot product
+between rotated queries and keys will depend on the relative dif-
+ferences in angles, allowing the model to learn about the meaning
+of relative position differences.
+For ads modeling, we care more about differences in time than
+sequence position, so we replace position 𝑝with a Unix timestamp
+𝑡. To handle time differences ranging from seconds to months, we
+define the rotation angle for the 𝑖-th component as
+𝛼𝑖(𝑡) = 𝑡· 𝜃𝑖,
+𝜃𝑖= 𝜙𝑚𝑖𝑛
+Δ𝑡max
+· 𝑏𝑎𝑠𝑒
+2𝑖
+𝑑,
+where Δ𝑡max is the lookback window used in constructing sequences
+and thus the largest possible difference in timestamps. 𝜙𝑚𝑖𝑛is a
+tunable parameter that lets us control what the the smallest relative
+rotation (difference in 𝛼0) would be for items with timestamps dif-
+fering by Δ𝑡max, and 𝑏𝑎𝑠𝑒is a tunable parameter that lets us control
+the highest frequency rotations that are useful for representing
+short-term information.
+We do not add explicit information about sequence position, as
+causal transformers can learn this implicitly [11].
+3.2.3
+Customized Masking. We employ customized time-based
+masking strategies during training and inference to ensure offline-
+online consistency and efficient candidate scoring.
+Inference-time Masking. At scoring time, the ranking model needs
+to rank hundreds of candidates simultaneously. Similar to previous
+work on generative recommenders [22], instead of scoring can-
+didates individually, we append all candidates to the end of the
+sequence and employ a special mask as shown in Figure 3 so that
+all candidates are scored in a single forward pass while remain-
+ing causally isolated from each other. This significantly improves
+evaluation and online inference speed.
+Training Masking. A critical challenge in production recommen-
+dation systems is maintaining offline-online consistency. For online
+ranking systems, recent activity may be unavailable for several rea-
+sons, including unavoidable system delay, simultaneous ranking for
+multiple ad slots, and delayed user interactions (e.g., a user clicking
+on an ad they saw earlier in the session). Attending to immediately
+previous tokens in the same session could inflate offline metrics
+and cause reliance on information unavailable at inference time.
+To prevent the model from learning to depend on interactions
+that are unavailable at inference-time, we enforce session-aware
+masking during training. We apply a train-time mask 𝑀that pre-
+vents tokens from attending to same-session information:
+𝑀𝑖,𝑗=
+(
+−∞
+if 𝑡𝑗> 𝑡𝑖−Δdelay
+0
+otherwise
+(6)
+where Δdelay encodes the minimum latency we guarantee between
+an event and its observability online. We materialize this mask at
+runtime as shown in Figure 3. The final attention computation is:
+Attention(𝑄, 𝐾,𝑉) = softmax
+𝑄𝐾⊤
+√𝑑𝑘
++ 𝑀
+
+𝑉
+(7)
+Keys (train)
+Keys (val)
+Query (train)
+Query (val)
+Figure 3: Session-aware masking strategies (depicted before
+item/action interleaving). Solid yellow cells are always un-
+masked. Striped cells fall within the Δdelay threshold, masked
+during training, but available at inference. Gray cells are
+masked and dark red cells denote the preserved diagonal.
+3.3
+Context-Conditioned Decoding Block
+The decoding block addresses a fundamental challenge in ads rec-
+ommendation: the gap between training-time observability and
+inference-time constraints. Critical contextual signals, such as final
+ad position or specific UI treatments, are often unknown during
+initial scoring. We resolve this by employing a multi-tower architec-
+ture that generates predictions conditioned on potential rendering
+contexts in a single forward pass.
+3.3.1
+Context-Conditioned Heads. To model behavior influenced
+by post-scoring context, we partition the context space into 𝐾
+discrete buckets based on historical click-through rates (e.g., 𝑘= 1
+for position 1, 𝑘= 2 for positions 2–4, 𝑘= 3 for positions 5+). For
+each bucket 𝑘∈{1, . . . , 𝐾}, we define a dedicated prediction head
+branching from the shared transformer output ℎ𝑡:
+ˆ𝑦𝑘= MLP𝑘(ℎ𝑡)
+(8)
+where ℎ𝑡is the transformer representation for impression 𝑡and ˆ𝑦𝑘
+denotes the logit produced by the k-th head.
+Training: During training, for each impression 𝑡, we observe
+its ground-truth context bucket 𝑘𝑡∈{1, . . . , 𝐾}. Only the head
+corresponding to the realized context contributes to the loss:
+Lctx =
+𝐿
+∑︁
+𝑡=1
+CE  ˆ𝑦𝑘𝑡, 𝑦𝑡
+
+(9)
+where ˆ𝑦𝑘𝑡denotes the prediction from the 𝑘𝑡-th head, and 𝑦𝑡is
+the ground-truth label. This selective routing ensures each head
+learns CTR for its specific context while eliminating train-serve
+mismatch by using position only for loss routing rather than as an
+input feature.
+Serving: At inference time, all 𝐾heads produce predictions in
+parallel, yielding { ˆ𝑦1, . . . , ˆ𝑦𝐾} for each candidate ad. During the
+online auction, when the serving system renders ads for a specific
+context, it selects the prediction from the corresponding bucket—
+e.g., ˆ𝑦1 when filling position 1, or ˆ𝑦2 when filling positions 2–4. This
+single-pass approach provides policy-ready signals that resolve the
+ranking dependency loop without the latency cost of iterative re-
+ranking or multi-pass feature toggling.
+
+
+CADET: Context-Conditioned Ads CTR Prediction With a Decoder-Only Transformer
+Historical Context Information: As described in Section 3.1, con-
+textual signals 𝐶𝑡are paired with actions 𝐴𝑡rather than included
+in impression features 𝐼𝑡. This design prevents information leak-
+age during training while enabling the model to learn historical
+behavior patterns conditioned on context.
+3.3.2
+Auxiliary Action Heads. To improve representation learning,
+we introduce auxiliary prediction tasks for fine-grained user actions,
+including click type classification, landing page dwell time, impres-
+sion duration regression and other engagement signals. These aux-
+iliary tasks are used solely for training-time regularization and do
+not participate in serving-time inference. Accordingly, auxiliary
+heads are implemented as shared prediction modules:
+ˆ𝑦aux
+𝑗
+= MLP𝑗(ℎ𝑡)
+(10)
+where 𝑗indicates the j-th auxiliary head. Since auxiliary tasks are
+not required to produce context-conditioned predictions at infer-
+ence time, we avoid introducing context-specific auxiliary towers.
+If contextual sensitivity is beneficial for a particular auxiliary signal,
+contextual features can be incorporated directly into the auxiliary
+head during training, without affecting the inference-time architec-
+ture.
+3.3.3
+Loss Construction. The total loss combines context-conditioned
+heads, auxiliary heads, and a pairwise ranking loss:
+L = 𝜆ctxLctx +
+𝐽∑︁
+𝑗=1
+𝜆𝑗Laux
+𝑗
++ 𝜆pairLpair
+(11)
+where 𝐽is the number of auxiliary tasks, Laux
+𝑗
+denotes the auxiliary
+loss for task 𝑗, Lpair is the pairwise ranking loss, and {𝜆ctx, 𝜆𝑗, 𝜆pair}
+are hyperparameters balancing the loss terms.
+We adopt the RankNet pairwise loss [4], which has demonstrated
+empirical performance in large-scale industrial settings [12]. Com-
+pared to pointwise objectives, pairwise loss functions directly op-
+timize relative ordering between positive and negative samples,
+which is better aligned with the ranking nature of ad serving sys-
+tems where only relative scores determine exposure. Prior work
+has shown that pairwise approach is particularly suitable under
+severe class imbalance and noisy labels [4, 5, 13, 19]. The loss is
+defined as:
+Lpair = −
+1
+𝑁+𝑁−
+𝑁+
+∑︁
+𝑖=1
+𝑁−
+∑︁
+𝑗=1
+log
+
+𝜎
+
+𝑧(+)
+𝑖
+−𝑧(−)
+𝑗
+
+(12)
+where 𝑁+ and 𝑁−denote the numbers of positive and negative
+samples within a training batch, respectively. Here, 𝑧(+)
+𝑖
+and 𝑧(−)
+𝑗
+represent the logits of the 𝑖-th positive sample and the 𝑗-th negative
+sample. This formulation constructs a cross-user pairwise loss that
+explicitly encourages higher scores for positive samples relative to
+negative ones.
+4
+Productionization and Scaling
+4.1
+Training System
+We train on NVIDIA H200 GPUs using PyTorch Hybrid Sharded
+Data Parallel (HSDP) and FlexAttention [9] to support customized
+masking. We also employ several techniques to improve training
+efficiency and compress the model size.
+4.1.1
+Data Processing. The transition to an auto-regressive para-
+digm allowed us to densify our training data. We migrated from a
+legacy pointwise architecture where each ad impression was stored
+as an independent record with over 100 features to a user-centric
+sequence format. By aggregating impressions and actions into uni-
+fied sequences and pruning the feature set to high-utility signals,
+we achieve significant data footprint reduction while maintaining
+model accuracy by prioritizing temporal behavioral signals (see
+Section 5.2 for quantitative results).
+4.1.2
+HSDP. For our model workloads, Hybrid Sharded Data Par-
+allel (HSDP) outperforms pure DDP or FSDP because it reshapes
+communication to match hardware topology. HSDP shards param-
+eters, gradients, and optimizer state within each node, so the fre-
+quent collectives (e.g., parameter all-gathers and reduce-scatter of
+gradients) run over high-bandwidth, low-latency intra-node links
+(NVLink), where they are comparatively cheap. Across nodes, HSDP
+typically keeps replicas at the node-group level and performs a
+smaller set of inter-node synchronizations (DDP-style all-reduce on
+already-sharded/aggregated buffers), which reduces the volume and
+frequency of traffic over slower, contention-prone interconnects
+(InfiniBand/Ethernet). The result is that the most communication-
+intensive work stays within each node, while cross-node traffic is
+reduced and spread out, improving step time, scaling efficiency, and
+stability for large, bandwidth-sensitive models.
+4.1.3
+Gradient Checkpointing. We use gradient checkpointing to
+reduce the memory usage by trading a small amount of additional
+recomputation for a substantial reduction in activation footprint,
+which enables more aggressive batch-size configurations while
+maximizing utilization of available HBM for maximum throughput.
+4.1.4
+Packing. Packing is a technique commonly used in trans-
+former training to reduce memory usage, and is particularly valu-
+able for Transformer-based ads CTR prediction. User interaction
+sequences in advertising are highly right-skewed: most users have
+only a handful of impressions within the lookback window while a
+small minority dominate the tail. A common approach to training
+sequence models materializes a dense (𝐵, 𝐿,𝑑model) tensor, but since
+attention is the only operation requiring explicit sequence structure,
+the majority of activation memory and MLP compute is wasted on
+padding tokens.
+To densify our training, we make the packed representation
+the canonical form throughout training and validation. The dat-
+aloader compacts every batch into a contiguous token buffer of
+shape (total_tokens,𝑑model) together with prefix-sum offsets and
+sequence-length metadata. Figure 4 contrasts the padding-heavy
+layout with the packed variant that keeps per-user tokens con-
+tiguous. To maintain a fixed total_tokens per batch is critical
+for stability and torch.compile, each worker aggregates user se-
+quences until the packed length approaches a configured budget,
+pads the final few tokens to hit the exact target, and emits the batch.
+4.1.5
+Chunking. While packing eliminates wasted computation
+on padding tokens, processing long sequences remains costly due
+to the self-attention mechanism’s 𝑂(𝑛2) complexity—doubling se-
+quence length quadruples attention computation and memory re-
+quirements. Sequence chunking addresses this by partitioning long
+
+
+Pardoe and Daftary, et al.
+Seq A
+Seq B
+Seq C
+padded length 𝐿=8
+(a) Padded batch: colored cells are real tokens, gray cells are
+padding.
+A
+B
+C
+packed buffer (14 tokens, no padding)
+(b) Packed buffer: sequences concatenated contiguously.
+Figure 4: Transition from padded to packed representation.
+Each color denotes a distinct user sequence; packing elimi-
+nates the gray padding and stores only real tokens.
+user histories into multiple shorter, non-overlapping chunks, en-
+abling efficient processing of arbitrarily long user histories without
+the prohibitive cost of full-length attention.
+Each chunk becomes an independent training example while
+preserving temporal ordering. Formally, for a user sequence S =
+(𝑠1,𝑠2, . . . ,𝑠𝐿) ordered from oldest to most recent, we generate
+⌈𝐿/𝐿chunk⌉training examples by partitioning from the most recent
+end, where the first chunk contains the most recent tokens. This
+ensures recent chunks are always full-length. Reducing sequence
+length from 𝐿to 𝐿chunk decreases per-sequence attention cost by
+(𝐿/𝐿chunk)2, with additional savings during offline inference and
+online serving. This approach is effective because moderate-length
+sequences already capture the most predictive behavioral signals,
+exhibiting diminishing returns for extremely long contexts. Further-
+more, chunking outperforms naive recent-truncation by retaining
+older training data that would otherwise be discarded.
+4.2
+Serving System
+The trained model is integrated into an inference service to predict
+the CTR for ad creatives targeted at LinkedIn users. Each inference
+request comprises a sequence of the user’s historical interaction
+context, detailed in Section 3.1, and a list of candidate creatives
+to be scored. Our primary objective for the inference service is to
+maximize throughput — defined as the number of requests a GPU
+can process — while maintaining a p99 latency within a budget of
+50ms.
+4.2.1
+Scaling inference service. Upon receiving a request, each host
+in the service executes two primary tasks:
+• Preprocessing: A lightweight CPU task that transforms input
+features from the historical context and candidate list into
+the tensor format required for model consumption.
+• Inference: The execution of the model’s forward() pass on
+the GPU to generate predictions.
+To maintain high GPU utilization, we implement a producer-consumer
+architecture: a pool of CPU threads executes the feature prepro-
+cessing tasks and populates a task queue, which a dedicated GPU
+thread subsequently drains to perform model inference.
+Under this architecture, if the average latency of a single GPU
+inference is denoted as 𝑙ms, the throughput of each host is de-
+fined as 1000/𝑙requests per second. Consequently, our primary
+optimization objective is to minimize the latency of individual in-
+ference passes by fully leveraging the massive parallel processing
+capabilities (FLOPS) provided by the GPU.
+4.2.2
+Custom Flash Attention Kernel. While we use FlexAtten-
+tion [9] during training to support session masking (Section 3.2),
+inference requires only the multi-item scoring attention pattern.
+This simpler, fixed pattern enables us to develop a specialized Flash-
+Attention [7] kernel optimized for inference latency.
+Standard PyTorch attention with explicit masks falls back to
+memory-efficient kernels that lack FlashAttention’s tiled computa-
+tion and cannot exploit the sparsity of our attention pattern. For
+context length 𝐿and candidate length 𝑁, standard kernels execute
+(𝐿+ 𝑁)2 operations, whereas our shared-context pattern requires
+only 𝐿2/2+𝐿𝑁—linear rather than quadratic in the number of candi-
+dates. We developed a custom CUDA kernel extending FlashAtten-
+tion that exploits this sparsity and integrates with torch.compile.
+Unlike the standard approach that requires allocating and pass-
+ing a full 2D attention mask tensor, our kernel accepts only two
+scalar parameters: context_length and candidate_length, along
+with the standard Flash Attention inputs (Q, K, V tensors).
+The key insight is that the custom attention pattern is fully
+determined by these two lengths:
+• For query positions 𝑖≤𝐿(context tokens): attend to posi-
+tions 𝑗≤𝑖(causal mask)
+• For query positions 𝑖> 𝐿(candidate tokens): attend to
+positions 𝑗≤𝐿(all context) and 𝑗= 𝑖(self only)
+By integrating this masking logic directly into the Flash Atten-
+tion computation, our kernel achieves several benefits:
+(1) Eliminated mask materialization: No need to allocate
+or transfer a potentially large 𝑂((𝐿+ 𝑁)2) attention mask
+tensor to GPU memory.
+(2) Compute skipping: During the tiled attention computa-
+tion, the kernel skips compute_qk operations entirely for
+tiles that are fully masked, rather than computing then
+masking.
+(3) Memory efficiency: Retains Flash Attention’s memory-
+efficient tiled computation and online softmax.
+The kernel implementation modifies the inner loop of Flash At-
+tention to check whether each key-query tile falls within the valid
+attention region based on the context and candidate length param-
+eters. Tiles that would be entirely masked are skipped without any
+computation, while boundary tiles apply the appropriate masking
+logic inline.
+5
+Experiments and Results
+Here we present the results of offline experiments designed to illus-
+trate the contributions of various components of the CADET model,
+as well as online A/B test results. All experiments are conducted
+on LinkedIn’s sponsored updates ad click dataset.
+
+
+CADET: Context-Conditioned Ads CTR Prediction With a Decoder-Only Transformer
+baseline (no gating)
+Training AUC
+representation-level gating
+0
+5,000
+10,000
+15,000
+20,000
+Training Steps
+representation- and interaction-level gating
+Figure 5: Training AUC curves before 20K steps under differ-
+ent self-gating configurations. Representative samples from
+multiple runs that exhibited consistent dynamics.
+5.1
+Ablation Studies on CADET Components
+Table 1 shows the results of ablation studies on various model
+components, measured in relative ROC AUC change compared to
+the full CADET model. All experiments are performed on one year
+of data with the final day used for validation and a Δdelay of one
+hour. We use 𝑛𝑙𝑎𝑦𝑒𝑟𝑠= 8, 𝑛ℎ𝑒𝑎𝑑𝑠= 4, 𝑑𝑚𝑜𝑑𝑒𝑙= 352, and sequence
+length 𝐿= 4096.
+5.1.1
+Self-Gated Multi-Head Attention. We study the effect of self-
+gating on training dynamics. Figure 5 shows training AUC over the
+first 20K steps with the following settings: 1) baseline without gat-
+ing, 2) representation-level gating, and 3) combined representation-
+and interaction-level gating. For each setting, we performed multi-
+ple runs and consistently observed similar training dynamics. The
+baseline model exhibits clear instability with multiple sharp AUC
+drops during training. Representation-level gating substantially
+smooths the learning trajectory by reducing the frequency and
+magnitude of these drops. The most stable behavior is achieved
+when both representation and interaction gating are applied, yield-
+ing consistently smooth convergence without pronounced degrada-
+tions. In practice, the improved stability enhances reproducibility
+across experiments and production retraining, reduces sensitiv-
+ity to optimization hyperparameters, and leads to more reliable
+convergence.
+5.1.2
+Context-Conditioned Modeling. We use LinkedIn feed posi-
+tion as the context signal in experiments. We set 𝐾= 2 (positions
+1–4, and 5+) to simplify integration with the downstream auction
+system while capturing the primary position-dependent CTR varia-
+tion. Removing context-conditioned modeling significantly hurts
+performance, reducing AUC by 0.61%.
+5.1.3
+Temporal RoPE. We used Δ𝑡max = 1 year in milliseconds,
+𝜙𝑚𝑖𝑛= 1𝑒−4, and 𝑏𝑎𝑠𝑒= 600000. Removing RoPE applied to im-
+pression timestamps reduces AUC by 0.13%, showing that the model
+is able to learn the importance of time between impressions.
+5.1.4
+Session Masking. In this experiment, we retain the Δdelay of
+one hour when creating attention masks for validation tokens, but
+set Δdelay to zero otherwise, meaning that during training we allow
+tokens to attend to any previous token. The drop of 0.31% in AUC
+shows that the model is indeed harmed by allowing it access to
+information at training time that would not be available during
+inference due to latency in updating sequences.
+5.1.5
+Pairwise Ranking Loss. Removing the pairwise ranking loss
+term 𝜆pairLpair results in a consistent AUC decrease of 0.03%. While
+the relative offline lift is small, pairwise supervision can help combat
+exposure bias inherent in logged click data and is low-cost to im-
+plement without external data system dependencies. We therefore
+retain it in our final model.
+Model Variant
+ΔAUC in validation
+full CADET
+-
+- context conditioned
+-0.61%
+- temporal RoPE
+-0.13%
+- session masking
+-0.31%
+- pairwise loss
+-0.03%
+Table 1: Ablation Studies
+5.2
+Scaling and Efficiency
+We evaluate the efficiency gains from our productionization tech-
+niques described in Section 4.
+5.2.1
+Data Processing. Transitioning from a pointwise architecture
+with over 100 features per impression to a user-centric sequence for-
+mat with 12 high-utility signals reduced our data footprint by 98%.
+Despite the leaner feature set, the sequence-native design achieves
+higher accuracy by prioritizing temporal behavioral signals.
+5.2.2
+Packing. By eliminating padding tokens through packing,
+we achieve approximately 4× increase in effective batch size. This
+is particularly impactful given the right-skewed distribution of user
+sequence lengths in advertising, where most users have only a
+handful of impressions.
+5.2.3
+Chunking. Table 2 shows the accuracy-efficiency trade-off
+for sequence chunking. Reducing sequence length from 4096 to
+2048 tokens decreases training cost by 54% while incurring only
+0.04% AUC degradation, demonstrating that chunking can be an
+effective way to reduce computation without significantly hurting
+relevance performance.
+Sequence Length
+Training Cost
+ΔAUC
+4096 (baseline)
+1.0×
+—
+2048
+0.46×
+−0.04%
+1024
+0.29×
+−0.29%
+Table 2: Accuracy-efficiency trade-off for sequence chunking.
+
+
+Pardoe and Daftary, et al.
+5.2.4
+Inference Optimization. We evaluate our custom Flash Atten-
+tion kernel on inference requests with 4,096 context tokens and 512
+candidate tokens. The baseline fused multi-head attention (fmha)
+kernel achieves only 34 TFLOPS/s—significantly below the A100’s
+theoretical peak of 312 TFLOPS/s for FP16 operations. Our custom
+kernel reduces attention execution time from 792𝜇s to 262𝜇s—a 3×
+speedup. This kernel-level efficiency translates to 330 requests per
+second per GPU while maintaining p99 latency under 50ms.
+5.3
+Online Results
+We evaluated CADET through large-scale online A/B testing on
+LinkedIn’s homefeed sponsored updates and saw strong online
+results, with significant improvements to our core business metrics
+of CTR and Revenue, as shown in Table 3.
+Experimental Setup: The control model was the production Li-
+Rank [3] architecture, a hybrid ensemble utilizing DCNv2 [18] for
+feature interactions and TransAct [20] for sequential history mod-
+eling. For the treatment group, we replaced this entire production
+ensemble with the unified CADET model.
+Results: As shown in Table 3, CADET achieved a statistically
+significant +11.04% lift in CTR over the LiRank production baseline.
+This result is particularly notable because it demonstrates that a
+unified generative approach can outperform a highly optimized,
+multi-component hybrid system while simplifying the engineering
+stack. CADET is able to learn implicit temporal patterns to achieve
+better relevance results for users with relatively few features.
+Metric
+Relative Change
+CTR
++11.04%
+Revenue
++0.14%
+Table 3: Online Metrics compared to LiRank baseline
+6
+Alternative Approaches Considered
+During the development of CADET, we explored several alternative
+architectural choices that ultimately did not make it into the final
+system. We document these here to provide insight into our design
+decisions.
+HSTU Architecture. We experimented with the HSTU architec-
+ture [22], including pointwise aggregation self-attention, removing
+FFN layers, and relative attention bias. These modifications yielded
+neutral to marginal gains on our dataset. Given that standard trans-
+former components provide access to well-optimized kernels and
+libraries such as FlexAttention, we chose to retain the conventional
+Transformer architecture. This tradeoff may differ across datasets
+and deployment environments.
+Semantic ID Tokenization. We explored using RQ-VAE-based
+semantic ID tokenization [15] as an alternative to ID-based item
+representations. Our experiments showed that semantic IDs cannot
+replace ID-based representations in our setting, likely due to the
+nature of our ads inventory size. Adding semantic IDs alongside
+ID-based representations provided marginal improvement (0.02%
+AUC lift) at the cost of significantly complicating the production
+pipeline. Given this trade-off, we opted not to include semantic ID
+tokenization in our final system.
+7
+Conclusion
+We presented CADET, an end-to-end decoder-only transformer for
+large-scale ads CTR prediction at LinkedIn. This work addressed
+key challenges in applying autoregressive transformers to advertis-
+ing: self-gated attention stabilizes optimization, timestamp-based
+RoPE captures temporal relationships across timescales, session-
+aware masking ensures offline-online consistency, and context-
+conditioned decoding resolves the chicken-and-egg problem be-
+tween CTR prediction and post-scoring signals.
+Beyond modeling innovations, productionization techniques in-
+cluding sequence packing, chunking, and custom FlashAttention
+kernels enable efficient training and low-latency serving. Empiri-
+cally, CADET achieves 11.04% CTR lift over our LiRank baseline [3],
+showing that a unified decoder-only transformer, combined with
+targeted modeling and production optimizations, can effectively
+outperform DLRM-style ensemble models in industrial ads ranking.
+Acknowledgments
+We thank Oren Sar Shalom, Yuan Gao and Frankin Graves for their
+valuable discussions and paper reviews. We also thank Guandong
+Zhu, Rutvij Mehta, Serhat Leloglu, Zeyu Jin, Shuzhe Xiao, Oz Ozkan,
+Hina Arora, Shao Tang, Alex Berlingeri, Ankur Agrawal, Emily Ki,
+Hongzhou Li, Joe Cho, Qian Li, Siva Popuri, Tiffany Zhou, Chen
+Zhu, Haoyue Tang, Jaideep Ray, Yang Pei, Yujie Ai, Sumit Rangwala,
+and Xiaoling Zhai for their collaboration and contributions to this
+work. Finally, we thank Sen Zhou, Xianxing Zhang, Julie Choi,
+Manas Apte, Yitong Zhou, and Sriram Sankar for their guidance
+and leadership support.
+References
+[1] Aman Agarwal, Kenta Takatsu, Ivan Zaitsev, and Thorsten Joachims. 2019. A Gen-
+eral Framework for Counterfactual Learning-to-Rank. In Proceedings of the 42nd
+International ACM SIGIR Conference on Research and Development in Information
+Retrieval. 5–14. https://doi.org/10.1145/3331184.3331202
+[2] Rohan Anil, Sandra Gadanho, Da Huang, Nijith Jacob, Zhuoshu Li, Dong Lin,
+Todd Phillips, Cristina Pop, Kevin Regan, Gil I. Shamir, Rakesh Shivanna, and
+Qiqi Yan. 2022. On the Factory Floor: ML Engineering for Industrial-Scale Ads
+Recommendation Models. In ORSUM@RecSys 2022. https://ceur-ws.org/Vol-
+3303/paper6.pdf
+[3] Fedor Borisyuk, Mingzhou Zhou, Qingquan Song, Siyu Zhu, Birjodh Tiwana,
+Ganesh Parameswaran, Siddharth Dangi, Lars Hertel, Qiang Charles Xiao, Xi-
+aochen Hou, Yunbo Ouyang, Aman Gupta, Sheallika Singh, Dan Liu, Hailing
+Cheng, Lei Le, Jonathan Hung, Sathiya Keerthi, Ruoyan Wang, Fengyu Zhang,
+Mohit Kothari, Chen Zhu, Daqi Sun, Yun Dai, Xun Luan, Sirou Zhu, Zhiwei
+Wang, Neil Daftary, Qianqi Shen, Chengming Jiang, Haichao Wei, Maneesh
+Varshney, Amol Ghoting, and Souvik Ghosh. 2024. LiRank: Industrial Large
+Scale Ranking Models at LinkedIn. In Proceedings of the 30th ACM SIGKDD
+Conference on Knowledge Discovery and Data Mining (KDD ’24). 4804–4815.
+https://doi.org/10.1145/3637528.3671561
+[4] Chris Burges, Tal Shaked, Erin Renshaw, Ari Lazier, Matt Deeds, Nicole Hamilton,
+and Greg Hullender. 2005. Learning to rank using gradient descent. In Proceedings
+of the 22nd international conference on Machine learning. 89–96.
+[5] Zhe Cao, Tao Qin, Tie-Yan Liu, Ming-Feng Tsai, and Hang Li. 2007. Learning
+to rank: from pairwise approach to listwise approach. In Proceedings of the 24th
+international conference on Machine learning. 129–136.
+[6] Yekun Chai, Shuo Jin, and Xinwen Hou. 2020. Highway Transformer: Self-Gating
+Enhanced Self-Attentive Networks. In Proceedings of the 58th Annual Meeting of
+the Association for Computational Linguistics, Dan Jurafsky, Joyce Chai, Natalie
+Schluter, and Joel Tetreault (Eds.). Association for Computational Linguistics,
+Online, 6887–6900. https://doi.org/10.18653/v1/2020.acl-main.616
+[7] Tri Dao. 2024. FlashAttention-3: Fast and Accurate Attention with Asynchrony
+and Low-precision. arXiv preprint arXiv:2407.08608 (2024).
+
+
+CADET: Context-Conditioned Ads CTR Prediction With a Decoder-Only Transformer
+[8] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. OneRec: Unifying Retrieve and Rank with Genera-
+tive Recommender and Iterative Preference Alignment. arXiv:2502.18965 [cs.IR]
+https://arxiv.org/abs/2502.18965
+[9] Juechu Dong, Boyuan Feng, Driss Guessous, Yanbo Liang, and Horace He. 2024.
+Flex Attention: A Programming Model for Generating Optimized Attention
+Kernels. arXiv:2412.05496 [cs.LG] https://arxiv.org/abs/2412.05496
+[10] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, Yueming Han, MengLei Zhou,
+Lei Yu, Chuan Liu, and Wei Lin. 2025. MTGR: Industrial-Scale Generative Recom-
+mendation Framework in Meituan. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management (CIKM ’25). 5731–5738.
+https://doi.org/10.1145/3746252.3761565
+[11] Amirhossein Kazemnejad, Inkit Padhi, Karthikeyan Natesan Ramamurthy, Payel
+Das, and Siva Reddy. 2023. The Impact of Positional Encoding on Length Gener-
+alization in Transformers. In Proceedings of the 37th International Conference on
+Neural Information Processing Systems (NIPS ’23). Article 1082.
+[12] Zhutian Lin, Junwei Pan, Shangyu Zhang, Ximei Wang, Xi Xiao, Shudong Huang,
+Lei Xiao, and Jie Jiang. 2024. Understanding the ranking loss for recommendation
+with sparse user feedback. In Proceedings of the 30th ACM SIGKDD Conference
+on Knowledge Discovery and Data Mining. 5409–5418.
+[13] Tie-Yan Liu et al. 2009. Learning to rank for information retrieval. Foundations
+and Trends® in Information Retrieval 3, 3 (2009), 225–331.
+[14] Zihan Qiu, Zekun Wang, Bo Zheng, Zeyu Huang, Kaiyue Wen, Songlin Yang,
+Rui Men, Le Yu, Fei Huang, Suozhi Huang, Dayiheng Liu, Jingren Zhou, and
+Junyang Lin. 2025. Gated Attention for Large Language Models: Non-linearity,
+Sparsity, and Attention-Sink-Free. In Proceedings of the 39th Annual Conference
+on Neural Information Processing Systems (NeurIPS ’25).
+[15] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Keshavan, Trung
+Vu, Lukasz Heidt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah Samost, Maciej
+Kula, Ed H. Chi, and Maheswaran Sathiamoorthy. 2023. Recommender Systems
+with Generative Retrieval. In Proceedings of the 37th International Conference on
+Neural Information Processing Systems (NIPS ’23). Article 452.
+[16] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng Liu.
+2024. RoFormer: Enhanced Transformer with Rotary Position Embedding. Neu-
+rocomputing 568 (2024), 127063. https://doi.org/10.1016/j.neucom.2023.127063
+[17] Ruoxi Wang, Bin Fu, Gang Fu, and Mingliang Wang. 2017. Deep & Cross Network
+for Ad Click Predictions. In Proceedings of the ADKDD’17 (ADKDD’17). Article
+12, 7 pages. https://doi.org/10.1145/3124749.3124754
+[18] Ruoxi Wang, Rakesh Shivanna, Derek Cheng, Sagar Jain, Dong Lin, Lichan Hong,
+and Ed Chi. 2021. DCN V2: Improved Deep & Cross Network and Practical
+Lessons for Web-scale Learning to Rank Systems. In Proceedings of the Web
+Conference 2021 (WWW ’21). 1785–1797. https://doi.org/10.1145/3442381.3450078
+[19] Qiang Wu, Christopher JC Burges, Krysta M Svore, and Jianfeng Gao. 2010.
+Adapting boosting for information retrieval measures. Information Retrieval 13,
+3 (2010), 254–270.
+[20] Xue Xia, Pong Eksombatchai, Nikil Pancha, Dhruvil Deven Badani, Po-Wei
+Wang, Neng Gu, Saurabh Vishwas Joshi, Nazanin Farahpour, Zhiyuan Zhang,
+and Andrew Zhai. 2023. TransAct: Transformer-based Realtime User Action
+Model for Recommendation at Pinterest. In Proceedings of the 29th ACM SIGKDD
+Conference on Knowledge Discovery and Data Mining (KDD ’23). 5249–5259.
+https://doi.org/10.1145/3580305.3599918
+[21] Zhichen Zeng, Xiaolong Liu, Mengyue Hang, Xiaoyi Liu, Qinghai Zhou, Chaofei
+Yang, Yiqun Liu, Yichen Ruan, Laming Chen, Yuxin Chen, Yujia Hao, Jiaqi Xu,
+Jade Nie, Xi Liu, Buyun Zhang, Wei Wen, Siyang Yuan, Hang Yin, Xin Zhang, Kai
+Wang, Wen-Yen Chen, Yiping Han, Huayu Li, Chunzhi Yang, Bo Long, Philip S.
+Yu, Hanghang Tong, and Jiyan Yang. 2025. InterFormer: Effective Heterogeneous
+Interaction Learning for Click-Through Rate Prediction. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management
+(CIKM ’25). 6225–6233. https://doi.org/10.1145/3746252.3761527
+[22] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Jiayuan He, Yinghai Lu, and Yu Shi. 2024. Actions
+Speak Louder than Words: Trillion-Parameter Sequential Transducers for Gen-
+erative Recommendations. In Proceedings of the 41st International Conference
+on Machine Learning (ICML ’24). PMLR, 58484–58509. https://proceedings.mlr.
+press/v235/zhai24a.html
+[23] Buyun Zhang, Liang Luo, Xi Liu, Jay Li, Zeliang Chen, Weilin Zhang, Xiaohan
+Wei, Yuchen Hao, Michael Tsang, Wenjun Wang, Yang Liu, Huayu Li, Yasmine
+Badr, Jongsoo Park, Jiyan Yang, Dheevatsa Mudigere, and Ellie Wen. 2022. DHEN:
+A Deep and Hierarchical Ensemble Network for Large-Scale Click-Through Rate
+Prediction. arXiv:2203.11014 [cs.IR] https://arxiv.org/abs/2203.11014
+[24] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep Interest Network for Click-
+Through Rate Prediction. In Proceedings of the 24th ACM SIGKDD International
+Conference on Knowledge Discovery & Data Mining (KDD ’18). 1059–1068. https:
+//doi.org/10.1145/3219819.3219823
