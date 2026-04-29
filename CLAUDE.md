@@ -122,7 +122,7 @@ TO-RoPE 的 `timestamps`（连续实数小时）走单独路径（不加到 embe
 
 已踩坑：
 - **EXP-023/024**：`time_gaps`/`action_levels` 训练时有，beam search incremental 步骤没传 → R@500 崩溃。修复：EXP-025。
-- **EXP-044B**：`timestamps`（TO-RoPE）训练时传真实 rel_hours，beam search 生成步骤没传 `step_timestamp` → timestamps=0 → attention pattern 完全不同 → R@500 32%（应有 ~60%+）。修复：`constrained_beam_search` 现已 carry-forward ctx 最后一个 timestamp。
+- **EXP-044B（第一次修复不完整）**：`timestamps`（TO-RoPE）训练时传真实 rel_hours，beam search 生成步骤没传 `step_timestamp` → timestamps=0。修复了 `constrained_beam_search` 的 carry-forward，但 `eval.py` 的 `eval_items` 构建循环过滤条件是 `fdef.inject != 'embed_add'`，导致 `inject='torope'` 的 timestamps 从未被放入 `ctx_side_features`，carry-forward 逻辑根本没机会执行，结果仍然 32%。**完整修复**：`eval.py` 的循环必须同时处理 `inject='embed_add'`（放 ctx_sf + gen_sf）和 `inject='torope'`（只放 ctx_sf，供 carry-forward）。
 
 **检查清单（设计新特征实验时）**：
 1. 训练时该特征是否非零？（看 `[sanity]` log，或直接看 shard 数据）

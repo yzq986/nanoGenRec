@@ -287,10 +287,14 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
             ctx_sf = {}
             gen_sf = {}
             for key, fdef in _FEAT_REG.items():
-                if fdef.inject != 'embed_add' or key not in seq:
+                if key not in seq:
                     continue
-                ctx_sf[key] = seq[key][:ctx_end]
-                gen_sf[key] = seq[key][ctx_end] if ctx_end < len(seq[key]) else fdef.default_val
+                if fdef.inject == 'embed_add':
+                    ctx_sf[key] = seq[key][:ctx_end]
+                    gen_sf[key] = seq[key][ctx_end] if ctx_end < len(seq[key]) else fdef.default_val
+                elif fdef.inject == 'torope':
+                    # timestamps go into ctx_side_features so beam search can carry-forward
+                    ctx_sf[key] = seq[key][:ctx_end]
             if ctx_sf:
                 item['ctx_side_features'] = ctx_sf
             if gen_sf:
