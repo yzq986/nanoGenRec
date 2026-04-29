@@ -1,0 +1,41 @@
+{
+  "name": "exp044c-torope-3d-ts025-l015",
+  "model_type": "s-tier",
+  "n_params": 45655552,
+  "n_active_params": 17344000,
+  "total_tokens": 132609912,
+  "total_flops": 13799917882368000,
+  "sid_cache": "experiments/sid_cache/exp026-0.6b-14d",
+  "eval": {
+    "ppl": 669.4497,
+    "layer_ppl": [
+      877.9861,
+      126.7345,
+      2700.827
+    ],
+    "avg_loss": 6.506456,
+    "depth_hit@10": [
+      0.0821,
+      0.0314,
+      0.007
+    ],
+    "depth_hit@10_indep": [
+      0.0818,
+      0.422,
+      0.1086
+    ],
+    "depth_acc_beam": [
+      0.026,
+      0.019,
+      0.018
+    ],
+    "target_sid_found_rate": 0.626,
+    "n_eval_positions": 148078,
+    "n_eval_items": 49166,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.119,
+    "item_recall@50": 0.297,
+    "item_recall@100": 0.389,
+    "item_recall@500": 0.624
+  }
+}

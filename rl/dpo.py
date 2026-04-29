@@ -122,7 +122,13 @@ def compute_sid_logprobs(
 
     positions = torch.arange(T, device=device).unsqueeze(0)
     x = model.embed_with_features(full_input, positions, full_sf or None)
-    hidden = model._transformer_forward(x)  # (B, T, D)
+    rope_pos, _, rope_lay = model._build_rope_inputs(T, device)
+    if model.use_rope:
+        raw_ts = full_sf.get('timestamps')
+        rope_ts = model._carry_forward_timestamps(raw_ts, T, device).expand(B, -1)
+    else:
+        rope_ts = None
+    hidden = model._transformer_forward(x, positions=rope_pos, timestamps=rope_ts, layers=rope_lay)
 
     batch_idx = torch.arange(B, device=device)
     total_logprob = torch.zeros(B, device=device, dtype=hidden.dtype)

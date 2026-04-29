@@ -36,19 +36,68 @@ cd "${REPO_ROOT}"
 
 注意是 `${REPO_ROOT}` 本身（即 `gr-demo/`），**不是父目录**。
 
-## 写实验脚本的硬性要求
+## 新实验标准流程（EXP-047 起统一使用）
 
-写新的 `experiments/scripts/exp-*.sh` 时，**必须先 Grep/Read 最近 2-3 个已有实验脚本**（按编号最大的优先），从中确认：
+**所有新实验走 `run_exp.py` + YAML，不再写 `.sh` 训练脚本。**
 
-1. **SID cache 路径** — grep `SID_CACHE=` 找到当前标准路径
-2. **NTP 数据日期窗口** — grep `date_start` 找到当前使用的日期范围
-3. **Tokenizer 完整参数** — 如果要训练新 tokenizer，从已有 `preprocess-sid` 调用复制完整参数
-4. **已有 baseline** — 如果 baseline 已训练过（有 checkpoint），直接引用，不要重训
+### 1. 创建 YAML config
 
-5. **CUDA 内存设置** — grep `PYTORCH_CUDA_ALLOC_CONF` 确认是否需要 `expandable_segments:True`（训练脚本几乎都需要）
-6. **日期窗口对齐** — `preprocess-sid` 和 `preprocess-ntp` 的日期范围必须兼容：SID 覆盖的 item 集合必须包含 NTP 行为数据中的 item。注意 `--behavior_path auto` 解析的日期取决于运行时间，不同时间跑同一脚本会得到不同结果，必须显式指定 `--date_start/--date_end`
+新建 `experiments/configs/exp-NNN.yaml`，**必须先 Read `experiments/configs/_base.yaml`** 确认 defaults，然后只写需要覆盖的参数：
 
-**绝对禁止凭记忆编造路径、日期、参数。** 所有这些必须从已有脚本中 grep 得到。
+```yaml
+name: exp047
+description: "..."
+base: _base.yaml
+
+# 覆盖 base defaults：
+sid_cache_name: exp026-0.6b-14d     # grep 已有 yaml 确认当前标准
+ntp_data_name: exp026-0.6b-14d      # 若复用其他实验数据，显式指定
+use_segment_emb: true
+
+variants:
+  - name: exp047-a
+    torope_time_split: 0.25
+  - name: exp047-b
+    torope_time_split: 0.50
+    torope_layer_split: 0.15
+```
+
+多 variant 对比实验用 `variants:` 列表；单 config 实验省略 `variants:`。
+
+### 2. 必须确认的参数（写 YAML 前 grep）
+
+**禁止凭记忆编造，必须从已有 yaml 中 grep 得到：**
+
+1. **`sid_cache_name`** — grep `sid_cache_name:` in `experiments/configs/`
+2. **`ntp_data_name`** — 复用已有数据时，grep 对应 exp 脚本确认目录名
+3. **`date_start` / `date_end`** — 如需新 preprocess，grep 最近 yaml 确认日期范围
+4. **已有 baseline** — `--check` 会自动显示相似实验，直接复用，不要重训
+
+### 3. 运行
+
+```bash
+# 检查：显示每个 variant 的相似历史实验（防重训）
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --check
+
+# 运行所有 variants（自动 full eval + registry 注册）
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --no-smoke --commit
+
+# 只跑某个 variant（断点续跑）
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --only exp047-a --no-smoke
+```
+
+### 4. 加入队列（后台跑）
+
+```bash
+# queue.txt 格式：SCRIPT  LOG  DONE_STRING
+echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!" >> experiments/queue.txt
+```
+
+`run_config.sh` 是通用 wrapper，内部调用 `run_exp.py --no-smoke --commit`。
+
+### 5. 需要新 preprocess 时
+
+日期窗口对齐规则不变：`preprocess-sid` 和 `preprocess-ntp` 的日期范围必须兼容，SID 覆盖的 item 集合必须包含 NTP 行为数据中的 item。必须显式指定 `--date_start/--date_end`，不要用 `auto`。
 
 ## Git remotes
 
@@ -115,6 +164,29 @@ Three remotes are configured:
 模型支持两类 side features：`time_gaps`（时间间隔 bucket）和 `action_levels`（行为级别）。
 TO-RoPE 的 `timestamps`（连续实数小时）走单独路径（不加到 embedding，而是传给 attention 的 RoPE 时间分量）。
 **所有路径（训练和推理）必须通过同一个入口注入特征**，否则会产生 train-infer 不一致。
+
+### ⚠️ Train-Infer 不一致：加特征必须全链路验证，否则实验无效
+
+**这是最高优先级的检查。训练时用了某个特征，eval 时必须同样注入，否则模型在两种完全不同的条件下运行，结果毫无意义，等于白费 GPU。**
+
+已踩坑（代价：多次无效实验）：
+- **EXP-023/024**：`time_gaps`/`action_levels` 训练时有，beam search incremental 步骤没传 → R@500 崩溃。修复：EXP-025。
+- **EXP-044B（两层 bug，排查耗时数天）**：
+  - Bug 1：`constrained_beam_search` 的生成步骤没传 `step_timestamp`，timestamps=0。
+  - Bug 2（更隐蔽）：`eval.py` 的 `eval_items` 构建循环 `if fdef.inject != 'embed_add': continue`，把 `inject='torope'` 的 timestamps 直接过滤掉，`ctx_side_features` 里永远没有 timestamps，carry-forward 根本没有机会执行。结果仍然 32%，误判 TO-RoPE 无效。
+  - 正确结果（修复后）：R@500=63.6%，比 baseline +2.4pp。
+
+**全链路检查清单（每次新增特征必做）**：
+
+| 环节 | 检查点 | 常见漏洞 |
+|------|--------|---------|
+| **Preprocess** | shard 文件里该特征是否存在且非零？ | pipeline 未接通，全为 0 |
+| **Train sanity** | `[sanity]` log 打印特征样本值是否正常？ | 看到全 0 立即停止 |
+| **eval_items 构建** | `eval.py` 的循环是否把该特征放进 `ctx_side_features`？ | inject 类型过滤把特征漏掉 |
+| **beam search ctx** | `constrained_beam_search` 调用时 `ctx_side_features` / `ctx_timestamps` 是否传了？ | 变量存在但未传入 |
+| **beam search gen** | 生成步骤（`_step_sf` / `_step_ts`）是否覆盖了该特征的 inject 路径？ | 只处理了 embed_add，漏了 torope |
+
+**快速验证方法**：在 eval log 里加 `[sanity] eval timestamps[:3]` 打印，确认非零。如果是 0，100% 是 bug，不要继续跑。
 
 ### Side Features 统一用 dict 传递
 
@@ -215,22 +287,22 @@ def embed_with_features(self, tokens, positions, side_features=None):
 
 **启动新实验 / 追加队列：**
 ```bash
-# 当前有实验在跑，想排队下一个：
-echo "exp-042.sh  /tmp/exp042.log  EXP-042 complete!" >> experiments/queue.txt
+# 当前有实验在跑，想排队下一个（新流程）：
+echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!" >> experiments/queue.txt
 # cron 检测到队列新条目，上一个完成后自动启动
 ```
 
 **首次启动（队列为空时）：**
 ```bash
 # 1. 启动第一个实验
-nohup bash experiments/scripts/exp-NNN.sh --no-smoke > /tmp/expNNN.log 2>&1 &
+nohup bash experiments/scripts/run_config.sh experiments/configs/exp-NNN.yaml > /tmp/expNNN.log 2>&1 &
 
 # 2. 写入 queue_state.json
 cat > experiments/queue_state.json <<EOF
 {
-  "current": "exp-NNN.sh",
+  "current": "run_config.sh",
   "log": "/tmp/expNNN.log",
-  "done_string": "EXP-NNN complete!",
+  "done_string": "exp-NNN complete!",
   "status": "running",
   "pid": $!
 }
@@ -241,10 +313,9 @@ EOF
 
 **queue.txt 格式：**
 ```
-# 注释行忽略
-exp-038b.sh  /tmp/exp038b.log  EXP-038B complete!  EVAL_MID_CHECKPOINTS=exp038b-hard-lam03-3ep
-exp-039b.sh  /tmp/exp039b.log  EXP-039B complete!
-exp-040.sh   /tmp/exp040.log   EXP-040 complete!
+# 注释行忽略（新流程，script = run_config.sh + yaml path）
+run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!
+run_config.sh experiments/configs/exp-MMM.yaml  /tmp/expMMM.log  exp-MMM complete!
 ```
 第4列 POST_HOOK 可选，支持 `EVAL_MID_CHECKPOINTS=NAME`（自动 eval ep1/ep2 中间 checkpoint 并选最优）。
 
@@ -259,15 +330,41 @@ exp-040.sh   /tmp/exp040.log   EXP-040 complete!
 3. 未完成：报告进度（grep "step \|EXP-" LOG | tail -3），继续等待
 4. 出错（log 有 Traceback/Error/exitcode : 1）：告知用户，state 改为 error，停止
 
-**早停检查 — 如发现以下任意情况，立即 kill 进程（pkill -f "<脚本名>"），更新 status=stopped，告知用户：**
+**早停检查 — 如发现以下任意情况，立即执行 early-stop 流程（见下），告知用户：**
 - log 中出现 Traceback / Error / exitcode : 1（非 SIGTERM）
 - 连续 3 次检查 step 数字没有增加（训练卡住）
 - reward_mean 持续为 0 超过 50 steps（reward 信号消失）
 - advantage_mean 绝对值 > 50（数值爆炸）
 - clip_fraction > 0.99 且持续 20+ steps（策略崩溃）
 
+**R@500 早停检查 — 每次有新的 inline eval 结果时执行：**
+- 从 log 中 grep 所有 `item_recall@500:` 行，提取数值列表（去重相邻重复，每 epoch 最多取 1 个值）
+- 计算历史最佳值 best_r500，取最新值 latest_r500
+- 如果 best_r500 >= 0.45 且 latest_r500 < best_r500 - 0.10：触发早停（R@500 下跌超过 10pp）
+- 如果 best_r500 < 0.45 但 latest_r500 < 0.30 且已跑了 >= 2 个 epoch：触发早停（基础性能不及格）
+- 否则：报告 "R@500: latest=X.XX best=X.XX"，继续等待
+
+实现提取的 bash 命令：
+```bash
+grep 'item_recall@500:' LOG | awk '{print $2}' | python3 -c "
+import sys
+vals=[float(l) for l in sys.stdin]
+deduped=[]
+for v in vals:
+    if not deduped or abs(v-deduped[-1])>1e-9:
+        deduped.append(v)
+if deduped:
+    print('best={:.4f} latest={:.4f} n_evals={}'.format(max(deduped),deduped[-1],len(deduped)))
+"
+```
+
+**Early-stop 流程：**
+  a. pkill -f "<current脚本名>" 并 pkill -f "torchrun.*<实验名关键词>"
+  b. 更新 queue_state.json status=stopped
+  c. 告知用户（说明触发原因和最后的 R@500 数字）
+  d. 不启动下一个实验，保持 cron 存活
+
 **效果预警 — 告知用户但不自动停止（由用户决定是否继续）：**
-- inline eval R@500 明显低于前序 checkpoint（差距 > 10pp）
 - reward_mean 在 100 steps 后仍 < 0.1
 
 （后续实验可在此追加新的早停/预警条件）

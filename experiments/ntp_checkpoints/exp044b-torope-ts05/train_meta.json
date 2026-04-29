@@ -44,17 +44,17 @@
       0.1769
     ],
     "depth_acc_beam": [
-      0.015,
-      0.002,
-      0.002
+      0.031,
+      0.022,
+      0.022
     ],
-    "target_sid_found_rate": 0.325,
+    "target_sid_found_rate": 0.625,
     "n_eval_positions": 148078,
     "n_eval_items": 49166,
     "n_recall_samples": 1000,
-    "item_recall@10": 0.043,
-    "item_recall@50": 0.112,
-    "item_recall@100": 0.161,
-    "item_recall@500": 0.324
+    "item_recall@10": 0.125,
+    "item_recall@50": 0.283,
+    "item_recall@100": 0.387,
+    "item_recall@500": 0.623
   }
 }

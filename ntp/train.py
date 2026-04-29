@@ -1045,8 +1045,12 @@ def train_packed(
     dry_run=False,
     side_features_lists=None,
     use_segment_emb=False,
+    use_rope=False,
+    rope_dims=None,
+    # legacy params kept for backward compat
     use_torope=False,
     torope_time_split=0.5,
+    torope_layer_split=0.0,
     use_gate_attn=False,
 ):
     """Train NTPModel or NTPProbe with unified sequences (causal LM style).
@@ -1067,7 +1071,24 @@ def train_packed(
             Known keys: "time_gaps" (long), "action_levels" (long),
             "timestamps" (float32 relative hours).
     """
+    # Resolve rope: new API (use_rope/rope_dims) takes precedence over legacy use_torope
+    _use_rope = use_rope or use_torope
+    _rope_dims = rope_dims  # may be None; NTPModel handles conversion from use_torope
+
     sf_lists = side_features_lists or {}
+
+    # Validate: every RopeDimSpec that needs data must have it in sf_lists
+    if _use_rope and _rope_dims is not None:
+        _SOURCE_TO_SF_KEY = {'timestamp': 'timestamps', 'layer_id': None}
+        for dim in _rope_dims:
+            sf_key = _SOURCE_TO_SF_KEY.get(dim.source)
+            if sf_key is not None and sf_key not in sf_lists:
+                raise ValueError(
+                    f"rope_dims contains dim '{dim.name}' with source='{dim.source}' "
+                    f"but '{sf_key}' is not in side_features_lists (shard likely missing "
+                    f"this field). Either remove '{dim.name}' from rope_dims or ensure "
+                    f"the data pipeline produces '{sf_key}'."
+                )
 
     # Determine contrastive item embedding dimension from sid_to_embedding
     _contrastive_item_dim = 0
@@ -1083,9 +1104,15 @@ def train_packed(
             _extra_kwargs['contrastive_item_dim'] = _contrastive_item_dim
         if use_segment_emb:
             _extra_kwargs['use_segment_emb'] = True
-        if use_torope:
-            _extra_kwargs['use_torope'] = True
-            _extra_kwargs['torope_time_split'] = torope_time_split
+        if _use_rope:
+            if _rope_dims is not None:
+                _extra_kwargs['rope_dims'] = _rope_dims
+            else:
+                # legacy path: pass old-style flags; NTPModel converts internally
+                _extra_kwargs['use_torope'] = True
+                _extra_kwargs['torope_time_split'] = torope_time_split
+                if torope_layer_split > 0:
+                    _extra_kwargs['torope_layer_split'] = torope_layer_split
         if use_gate_attn:
             _extra_kwargs['use_gate_attn'] = True
         model = NTPModel(
@@ -1280,10 +1307,16 @@ def train_packed(
                 tg_sample = batch_sf['time_gaps'][0, :8].tolist()
                 log(is_main, f"  [sanity] train  time_gaps[0,:8] = {tg_sample}")
             if 'timestamps' in batch_sf:
-                ts_sample = batch_sf['timestamps'][0, :8].tolist()
-                log(is_main, f"  [sanity] train  timestamps[0,:8] = {ts_sample}")
-            elif use_torope:
-                log(is_main, f"  [sanity] train  timestamps = zeros (not in pipeline)")
+                ts_all = batch_sf['timestamps']
+                ri = torch.randint(ts_all.shape[0], (1,)).item()
+                ts_preview = ts_all[ri, :8].tolist()
+                log(is_main, f"  [sanity] train  timestamps[rand={ri},:8] = {[f'{v:.2f}' for v in ts_preview]}")
+                if float(ts_all.max()) == 0.0:
+                    log(is_main, "  [WARNING] use_rope=True but timestamps are ALL ZERO (batch max=0) — "
+                                 "train-infer mismatch! preprocess-ntp may be missing timestamps.")
+            elif _use_rope:
+                log(is_main, "  [WARNING] use_rope=True but 'timestamps' not in shard data — "
+                             "train-infer mismatch! beam search will use zeros at inference time.")
 
         if dry_run and step >= 1:
             log(is_main, f"  Dry run complete (2 steps, loss={total_loss/2:.4f})")
@@ -1411,9 +1444,14 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
             probe_config['use_segment_emb'] = True
         if hasattr(probe, 'active_features') and probe.active_features:
             probe_config['active_features'] = probe.active_features
-        if hasattr(probe, 'use_torope') and probe.use_torope:
-            probe_config['use_torope'] = True
-            probe_config['torope_time_split'] = probe.torope_time_split
+        if hasattr(probe, 'use_rope') and probe.use_rope:
+            probe_config['use_rope'] = True
+            # Save full rope_dims spec so eval can reconstruct exactly
+            probe_config['rope_dims'] = [
+                {'name': d.name, 'split_ratio': d.split_ratio,
+                 'source': d.source, 'base': d.base, 'max_val': d.max_val}
+                for d in probe.rope_dims
+            ]
         if getattr(probe.layers[0], 'attn_gate', None) is not None:
             probe_config['use_gate_attn'] = True
     else:
@@ -1468,6 +1506,42 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
 
 
 # ============================================================
+# CLI helpers
+
+
+def parse_rope_dims(s: str):
+    """Parse --rope_dims string into a list of RopeDimSpec.
+
+    Format: "name:ratio,name:ratio,..."
+    E.g.: "order:0.6,time:0.25,layer:0.0"
+
+    Dims with ratio=0.0 are excluded (disabled), except the first dim always
+    has at least 1 plane (handled inside build_rope_freqs).
+
+    Returns list[RopeDimSpec], or None if s is empty/None.
+    """
+    from ntp.model import RopeDimSpec
+    if not s:
+        return None
+    _SOURCE_MAP = {
+        'order': 'position',
+        'time':  'timestamp',
+        'layer': 'layer_id',
+    }
+    dims = []
+    for part in s.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        name, ratio_s = part.split(':')
+        name = name.strip()
+        ratio = float(ratio_s.strip())
+        source = _SOURCE_MAP.get(name, 'position')
+        dims.append(RopeDimSpec(name=name, split_ratio=ratio, source=source))
+    return dims if dims else None
+
+
+# ============================================================
 # CLI
 # ============================================================
 
@@ -1516,12 +1590,21 @@ def parse_args():
     # Side information features (EXP-023)
     parser.add_argument('--use_segment_emb', action='store_true', default=False,
                         help='Enable segment embedding (item_pos + layer_pos)')
-    # TO-RoPE (feat-5, arxiv 2510.20455) — architecture flag, not a data feature
-    parser.add_argument('--use_torope', action='store_true', default=False,
-                        help='Enable TO-RoPE (Time-and-Order RoPE). Replaces learnable pos_emb '
+    # RoPE — architecture flag, not a data feature
+    parser.add_argument('--use_rope', action='store_true', default=False,
+                        help='Enable RoPE (Rotary Position Embedding). Replaces learnable pos_emb '
                              'with split-by-dim rotary encoding.')
+    parser.add_argument('--rope_dims', type=str, default='order:0.6,time:0.25,layer:0.0',
+                        help='RoPE dimension spec string (name:ratio,...). '
+                             'layer:0.0 means layer dim disabled (2-dim mode). '
+                             'E.g. "order:0.6,time:0.25,layer:0.15"')
+    # Legacy TO-RoPE flags — kept for backward compat, superseded by --use_rope/--rope_dims
+    parser.add_argument('--use_torope', action='store_true', default=False,
+                        help='[DEPRECATED] Use --use_rope instead.')
     parser.add_argument('--torope_time_split', type=float, default=0.5,
-                        help='Fraction of RoPE planes for time encoding (default 0.5)')
+                        help='[DEPRECATED] Use --rope_dims instead.')
+    parser.add_argument('--torope_layer_split', type=float, default=0.0,
+                        help='[DEPRECATED] Use --rope_dims instead.')
     parser.add_argument('--use_gate_attn', action='store_true', default=False,
                         help='Enable GateAttention: sigmoid gate on attention output.')
     return parser.parse_args()
@@ -1623,7 +1706,7 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
         print(f"  [sanity] eval   ctx positions[:8]  = {_ctx_pos[:8]}")
         print(f"  [sanity] eval   ctx positions[-4:] = {_ctx_pos[max(0,_ctx_len-4):]}")
         print(f"  [sanity] eval   ctx len={_ctx_len}, gen positions start at {_ctx_len}")
-        if probe.use_torope:
+        if probe.use_rope:
             print(f"  [sanity] eval   timestamps = zeros (ctx_timestamps not passed to beam search)")
 
     log(is_main, f"  Building sid_to_items from {sid_cache_dir}")
@@ -1866,6 +1949,8 @@ def main():
 
         if model_type == 's-tier':
             from ntp.model import NTPModel
+            # Backward compat: old checkpoints store use_torope; new ones store use_rope
+            _ckpt_use_rope = cfg.get('use_rope', False) or cfg.get('use_torope', False)
             probe = NTPModel(
                 n_clusters_per_layer=cfg['n_clusters_per_layer'],
                 n_sid_layers=cfg['n_sid_layers'],
@@ -1879,8 +1964,9 @@ def main():
                 max_seq_len=cfg.get('max_seq_len', max_seq_len),
                 active_features=cfg.get('active_features', []),
                 use_segment_emb=cfg.get('use_segment_emb', False),
-                use_torope=cfg.get('use_torope', False),
+                use_torope=_ckpt_use_rope,
                 torope_time_split=cfg.get('torope_time_split', 0.5),
+                torope_layer_split=cfg.get('torope_layer_split', 0.0),
                 use_gate_attn=cfg.get('use_gate_attn', False),
             )
         else:
@@ -1953,8 +2039,11 @@ def main():
             dry_run=args.dry_run,
             side_features_lists=side_features_lists,
             use_segment_emb=args.use_segment_emb,
+            use_rope=args.use_rope,
+            rope_dims=parse_rope_dims(args.rope_dims) if (args.use_rope and args.rope_dims) else None,
             use_torope=args.use_torope,
             torope_time_split=args.torope_time_split,
+            torope_layer_split=args.torope_layer_split,
             use_gate_attn=args.use_gate_attn,
         )
 

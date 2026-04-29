@@ -1,0 +1,18 @@
+name: exp044c
+description: "RoPE item-pos fix + optional 3-dim RoPE (order, time, layer)"
+base: _base.yaml
+
+sid_cache_name: exp026-0.6b-14d
+ntp_data_name: exp044b-0.6b-14d    # reuse 044B data (timestamps already present)
+use_segment_emb: true
+use_rope: true
+
+variants:
+  - name: exp044c-torope-ts025
+    rope_dims: "order:0.75,time:0.25,layer:0.0"
+  - name: exp044c-torope-ts05
+    rope_dims: "order:0.50,time:0.50,layer:0.0"
+  - name: exp044c-torope-3d-ts025-l015
+    rope_dims: "order:0.60,time:0.25,layer:0.15"
+  - name: exp044c-torope-3d-ts025-l025
+    rope_dims: "order:0.50,time:0.25,layer:0.25"

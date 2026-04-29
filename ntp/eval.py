@@ -116,10 +116,11 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
             padded[i, :len(toks)] = torch.tensor(toks, dtype=torch.long)
 
         # Side features — pad all features present in both the shard and the model
+        # Include both embed_add and rope features (timestamps needed for RoPE teacher-forced eval)
         from ntp.features import REGISTRY as _FEAT_REG
         sf_padded: Dict[str, torch.Tensor] = {}
         for key, fdef in _FEAT_REG.items():
-            if fdef.inject != 'embed_add':
+            if fdef.inject not in ('embed_add', 'rope', 'torope'):
                 continue
             if key not in batch_seqs[0]:
                 continue
@@ -143,14 +144,13 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
 
         # Forward pass
         L = n_layers
-        positions = torch.arange(T, device=device).unsqueeze(0)
-        x = probe.embed_with_features(input_tokens, positions, input_sf or None)
-
         if hasattr(probe, 'encoder'):
+            positions = torch.arange(T, device=device).unsqueeze(0)
+            x = probe.embed_with_features(input_tokens, positions, input_sf or None)
             causal_mask = nn.Transformer.generate_square_subsequent_mask(T, device=device)
             hidden = probe.encoder(x, mask=causal_mask, is_causal=True)
         else:
-            hidden = probe._transformer_forward(x)
+            hidden = probe.forward_tf(input_tokens, input_sf or None)
 
         # Per-layer loss and per-position hit@10
         hidden_flat = hidden.reshape(-1, hidden.size(-1))
@@ -287,10 +287,14 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
             ctx_sf = {}
             gen_sf = {}
             for key, fdef in _FEAT_REG.items():
-                if fdef.inject != 'embed_add' or key not in seq:
+                if key not in seq:
                     continue
-                ctx_sf[key] = seq[key][:ctx_end]
-                gen_sf[key] = seq[key][ctx_end] if ctx_end < len(seq[key]) else fdef.default_val
+                if fdef.inject == 'embed_add':
+                    ctx_sf[key] = seq[key][:ctx_end]
+                    gen_sf[key] = seq[key][ctx_end] if ctx_end < len(seq[key]) else fdef.default_val
+                elif fdef.inject in ('rope', 'torope'):
+                    # timestamps go into ctx_side_features so beam search can carry-forward
+                    ctx_sf[key] = seq[key][:ctx_end]
             if ctx_sf:
                 item['ctx_side_features'] = ctx_sf
             if gen_sf:
@@ -323,16 +327,22 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
 
         # Build side feature tensors for context (if available)
         ctx_sf_tensors = None
+        ctx_timestamps = None
         if 'ctx_side_features' in item:
             ctx_sf_tensors = {}
             for k, v in item['ctx_side_features'].items():
                 fdef = _FEAT_REG.get(k)
                 dtype = torch.float32 if (fdef and fdef.dtype == 'float') else torch.long
-                ctx_sf_tensors[k] = torch.tensor(v, dtype=dtype, device=device).unsqueeze(0)
+                t = torch.tensor(v, dtype=dtype, device=device).unsqueeze(0)
+                if k == 'timestamps':
+                    ctx_timestamps = t  # TO-RoPE path: pass separately
+                else:
+                    ctx_sf_tensors[k] = t
 
         beams, scores, _ = constrained_beam_search(
             probe, ctx, sid_trie, beam_size=recall_beam_size,
-            ctx_side_features=ctx_sf_tensors,
+            ctx_side_features=ctx_sf_tensors or None,
+            ctx_timestamps=ctx_timestamps,
             gen_side_features=item.get('gen_side_features'))
 
         # Check if target SID appears in any beam
@@ -489,6 +499,22 @@ class SemanticIDPredictionMetric(BaseMetric):
         # Strip legacy keys that no longer exist in NTPModel.__init__
         for _legacy in ('n_time_buckets', 'n_action_levels', 'parallel'):
             probe_config.pop(_legacy, None)
+        # Resolve rope config: new checkpoints store rope_dims as list of dicts.
+        # Old checkpoints store use_torope + split floats; convert those to use_torope kwarg.
+        if 'rope_dims' in probe_config:
+            from ntp.model import RopeDimSpec as _RDS
+            raw_dims = probe_config.pop('rope_dims')
+            probe_config.pop('use_rope', None)
+            probe_config.pop('use_torope', None)
+            probe_config['rope_dims'] = [
+                _RDS(name=d['name'], split_ratio=d['split_ratio'],
+                     source=d['source'], base=d.get('base', 10000.0),
+                     max_val=d.get('max_val', 0))
+                for d in raw_dims
+            ]
+        elif 'use_rope' in probe_config and 'use_torope' not in probe_config:
+            # Old checkpoint: use_rope=True + torope_time_split/torope_layer_split
+            probe_config['use_torope'] = probe_config.pop('use_rope')
 
         if model_type == 's-tier':
             probe = NTPModel(**probe_config).to(device)
@@ -560,6 +586,18 @@ class SemanticIDPredictionMetric(BaseMetric):
             eval_sequences = random.sample(eval_sequences, eval_sample_size)
             if verbose:
                 print(f"  Subsampled to {len(eval_sequences):,} sequences")
+
+        # ── Validate rope_dims vs shard fields ──
+        if hasattr(probe, 'use_rope') and probe.use_rope and probe.rope_dims and eval_sequences:
+            _src_to_key = {'timestamp': 'timestamps'}
+            for _dim in probe.rope_dims:
+                _sf_key = _src_to_key.get(_dim.source)
+                if _sf_key and _sf_key not in eval_sequences[0]:
+                    raise RuntimeError(
+                        f"Model rope_dims has dim '{_dim.name}' (source='{_dim.source}') "
+                        f"but eval shard is missing '{_sf_key}'. "
+                        f"Train-infer mismatch — eval would use wrong timestamps."
+                    )
 
         # ── Teacher-forced eval (batched forward) ──
         if verbose:
