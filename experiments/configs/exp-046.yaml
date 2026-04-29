@@ -1,7 +1,14 @@
-name: exp046-gate-attn
-description: "GateAttention — sigmoid gate on attn output, s-tier baseline"
+name: exp046
+description: "GateAttention — sigmoid gate on attention output vs baseline"
 base: _base.yaml
 
-# delta from base
+sid_cache_name: exp026-0.6b-14d
 use_segment_emb: true
-use_gate_attn: true
+
+variants:
+  # Config A: baseline (exp043-s-0.6b) — dedup will skip if already registered
+  - name: exp043-s-0.6b
+    use_gate_attn: false
+  # Config B: +gate_attn
+  - name: exp046-gate-attn
+    use_gate_attn: true
