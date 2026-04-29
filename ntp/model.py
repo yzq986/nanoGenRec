@@ -1289,17 +1289,24 @@ class NTPModel(nn.Module):
 
     @staticmethod
     def _carry_forward_timestamps(ts: Optional[torch.Tensor], T: int, device) -> torch.Tensor:
-        """Return a (1, T) float timestamp tensor, carry-forwarding the last known value.
+        """Return a (*, T) float timestamp tensor, carry-forwarding the last known value.
 
-        Never returns zeros for interior positions — 0 is out-of-distribution for any
-        position that isn't the very start of a session.
+        If ts is shorter than T, repeats the last value rather than zero-padding.
+        Zero-padding is OOD for any non-start position (training never sees ts=0 except
+        at sequence start).
+
+        ts=None is a last-resort fallback (should not happen when use_rope=True and the
+        data pipeline is correctly wired). Callers inside `if self.use_rope:` blocks must
+        ensure timestamps are present in the shard before reaching this point.
         """
         if ts is None:
+            # Should not happen when pipeline is correctly wired — zero is still better
+            # than crashing, but will degrade RoPE quality.
             return torch.zeros(1, T, device=device, dtype=torch.float)
         ts = ts.float()
         if ts.size(1) >= T:
             return ts[:, :T]
-        # Pad by repeating the last value (carry-forward)
+        # Carry-forward: repeat last known timestamp for unknown future positions
         last = ts[:, -1:]
         pad = last.expand(ts.size(0), T - ts.size(1))
         return torch.cat([ts, pad], dim=1)
@@ -1525,8 +1532,15 @@ class NTPModel(nn.Module):
 
             step_pos, _, step_lay = self._build_rope_inputs(T_new, device, offset=offset)
             if self.use_rope:
-                ts_new = step_timestamp.float() if step_timestamp is not None \
-                    else torch.zeros(new_tokens.size(0), T_new, device=device)
+                if step_timestamp is not None:
+                    ts_new = step_timestamp.float()
+                elif kv_timestamps_cache is not None:
+                    # carry-forward: repeat last known timestamp for new tokens
+                    ts_new = kv_timestamps_cache[:, -1:].float().expand(
+                        new_tokens.size(0), T_new)
+                else:
+                    ts_new = self._carry_forward_timestamps(None, T_new, device).expand(
+                        new_tokens.size(0), -1)
                 if kv_positions_cache is not None:
                     B_kv = kv_positions_cache.size(0)
                     full_pos = torch.cat([kv_positions_cache,
