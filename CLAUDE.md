@@ -36,19 +36,68 @@ cd "${REPO_ROOT}"
 
 注意是 `${REPO_ROOT}` 本身（即 `gr-demo/`），**不是父目录**。
 
-## 写实验脚本的硬性要求
+## 新实验标准流程（EXP-047 起统一使用）
 
-写新的 `experiments/scripts/exp-*.sh` 时，**必须先 Grep/Read 最近 2-3 个已有实验脚本**（按编号最大的优先），从中确认：
+**所有新实验走 `run_exp.py` + YAML，不再写 `.sh` 训练脚本。**
 
-1. **SID cache 路径** — grep `SID_CACHE=` 找到当前标准路径
-2. **NTP 数据日期窗口** — grep `date_start` 找到当前使用的日期范围
-3. **Tokenizer 完整参数** — 如果要训练新 tokenizer，从已有 `preprocess-sid` 调用复制完整参数
-4. **已有 baseline** — 如果 baseline 已训练过（有 checkpoint），直接引用，不要重训
+### 1. 创建 YAML config
 
-5. **CUDA 内存设置** — grep `PYTORCH_CUDA_ALLOC_CONF` 确认是否需要 `expandable_segments:True`（训练脚本几乎都需要）
-6. **日期窗口对齐** — `preprocess-sid` 和 `preprocess-ntp` 的日期范围必须兼容：SID 覆盖的 item 集合必须包含 NTP 行为数据中的 item。注意 `--behavior_path auto` 解析的日期取决于运行时间，不同时间跑同一脚本会得到不同结果，必须显式指定 `--date_start/--date_end`
+新建 `experiments/configs/exp-NNN.yaml`，**必须先 Read `experiments/configs/_base.yaml`** 确认 defaults，然后只写需要覆盖的参数：
 
-**绝对禁止凭记忆编造路径、日期、参数。** 所有这些必须从已有脚本中 grep 得到。
+```yaml
+name: exp047
+description: "..."
+base: _base.yaml
+
+# 覆盖 base defaults：
+sid_cache_name: exp026-0.6b-14d     # grep 已有 yaml 确认当前标准
+ntp_data_name: exp026-0.6b-14d      # 若复用其他实验数据，显式指定
+use_segment_emb: true
+
+variants:
+  - name: exp047-a
+    torope_time_split: 0.25
+  - name: exp047-b
+    torope_time_split: 0.50
+    torope_layer_split: 0.15
+```
+
+多 variant 对比实验用 `variants:` 列表；单 config 实验省略 `variants:`。
+
+### 2. 必须确认的参数（写 YAML 前 grep）
+
+**禁止凭记忆编造，必须从已有 yaml 中 grep 得到：**
+
+1. **`sid_cache_name`** — grep `sid_cache_name:` in `experiments/configs/`
+2. **`ntp_data_name`** — 复用已有数据时，grep 对应 exp 脚本确认目录名
+3. **`date_start` / `date_end`** — 如需新 preprocess，grep 最近 yaml 确认日期范围
+4. **已有 baseline** — `--check` 会自动显示相似实验，直接复用，不要重训
+
+### 3. 运行
+
+```bash
+# 检查：显示每个 variant 的相似历史实验（防重训）
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --check
+
+# 运行所有 variants（自动 full eval + registry 注册）
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --no-smoke --commit
+
+# 只跑某个 variant（断点续跑）
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --only exp047-a --no-smoke
+```
+
+### 4. 加入队列（后台跑）
+
+```bash
+# queue.txt 格式：SCRIPT  LOG  DONE_STRING
+echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!" >> experiments/queue.txt
+```
+
+`run_config.sh` 是通用 wrapper，内部调用 `run_exp.py --no-smoke --commit`。
+
+### 5. 需要新 preprocess 时
+
+日期窗口对齐规则不变：`preprocess-sid` 和 `preprocess-ntp` 的日期范围必须兼容，SID 覆盖的 item 集合必须包含 NTP 行为数据中的 item。必须显式指定 `--date_start/--date_end`，不要用 `auto`。
 
 ## Git remotes
 
@@ -238,22 +287,22 @@ def embed_with_features(self, tokens, positions, side_features=None):
 
 **启动新实验 / 追加队列：**
 ```bash
-# 当前有实验在跑，想排队下一个：
-echo "exp-042.sh  /tmp/exp042.log  EXP-042 complete!" >> experiments/queue.txt
+# 当前有实验在跑，想排队下一个（新流程）：
+echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!" >> experiments/queue.txt
 # cron 检测到队列新条目，上一个完成后自动启动
 ```
 
 **首次启动（队列为空时）：**
 ```bash
 # 1. 启动第一个实验
-nohup bash experiments/scripts/exp-NNN.sh --no-smoke > /tmp/expNNN.log 2>&1 &
+nohup bash experiments/scripts/run_config.sh experiments/configs/exp-NNN.yaml > /tmp/expNNN.log 2>&1 &
 
 # 2. 写入 queue_state.json
 cat > experiments/queue_state.json <<EOF
 {
-  "current": "exp-NNN.sh",
+  "current": "run_config.sh",
   "log": "/tmp/expNNN.log",
-  "done_string": "EXP-NNN complete!",
+  "done_string": "exp-NNN complete!",
   "status": "running",
   "pid": $!
 }
@@ -264,10 +313,9 @@ EOF
 
 **queue.txt 格式：**
 ```
-# 注释行忽略
-exp-038b.sh  /tmp/exp038b.log  EXP-038B complete!  EVAL_MID_CHECKPOINTS=exp038b-hard-lam03-3ep
-exp-039b.sh  /tmp/exp039b.log  EXP-039B complete!
-exp-040.sh   /tmp/exp040.log   EXP-040 complete!
+# 注释行忽略（新流程，script = run_config.sh + yaml path）
+run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!
+run_config.sh experiments/configs/exp-MMM.yaml  /tmp/expMMM.log  exp-MMM complete!
 ```
 第4列 POST_HOOK 可选，支持 `EVAL_MID_CHECKPOINTS=NAME`（自动 eval ep1/ep2 中间 checkpoint 并选最优）。
 
