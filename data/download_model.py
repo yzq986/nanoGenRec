@@ -4,11 +4,10 @@
     python run.py download-model --model qwen3-vl-2b
     python run.py download-model --model qwen3-8b
 
-hf_transfer 默认禁用 (某些环境下会卡死)，使用普通 HTTP 下载。
+使用 modelscope 下载 (国内网络友好)。
 """
 
 import argparse
-import os
 
 from data.encode_distributed import DISTRIBUTED_MODEL_CONFIGS
 
@@ -24,10 +23,7 @@ def main():
 
     hf_name = args.hf_name or DISTRIBUTED_MODEL_CONFIGS[args.model][0]
 
-    # 禁用 hf_transfer (rust 后端在某些环境下会卡死)
-    os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '0'
-
-    from huggingface_hub import snapshot_download
+    from modelscope import snapshot_download
     print(f'Downloading {hf_name} ...')
     path = snapshot_download(hf_name)
     print(f'Done: {path}')
