@@ -206,8 +206,51 @@ EXP-043 baseline（exp043-s-0.6b）使用绝对位置 embedding + segment_emb + 
 4. **实验无效结论**：本实验不能说明 TO-RoPE 不如 absolute pos emb。正确对比需要真实时间戳 + time_gap_emb 共存，且 TO-RoPE 设计也需根据推荐场景（小时级间隔）调整频率基底。
 
 ### Next Steps
-- **EXP-044B（待规划）**：使用真实 timestamps（rel_hours pipeline 已接通）重跑 TO-RoPE，同时保留 time_gap_emb 共存
-- Re-preprocess exp043-0.6b-14d 数据加入 timestamps 字段，再训一轮 TO-RoPE 进行公平对比
+- ~~EXP-044B~~: 完成，见下
+
+---
+
+## EXP-044B: TO-RoPE with Real Timestamps — S-tier + 0.6B SID
+
+**Date**: 2026-04-29
+**Status**: completed
+
+### Background
+EXP-044 中 timestamps 全为 0（pipeline 未接通），本实验修复后重跑：
+- `_build_sequences_from_behavior` 补充 `timestamps` 计算（rel_hours）
+- time_gap_emb 与 TO-RoPE 共存
+- 单独消融：去掉 time_gap（Config D）验证两者是否互补
+
+### Design
+- **Variable**: TO-RoPE time_split (0.5 / 0.25) × 有无 time_gap 共存
+- **Fixed**: S-tier + 0.6B SID，14d 数据，action_level + segment_emb
+- **Baseline**: exp043-s-0.6b（R@500=61.2%，PPL=26.52）
+
+| Config | 说明 |
+|--------|------|
+| exp043-s-0.6b | Baseline: abs pos + time_gap + action + segment |
+| exp044b-torope-ts05 | TO-RoPE ts=0.5 + time_gap + action + segment |
+| exp044b-torope-ts025 | TO-RoPE ts=0.25 + time_gap + action + segment |
+| exp044b-torope-ts05-notg | TO-RoPE ts=0.5 + action + segment（无 time_gap 消融）|
+
+### Results
+
+| Config | R@10 | R@500 | PPL |
+|--------|------|-------|-----|
+| **exp043-s-0.6b** (baseline) | **11.4%** | **61.2%** | **26.52** |
+| exp044b-torope-ts05 | 4.3% | 32.4% | 474.93 |
+| exp044b-torope-ts025 | 4.7% | 34.7% | 467.51 |
+| exp044b-torope-ts05-notg | 4.3% | 30.7% | 479.99 |
+
+### Analysis
+
+1. **TO-RoPE 崩溃性失败**：R@500 从 61.2% 跌至 30-35%，PPL 从 26 暴增至 467-480（约 18×）。与 EXP-044（timestamps=0 时 PPL~380）相比，**真实 timestamps 反而让结果更差**。
+
+2. **PPL 爆炸根因**：TO-RoPE 的时间频率基底设计基于自然语言 token 间隔（毫秒级），推荐场景的 rel_hours 动辄几十到几百小时，频率完全不匹配。RoPE 旋转角度溢出，位置编码失效。
+
+3. **time_gap 消融（Config D vs B）**：去掉 time_gap 后 R@500 从 32.4% 进一步降到 30.7%，说明 time_gap 对 TO-RoPE 场景仍有轻微正向作用，但无法挽救根本问题。
+
+4. **结论**：TO-RoPE 直接搬用到推荐场景不可行。如果未来要用时间感知 RoPE，需要将 rel_hours 重新归一化到 [0, 1] 或对数压缩，避免频率溢出。当前实验彻底排除了默认参数下的 TO-RoPE。
 
 ---
 
