@@ -1108,6 +1108,18 @@ class NTPModel(nn.Module):
                 nn.Linear(contrastive_dim, contrastive_dim),
             )
 
+    def _build_rope_inputs(self, T: int, device, offset: int = 0):
+        """Return (pos, timestamps, layers) for transformer forward — zero-overhead if not torope.
+
+        All forward paths call this instead of computing torope params inline,
+        so adding/changing RoPE variants only requires editing this one method.
+        """
+        if not self.use_torope:
+            return None, None, None
+        L = self.n_sid_layers
+        pos_raw = torch.arange(offset, offset + T, device=device).unsqueeze(0)
+        return pos_raw // L, torch.zeros(1, T, device=device), pos_raw % L
+
     def _embed_tokens(self, tokens: torch.Tensor) -> torch.Tensor:
         """Per-layer token embedding lookup. Position i uses token_embs[i % n_sid_layers]."""
         B, T = tokens.size()
@@ -1191,13 +1203,8 @@ class NTPModel(nn.Module):
         device = tokens.device
         pos_raw = torch.arange(T, device=device).unsqueeze(0)
         x = self.embed_with_features(tokens, pos_raw, side_features)
-        if self.use_torope:
-            L = self.n_sid_layers
-            tf_pos = pos_raw // L
-            tf_lay = pos_raw % L
-            tf_ts  = torch.zeros(1, T, device=device)
-            return self._transformer_forward(x, positions=tf_pos, timestamps=tf_ts, layers=tf_lay)
-        return self._transformer_forward(x)
+        tf_pos, tf_ts, tf_lay = self._build_rope_inputs(T, device)
+        return self._transformer_forward(x, positions=tf_pos, timestamps=tf_ts, layers=tf_lay)
 
     # ── KV-cached inference ──
 
@@ -1274,8 +1281,7 @@ class NTPModel(nn.Module):
             device = tokens.device
             pos_raw = torch.arange(T, device=device).unsqueeze(0)
             positions = pos_raw  # used for APE token embedding lookup
-            torope_pos = (pos_raw // self.n_sid_layers) if self.use_torope else None
-            torope_lay = (pos_raw % self.n_sid_layers)  if self.use_torope else None
+            torope_pos, _, torope_lay = self._build_rope_inputs(T, device)
 
             # Pad each ctx side feature to full sequence length
             padded_sf = {}
@@ -1321,9 +1327,8 @@ class NTPModel(nn.Module):
             x = x + self._get_pos_emb(positions)
             x = self._apply_embed_add_sf(x, step_sf)
 
+            step_pos, _, step_lay = self._build_rope_inputs(T_new, device, offset=offset)
             if self.use_torope:
-                step_pos = pos_raw_inc // self.n_sid_layers
-                step_lay = pos_raw_inc % self.n_sid_layers
                 ts_new = step_timestamp.float() if step_timestamp is not None \
                     else torch.zeros(new_tokens.size(0), T_new, device=device)
                 if kv_positions_cache is not None:
@@ -1333,10 +1338,9 @@ class NTPModel(nn.Module):
                     kv_ts_base = kv_timestamps_cache.float() if kv_timestamps_cache is not None \
                         else torch.zeros(B_kv, offset, device=device)
                     full_ts = torch.cat([kv_ts_base, ts_new.expand(B_kv, -1)], dim=1)
-                    # Layer index = raw token position % L; cached tokens are 0..offset-1
-                    kv_lay_base = torch.arange(offset, device=device).unsqueeze(0) \
-                        .expand(B_kv, -1) % self.n_sid_layers
-                    full_lay = torch.cat([kv_lay_base, step_lay.expand(B_kv, -1)], dim=1)
+                    kv_pos_base, _, kv_lay_base = self._build_rope_inputs(offset, device)
+                    full_lay = torch.cat([kv_lay_base.expand(B_kv, -1),
+                                          step_lay.expand(B_kv, -1)], dim=1)
                 else:
                     full_pos = step_pos
                     full_ts  = ts_new
@@ -1413,9 +1417,8 @@ class NTPModel(nn.Module):
         if self.parallel:
             positions = torch.arange(self.seq_len, device=device).unsqueeze(0)
             x = self._embed_tokens(input_tokens) + self._get_pos_emb(positions)
-            tp_pos = positions if self.use_torope else None
-            tp_ts = torch.zeros(1, self.seq_len, device=device) if self.use_torope else None
-            out = self._transformer_forward(x, positions=tp_pos, timestamps=tp_ts)
+            tp_pos, tp_ts, tp_lay = self._build_rope_inputs(self.seq_len, device)
+            out = self._transformer_forward(x, positions=tp_pos, timestamps=tp_ts, layers=tp_lay)
             s = out[:, -1, :]
             return [self.output_projs[l](s) for l in range(self.n_sid_layers)]
 
@@ -1428,13 +1431,8 @@ class NTPModel(nn.Module):
         T = tokens.size(1)
         pos_raw = torch.arange(T, device=device).unsqueeze(0)
         x = self._embed_tokens(tokens) + self._get_pos_emb(pos_raw)
-        if self.use_torope:
-            torope_pos = pos_raw // self.n_sid_layers
-            torope_lay = pos_raw % self.n_sid_layers
-            torope_ts  = torch.zeros(1, T, device=device)
-        else:
-            torope_pos = torope_lay = torope_ts = None
-        out = self._transformer_forward(x, positions=torope_pos, timestamps=torope_ts, layers=torope_lay)
+        rope_pos, rope_ts, rope_lay = self._build_rope_inputs(T, device)
+        out = self._transformer_forward(x, positions=rope_pos, timestamps=rope_ts, layers=rope_lay)
 
         if return_last_n == 1:
             target_layer = T % self.n_sid_layers
@@ -1486,13 +1484,12 @@ class NTPModel(nn.Module):
         pos_raw = torch.arange(S, device=device).unsqueeze(0)
         positions = pos_raw
         x = self.embed_with_features(input_tokens, positions, sf)
+        tp_pos, _, tp_lay = self._build_rope_inputs(S, device)
         if self.use_torope:
-            tp_pos = pos_raw // L        # item-order index
-            tp_lay = pos_raw % L         # SID layer index 0..L-1
-            timestamps = sf.get('timestamps')
-            tp_ts = timestamps if timestamps is not None else torch.zeros(1, S, device=device)
+            raw_ts = sf.get('timestamps')
+            tp_ts = raw_ts if raw_ts is not None else torch.zeros(1, S, device=device)
         else:
-            tp_pos = tp_lay = tp_ts = None
+            tp_ts = None
         hidden = self._transformer_forward(x, positions=tp_pos, timestamps=tp_ts, layers=tp_lay)
 
         # Flatten for efficient per-layer gather
