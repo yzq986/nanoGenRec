@@ -703,9 +703,11 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
         for toks in user_tokens:
             flat.extend(toks)
 
-        # Compute time_gaps and action_levels (replicated across n_layers tokens per item)
+        # Compute time_gaps, action_levels, and continuous timestamps
         time_gaps = []
         action_levels = []
+        timestamps = []
+        t0_seq = float(user_ts[0])
         for i in range(n):
             if i == 0:
                 bucket = 0  # BOS
@@ -713,9 +715,11 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
                 delta = float(user_ts[i] - user_ts[i - 1])
                 bucket = _compute_time_gap_bucket(delta)
             level = _action_bitmap_to_level(int(user_actions[i]))
+            rel_hours = (float(user_ts[i]) - t0_seq) / 3600.0
             for _ in range(n_layers):
                 time_gaps.append(bucket)
                 action_levels.append(level)
+                timestamps.append(rel_hours)
 
         if action_l2_only:
             for i in range(len(action_levels)):
@@ -726,6 +730,7 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
             L = n_layers
             time_gaps = [0] * L + time_gaps[:-L]
             action_levels = [0] * L + action_levels[:-L]
+            timestamps = [0.0] * L + timestamps[:-L]
 
         sequences.append({
             'tokens': flat,
@@ -733,6 +738,7 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
             'eval_cids': eval_cids,
             'time_gaps': time_gaps,
             'action_levels': action_levels,
+            'timestamps': timestamps,
         })
 
         if split_item_idx == n:
