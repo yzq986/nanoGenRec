@@ -291,7 +291,7 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
                 if fdef.inject == 'embed_add':
                     ctx_sf[key] = seq[key][:ctx_end]
                     gen_sf[key] = seq[key][ctx_end] if ctx_end < len(seq[key]) else fdef.default_val
-                elif fdef.inject == 'torope':
+                elif fdef.inject in ('rope', 'torope'):
                     # timestamps go into ctx_side_features so beam search can carry-forward
                     ctx_sf[key] = seq[key][:ctx_end]
             if ctx_sf:
@@ -498,6 +498,10 @@ class SemanticIDPredictionMetric(BaseMetric):
         # Strip legacy keys that no longer exist in NTPModel.__init__
         for _legacy in ('n_time_buckets', 'n_action_levels', 'parallel'):
             probe_config.pop(_legacy, None)
+        # Backward compat: old checkpoints store use_torope; new ones store use_rope.
+        # NTPModel accepts both, but if only use_rope is in config, convert to use_torope.
+        if 'use_rope' in probe_config and 'use_torope' not in probe_config:
+            probe_config['use_torope'] = probe_config.pop('use_rope')
 
         if model_type == 's-tier':
             probe = NTPModel(**probe_config).to(device)

@@ -196,8 +196,14 @@ def build_torchrun_cmd(resolved: dict, name: str, n_gpus: int, dry_run: bool = F
         cmd += ["--lr", str(resolved["lr"])]
     if resolved.get("use_segment_emb"):
         cmd.append("--use_segment_emb")
-    if resolved.get("use_torope"):
-        cmd += ["--use_torope", "--torope_time_split", str(resolved["torope_time_split"])]
+    # New RoPE API
+    if resolved.get("use_rope"):
+        cmd.append("--use_rope")
+        if resolved.get("rope_dims"):
+            cmd += ["--rope_dims", str(resolved["rope_dims"])]
+    # Legacy TO-RoPE API (backward compat for old configs)
+    elif resolved.get("use_torope"):
+        cmd += ["--use_torope", "--torope_time_split", str(resolved.get("torope_time_split", 0.5))]
         if resolved.get("torope_layer_split", 0.0) > 0:
             cmd += ["--torope_layer_split", str(resolved["torope_layer_split"])]
     if resolved.get("use_gate_attn"):

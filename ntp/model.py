@@ -9,6 +9,7 @@ Reference:
   - DeepSeek / IDEA-onemall-4: Loss-Free dynamic bias MoE balancing
 """
 
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 import math
@@ -21,9 +22,151 @@ import torch.nn.functional as F
 
 
 # ============================================================
-# TO-RoPE — Time-and-Order Rotary Position Embedding
+# RoPE — Rotary Position Embedding (pluggable multi-dim)
 # arxiv 2510.20455 (Roblox), split-by-dim variant
 # ============================================================
+
+@dataclass
+class RopeDimSpec:
+    """Specification for one dimension of a multi-dimensional RoPE."""
+    name: str           # "order", "time", "layer" — or any future dim
+    split_ratio: float  # fraction of head_dim half-planes to allocate
+    source: str         # "position" | "timestamp" | "layer_id"
+    base: float = 10000.0    # RoPE frequency base
+    max_val: int = 0         # precompute table up to this value
+                              # (0 = use max_seq_len for position, n_sid_layers for layer_id)
+
+
+def build_rope_freqs(
+    head_dim: int,
+    max_seq_len: int,
+    dims: List[RopeDimSpec],
+    n_sid_layers: int = 3,
+) -> List[dict]:
+    """Pre-compute RoPE frequency tensors for a list of RopeDimSpec dimensions.
+
+    Returns a list of dicts, one per dim:
+        {"spec": RopeDimSpec, "n_planes": int, "freq": Tensor}
+    where:
+        source="position" → freq_table shape (max_seq_len, n_planes)
+        source="timestamp" → inv_freq shape (n_planes,)  (applied at runtime)
+        source="layer_id"  → freq_table shape (n_sid_layers, n_planes)
+
+    Allocation rule:
+        - First dim always gets at least 1 plane.
+        - Each dim gets floor(half * split_ratio) planes.
+        - Last dim gets the remainder (all unallocated planes).
+    """
+    half = head_dim // 2
+    results = []
+    allocated = 0
+
+    for i, dim in enumerate(dims):
+        is_last = (i == len(dims) - 1)
+        n_planes = max(1 if i == 0 else 0, int(half * dim.split_ratio))
+        if is_last:
+            n_planes = max(n_planes, half - allocated)
+        n_planes = min(n_planes, half - allocated)
+        allocated += n_planes
+
+        max_v = dim.max_val if dim.max_val > 0 else (
+            n_sid_layers if dim.source == 'layer_id' else max_seq_len)
+
+        if n_planes > 0:
+            inv_freq = 1.0 / (dim.base ** (
+                torch.arange(0, n_planes * 2, 2).float() / (n_planes * 2)))
+            if dim.source == 'timestamp':
+                freq = inv_freq  # (n_planes,) — applied at runtime with actual values
+            else:
+                t = torch.arange(max_v).float()
+                freq = torch.outer(t, inv_freq)  # (max_v, n_planes)
+        else:
+            if dim.source == 'timestamp':
+                freq = torch.zeros(0)
+            else:
+                freq = torch.zeros(max_v, 0)
+
+        results.append({"spec": dim, "n_planes": n_planes, "freq": freq})
+
+    return results
+
+
+def _rotate_segment(
+    x_seg: torch.Tensor,   # (B, H, T, n_planes*2)
+    angles: torch.Tensor,  # (B, 1, T, n_planes) or (B, H, T, n_planes)
+) -> torch.Tensor:
+    """Apply RoPE rotation to a segment of x using precomputed angles."""
+    def rotate_half(v):
+        v1, v2 = v[..., ::2], v[..., 1::2]
+        return torch.stack([-v2, v1], dim=-1).flatten(-2)
+
+    cos = torch.cos(angles).repeat_interleave(2, dim=-1)
+    sin = torch.sin(angles).repeat_interleave(2, dim=-1)
+    return x_seg * cos + rotate_half(x_seg) * sin
+
+
+def apply_rope(
+    q: torch.Tensor,           # (B, H, T_q, head_dim)
+    k: torch.Tensor,           # (B, H, T_k, head_dim)
+    dim_inputs_q: List,        # one input tensor per dim for Q
+    dim_inputs_k: List,        # one input tensor per dim for K
+    rope_info: List[dict],     # from build_rope_freqs
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply multi-dim RoPE to Q and K independently.
+
+    dim_inputs: list of tensors, one per entry in rope_info, same order.
+        source="position" → integer tensor (B, T) — item-order indices
+        source="timestamp" → float tensor (B, T) — hours
+        source="layer_id"  → integer tensor (B, T) — layer index 0..L-1
+    """
+    def _rot_one(x, dim_inputs):
+        B, H, T, D = x.shape
+        device = x.device
+        parts = []
+        cursor = 0
+        for inp, info in zip(dim_inputs, rope_info):
+            n_p = info["n_planes"]
+            freq = info["freq"].to(device)
+            spec = info["spec"]
+            if n_p == 0:
+                continue
+            x_seg = x[..., cursor:cursor + n_p * 2]
+            if spec.source == 'timestamp':
+                # inv_freq shape (n_planes,); inp is float (B, T)
+                ts = inp.unsqueeze(1).unsqueeze(-1).float()  # (B,1,T,1)
+                angles = ts * freq.reshape(1, 1, 1, n_p)    # (B,1,T,n_p)
+            else:
+                # freq_table shape (max_v, n_planes); inp is integer (B, T)
+                flat = inp.expand(B, T).reshape(-1).long().clamp(0, freq.size(0) - 1)
+                angles = freq[flat].reshape(B, 1, T, n_p)
+            parts.append(_rotate_segment(x_seg, angles))
+            cursor += n_p * 2
+        if cursor < D:
+            parts.append(x[..., cursor:])
+        return torch.cat(parts, dim=-1)
+
+    B, H, T_q, _ = q.shape
+    T_k = k.shape[2]
+
+    def _fill_zeros(inp, T, device):
+        """Replace None with zero tensor of appropriate shape/dtype."""
+        if inp is not None:
+            return inp
+        return torch.zeros(1, T, device=device)
+
+    q_inputs = [_fill_zeros(inp, T_q, q.device) for inp in dim_inputs_q]
+    k_inputs = [_fill_zeros(inp, T_k, k.device) for inp in dim_inputs_k]
+
+    def _expand(t, B, T):
+        return t.expand(B, T) if t.size(0) == 1 else t
+
+    q_inputs = [_expand(inp, B, T_q) for inp in q_inputs]
+    k_inputs = [_expand(inp, B, T_k) for inp in k_inputs]
+
+    return _rot_one(q, q_inputs), _rot_one(k, k_inputs)
+
+
+# ── Backward-compatible legacy API ───────────────────────────────────────────
 
 def build_torope_freqs(
     head_dim: int,
@@ -34,47 +177,34 @@ def build_torope_freqs(
     time_base: float = 10000.0,
     n_sid_layers: int = 3,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int, int]:
-    """Pre-compute TO-RoPE frequency tensors for up to three dimensions.
-
-    head_dim is split into three contiguous segments:
-      [index-planes | time-planes | layer-planes]
-    - index: encodes item-order position (integer, pre-multiplied)
-    - time:  encodes wall-clock hours (continuous, applied at runtime via inv_freq)
-    - layer: encodes SID layer index 0..n_sid_layers-1 (integer, pre-multiplied)
-
-    layer_split_ratio=0.0 disables the layer segment (2-dim mode, backward compatible).
-    """
+    """Legacy wrapper — use build_rope_freqs with RopeDimSpec for new code."""
     half = head_dim // 2
     n_layer_planes = int(half * layer_split_ratio) if layer_split_ratio > 0 else 0
     n_time_planes  = max(1, int(half * time_split_ratio))
     n_idx_planes   = half - n_time_planes - n_layer_planes
     if n_idx_planes < 1:
-        # Clamp: at least 1 index plane
         n_idx_planes = 1
         n_time_planes = half - n_idx_planes - n_layer_planes
 
-    # Index planes: precomputed angles for positions 0..max_seq_len
     if n_idx_planes > 0:
         inv_freq_idx = 1.0 / (index_base ** (
             torch.arange(0, n_idx_planes * 2, 2).float() / (n_idx_planes * 2)))
         t = torch.arange(max_seq_len).float()
-        freq_idx = torch.outer(t, inv_freq_idx)  # (max_seq_len, n_idx_planes)
+        freq_idx = torch.outer(t, inv_freq_idx)
     else:
         freq_idx = torch.zeros(max_seq_len, 0)
 
-    # Time planes: only inv_freq stored; angles = timestamp * inv_freq at runtime
     if n_time_planes > 0:
         inv_freq_time = 1.0 / (time_base ** (
             torch.arange(0, n_time_planes * 2, 2).float() / (n_time_planes * 2)))
     else:
         inv_freq_time = torch.zeros(0)
 
-    # Layer planes: precomputed angles for layer indices 0..n_sid_layers-1
     if n_layer_planes > 0:
         inv_freq_layer = 1.0 / (index_base ** (
             torch.arange(0, n_layer_planes * 2, 2).float() / (n_layer_planes * 2)))
         t_layer = torch.arange(n_sid_layers).float()
-        freq_layer = torch.outer(t_layer, inv_freq_layer)  # (n_sid_layers, n_layer_planes)
+        freq_layer = torch.outer(t_layer, inv_freq_layer)
     else:
         freq_layer = torch.zeros(n_sid_layers, 0)
 
@@ -82,18 +212,18 @@ def build_torope_freqs(
 
 
 def _rotate_with_positions(
-    x: torch.Tensor,              # (B, H, T, head_dim)
-    positions: torch.Tensor,      # (B, T) integer item-order indices
-    timestamps: torch.Tensor,     # (B, T) float hours
-    freq_idx: torch.Tensor,       # (max_len, n_idx_planes)
-    inv_freq_time: torch.Tensor,  # (n_time_planes,)
-    freq_layer: torch.Tensor,     # (n_sid_layers, n_layer_planes)
+    x: torch.Tensor,
+    positions: torch.Tensor,
+    timestamps: torch.Tensor,
+    freq_idx: torch.Tensor,
+    inv_freq_time: torch.Tensor,
+    freq_layer: torch.Tensor,
     n_idx_planes: int,
     n_time_planes: int,
     n_layer_planes: int,
-    layers: Optional[torch.Tensor] = None,  # (B, T) int layer indices 0..L-1
+    layers: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Apply 3-dim TO-RoPE: [index | time | layer]."""
+    """Legacy helper — apply 3-dim RoPE: [index | time | layer]."""
     B, H, T, D = x.shape
     device = x.device
 
@@ -116,7 +246,7 @@ def _rotate_with_positions(
 
     if n_time_planes > 0:
         inv_f = inv_freq_time.to(device)
-        ts = timestamps.unsqueeze(1).unsqueeze(-1).float()  # (B,1,T,1)
+        ts = timestamps.unsqueeze(1).unsqueeze(-1).float()
         angles_t = ts * inv_f.reshape(1, 1, 1, n_time_planes)
         cos_t = torch.cos(angles_t).repeat_interleave(2, dim=-1)
         sin_t = torch.sin(angles_t).repeat_interleave(2, dim=-1)
@@ -141,22 +271,22 @@ def _rotate_with_positions(
 
 
 def apply_torope(
-    q: torch.Tensor,            # (B, H, T_q, head_dim)
-    k: torch.Tensor,            # (B, H, T_k, head_dim)
-    positions_q: torch.Tensor,  # (B, T_q) or (1, T_q) — item-order indices for Q
-    positions_k: torch.Tensor,  # (B, T_k) — item-order indices for K
-    freq_idx: torch.Tensor,     # (max_seq_len, n_idx_planes) — precomputed
-    inv_freq_time: torch.Tensor,  # (n_time_planes,)
-    freq_layer: torch.Tensor,   # (n_sid_layers, n_layer_planes) — precomputed
+    q: torch.Tensor,
+    k: torch.Tensor,
+    positions_q: torch.Tensor,
+    positions_k: torch.Tensor,
+    freq_idx: torch.Tensor,
+    inv_freq_time: torch.Tensor,
+    freq_layer: torch.Tensor,
     n_idx_planes: int,
     n_time_planes: int,
     n_layer_planes: int,
-    timestamps_q: Optional[torch.Tensor] = None,  # (B, T_q) float hours
-    timestamps_k: Optional[torch.Tensor] = None,  # (B, T_k) float hours
-    layers_q: Optional[torch.Tensor] = None,      # (B, T_q) int 0..L-1
-    layers_k: Optional[torch.Tensor] = None,      # (B, T_k) int 0..L-1
+    timestamps_q: Optional[torch.Tensor] = None,
+    timestamps_k: Optional[torch.Tensor] = None,
+    layers_q: Optional[torch.Tensor] = None,
+    layers_k: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Apply 3-dim TO-RoPE to Q and K independently."""
+    """Legacy wrapper — use apply_rope for new code."""
     B, H, T_q, D = q.shape
     T_k = k.shape[2]
     device = q.device
@@ -319,7 +449,7 @@ def constrained_beam_search(
     # Carry-forward timestamp for generated tokens: use last ctx timestamp
     # (target item timestamp unknown at inference time → assume same as last ctx item)
     gen_timestamp = None
-    if model.use_torope and ctx_timestamps is not None:
+    if model.use_rope and ctx_timestamps is not None:
         gen_timestamp = ctx_timestamps[:, -1:]  # (B, 1) — last ctx token's timestamp
 
     def _step_sf(n_tok, seq_len=1):
@@ -806,8 +936,8 @@ def _compute_entp_loss(
 class TransformerLayer(nn.Module):
     """Pre-norm Transformer layer: LayerNorm → Attention → LayerNorm → FFN/MoE.
 
-    When torope_params is provided the layer uses manual SDPA (F.scaled_dot_product_attention)
-    and applies TO-RoPE to Q/K before the dot product.  Otherwise falls back to
+    When rope_params is provided the layer uses manual SDPA (F.scaled_dot_product_attention)
+    and applies RoPE to Q/K before the dot product.  Otherwise falls back to
     nn.MultiheadAttention (no RoPE).
     """
 
@@ -821,15 +951,19 @@ class TransformerLayer(nn.Module):
         top_k: int = 2,
         expert_dim: int = 1024,
         causal: bool = True,
-        torope_params: Optional[dict] = None,
+        rope_params: Optional[dict] = None,
         use_gate_attn: bool = False,
+        # backward compat alias
+        torope_params: Optional[dict] = None,
     ):
         super().__init__()
         self.causal = causal
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
         self.dropout = dropout
-        self.torope_params = torope_params  # None → standard APE path
+        self.rope_params = rope_params if rope_params is not None else torope_params  # None → standard APE path
+        # backward compat: expose as torope_params too
+        self.torope_params = self.rope_params
 
         self.attn = nn.MultiheadAttention(
             embed_dim, n_heads, dropout=dropout, batch_first=True,
@@ -850,7 +984,7 @@ class TransformerLayer(nn.Module):
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
 
-    def _attn_with_torope(
+    def _attn_with_rope(
         self,
         x_norm: torch.Tensor,       # (B, T_q, D)
         kv_src: torch.Tensor,        # (B, T_kv, D)
@@ -861,11 +995,11 @@ class TransformerLayer(nn.Module):
         layers_q: Optional[torch.Tensor] = None,   # (B, T_q) int 0..L-1
         layers_kv: Optional[torch.Tensor] = None,  # (B, T_kv) int 0..L-1
     ) -> torch.Tensor:
-        """Manual SDPA with 3-dim TO-RoPE applied to Q and K."""
+        """Manual SDPA with 3-dim RoPE applied to Q and K."""
         B, T_q, D = x_norm.shape
         T_kv = kv_src.size(1)
         H, Dh = self.n_heads, self.head_dim
-        tp = self.torope_params
+        tp = self.rope_params
 
         # Project Q, K, V
         W, b = self.attn.in_proj_weight, self.attn.in_proj_bias
@@ -911,6 +1045,9 @@ class TransformerLayer(nn.Module):
         attn_out = attn_out.transpose(1, 2).reshape(B, T_q, D)
         return F.linear(attn_out, self.attn.out_proj.weight, self.attn.out_proj.bias)
 
+    # backward compat alias
+    _attn_with_torope = _attn_with_rope
+
     def forward(
         self,
         x: torch.Tensor,
@@ -930,9 +1067,9 @@ class TransformerLayer(nn.Module):
         else:
             kv = x_norm
 
-        use_torope = self.torope_params is not None and positions is not None and timestamps is not None
+        use_rope = self.rope_params is not None and positions is not None and timestamps is not None
 
-        if use_torope:
+        if use_rope:
             if kv_positions is not None:
                 pos_kv = kv_positions
                 ts_kv  = kv_timestamps
@@ -941,7 +1078,7 @@ class TransformerLayer(nn.Module):
                 pos_kv = positions
                 ts_kv  = timestamps
                 lay_kv = layers
-            attn_out = self._attn_with_torope(
+            attn_out = self._attn_with_rope(
                 x_norm, kv, positions, pos_kv, timestamps, ts_kv,
                 layers_q=layers, layers_kv=lay_kv,
             )
@@ -1006,6 +1143,9 @@ class NTPModel(nn.Module):
         contrastive_item_dim: int = 1024,
         active_features: Optional[List[str]] = None,
         use_segment_emb: bool = False,
+        # New RoPE API — takes a list of RopeDimSpec
+        rope_dims: Optional[List[RopeDimSpec]] = None,
+        # Legacy TO-RoPE API — kept for backward compat / old checkpoints
         use_torope: bool = False,
         torope_time_split: float = 0.5,
         torope_layer_split: float = 0.0,
@@ -1020,7 +1160,22 @@ class NTPModel(nn.Module):
         self.parallel = parallel
         self.seq_len = n_items * n_sid_layers
         self.use_segment_emb = use_segment_emb
-        self.use_torope = use_torope
+
+        # Resolve rope_dims: new API takes precedence; legacy use_torope auto-converts
+        if rope_dims is not None:
+            self.rope_dims = rope_dims
+        elif use_torope:
+            # Convert legacy torope params to RopeDimSpec list
+            self.rope_dims = [
+                RopeDimSpec(name='order', split_ratio=1.0 - torope_time_split - torope_layer_split,
+                            source='position'),
+                RopeDimSpec(name='time', split_ratio=torope_time_split, source='timestamp'),
+            ]
+            if torope_layer_split > 0:
+                self.rope_dims.append(
+                    RopeDimSpec(name='layer', split_ratio=torope_layer_split, source='layer_id'))
+        else:
+            self.rope_dims = None
 
         # Per-layer token embeddings (different codebook per SID layer)
         self.token_embs = nn.ModuleList([
@@ -1031,24 +1186,38 @@ class NTPModel(nn.Module):
         self.max_seq_len = max(max_seq_len, default_len)
 
         # Position embeddings: standard or segment (item_pos + layer_pos)
-        # When use_torope=True these are replaced by RoPE (no learnable pos params).
-        if use_torope:
+        # When use_rope=True these are replaced by RoPE (no learnable pos params).
+        if self.use_rope:
             head_dim = embed_dim // n_heads
+            # Build legacy-style buffers from rope_dims for backward compat
+            # (also used by TransformerLayer which expects the old dict format)
             freq_idx, inv_freq_time, freq_layer, n_idx_planes, n_time_planes, n_layer_planes = \
                 build_torope_freqs(
                     head_dim, self.max_seq_len,
-                    time_split_ratio=torope_time_split,
-                    layer_split_ratio=torope_layer_split,
+                    time_split_ratio=torope_time_split if use_torope else
+                        next((d.split_ratio for d in self.rope_dims if d.source == 'timestamp'), 0.5),
+                    layer_split_ratio=torope_layer_split if use_torope else
+                        next((d.split_ratio for d in self.rope_dims if d.source == 'layer_id'), 0.0),
                     n_sid_layers=n_sid_layers,
                 )
+            # Register under both old and new buffer names for full compat
             self.register_buffer('torope_freq_idx', freq_idx)
             self.register_buffer('torope_inv_freq_time', inv_freq_time)
             self.register_buffer('torope_freq_layer', freq_layer)
-            self.torope_n_idx_planes  = n_idx_planes
-            self.torope_n_time_planes = n_time_planes
+            # New indexed names
+            self.register_buffer('rope_dim_0_freq', freq_idx)
+            self.register_buffer('rope_dim_1_freq', inv_freq_time)
+            self.register_buffer('rope_dim_2_freq', freq_layer)
+            self.torope_n_idx_planes   = n_idx_planes
+            self.torope_n_time_planes  = n_time_planes
             self.torope_n_layer_planes = n_layer_planes
-            self.torope_time_split  = torope_time_split
-            self.torope_layer_split = torope_layer_split
+            # Also store split ratios (used in probe_config serialization)
+            _ts = torope_time_split if use_torope else \
+                next((d.split_ratio for d in self.rope_dims if d.source == 'timestamp'), 0.5)
+            _ls = torope_layer_split if use_torope else \
+                next((d.split_ratio for d in self.rope_dims if d.source == 'layer_id'), 0.0)
+            self.torope_time_split  = _ts
+            self.torope_layer_split = _ls
         else:
             if use_segment_emb:
                 max_n_items = self.max_seq_len // n_sid_layers + 1
@@ -1064,9 +1233,9 @@ class NTPModel(nn.Module):
             if fdef is not None and fdef.inject == 'embed_add' and fdef.emb_size > 0:
                 setattr(self, f'{key}_emb', nn.Embedding(fdef.emb_size, embed_dim))
 
-        torope_layer_params = None
-        if use_torope:
-            torope_layer_params = {
+        rope_layer_params = None
+        if self.use_rope:
+            rope_layer_params = {
                 'freq_idx':       self.torope_freq_idx,
                 'inv_freq_time':  self.torope_inv_freq_time,
                 'freq_layer':     self.torope_freq_layer,
@@ -1082,7 +1251,7 @@ class NTPModel(nn.Module):
                 use_moe=use_moe, n_experts=n_experts,
                 top_k=top_k, expert_dim=expert_dim,
                 causal=not parallel,
-                torope_params=torope_layer_params,
+                rope_params=rope_layer_params,
                 use_gate_attn=use_gate_attn,
             )
             for _ in range(n_transformer_layers)
@@ -1108,13 +1277,23 @@ class NTPModel(nn.Module):
                 nn.Linear(contrastive_dim, contrastive_dim),
             )
 
-    def _build_rope_inputs(self, T: int, device, offset: int = 0):
-        """Return (pos, timestamps, layers) for transformer forward — zero-overhead if not torope.
+    @property
+    def use_rope(self) -> bool:
+        """True if this model uses RoPE (new or legacy API)."""
+        return self.rope_dims is not None
 
-        All forward paths call this instead of computing torope params inline,
+    @property
+    def use_torope(self) -> bool:
+        """Backward compat alias for use_rope."""
+        return self.use_rope
+
+    def _build_rope_inputs(self, T: int, device, offset: int = 0):
+        """Return (pos, timestamps, layers) for transformer forward — zero-overhead if not rope.
+
+        All forward paths call this instead of computing rope params inline,
         so adding/changing RoPE variants only requires editing this one method.
         """
-        if not self.use_torope:
+        if not self.use_rope:
             return None, None, None
         L = self.n_sid_layers
         pos_raw = torch.arange(offset, offset + T, device=device).unsqueeze(0)
@@ -1136,8 +1315,8 @@ class NTPModel(nn.Module):
 
     def _get_pos_emb(self, positions: torch.Tensor) -> torch.Tensor:
         """Get positional embedding for given positions (standard or segment).
-        Returns zeros when use_torope=True (position info lives in RoPE instead)."""
-        if self.use_torope:
+        Returns zeros when use_rope=True (position info lives in RoPE instead)."""
+        if self.use_rope:
             return torch.zeros(*positions.shape, self.embed_dim,
                                device=positions.device, dtype=torch.get_default_dtype())
         if self.use_segment_emb:
@@ -1173,7 +1352,7 @@ class NTPModel(nn.Module):
         exactly this one function.
 
         side_features: dict[str, Tensor] — any registered 'embed_add' features.
-            'torope' features (timestamps) are handled in _forward_packed, not here.
+            'rope' features (timestamps) are handled in _forward_packed, not here.
         """
         x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
         return self._apply_embed_add_sf(x, side_features or {})
@@ -1259,15 +1438,15 @@ class NTPModel(nn.Module):
             ctx_side_features: dict of side features for context tokens, e.g.
                 {"time_gaps": (B,T_ctx) long, "action_levels": (B,T_ctx) long}.
             step_side_features: dict of side features for new (generated) tokens.
-            ctx_timestamps: (B, T_ctx) float timestamps in hours (TO-RoPE path).
-            step_timestamp: (B, T_new) float timestamps for new tokens (TO-RoPE path).
-            kv_positions_cache: (B, T_kv) positions already in KV cache (TO-RoPE incremental).
-            kv_timestamps_cache: (B, T_kv) timestamps already in KV cache (TO-RoPE incremental).
+            ctx_timestamps: (B, T_ctx) float timestamps in hours (RoPE path).
+            step_timestamp: (B, T_new) float timestamps for new tokens (RoPE path).
+            kv_positions_cache: (B, T_kv) positions already in KV cache (RoPE incremental).
+            kv_timestamps_cache: (B, T_kv) timestamps already in KV cache (RoPE incremental).
 
         Returns:
             logits: (B, C) logits for the next token.
             kv_caches: list of per-layer caches for reuse.
-            (kv_positions, kv_timestamps) — updated position/timestamp caches (TO-RoPE only).
+            (kv_positions, kv_timestamps) — updated position/timestamp caches (RoPE only).
         """
         ctx_sf = ctx_side_features or {}
         step_sf = step_side_features or {}
@@ -1281,7 +1460,7 @@ class NTPModel(nn.Module):
             device = tokens.device
             pos_raw = torch.arange(T, device=device).unsqueeze(0)
             positions = pos_raw  # used for APE token embedding lookup
-            torope_pos, _, torope_lay = self._build_rope_inputs(T, device)
+            rope_pos, _, rope_lay = self._build_rope_inputs(T, device)
 
             # Pad each ctx side feature to full sequence length
             padded_sf = {}
@@ -1296,8 +1475,8 @@ class NTPModel(nn.Module):
                         padded_sf[key] = feat
             x = self.embed_with_features(tokens, positions, padded_sf)
 
-            # TO-RoPE: build full timestamp tensor for context
-            if self.use_torope:
+            # RoPE: build full timestamp tensor for context
+            if self.use_rope:
                 if ctx_timestamps is not None:
                     T_ctx = ctx_timestamps.size(1)
                     ts_pad = torch.zeros(ctx_timestamps.size(0), T - T_ctx,
@@ -1310,11 +1489,11 @@ class NTPModel(nn.Module):
                 timestamps = None
 
             out, kv_caches = self._transformer_forward_cached(
-                x, positions=torope_pos, timestamps=timestamps, layers=torope_lay)
+                x, positions=rope_pos, timestamps=timestamps, layers=rope_lay)
 
-            new_kv_pos = torope_pos if self.use_torope else None
-            new_kv_ts  = timestamps  if self.use_torope else None
-            new_kv_lay = torope_lay  if self.use_torope else None
+            new_kv_pos = rope_pos if self.use_rope else None
+            new_kv_ts  = timestamps if self.use_rope else None
+            new_kv_lay = rope_lay  if self.use_rope else None
         else:
             # Incremental — only new tokens
             offset = kv_caches[0].size(1)
@@ -1323,12 +1502,12 @@ class NTPModel(nn.Module):
             device = new_tokens.device
             x = self._embed_tokens_at_offset(new_tokens, offset)
             pos_raw_inc = torch.arange(offset, offset + T_new, device=device).unsqueeze(0)
-            positions = pos_raw_inc  # for APE (not used with torope)
+            positions = pos_raw_inc  # for APE (not used with rope)
             x = x + self._get_pos_emb(positions)
             x = self._apply_embed_add_sf(x, step_sf)
 
             step_pos, _, step_lay = self._build_rope_inputs(T_new, device, offset=offset)
-            if self.use_torope:
+            if self.use_rope:
                 ts_new = step_timestamp.float() if step_timestamp is not None \
                     else torch.zeros(new_tokens.size(0), T_new, device=device)
                 if kv_positions_cache is not None:
@@ -1485,7 +1664,7 @@ class NTPModel(nn.Module):
         positions = pos_raw
         x = self.embed_with_features(input_tokens, positions, sf)
         tp_pos, _, tp_lay = self._build_rope_inputs(S, device)
-        if self.use_torope:
+        if self.use_rope:
             raw_ts = sf.get('timestamps')
             tp_ts = raw_ts if raw_ts is not None else torch.zeros(1, S, device=device)
         else:
