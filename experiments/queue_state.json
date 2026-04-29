@@ -1,14 +1,8 @@
 {
-  "current": "exp-041b.sh",
-  "log": "/tmp/exp041b.log",
-  "done_string": "EXP-041B complete!",
+  "current": "exp-042.sh",
+  "log": "/tmp/exp042.log",
+  "done_string": "EXP-042 complete!",
   "status": "running",
-  "started_at": "2026-04-29 10:30",
-  "pid": 182078,
-  "prev": {
-    "exp": "exp-039b.sh",
-    "status": "completed",
-    "ckpt": "exp039b-ecpo-from-spdpo",
-    "r500": 0.657
-  }
+  "started_at": "2026-04-29 11:02",
+  "pid": 204731
 }
