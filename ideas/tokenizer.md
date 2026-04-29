@@ -147,6 +147,67 @@ RKMeans 3×1024 (EXP-001 baseline, collision=1.75%)
 
 ---
 
+## IDEA-fsq-scale-0: FSQ Hidden 自适应 — 匹配 Embedding 维度
+
+**优先级**: P1 — EXP-043 发现的直接 actionable 改进
+**状态**: 待实验，计划为 EXP-045 或独立 tokenizer 实验
+
+### 背景与根因
+
+EXP-043 熵分析揭示：FSQ MLP hidden=64 是为 Qwen3-0.6B (1024D) embedding 设计的。当 embedding 维度增大时，残差向量维度同步增大，但 FSQ bottleneck 不变，导致 L2 层信息严重损失：
+
+| Embedding | Residual Dim | FSQ hidden | L2 entropy | FSQ 有效槽位 | Collision |
+|-----------|-------------|-----------|-----------|------------|---------|
+| Qwen3-0.6B | ~1024D | 64 | 10.58 bits (91.2%) | ~1500 | **0.49%** |
+| Qwen3-4B | ~2560D | 64 | 8.10 bits (78.7%) | ~275 | 2.76% |
+| Qwen3-8B | ~4096D | 64 | 7.17 bits (71.6%) | ~145 | 5.44% |
+
+通过 S-tier + M-tier 两点 scaling law 反推，各 SID 的 irreducible floor PPL：
+- 0.6B: 12.46，4B: **11.78（最优）**，8B: 12.26（差于 4B，L2 坍缩所致）
+
+### 核心假设
+
+FSQ hidden 应与 embedding 维度成比例扩大，使 L2 entropy 保持在 ≥90% 利用率：
+```
+h_optimal ≈ k × emb_dim^α   （经验公式，待拟合）
+```
+初始猜测：0.6B(1024D)→h=64，4B(2560D)→h=128~160，8B(4096D)→h=256
+
+### 实验设计
+
+**变量**：FSQ hidden h ∈ {64, 128, 256, 512} × embedding model ∈ {0.6B, 4B, 8B}
+
+但全量 3×4=12 组成本太高（每组需重建 SID cache + 重训 NTP）。**建议经济方案**：
+
+**Phase 1 — 纯 tokenizer 评测（无需 NTP，成本极低）**：
+- 固定 0.6B SID，sweep h ∈ {32, 64, 128, 256}：确认 h=64 已是 0.6B 的最优点
+- 固定 4B SID，sweep h ∈ {64, 128, 256}：找到 L2 entropy ≥90% 的最小 h
+- 固定 8B SID，sweep h ∈ {64, 128, 256, 512}：同上
+- 评测指标：L2 entropy（bits + 利用率）、collision rate、FSQ 有效槽位数
+
+**Phase 2 — NTP 端到端验证（仅跑 Phase 1 找到的最优 h）**：
+- 4B SID with h=最优 → S-tier NTP → 与 exp043-s-4b (R@500=64.3%) 对比
+- 8B SID with h=最优 → S-tier NTP → 与 exp043-s-8b (R@500=64.7%) 对比
+- 目标：验证 L2 entropy 恢复后 floor PPL 是否真正下降，R@500 是否超越 4B 当前最优
+
+### 经验公式目标
+
+通过 Phase 1 数据，拟合：
+```
+h_min_for_L2_util_90% = f(emb_dim)
+```
+若线性：`h ≈ emb_dim / 16`（0.6B: 64, 4B: 160, 8B: 256）
+若根号：`h ≈ 2 × sqrt(emb_dim)`（0.6B: 64, 4B: 101, 8B: 128）
+
+最终给出一个跨 embedding 规模通用的 h 选取公式，避免逐个调参。
+
+### 改动文件
+
+- `model/rkmeans.py` / `model/fsq.py` — `fsq_mlp_hidden` 参数已支持，只需改 config 值
+- `experiments/scripts/exp-026-sid.sh`（或新建 `exp-045-fsq-scale.sh`）
+
+---
+
 ## IDEA-sid-2: Balanced KMeans
 
 **优先级**: ~~P1~~ → P2 (NTP 后)

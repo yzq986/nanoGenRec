@@ -12,9 +12,10 @@ Tokenizer ✅ → NTP ✅ → RL 对齐 ← (当前) → 部署
 ```
 
 - **Tokenizer**: 4096×3 binary MLP-FSQ `[2]×12` 确认为赢家 (EXP-012, snHR=0.095, collision=0.89%)
-- **Embedding**: 原始 Qwen3-0.6B 不做 fine-tune (EXP-007/009 证明 I2I contrastive 路线无效)
-- **NTP**: S-tier (45.8M) 已完成，R@500=60%，scaling law 成立 (EXP-013/015)
-- **RL 对齐**: SP-DPO → RF-DPO → GRPO → **ECPO (当前)** — 已完成全链路，含 GRPO→ECPO 稳定性复现
+- **Embedding**: Qwen3 0.6B/4B/8B 三套 SID cache 已构建 (EXP-026/043)；4B 理论上限最优 (floor PPL=11.78)；**8B 需扩大 FSQ hidden** 修复 L2 entropy 坍缩
+- **NTP**: S-tier R@500=61.2%，M-tier R@500=**70.4%** (EXP-043)；scaling law 已更新，4B SID floor < 0.6B
+- **Features**: time_gap + action_level + segment_emb 三合一 +3.7pp (EXP-036)；TO-RoPE 实验进行中 (EXP-044)
+- **RL 对齐**: SP-DPO → RF-DPO → GRPO → ECPO 全链路已完成，SOTA R@500=**67.8%** (EXP-029)；下一步：以 M-tier SFT 为起点重做 RL 链路
 - **Ideas**: 63 个可实验想法已归档, 来源 39 篇工业论文
 
 ## 流程总览
@@ -498,24 +499,61 @@ flowchart LR
 | exp031-baseline | NTP+RF-DPO+ECPO+full stack | 14.6 | 12.5% | 67.7% | 与 exp029 持平 |
 | exp025-beam-passes | features SFT (beam-passes) | 25.22 | 10.4% | 63.6% | features 起点（待替换） |
 
-**当前进行中**：
-- **EXP-036**（completed）：Config B(features) R@500=59.0% vs Config A(no feat) 55.3%，+3.7pp ✅ features 有效，exp036-full-features 作为新 RL 起点
+### 阶段七：Embedding Model Scaling × NTP Tier (EXP-043)
+
+| Config | SID | R@10 | R@500 | PPL | floor PPL |
+|--------|-----|------|-------|-----|----------|
+| exp043-s-0.6b | Qwen3-0.6B | 11.4% | 61.2% | 26.52 | 12.46 |
+| exp043-s-4b | Qwen3-4B | 9.7% | 64.3% | 22.49 | 11.78 |
+| exp043-s-8b | Qwen3-8B | 10.2% | 64.7% | 20.66 | 12.26 |
+| exp043-m-0.6b | Qwen3-0.6B | 14.5% | 70.2% | 18.54 | 12.46 |
+| **exp043-m-4b** | **Qwen3-4B** | **14.2%** | **70.4%** | **16.55** | **11.78** | 
+| exp043-m-8b | Qwen3-8B | 13.0% | 69.7% | 16.14 | 12.26 |
+
+**关键结论**：
+- M-tier 比 S-tier 高 **5-9pp R@500**，71.6M active params 仍有显著收益
+- **4B SID 理论上限最优**（floor PPL=11.78）：L2 entropy 78.7%，collision 2.76%
+- **8B SID floor 反而高于 4B**（12.26 vs 11.78）：FSQ h=64 bottleneck 不足以压缩 4096D 残差，L2 entropy 坍缩至 71.6%（有效 FSQ 槽位仅 ~145 个 vs 0.6B 的 ~1500 个）
+- **待解决**：为 4B/8B embedding 适配更大的 FSQ hidden（h=128/256），释放高维 embedding 真实潜力
+
+### 阶段八：TO-RoPE 时间编码 (EXP-044，进行中)
+
+替换 absolute pos_emb + time_gap bucket → **TO-RoPE**（arxiv 2510.20455，Roblox split-by-dim），时间和序列顺序统一编码进 Q/K 旋转，天然兼容 KV cache。4 configs 对比中。
 
 ---
 
-**总结一句话**：`NTP(14d, S-tier) → RF-DPO(λ=0.03) → ECPO(on-policy, G=512)` 路线已验证，R@500 从 baseline 58.5% 提升至 **67.8%**（+9.3pp）。下一步：验证 features NTP（EXP-036），若有效则建立新 SFT 起点再继续 RL。
+**当前最优路径**：
+```
+S-tier NTP (R@500=61.2%) ──→ M-tier NTP (R@500=70.4%) ──→ TO-RoPE (EXP-044) ──→ M-tier RL 链路
+                                    ↑
+                        4B SID (floor PPL=11.78, 最优)
+```
 
-## NTP Scaling Law (EXP-015)
+**总结一句话**：`NTP(14d, S-tier) → RF-DPO(λ=0.03) → ECPO(on-policy, G=512)` 路线已验证，R@500 从 baseline 58.5% 提升至 **67.8%**（+9.3pp）。当前重点：M-tier × 新 SID 的 NTP 已达 70.4%，下一步用 M-tier SFT 重做 RL 链路，预期突破 75%+。
+
+## NTP Scaling Law (EXP-015 + EXP-043 更新)
 
 在相同数据上 sweep 7 个模型规模 (1.7M ~ 101M active params)，拟合 power law:
 
 ```
-L̂(N) = 2.522 + 2055.1 / N^0.456
+L̂(N) = floor + b / N^0.456
 ```
 
+**EXP-015 (exp013 SID，旧 0.6B)**：floor=2.522 (PPL≈12.45)，b=2055
+
+**EXP-043 反推各 SID 的 floor（固定 α=0.456，S+M 两点联立）**：
+
+| SID | floor loss | floor PPL | scaling b | 说明 |
+|-----|-----------|----------|-----------|------|
+| exp013 (旧) | 2.522 | **12.45** | 2055 | EXP-015 拟合值 |
+| exp026-0.6b | 2.523 | **12.46** | 1517 | 与旧 SID 持平，但 b 更小（收敛更快）|
+| exp026-4b   | 2.466 | **11.78** | 1299 | **最优** — L2 entropy 78.7% |
+| exp026-8b   | 2.507 | **12.26** | 1047 | 差于 4B — L2 entropy 坍缩至 71.6% |
+
 - **α = 0.456** — 接近 OneRec-V2 的 0.489，验证架构 scaling 效率
-- **a = 2.522 (PPL≈12.5)** — irreducible loss floor，tokenizer + 用户行为随机性的天花板
-- **M 档 (~55M active) 是性价比甜点** — 之后曲线趋于平坦
+- **floor 由 tokenizer L2 entropy 决定**：4B SID L2=8.10 bits，FSQ 码本利用率最高 → floor 最低
+- **8B 反而差于 4B**：FSQ h=64 bottleneck 无法压缩 4096D 残差，L2 entropy 7.17 bits（71.6%），有效 FSQ 槽位仅 ~145
+- **M 档 (~55M active) 是性价比甜点** — 之后曲线趋于平坦；M-tier (71.6M) 已验证 R@500=70.4%
 
 ![NTP Scaling Law](experiments/results/ntp/exp015-scaling-law.png)
 
