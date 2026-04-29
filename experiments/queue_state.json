@@ -3,6 +3,6 @@
   "log": "/tmp/exp044b.log",
   "done_string": "EXP-044B complete!",
   "status": "running",
-  "pid": 432082,
+  "pid": 436579,
   "next_queue": ["exp-046.sh", "exp-045.sh"]
 }

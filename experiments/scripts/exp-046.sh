@@ -49,8 +49,6 @@ if [ "${1:-}" != "--no-smoke" ]; then
         --output_dir "${SMOKE_OUT}" \
         --name exp046-smoke \
         --model s-tier \
-        --use_time_gap \
-        --use_action_level \
         --use_segment_emb \
         --use_gate_attn \
         --dry_run
@@ -110,7 +108,7 @@ torchrun --nproc_per_node="${N_GPUS}" run.py eval-ntp \
 train_eval \
     "exp046-gate-attn" \
     "+gate_attn (same as baseline + sigmoid gate on attn output)" \
-    "--use_time_gap --use_action_level --use_segment_emb --use_gate_attn"
+    "--use_segment_emb --use_gate_attn"
 
 # ── Summary ───────────────────────────────────────────────────
 echo ""
