@@ -1288,21 +1288,23 @@ class NTPModel(nn.Module):
         return self.use_rope
 
     @staticmethod
-    def _carry_forward_timestamps(ts: Optional[torch.Tensor], T: int, device) -> torch.Tensor:
+    def _carry_forward_timestamps(ts: torch.Tensor, T: int, device) -> torch.Tensor:
         """Return a (*, T) float timestamp tensor, carry-forwarding the last known value.
 
         If ts is shorter than T, repeats the last value rather than zero-padding.
-        Zero-padding is OOD for any non-start position (training never sees ts=0 except
-        at sequence start).
+        Zero-padding is OOD for interior positions (training never sees ts=0 except at
+        sequence start).
 
-        ts=None is a last-resort fallback (should not happen when use_rope=True and the
-        data pipeline is correctly wired). Callers inside `if self.use_rope:` blocks must
-        ensure timestamps are present in the shard before reaching this point.
+        ts must never be None here — callers with a 'time' RopeDimSpec must ensure the
+        data pipeline provides timestamps. Use strip_missing_rope_dims() at model creation
+        to drop the time dim when the shard lacks timestamps.
         """
         if ts is None:
-            # Should not happen when pipeline is correctly wired — zero is still better
-            # than crashing, but will degrade RoPE quality.
-            return torch.zeros(1, T, device=device, dtype=torch.float)
+            raise RuntimeError(
+                "timestamps is None but a RopeDimSpec with source='timestamp' is active. "
+                "Either the shard is missing timestamps or strip_missing_rope_dims() was "
+                "not called at model init. This would silently break train-infer consistency."
+            )
         ts = ts.float()
         if ts.size(1) >= T:
             return ts[:, :T]

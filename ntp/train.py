@@ -1077,6 +1077,19 @@ def train_packed(
 
     sf_lists = side_features_lists or {}
 
+    # Validate: every RopeDimSpec that needs data must have it in sf_lists
+    if _use_rope and _rope_dims is not None:
+        _SOURCE_TO_SF_KEY = {'timestamp': 'timestamps', 'layer_id': None}
+        for dim in _rope_dims:
+            sf_key = _SOURCE_TO_SF_KEY.get(dim.source)
+            if sf_key is not None and sf_key not in sf_lists:
+                raise ValueError(
+                    f"rope_dims contains dim '{dim.name}' with source='{dim.source}' "
+                    f"but '{sf_key}' is not in side_features_lists (shard likely missing "
+                    f"this field). Either remove '{dim.name}' from rope_dims or ensure "
+                    f"the data pipeline produces '{sf_key}'."
+                )
+
     # Determine contrastive item embedding dimension from sid_to_embedding
     _contrastive_item_dim = 0
     if contrastive_weight > 0 and sid_to_embedding is not None:

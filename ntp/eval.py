@@ -587,6 +587,18 @@ class SemanticIDPredictionMetric(BaseMetric):
             if verbose:
                 print(f"  Subsampled to {len(eval_sequences):,} sequences")
 
+        # ── Validate rope_dims vs shard fields ──
+        if hasattr(probe, 'use_rope') and probe.use_rope and probe.rope_dims and eval_sequences:
+            _src_to_key = {'timestamp': 'timestamps'}
+            for _dim in probe.rope_dims:
+                _sf_key = _src_to_key.get(_dim.source)
+                if _sf_key and _sf_key not in eval_sequences[0]:
+                    raise RuntimeError(
+                        f"Model rope_dims has dim '{_dim.name}' (source='{_dim.source}') "
+                        f"but eval shard is missing '{_sf_key}'. "
+                        f"Train-infer mismatch — eval would use wrong timestamps."
+                    )
+
         # ── Teacher-forced eval (batched forward) ──
         if verbose:
             print(f"\n  Teacher-forced eval (batched)...")
