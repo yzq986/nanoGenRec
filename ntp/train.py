@@ -1707,7 +1707,8 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
         print(f"  [sanity] eval   ctx positions[-4:] = {_ctx_pos[max(0,_ctx_len-4):]}")
         print(f"  [sanity] eval   ctx len={_ctx_len}, gen positions start at {_ctx_len}")
         if probe.use_rope:
-            print(f"  [sanity] eval   timestamps = zeros (ctx_timestamps not passed to beam search)")
+            _has_ts = 'timestamps' in eval_sequences[0]
+            print(f"  [sanity] eval   timestamps in shard: {_has_ts} (use_rope=True)")
 
     log(is_main, f"  Building sid_to_items from {sid_cache_dir}")
     sid_to_items = _build_sid_to_items(sid_cache_dir)
