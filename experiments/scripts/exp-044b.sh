@@ -98,8 +98,6 @@ if [ "${SKIP_SMOKE}" == false ] && [ "${START_FROM}" -le 1 ]; then
         --name exp044b-smoke \
         --model s-tier \
         --use_torope \
-        --use_time_gap \
-        --use_action_level \
         --use_segment_emb \
         --dry_run
     echo "  Smoke test PASSED"
@@ -157,19 +155,19 @@ echo "  [Config A] Baseline: exp043-s-0.6b (abs pos + time_gap + action + seg)"
 [ "${START_FROM}" -le 2 ] && train_eval \
     "exp044b-torope-ts05" \
     "TO-RoPE ts=0.5 + time_gap + action + segment" \
-    "--use_torope --torope_time_split 0.5 --use_time_gap --use_action_level --use_segment_emb"
+    "--use_torope --torope_time_split 0.5 --use_segment_emb"
 
 # Config C: TO-RoPE ts=0.25 + time_gap + action + segment
 [ "${START_FROM}" -le 3 ] && train_eval \
     "exp044b-torope-ts025" \
     "TO-RoPE ts=0.25 + time_gap + action + segment" \
-    "--use_torope --torope_time_split 0.25 --use_time_gap --use_action_level --use_segment_emb"
+    "--use_torope --torope_time_split 0.25 --use_segment_emb"
 
 # Config D: TO-RoPE ts=0.5 + action + segment (无 time_gap，消融)
 [ "${START_FROM}" -le 4 ] && train_eval \
     "exp044b-torope-ts05-notg" \
     "TO-RoPE ts=0.5 + action + segment (no time_gap)" \
-    "--use_torope --torope_time_split 0.5 --use_action_level --use_segment_emb"
+    "--use_torope --torope_time_split 0.5 --use_segment_emb"
 
 # ── Summary ───────────────────────────────────────────────────
 echo ""
