@@ -6,6 +6,8 @@
 #   behavior-v2      feed_user_behavior_v2 (正+负样本, 2026-03-18~03-31)
 #   exposure-neg     feed_user_exposure_neg (ENTP 负样本, 2026-03-01~03-31)
 #   behavior         feed_user_behavior (原始行为数据, 2026-03-18~03-31)
+#   qwen3-vl-emb-8b  Qwen3-VL-Embedding-8B → /mnt/workspace/models/Qwen3-VL-Embedding-8B
+#   qwen3-vl-emb-2b  Qwen3-VL-Embedding-2B → /mnt/workspace/models/Qwen3-VL-Embedding-2B
 
 set -euo pipefail
 
@@ -19,9 +21,11 @@ usage() {
     echo "  behavior-v2    feed_user_behavior_v2 (正+内联负样本, 2026-03-18~03-31)"
     echo "  exposure-neg   feed_user_exposure_neg (ENTP 负样本, 2026-03-01~03-31)"
     echo "  behavior       feed_user_behavior (原始行为数据, 2026-03-18~03-31)"
-    echo "  sid-0.6b       SID cache (Qwen3-0.6B, 14d) → experiments/sid_cache/exp026-0.6b-14d"
-    echo "  sid-4b         SID cache (Qwen3-4B,  14d) → experiments/sid_cache/exp026-4b-14d"
-    echo "  sid-8b         SID cache (Qwen3-8B,  14d) → experiments/sid_cache/exp026-8b-14d"
+    echo "  sid-0.6b           SID cache (Qwen3-0.6B, 14d) → experiments/sid_cache/exp026-0.6b-14d"
+    echo "  sid-4b             SID cache (Qwen3-4B,  14d) → experiments/sid_cache/exp026-4b-14d"
+    echo "  sid-8b             SID cache (Qwen3-8B,  14d) → experiments/sid_cache/exp026-8b-14d"
+    echo "  qwen3-vl-emb-8b    Qwen3-VL-Embedding-8B     → /mnt/workspace/models/Qwen3-VL-Embedding-8B"
+    echo "  qwen3-vl-emb-2b    Qwen3-VL-Embedding-2B     → /mnt/workspace/models/Qwen3-VL-Embedding-2B"
     exit 1
 }
 
@@ -53,6 +57,14 @@ case "${DATASET}" in
     sid-8b)
         S3_PATH="${S3_BASE}/sid_cache/exp026-8b-14d"
         LOCAL_DIR="experiments/sid_cache/exp026-8b-14d"
+        ;;
+    qwen3-vl-emb-8b)
+        S3_PATH="${S3_BASE}/models/Qwen3-VL-Embedding-8B"
+        LOCAL_DIR="/mnt/workspace/models/Qwen3-VL-Embedding-8B"
+        ;;
+    qwen3-vl-emb-2b)
+        S3_PATH="${S3_BASE}/models/Qwen3-VL-Embedding-2B"
+        LOCAL_DIR="/mnt/workspace/models/Qwen3-VL-Embedding-2B"
         ;;
     *)
         echo "Unknown dataset: ${DATASET}"
