@@ -1,0 +1,41 @@
+{
+  "name": "exp046-gate-attn",
+  "model_type": "s-tier",
+  "n_params": 46093312,
+  "n_active_params": 17781760,
+  "total_tokens": 132613800,
+  "total_flops": 14148640585728000,
+  "sid_cache": "experiments/sid_cache/exp026-0.6b-14d",
+  "eval": {
+    "ppl": 26.0655,
+    "layer_ppl": [
+      385.3291,
+      10.2614,
+      4.5504
+    ],
+    "avg_loss": 3.260612,
+    "depth_hit@10": [
+      0.1858,
+      0.1678,
+      0.1665
+    ],
+    "depth_hit@10_indep": [
+      0.1851,
+      0.8159,
+      0.8541
+    ],
+    "depth_acc_beam": [
+      0.035,
+      0.024,
+      0.023
+    ],
+    "target_sid_found_rate": 0.619,
+    "n_eval_positions": 148078,
+    "n_eval_items": 49166,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.102,
+    "item_recall@50": 0.268,
+    "item_recall@100": 0.365,
+    "item_recall@500": 0.616
+  }
+}

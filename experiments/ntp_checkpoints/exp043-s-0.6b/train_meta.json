@@ -26,35 +26,35 @@
     "max_seq_len": 512
   },
   "eval": {
-    "ppl": 26.518,
+    "ppl": 52.0097,
     "layer_ppl": [
-      390.1505,
-      10.6675,
-      4.552
+      486.8211,
+      16.9038,
+      17.3223
     ],
-    "avg_loss": 3.277825,
+    "avg_loss": 3.95143,
     "depth_hit@10": [
-      0.1837,
-      0.1666,
-      0.1655
+      0.1547,
+      0.1356,
+      0.1266
     ],
     "depth_hit@10_indep": [
-      0.183,
-      0.8145,
-      0.8474
+      0.1541,
+      0.7649,
+      0.7221
     ],
     "depth_acc_beam": [
-      0.029,
-      0.019,
-      0.018
+      0.024,
+      0.017,
+      0.017
     ],
-    "target_sid_found_rate": 0.615,
+    "target_sid_found_rate": 0.495,
     "n_eval_positions": 148078,
     "n_eval_items": 49166,
     "n_recall_samples": 1000,
-    "item_recall@10": 0.114,
-    "item_recall@50": 0.27,
-    "item_recall@100": 0.359,
-    "item_recall@500": 0.612
+    "item_recall@10": 0.085,
+    "item_recall@50": 0.201,
+    "item_recall@100": 0.277,
+    "item_recall@500": 0.495
   }
 }
