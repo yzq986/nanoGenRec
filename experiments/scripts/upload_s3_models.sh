@@ -30,7 +30,9 @@ upload_model() {
     local HF_REPO=$2       # e.g. models--Qwen--Qwen3-VL-Embedding-8B
     local S3_NAME=$3       # e.g. Qwen3-VL-Embedding-8B
 
-    local SNAPSHOT_DIR="${HF_CACHE}/${HF_REPO}/snapshots"
+    local BLOBS_DIR="${HF_CACHE}/${HF_REPO}/blobs"
+    local REFS_DIR="${HF_CACHE}/${HF_REPO}/refs"
+    local SNAPSHOTS_DIR="${HF_CACHE}/${HF_REPO}/snapshots"
     local S3_PATH="${S3_BASE}/models/${S3_NAME}"
 
     echo ""
@@ -39,26 +41,25 @@ upload_model() {
     echo "S3:     ${S3_PATH}"
     echo "========================================"
 
-    # 找到 snapshot 目录（取最新一个）
-    if [ ! -d "${SNAPSHOT_DIR}" ]; then
-        echo "ERROR: snapshot dir not found: ${SNAPSHOT_DIR}"
+    if [ ! -d "${BLOBS_DIR}" ]; then
+        echo "ERROR: blobs dir not found: ${BLOBS_DIR}"
         echo "  Run: hf download Qwen/${S3_NAME}"
         return 1
     fi
 
-    LOCAL_DIR=$(ls -td "${SNAPSHOT_DIR}"/*/  2>/dev/null | head -1)
-    if [ -z "${LOCAL_DIR}" ]; then
-        echo "ERROR: no snapshots found in ${SNAPSHOT_DIR}"
-        return 1
-    fi
-    LOCAL_DIR="${LOCAL_DIR%/}"
-
-    echo "Local:  ${LOCAL_DIR}"
-    echo "Size:   $(du -sh "${LOCAL_DIR}" | cut -f1)"
+    echo "Local:  ${BLOBS_DIR}"
+    echo "Size:   $(du -sh "${BLOBS_DIR}" | cut -f1)"
     echo ""
 
-    echo ">>> Uploading..."
-    "${IDAAS}" exec aws s3 sync "${LOCAL_DIR}/" "${S3_PATH}/" --no-progress
+    # 上传 blobs（真正的模型文件）
+    echo ">>> Uploading blobs/..."
+    "${IDAAS}" exec aws s3 sync "${BLOBS_DIR}/" "${S3_PATH}/blobs/" --no-progress
+
+    # 上传 refs 和 snapshots（含 symlink 的目录结构，用于还原 HF cache）
+    echo ">>> Uploading refs/ and snapshots/..."
+    "${IDAAS}" exec aws s3 sync "${REFS_DIR}/" "${S3_PATH}/refs/" --no-progress
+    "${IDAAS}" exec aws s3 sync "${SNAPSHOTS_DIR}/" "${S3_PATH}/snapshots/" \
+        --no-progress --follow-symlinks
 
     echo ""
     echo ">>> Verifying..."

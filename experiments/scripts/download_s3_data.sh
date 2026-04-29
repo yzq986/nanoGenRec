@@ -60,11 +60,11 @@ case "${DATASET}" in
         ;;
     qwen3-vl-emb-8b)
         S3_PATH="${S3_BASE}/models/Qwen3-VL-Embedding-8B"
-        LOCAL_DIR="/mnt/workspace/models/Qwen3-VL-Embedding-8B"
+        LOCAL_DIR="${HOME}/.cache/huggingface/hub/models--Qwen--Qwen3-VL-Embedding-8B"
         ;;
     qwen3-vl-emb-2b)
         S3_PATH="${S3_BASE}/models/Qwen3-VL-Embedding-2B"
-        LOCAL_DIR="/mnt/workspace/models/Qwen3-VL-Embedding-2B"
+        LOCAL_DIR="${HOME}/.cache/huggingface/hub/models--Qwen--Qwen3-VL-Embedding-2B"
         ;;
     *)
         echo "Unknown dataset: ${DATASET}"
