@@ -84,7 +84,8 @@ def _rotate_with_positions(
     parts = []
     if n_idx_planes > 0:
         freq_idx = freq_idx.to(device)
-        pos_flat = positions.reshape(-1).long().clamp(0, freq_idx.size(0) - 1)
+        pos_exp = positions.expand(B, T)
+        pos_flat = pos_exp.reshape(-1).long().clamp(0, freq_idx.size(0) - 1)
         angles = freq_idx[pos_flat].reshape(B, 1, T, n_idx_planes)
         cos_i = torch.cos(angles).repeat_interleave(2, dim=-1)
         sin_i = torch.sin(angles).repeat_interleave(2, dim=-1)
