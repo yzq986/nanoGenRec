@@ -1,0 +1,13 @@
+{
+  "n_shards": 4,
+  "n_layers": 3,
+  "beam_size": 50,
+  "n_rejected": 20,
+  "difficulty": "all",
+  "prefix_locked": true,
+  "sft_checkpoint": "experiments/ntp_checkpoints/exp037-easy",
+  "preprocessed_dir": "experiments/ntp_data/exp023-14d-features",
+  "n_pairs_rank0": 7697,
+  "wall_time_s": 1018.4,
+  "timestamp": "2026-04-28 17:36:36"
+}

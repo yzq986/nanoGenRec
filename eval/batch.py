@@ -191,42 +191,59 @@ def resolve_exposure_files(date_start: str = None, date_end: str = None) -> List
     return files
 
 
-def load_exposure_neg_data(date_start: str = None, date_end: str = None) -> Dict:
+def load_exposure_neg_data(date_start: str = None, date_end: str = None,
+                           local_path: str = None) -> Dict:
     """Load compact ENTP negative-sample parquet (PySpark 产出).
 
     Schema: uid STRING, iid STRING, first_ts LONG, neg_iids ARRAY<STRING>
-    ~30M rows (only positives with attached negatives).
+
+    Args:
+        local_path: 本地目录路径（优先），如 /mnt/workspace/gr-demo-exposure-neg/2026-03-01_2026-03-31
+                    为 None 时走 S3（需要 s3fs 权限）。
 
     Returns:
         dict with uid, iid, first_ts (np arrays) and neg_iids (list of lists).
     """
+    import glob as glob_module
     import pandas as pd
-    import s3fs
 
-    from config import S3_USER_BEHAVIOR
     from config import DEFAULT_DATE_START, DEFAULT_DATE_END
 
     ds = date_start or DEFAULT_DATE_START
     de = date_end or DEFAULT_DATE_END
 
-    s3_neg_base = S3_USER_BEHAVIOR.rsplit("/", 1)[0] + "/feed_user_exposure_neg"
-    neg_path = f"{s3_neg_base}/{ds}_{de}".replace('s3://', '')
-
     print(f"\n{'='*60}")
     print("Loading ENTP Negative Data")
     print(f"{'='*60}")
-    print(f"  Path: {neg_path}")
 
-    fs = s3fs.S3FileSystem()
-    files = fs.glob(f"{neg_path}/*.parquet")
-    print(f"  Found {len(files)} parquet files")
-
-    dfs = []
-    for i, f in enumerate(files):
-        with fs.open(f, 'rb') as fh:
-            dfs.append(pd.read_parquet(fh))
-        if (i + 1) % 5 == 0:
-            print(f"  Loaded {i + 1}/{len(files)}")
+    if local_path is not None:
+        # 本地路径模式
+        files = sorted(glob_module.glob(f"{local_path}/*.parquet"))
+        print(f"  Local path: {local_path}")
+        print(f"  Found {len(files)} parquet files")
+        if not files:
+            raise FileNotFoundError(f"No parquet files found at {local_path}")
+        dfs = []
+        for i, f in enumerate(files):
+            dfs.append(pd.read_parquet(f))
+            if (i + 1) % 5 == 0:
+                print(f"  Loaded {i + 1}/{len(files)}")
+    else:
+        # S3 模式（fallback）
+        import s3fs
+        from config import S3_USER_BEHAVIOR
+        s3_neg_base = S3_USER_BEHAVIOR.rsplit("/", 1)[0] + "/feed_user_exposure_neg"
+        neg_path = f"{s3_neg_base}/{ds}_{de}".replace('s3://', '')
+        print(f"  S3 path: {neg_path}")
+        fs = s3fs.S3FileSystem()
+        files = fs.glob(f"{neg_path}/*.parquet")
+        print(f"  Found {len(files)} parquet files")
+        dfs = []
+        for i, f in enumerate(files):
+            with fs.open(f, 'rb') as fh:
+                dfs.append(pd.read_parquet(fh))
+            if (i + 1) % 5 == 0:
+                print(f"  Loaded {i + 1}/{len(files)}")
 
     df = pd.concat(dfs, ignore_index=True)
     print(f"  Total: {len(df):,} positive interactions with negatives")
@@ -296,6 +313,81 @@ def load_all_behavior_data(date_start: str = None, date_end: str = None,
         'iid': df['iid'].values,
         'action_bitmap': df['action_bitmap'].values.astype(np.int32),
         'first_ts': first_ts,
+    }
+
+
+def load_behavior_v2_data(local_path: str,
+                          date_start: str = None,
+                          date_end: str = None) -> Dict:
+    """Load behavior_v2 data (positives + inline negatives).
+
+    Schema: uid, session_id, iid, action_bitmap, first_ts, last_ts, event_cnt
+    action_bitmap=0 rows are session-level negatives.
+
+    Returns dict with:
+        positives: dict with uid, iid, action_bitmap, first_ts (np arrays) — behavior_data compatible
+        neg_lookup: dict[(uid, iid)] -> List[str]  neg iids from same session
+    """
+    import glob as glob_module
+    import pandas as pd
+    from datetime import datetime, timedelta
+
+    print(f"\n{'='*60}")
+    print("Loading Behavior V2 Data (positives + inline negatives)")
+    print(f"{'='*60}")
+
+    # Resolve date dirs
+    if date_start and date_end:
+        d = datetime.strptime(date_start, "%Y-%m-%d")
+        end = datetime.strptime(date_end, "%Y-%m-%d")
+        dirs = []
+        while d <= end:
+            dirs.append(os.path.join(local_path, d.strftime("%Y-%m-%d")))
+            d += timedelta(days=1)
+    else:
+        dirs = sorted(glob_module.glob(os.path.join(local_path, "????-??-??")))
+
+    files = []
+    for d in dirs:
+        files.extend(sorted(glob_module.glob(os.path.join(d, "*.parquet"))))
+
+    print(f"  Local path: {local_path}")
+    print(f"  Found {len(files)} parquet files across {len(dirs)} days")
+    if not files:
+        raise FileNotFoundError(f"No parquet files found at {local_path}")
+
+    dfs = []
+    for i, f in enumerate(files):
+        dfs.append(pd.read_parquet(f))
+        if (i + 1) % 10 == 0:
+            print(f"  Loaded {i + 1}/{len(files)}")
+    df = pd.concat(dfs, ignore_index=True)
+
+    pos_df = df[df['action_bitmap'] != 0].copy()
+    neg_df = df[df['action_bitmap'] == 0].copy()
+    print(f"  Total: {len(pos_df):,} positives, {len(neg_df):,} negatives")
+
+    # Build neg_lookup: (uid, session_id) -> list of neg iids
+    neg_lookup: Dict = {}
+    for row in neg_df.itertuples(index=False):
+        key = (row.uid, row.session_id)
+        if key not in neg_lookup:
+            neg_lookup[key] = []
+        neg_lookup[key].append(row.iid)
+
+    first_ts = pos_df['first_ts'].fillna(0).values.astype(np.int64)
+
+    positives = {
+        'uid': pos_df['uid'].values,
+        'iid': pos_df['iid'].values,
+        'action_bitmap': pos_df['action_bitmap'].values.astype(np.int32),
+        'first_ts': first_ts,
+        'session_id': pos_df['session_id'].values,
+    }
+    print(f"  neg_lookup: {len(neg_lookup):,} (uid, session) keys with negatives")
+    return {
+        'positives': positives,
+        'neg_lookup': neg_lookup,
     }
 
 

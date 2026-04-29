@@ -48,12 +48,20 @@ def parse_args():
                         help='Local behavior cache dir or "auto" (S3)')
     parser.add_argument('--entp_weight', type=float, default=0.0,
                         help='If > 0, load exposure data and build neg_l0 for ENTP loss')
+    parser.add_argument('--exposure_neg_path', type=str, default=None,
+                        help='Local dir for exposure neg parquet (skips S3). '
+                             'e.g. /mnt/workspace/gr-demo-exposure-neg/2026-03-01_2026-03-31')
+    parser.add_argument('--behavior_v2_path', type=str, default=None,
+                        help='Local dir for behavior_v2 parquet (positives + inline session negatives). '
+                             'e.g. /mnt/workspace/gr-demo-behavior-v2')
     parser.add_argument('--entp_k', type=int, default=5,
                         help='Max negative L0 tokens per position for ENTP')
     parser.add_argument('--shift_features', action='store_true', default=False,
                         help='Shift time_gap/action_level by one item to avoid target leakage')
     parser.add_argument('--action_l2_only', action='store_true', default=False,
                         help='Zero out action_level at L0/L1 positions, keep only at L2')
+    parser.add_argument('--min_action_level', type=int, default=1,
+                        help='RSFT: min quality level to keep (1=all, 2=strong+trade, 3=trade only)')
     return parser.parse_args()
 
 
@@ -90,6 +98,8 @@ def save_shard(sequences, path):
     has_features = 'time_gaps' in sequences[0]
     all_time_gaps = [] if has_features else None
     all_action_levels = [] if has_features else None
+    has_timestamps = 'timestamps' in sequences[0]
+    all_timestamps = [] if has_timestamps else None
 
     for seq in sequences:
         all_tokens.extend(seq['tokens'])
@@ -107,6 +117,8 @@ def save_shard(sequences, path):
         if has_features:
             all_time_gaps.extend(seq['time_gaps'])
             all_action_levels.extend(seq['action_levels'])
+        if has_timestamps:
+            all_timestamps.extend(seq['timestamps'])
 
     arrays = dict(
         tokens=np.array(all_tokens, dtype=np.int32),
@@ -122,6 +134,8 @@ def save_shard(sequences, path):
     if has_features:
         arrays['time_gaps'] = np.array(all_time_gaps, dtype=np.int8)
         arrays['action_levels'] = np.array(all_action_levels, dtype=np.int8)
+    if has_timestamps:
+        arrays['timestamps'] = np.array(all_timestamps, dtype=np.float32)
 
     np.savez_compressed(path, **arrays)
 
@@ -139,6 +153,7 @@ def load_shard(path):
 
     has_neg = 'neg_l0_flat' in data
     has_features = 'time_gaps' in data.files
+    has_timestamps = 'timestamps' in data.files
 
     if has_neg:
         neg_flat = data['neg_l0_flat']
@@ -147,12 +162,14 @@ def load_shard(path):
 
     time_gaps_all = data['time_gaps'] if has_features else None
     action_levels_all = data['action_levels'] if has_features else None
+    timestamps_all = data['timestamps'] if has_timestamps else None
 
     tokens_list = []
     split_pos_list = []
     neg_l0_list = [] if has_neg else None
     time_gaps_list = [] if has_features else None
     action_levels_list = [] if has_features else None
+    timestamps_list = [] if has_timestamps else None
 
     for i in range(len(offsets) - 1):
         start, end = int(offsets[i]), int(offsets[i + 1])
@@ -168,6 +185,8 @@ def load_shard(path):
         if has_features:
             time_gaps_list.append(time_gaps_all[start:end].tolist())
             action_levels_list.append(action_levels_all[start:end].tolist())
+        if has_timestamps:
+            timestamps_list.append(timestamps_all[start:end].tolist())
 
     result = {
         'tokens_list': tokens_list,
@@ -178,6 +197,8 @@ def load_shard(path):
     if has_features:
         result['time_gaps_list'] = time_gaps_list
         result['action_levels_list'] = action_levels_list
+    if has_timestamps:
+        result['timestamps_list'] = timestamps_list
     return result
 
 
@@ -193,8 +214,10 @@ def load_shard_full(path):
     eval_cids_flat = data['eval_cids_flat']
     eval_cids_offsets = data['eval_cids_offsets']
     has_features = 'time_gaps' in data.files
+    has_timestamps = 'timestamps' in data.files
     time_gaps_all = data['time_gaps'] if has_features else None
     action_levels_all = data['action_levels'] if has_features else None
+    timestamps_all = data['timestamps'] if has_timestamps else None
 
     sequences = []
     for i in range(len(offsets) - 1):
@@ -211,6 +234,8 @@ def load_shard_full(path):
         if has_features:
             seq['time_gaps'] = time_gaps_all[start:end].tolist()
             seq['action_levels'] = action_levels_all[start:end].tolist()
+        if has_timestamps:
+            seq['timestamps'] = timestamps_all[start:end].tolist()
         sequences.append(seq)
     return sequences
 
@@ -240,17 +265,27 @@ def main():
     # ── Load data ──
     exposure_neg_data = None
     behavior_data = None
-    if args.entp_weight > 0:
-        # ENTP mode: load compact positive+neg_iids from PySpark export
+    behavior_v2_data = None
+
+    if args.behavior_v2_path is not None:
+        # V2 mode: behavior positives + inline session negatives
+        print("\nStep 2: Loading behavior_v2 data (positives + inline negatives)")
+        from eval.batch import load_behavior_v2_data
+        behavior_v2_data = load_behavior_v2_data(
+            local_path=args.behavior_v2_path,
+            date_start=args.date_start, date_end=args.date_end)
+        print(f"  Positives: {len(behavior_v2_data['positives']['uid']):,}")
+        print(f"  Neg lookup entries: {len(behavior_v2_data['neg_lookup']):,}")
+    elif args.entp_weight > 0:
+        # Legacy ENTP mode: load compact positive+neg_iids from PySpark export
         print("\nStep 2: Loading ENTP negative data")
         from eval.batch import load_exposure_neg_data
         exposure_neg_data = load_exposure_neg_data(
-            date_start=args.date_start, date_end=args.date_end)
+            date_start=args.date_start, date_end=args.date_end,
+            local_path=args.exposure_neg_path)
         print(f"  Positives with negatives: {len(exposure_neg_data['uid']):,}")
 
         # Filter out negatives that share L0 with their positive (gradient conflict).
-        # Same-session items often cluster to the same L0 → ENTP and NTP push
-        # the same L0 probability in opposite directions, hurting training.
         print("\n  Filtering neg_iids sharing L0 with positive...")
         content_to_tokens = {}
         for cid, sid_str in sid_dict.items():
@@ -292,10 +327,12 @@ def main():
             n_items=args.n_items, max_seq_len=args.max_seq_len,
             n_eval_target=args.n_eval_target,
             exposure_neg_data=exposure_neg_data, entp_k=args.entp_k,
+            behavior_v2_data=behavior_v2_data,
             shift_features=args.shift_features,
-            action_l2_only=args.action_l2_only)
+            action_l2_only=args.action_l2_only,
+            min_action_level=args.min_action_level)
 
-    del sid_dict, behavior_data, exposure_neg_data  # free memory
+    del sid_dict, behavior_data, exposure_neg_data, behavior_v2_data  # free memory
 
     # ── Save shards ──
     n_total = len(sequences)
@@ -313,7 +350,7 @@ def main():
         file_size = os.path.getsize(shard_path) / 1e6
         print(f"  shard {i}: {end - start:,} seqs -> {shard_path} ({file_size:.1f}MB)")
 
-    has_neg = args.entp_weight > 0
+    has_neg = args.entp_weight > 0 or args.behavior_v2_path is not None
     del sequences
 
     # ── Save metadata ──
@@ -330,6 +367,7 @@ def main():
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'has_neg_l0': has_neg,
         'entp_k': args.entp_k if has_neg else 0,
+        'min_action_level': args.min_action_level,
         'seq_stats': seq_stats,
     }
     meta_path = os.path.join(args.output_dir, 'meta.json')

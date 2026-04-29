@@ -11,9 +11,144 @@ Reference:
 
 from typing import Dict, List, Optional, Set, Tuple
 
+import math
+
+from ntp.features import REGISTRY as _FEATURE_REGISTRY
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+# ============================================================
+# TO-RoPE — Time-and-Order Rotary Position Embedding
+# arxiv 2510.20455 (Roblox), split-by-dim variant
+# ============================================================
+
+def build_torope_freqs(
+    head_dim: int,
+    max_seq_len: int,
+    time_split_ratio: float = 0.5,
+    index_base: float = 10000.0,
+    time_base: float = 10000.0,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Pre-compute TO-RoPE frequency tensors.
+
+    head_dim must be even. The first (1-time_split_ratio) fraction of rotary
+    planes encodes sequence index; the remaining fraction encodes wall-clock time.
+
+    Returns:
+        freq_idx:  (max_seq_len, head_dim//2) — angle per (position, plane) for index dim
+        freq_time: (max_seq_len, head_dim//2) — angle per (position, plane) for time dim
+        Both are pre-multiplied so that apply_rotary_emb only needs to index by position.
+        The two tensors are *logically* used via split_pos below.
+    """
+    half = head_dim // 2
+    n_time_planes = max(1, int(half * time_split_ratio))
+    n_idx_planes = half - n_time_planes
+
+    # Index planes: standard RoPE frequencies
+    if n_idx_planes > 0:
+        inv_freq_idx = 1.0 / (index_base ** (
+            torch.arange(0, n_idx_planes * 2, 2).float() / (n_idx_planes * 2)))
+        t = torch.arange(max_seq_len).float()
+        freq_idx = torch.outer(t, inv_freq_idx)  # (max_seq_len, n_idx_planes)
+    else:
+        freq_idx = torch.zeros(max_seq_len, 0)
+
+    # Time planes: RoPE with time_base (same formula, applied to τ at runtime)
+    if n_time_planes > 0:
+        inv_freq_time = 1.0 / (time_base ** (
+            torch.arange(0, n_time_planes * 2, 2).float() / (n_time_planes * 2)))
+    else:
+        inv_freq_time = torch.zeros(0)
+
+    return freq_idx, inv_freq_time, n_idx_planes, n_time_planes
+
+
+def _rotate_with_positions(
+    x: torch.Tensor,            # (B, H, T, head_dim)
+    positions: torch.Tensor,    # (B, T) integer indices
+    timestamps: torch.Tensor,   # (B, T) float hours
+    freq_idx: torch.Tensor,     # (max_len, n_idx_planes)
+    inv_freq_time: torch.Tensor,  # (n_time_planes,)
+    n_idx_planes: int,
+    n_time_planes: int,
+) -> torch.Tensor:
+    """Apply TO-RoPE rotation to a single tensor x given its positions and timestamps."""
+    B, H, T, D = x.shape
+    device = x.device
+
+    def rotate_half(v):
+        v1, v2 = v[..., ::2], v[..., 1::2]
+        return torch.stack([-v2, v1], dim=-1).flatten(-2)
+
+    parts = []
+    if n_idx_planes > 0:
+        freq_idx = freq_idx.to(device)
+        pos_exp = positions.expand(B, T)
+        pos_flat = pos_exp.reshape(-1).long().clamp(0, freq_idx.size(0) - 1)
+        angles = freq_idx[pos_flat].reshape(B, 1, T, n_idx_planes)
+        cos_i = torch.cos(angles).repeat_interleave(2, dim=-1)
+        sin_i = torch.sin(angles).repeat_interleave(2, dim=-1)
+        xi = x[..., :n_idx_planes * 2]
+        parts.append(xi * cos_i + rotate_half(xi) * sin_i)
+
+    if n_time_planes > 0:
+        inv_f = inv_freq_time.to(device)
+        ts = timestamps.unsqueeze(1).unsqueeze(-1).float()  # (B,1,T,1)
+        angles_t = ts * inv_f.reshape(1, 1, 1, n_time_planes)
+        cos_t = torch.cos(angles_t).repeat_interleave(2, dim=-1)
+        sin_t = torch.sin(angles_t).repeat_interleave(2, dim=-1)
+        start = n_idx_planes * 2
+        xt = x[..., start:start + n_time_planes * 2]
+        parts.append(xt * cos_t + rotate_half(xt) * sin_t)
+
+    total_rotated = (n_idx_planes + n_time_planes) * 2
+    if total_rotated < D:
+        parts.append(x[..., total_rotated:])
+
+    return torch.cat(parts, dim=-1)
+
+
+def apply_torope(
+    q: torch.Tensor,            # (B, H, T_q, head_dim)
+    k: torch.Tensor,            # (B, H, T_k, head_dim)
+    positions_q: torch.Tensor,  # (B, T_q) or (1, T_q) — integer sequence indices for Q
+    positions_k: torch.Tensor,  # (B, T_k) — integer sequence indices for K
+    freq_idx: torch.Tensor,     # (max_seq_len, n_idx_planes) — precomputed
+    inv_freq_time: torch.Tensor,  # (n_time_planes,)
+    n_idx_planes: int,
+    n_time_planes: int,
+    timestamps_q: Optional[torch.Tensor] = None,  # (B, T_q) float hours — defaults to zeros
+    timestamps_k: Optional[torch.Tensor] = None,  # (B, T_k) float hours — defaults to zeros
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply TO-RoPE (split-by-dim) to Q and K independently.
+
+    Q and K may have different sequence lengths (cross-attention / KV-cache incremental).
+    Index planes use precomputed freq_idx; time planes compute angles from timestamps
+    * inv_freq_time at runtime.
+    """
+    B, H, T_q, D = q.shape
+    T_k = k.shape[2]
+    device = q.device
+
+    if timestamps_q is None:
+        timestamps_q = torch.zeros(positions_q.shape[0], T_q, device=device)
+    if timestamps_k is None:
+        timestamps_k = torch.zeros(positions_k.shape[0], T_k, device=device)
+
+    q_rot = _rotate_with_positions(
+        q, positions_q.expand(B, -1) if positions_q.size(0) == 1 else positions_q,
+        timestamps_q.expand(B, -1) if timestamps_q.size(0) == 1 else timestamps_q,
+        freq_idx, inv_freq_time, n_idx_planes, n_time_planes,
+    )
+    k_rot = _rotate_with_positions(
+        k, positions_k.expand(B, -1) if positions_k.size(0) == 1 else positions_k,
+        timestamps_k.expand(B, -1) if timestamps_k.size(0) == 1 else timestamps_k,
+        freq_idx, inv_freq_time, n_idx_planes, n_time_planes,
+    )
+    return q_rot, k_rot
 
 
 # ============================================================
@@ -52,6 +187,35 @@ class SIDTrie:
         return self.children[0].get((), set())
 
 
+def _build_trie_mask(
+    beams: torch.Tensor,    # (B, n_beams, step) CPU tensor of token indices so far
+    trie: 'SIDTrie',
+    step: int,
+    B: int,
+    n_beams: int,
+    n_vocab: int,
+    device,
+) -> torch.Tensor:
+    """Build boolean trie validity mask of shape (B*n_beams, n_vocab).
+
+    Groups beams by prefix to avoid redundant trie lookups.
+    """
+    mask = torch.zeros(B * n_beams, n_vocab, dtype=torch.bool, device=device)
+    prefix_to_valid: Dict[tuple, List[int]] = {}
+    for bi in range(B):
+        for ki in range(n_beams):
+            pfx = tuple(beams[bi, ki].tolist())
+            if pfx not in prefix_to_valid:
+                valid = trie.valid_tokens(step, pfx)
+                prefix_to_valid[pfx] = list(valid) if valid else []
+    for bi in range(B):
+        for ki in range(n_beams):
+            valid_list = prefix_to_valid[tuple(beams[bi, ki].tolist())]
+            if valid_list:
+                mask[bi * n_beams + ki, valid_list] = True
+    return mask
+
+
 @torch.no_grad()
 def constrained_beam_search(
     model,
@@ -61,11 +225,10 @@ def constrained_beam_search(
     prefix: torch.Tensor = None,
     ctx_kv_caches=None,
     initial_logits: torch.Tensor = None,
-    ctx_time_gaps: torch.Tensor = None,
-    ctx_action_levels: torch.Tensor = None,
-    gen_time_gap: int = None,
-    gen_action_level: int = None,
+    ctx_side_features: Optional[Dict] = None,
+    gen_side_features: Optional[Dict] = None,
     sampling_temperature: float = 0.0,
+    ctx_timestamps: torch.Tensor = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, list]:
     """Trie-constrained beam search / sampling with KV cache.
 
@@ -79,10 +242,10 @@ def constrained_beam_search(
         prefix: (B, P) optional fixed prefix tokens.
         ctx_kv_caches: pre-computed KV caches for the context.
         initial_logits: (B, C) logits from the last context position.
-        ctx_time_gaps: (B, T) time gap buckets for context tokens.
-        ctx_action_levels: (B, T) action levels for context tokens.
-        gen_time_gap: scalar int, time_gap bucket for generated tokens.
-        gen_action_level: scalar int, action_level for generated tokens.
+        ctx_side_features: dict of context side features, e.g.
+            {"time_gaps": (B,T) long, "action_levels": (B,T) long}.
+        gen_side_features: dict of scalar side features for generated tokens, e.g.
+            {"time_gaps": int, "action_levels": int}.
         sampling_temperature: if > 0, use constrained sampling instead of
             beam search. Each of the beam_size candidates is drawn
             independently from the trie-masked policy distribution at
@@ -98,6 +261,7 @@ def constrained_beam_search(
     B = input_tokens.size(0)
     device = input_tokens.device
     L = trie.n_layers
+    gen_sf = gen_side_features or {}
 
     # ── Phase 0: context encoding (or reuse) ──
     use_kv_cache = hasattr(model, 'forward_cached')
@@ -106,22 +270,27 @@ def constrained_beam_search(
         return _constrained_beam_search_legacy(
             model, input_tokens, trie, beam_size, prefix)
 
+    # ctx_kv_pos/ctx_kv_ts track TO-RoPE position/timestamp caches across incremental steps
+    ctx_kv_pos = None
+    ctx_kv_ts  = None
+
     if ctx_kv_caches is None:
-        initial_logits, ctx_kv_caches = model.forward_cached(
-            input_tokens, ctx_time_gaps=ctx_time_gaps,
-            ctx_action_levels=ctx_action_levels)
+        initial_logits, ctx_kv_caches, ctx_kv_pos, ctx_kv_ts = model.forward_cached(
+            input_tokens, ctx_side_features=ctx_side_features,
+            ctx_timestamps=ctx_timestamps)
 
-    # ── Build step feature tensors for generated tokens ──
-    _has_tg = gen_time_gap is not None and hasattr(model, 'time_gap_emb')
-    _has_al = gen_action_level is not None and hasattr(model, 'action_emb')
-
-    def _step_features(n_tok):
-        """Return step_time_gap, step_action_level tensors for n_tok tokens."""
-        stg = torch.full((n_tok, 1), gen_time_gap, dtype=torch.long,
-                         device=device) if _has_tg else None
-        sal = torch.full((n_tok, 1), gen_action_level, dtype=torch.long,
-                         device=device) if _has_al else None
-        return stg, sal
+    def _step_sf(n_tok, seq_len=1):
+        """Build step side-feature dict via registry; shape (n_tok, seq_len)."""
+        sf = {}
+        for key, val in gen_sf.items():
+            fdef = _FEATURE_REGISTRY.get(key)
+            if fdef is None or fdef.inject != 'embed_add':
+                continue
+            if val is None or not hasattr(model, f'{key}_emb'):
+                continue
+            dtype = torch.long if fdef.dtype == 'long' else torch.float32
+            sf[key] = torch.full((n_tok, seq_len), val, dtype=dtype, device=device)
+        return sf or None
 
     # ── Phase 1: beam init ──
     if prefix is not None:
@@ -129,17 +298,19 @@ def constrained_beam_search(
         beams = prefix.unsqueeze(1)  # (B, 1, P)
         start_step = P
         step_kv = [c.clone() for c in ctx_kv_caches]
-        stg_pfx = torch.full((B, P), gen_time_gap, dtype=torch.long,
-                             device=device) if _has_tg else None
-        sal_pfx = torch.full((B, P), gen_action_level, dtype=torch.long,
-                             device=device) if _has_al else None
-        current_logits, step_kv = model.forward_cached(
+        step_kv_pos = ctx_kv_pos
+        step_kv_ts  = ctx_kv_ts
+        pfx_sf = _step_sf(B, P)
+        current_logits, step_kv, step_kv_pos, step_kv_ts = model.forward_cached(
             generated_tokens=prefix, kv_caches=step_kv,
-            step_time_gap=stg_pfx, step_action_level=sal_pfx)
+            step_side_features=pfx_sf or None,
+            kv_positions_cache=step_kv_pos, kv_timestamps_cache=step_kv_ts)
     else:
         beams = torch.zeros(B, 1, 0, dtype=torch.long, device=device)
         start_step = 0
         step_kv = [c.clone() for c in ctx_kv_caches]
+        step_kv_pos = ctx_kv_pos
+        step_kv_ts  = ctx_kv_ts
         current_logits = initial_logits
     scores = torch.zeros(B, 1, device=device)
 
@@ -149,36 +320,20 @@ def constrained_beam_search(
 
         if step > start_step:
             last_tokens = beams[:, :, -1].reshape(B * n_beams, 1)
-            stg_step, sal_step = _step_features(B * n_beams)
-            current_logits, step_kv = model.forward_cached(
+            sf_step = _step_sf(B * n_beams)
+            # All beams share the same positions — take first row and expand
+            kv_pos_step = step_kv_pos[:1].expand(B * n_beams, -1) if step_kv_pos is not None else None
+            kv_ts_step  = step_kv_ts[:1].expand(B * n_beams, -1)  if step_kv_ts  is not None else None
+            current_logits, step_kv, step_kv_pos, step_kv_ts = model.forward_cached(
                 generated_tokens=last_tokens, kv_caches=step_kv,
-                step_time_gap=stg_step, step_action_level=sal_step)
+                step_side_features=sf_step,
+                kv_positions_cache=kv_pos_step, kv_timestamps_cache=kv_ts_step)
 
         log_probs = F.log_softmax(
             current_logits.view(B, n_beams, -1), dim=-1)
         C = log_probs.size(-1)
 
-        # Build trie mask: group beams by prefix to minimize dict lookups
-        mask = torch.zeros(B * n_beams, C, dtype=torch.bool, device=device)
-        beams_cpu = beams.cpu()
-
-        prefix_to_valid: Dict[tuple, List[int]] = {}
-        for bi in range(B):
-            for ki in range(n_beams):
-                pfx = tuple(beams_cpu[bi, ki].tolist())
-                if pfx not in prefix_to_valid:
-                    valid = trie.valid_tokens(step, pfx)
-                    prefix_to_valid[pfx] = list(valid) if valid else []
-
-        for bi in range(B):
-            for ki in range(n_beams):
-                pfx = tuple(beams_cpu[bi, ki].tolist())
-                valid_list = prefix_to_valid[pfx]
-                if valid_list:
-                    idx = bi * n_beams + ki
-                    mask[idx, valid_list] = True
-
-        # Mask invalid tokens
+        mask = _build_trie_mask(beams.cpu(), trie, step, B, n_beams, C, device)
         log_probs = log_probs.masked_fill(
             ~mask.view(B, n_beams, C), float('-inf'))
 
@@ -232,10 +387,8 @@ def constrained_sampling(
     n_samples: int = 64,
     ctx_kv_caches=None,
     initial_logits: torch.Tensor = None,
-    ctx_time_gaps: torch.Tensor = None,
-    ctx_action_levels: torch.Tensor = None,
-    gen_time_gap: int = None,
-    gen_action_level: int = None,
+    ctx_side_features: Optional[Dict] = None,
+    gen_side_features: Optional[Dict] = None,
     temperature: float = 1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, list]:
     """Trie-constrained ancestral sampling — every candidate is a real SID.
@@ -248,18 +401,16 @@ def constrained_sampling(
     Assumes B=1 (one context at a time, same as constrained_beam_search).
 
     Args:
-        model:          NTPModel with forward_cached().
-        input_tokens:   (1, T) context tokens.
-        trie:           SIDTrie for validity masking.
-        n_samples:      number of independent candidates to draw.
-        ctx_kv_caches:  pre-computed context KV caches (or None to encode).
-        initial_logits: (1, C) logits at last context position.
-        ctx_time_gaps:  (1, T) time gap buckets for context tokens.
-        ctx_action_levels: (1, T) action levels for context tokens.
-        gen_time_gap:   scalar int, time_gap for generated tokens.
-        gen_action_level: scalar int, action_level for generated tokens.
-        temperature:    softmax temperature. 1.0 = policy distribution,
-                        <1 = sharper (less explore), >1 = more uniform.
+        model:             NTPModel with forward_cached().
+        input_tokens:      (1, T) context tokens.
+        trie:              SIDTrie for validity masking.
+        n_samples:         number of independent candidates to draw.
+        ctx_kv_caches:     pre-computed context KV caches (or None to encode).
+        initial_logits:    (1, C) logits at last context position.
+        ctx_side_features: dict of context side features (e.g. time_gaps, action_levels).
+        gen_side_features: dict of scalar side features for generated tokens.
+        temperature:       softmax temperature. 1.0 = policy distribution,
+                           <1 = sharper (less explore), >1 = more uniform.
 
     Returns:
         beams:  (1, n_unique, n_layers) — deduplicated sampled SIDs
@@ -268,22 +419,24 @@ def constrained_sampling(
     """
     device = input_tokens.device
     L = trie.n_layers
+    gen_sf = gen_side_features or {}
 
     # ── Encode context (or reuse cached) ──
     if ctx_kv_caches is None:
-        initial_logits, ctx_kv_caches = model.forward_cached(
-            input_tokens, ctx_time_gaps=ctx_time_gaps,
-            ctx_action_levels=ctx_action_levels)
+        initial_logits, ctx_kv_caches, _, _ = model.forward_cached(
+            input_tokens, ctx_side_features=ctx_side_features)
 
-    _has_tg = gen_time_gap is not None and hasattr(model, 'time_gap_emb')
-    _has_al = gen_action_level is not None and hasattr(model, 'action_emb')
-
-    def _feat(n):
-        stg = torch.full((n, 1), gen_time_gap, dtype=torch.long,
-                         device=device) if _has_tg else None
-        sal = torch.full((n, 1), gen_action_level, dtype=torch.long,
-                         device=device) if _has_al else None
-        return stg, sal
+    def _step_sf(n):
+        sf = {}
+        for key, val in gen_sf.items():
+            fdef = _FEATURE_REGISTRY.get(key)
+            if fdef is None or fdef.inject != 'embed_add':
+                continue
+            if val is None or not hasattr(model, f'{key}_emb'):
+                continue
+            dtype = torch.long if fdef.dtype == 'long' else torch.float32
+            sf[key] = torch.full((n, 1), val, dtype=dtype, device=device)
+        return sf or None
 
     # ── Sample n_samples paths independently ──
     # paths[i] = list of token indices, one per layer
@@ -303,10 +456,9 @@ def constrained_sampling(
     for step in range(L):
         if step > 0:
             last_tok = sampled_tokens[-1].unsqueeze(1)  # (n_samples, 1)
-            stg, sal = _feat(n_samples)
-            cur_logits, step_kv = model.forward_cached(
+            cur_logits, step_kv, _, _ = model.forward_cached(
                 generated_tokens=last_tok, kv_caches=step_kv,
-                step_time_gap=stg, step_action_level=sal)
+                step_side_features=_step_sf(n_samples))
             # cur_logits: (n_samples, C)
 
         C = cur_logits.size(-1)
@@ -403,25 +555,7 @@ def _constrained_beam_search_legacy(
         log_probs = F.log_softmax(logits, dim=-1)
         C = log_probs.size(-1)
 
-        mask = torch.zeros(B * n_beams, C, dtype=torch.bool, device=device)
-        beams_cpu = beams.cpu()
-
-        prefix_to_valid: Dict[tuple, List[int]] = {}
-        for bi in range(B):
-            for ki in range(n_beams):
-                pfx = tuple(beams_cpu[bi, ki].tolist())
-                if pfx not in prefix_to_valid:
-                    valid = trie.valid_tokens(step, pfx)
-                    prefix_to_valid[pfx] = list(valid) if valid else []
-
-        for bi in range(B):
-            for ki in range(n_beams):
-                pfx = tuple(beams_cpu[bi, ki].tolist())
-                valid_list = prefix_to_valid[pfx]
-                if valid_list:
-                    idx = bi * n_beams + ki
-                    mask[idx, valid_list] = True
-
+        mask = _build_trie_mask(beams.cpu(), trie, step, B, n_beams, C, device)
         log_probs = log_probs.masked_fill(~mask, float('-inf'))
         log_probs = log_probs.view(B, n_beams, C)
         candidate_scores = scores.unsqueeze(-1) + log_probs
@@ -619,7 +753,12 @@ def _compute_entp_loss(
 # ============================================================
 
 class TransformerLayer(nn.Module):
-    """Pre-norm Transformer layer: LayerNorm → Attention → LayerNorm → FFN/MoE."""
+    """Pre-norm Transformer layer: LayerNorm → Attention → LayerNorm → FFN/MoE.
+
+    When torope_params is provided the layer uses manual SDPA (F.scaled_dot_product_attention)
+    and applies TO-RoPE to Q/K before the dot product.  Otherwise falls back to
+    nn.MultiheadAttention (no RoPE).
+    """
 
     def __init__(
         self,
@@ -631,12 +770,23 @@ class TransformerLayer(nn.Module):
         top_k: int = 2,
         expert_dim: int = 1024,
         causal: bool = True,
+        torope_params: Optional[dict] = None,
+        use_gate_attn: bool = False,
     ):
         super().__init__()
         self.causal = causal
+        self.n_heads = n_heads
+        self.head_dim = embed_dim // n_heads
+        self.dropout = dropout
+        self.torope_params = torope_params  # None → standard APE path
+
         self.attn = nn.MultiheadAttention(
             embed_dim, n_heads, dropout=dropout, batch_first=True,
         )
+        # GateAttention: scalar sigmoid gate on attention output per position
+        # gate(x) = sigmoid(W_g x) ∈ (0,1)^D, applied as attn_out * gate(x_norm)
+        self.attn_gate = nn.Linear(embed_dim, embed_dim, bias=False) if use_gate_attn else None
+
         if use_moe:
             self.ffn = SparseMoEBlock(embed_dim, expert_dim, n_experts, top_k, dropout)
         else:
@@ -649,8 +799,74 @@ class TransformerLayer(nn.Module):
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
 
-    def forward(self, x: torch.Tensor, kv_cache=None, use_cache: bool = False):
-        # Pre-norm self-attention
+    def _attn_with_torope(
+        self,
+        x_norm: torch.Tensor,       # (B, T_q, D)
+        kv_src: torch.Tensor,        # (B, T_kv, D)
+        positions_q: torch.Tensor,   # (B, T_q) or (1, T_q)
+        positions_kv: torch.Tensor,  # (B, T_kv)
+        timestamps_q: torch.Tensor,  # (B, T_q)
+        timestamps_kv: torch.Tensor, # (B, T_kv)
+    ) -> torch.Tensor:
+        """Manual SDPA with TO-RoPE applied to Q and K."""
+        B, T_q, D = x_norm.shape
+        T_kv = kv_src.size(1)
+        H, Dh = self.n_heads, self.head_dim
+        tp = self.torope_params
+
+        # Project Q, K, V
+        W, b = self.attn.in_proj_weight, self.attn.in_proj_bias
+        q = F.linear(x_norm, W[:D], b[:D] if b is not None else None)
+        k = F.linear(kv_src, W[D:2*D], b[D:2*D] if b is not None else None)
+        v = F.linear(kv_src, W[2*D:], b[2*D:] if b is not None else None)
+
+        # Reshape to (B, H, T, Dh)
+        q = q.view(B, T_q, H, Dh).transpose(1, 2)
+        k = k.view(B, T_kv, H, Dh).transpose(1, 2)
+        v = v.view(B, T_kv, H, Dh).transpose(1, 2)
+
+        # Apply TO-RoPE independently to Q (T_q tokens) and K (T_kv tokens)
+        q, k = apply_torope(
+            q, k,
+            positions_q, positions_kv,
+            tp['freq_idx'], tp['inv_freq_time'],
+            tp['n_idx_planes'], tp['n_time_planes'],
+            timestamps_q=timestamps_q,
+            timestamps_k=timestamps_kv,
+        )
+
+        # Scaled dot-product attention
+        is_causal_call = self.causal and (T_q == T_kv)
+        attn_out = F.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=is_causal_call,
+            attn_mask=None,
+        )
+        # Non-square causal mask (incremental decode with Q_len > 1 unlikely but handle it)
+        if self.causal and not is_causal_call and T_q > 1:
+            mask = torch.full((T_q, T_kv), float('-inf'), device=x_norm.device)
+            for i in range(T_q):
+                mask[i, :T_kv - T_q + i + 1] = 0.0
+            attn_out = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=mask.unsqueeze(0).unsqueeze(0),
+                dropout_p=self.dropout if self.training else 0.0,
+            )
+
+        attn_out = attn_out.transpose(1, 2).reshape(B, T_q, D)
+        return F.linear(attn_out, self.attn.out_proj.weight, self.attn.out_proj.bias)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        kv_cache=None,
+        use_cache: bool = False,
+        positions: Optional[torch.Tensor] = None,        # (B,T) or (1,T) — for TO-RoPE
+        timestamps: Optional[torch.Tensor] = None,       # (B,T) — for TO-RoPE
+        kv_positions: Optional[torch.Tensor] = None,     # (B,T_kv) — KV cache positions
+        kv_timestamps: Optional[torch.Tensor] = None,    # (B,T_kv) — KV cache timestamps
+    ):
         x_norm = self.norm1(x)
 
         if kv_cache is not None:
@@ -658,20 +874,28 @@ class TransformerLayer(nn.Module):
         else:
             kv = x_norm
 
-        if self.causal:
+        use_torope = self.torope_params is not None and positions is not None and timestamps is not None
+
+        if use_torope:
+            # Positions and timestamps for the full KV sequence
+            if kv_positions is not None:
+                pos_kv = kv_positions
+                ts_kv = kv_timestamps
+            else:
+                pos_kv = positions
+                ts_kv = timestamps
+            attn_out = self._attn_with_torope(x_norm, kv, positions, pos_kv, timestamps, ts_kv)
+        elif self.causal:
             Q_len = x_norm.size(1)
             KV_len = kv.size(1)
             if Q_len == KV_len:
-                # Full sequence (no cache) — standard square mask
                 attn_mask = nn.Transformer.generate_square_subsequent_mask(
                     KV_len, device=x.device,
                 )
                 attn_out, _ = self.attn(x_norm, kv, kv, attn_mask=attn_mask)
             elif Q_len == 1:
-                # Single new token attends to all prior — no mask needed
                 attn_out, _ = self.attn(x_norm, kv, kv)
             else:
-                # Rectangular causal mask: (Q_len, KV_len)
                 attn_mask = torch.full(
                     (Q_len, KV_len), float('-inf'), device=x.device)
                 for i in range(Q_len):
@@ -679,9 +903,10 @@ class TransformerLayer(nn.Module):
                 attn_out, _ = self.attn(x_norm, kv, kv, attn_mask=attn_mask)
         else:
             attn_out, _ = self.attn(x_norm, x_norm, x_norm)
-        x = x + attn_out
 
-        # Pre-norm FFN/MoE
+        if self.attn_gate is not None:
+            attn_out = attn_out * torch.sigmoid(self.attn_gate(x_norm))
+        x = x + attn_out
         x = x + self.ffn(self.norm2(x))
         if use_cache:
             return x, kv
@@ -719,9 +944,11 @@ class NTPModel(nn.Module):
         max_seq_len: int = 0,
         contrastive_dim: int = 0,
         contrastive_item_dim: int = 1024,
-        n_time_buckets: int = 0,
-        n_action_levels: int = 0,
+        active_features: Optional[List[str]] = None,
         use_segment_emb: bool = False,
+        use_torope: bool = False,
+        torope_time_split: float = 0.5,
+        use_gate_attn: bool = False,
     ):
         super().__init__()
         assert len(n_clusters_per_layer) == n_sid_layers
@@ -732,6 +959,7 @@ class NTPModel(nn.Module):
         self.parallel = parallel
         self.seq_len = n_items * n_sid_layers
         self.use_segment_emb = use_segment_emb
+        self.use_torope = use_torope
 
         # Per-layer token embeddings (different codebook per SID layer)
         self.token_embs = nn.ModuleList([
@@ -742,18 +970,42 @@ class NTPModel(nn.Module):
         self.max_seq_len = max(max_seq_len, default_len)
 
         # Position embeddings: standard or segment (item_pos + layer_pos)
-        if use_segment_emb:
-            max_n_items = self.max_seq_len // n_sid_layers + 1
-            self.item_pos_emb = nn.Embedding(max_n_items, embed_dim)
-            self.layer_pos_emb = nn.Embedding(n_sid_layers, embed_dim)
+        # When use_torope=True these are replaced by RoPE (no learnable pos params).
+        if use_torope:
+            head_dim = embed_dim // n_heads
+            freq_idx, inv_freq_time, n_idx_planes, n_time_planes = build_torope_freqs(
+                head_dim, self.max_seq_len, time_split_ratio=torope_time_split,
+            )
+            # Register as buffers so they move with .to(device) but are not parameters
+            self.register_buffer('torope_freq_idx', freq_idx)
+            self.register_buffer('torope_inv_freq_time', inv_freq_time)
+            self.torope_n_idx_planes = n_idx_planes
+            self.torope_n_time_planes = n_time_planes
+            self.torope_time_split = torope_time_split
         else:
-            self.pos_emb = nn.Embedding(self.max_seq_len, embed_dim)
+            if use_segment_emb:
+                max_n_items = self.max_seq_len // n_sid_layers + 1
+                self.item_pos_emb = nn.Embedding(max_n_items, embed_dim)
+                self.layer_pos_emb = nn.Embedding(n_sid_layers, embed_dim)
+            else:
+                self.pos_emb = nn.Embedding(self.max_seq_len, embed_dim)
 
-        # Side information embeddings (EXP-023)
-        if n_time_buckets > 0:
-            self.time_gap_emb = nn.Embedding(n_time_buckets, embed_dim)
-        if n_action_levels > 0:
-            self.action_emb = nn.Embedding(n_action_levels, embed_dim)
+        # Side feature embeddings — auto-created from registry for each active feature.
+        self.active_features: List[str] = list(active_features) if active_features else []
+        for key in self.active_features:
+            fdef = _FEATURE_REGISTRY.get(key)
+            if fdef is not None and fdef.inject == 'embed_add' and fdef.emb_size > 0:
+                setattr(self, f'{key}_emb', nn.Embedding(fdef.emb_size, embed_dim))
+
+        # Build TO-RoPE params dict for TransformerLayer (or None)
+        torope_layer_params = None
+        if use_torope:
+            torope_layer_params = {
+                'freq_idx': self.torope_freq_idx,
+                'inv_freq_time': self.torope_inv_freq_time,
+                'n_idx_planes': n_idx_planes,
+                'n_time_planes': n_time_planes,
+            }
 
         # Transformer layers
         self.layers = nn.ModuleList([
@@ -762,6 +1014,8 @@ class NTPModel(nn.Module):
                 use_moe=use_moe, n_experts=n_experts,
                 top_k=top_k, expert_dim=expert_dim,
                 causal=not parallel,
+                torope_params=torope_layer_params,
+                use_gate_attn=use_gate_attn,
             )
             for _ in range(n_transformer_layers)
         ])
@@ -801,7 +1055,11 @@ class NTPModel(nn.Module):
         return x
 
     def _get_pos_emb(self, positions: torch.Tensor) -> torch.Tensor:
-        """Get positional embedding for given positions (standard or segment)."""
+        """Get positional embedding for given positions (standard or segment).
+        Returns zeros when use_torope=True (position info lives in RoPE instead)."""
+        if self.use_torope:
+            return torch.zeros(*positions.shape, self.embed_dim,
+                               device=positions.device, dtype=torch.get_default_dtype())
         if self.use_segment_emb:
             L = self.n_sid_layers
             item_pos = positions // L
@@ -810,12 +1068,22 @@ class NTPModel(nn.Module):
         else:
             return self.pos_emb(positions)
 
+    def _apply_embed_add_sf(self, x: torch.Tensor, sf: dict) -> torch.Tensor:
+        """Add registered embed_add features to an already-embedded tensor."""
+        for key, val in sf.items():
+            fdef = _FEATURE_REGISTRY.get(key)
+            if fdef is None or fdef.inject != 'embed_add':
+                continue
+            emb = getattr(self, f'{key}_emb', None)
+            if emb is not None and val is not None:
+                x = x + emb(val)
+        return x
+
     def embed_with_features(
         self,
         tokens: torch.Tensor,        # (B, T)
         positions: torch.Tensor,     # (B, T) or (1, T)
-        time_gaps: torch.Tensor = None,    # (B, T) optional
-        action_levels: torch.Tensor = None,  # (B, T) optional
+        side_features: Optional[Dict] = None,
     ) -> torch.Tensor:
         """Single source of truth for input embedding + side features injection.
 
@@ -823,18 +1091,26 @@ class NTPModel(nn.Module):
         paths must call this instead of combining _embed_tokens + _get_pos_emb +
         feature embeddings manually.  Adding a new side feature means editing
         exactly this one function.
+
+        side_features: dict[str, Tensor] — any registered 'embed_add' features.
+            'torope' features (timestamps) are handled in _forward_packed, not here.
         """
         x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
-        if time_gaps is not None and hasattr(self, 'time_gap_emb'):
-            x = x + self.time_gap_emb(time_gaps)
-        if action_levels is not None and hasattr(self, 'action_emb'):
-            x = x + self.action_emb(action_levels)
-        return x
+        return self._apply_embed_add_sf(x, side_features or {})
 
-    def _transformer_forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Run through all transformer layers + final norm."""
+    def _transformer_forward(
+        self,
+        x: torch.Tensor,
+        positions: Optional[torch.Tensor] = None,
+        timestamps: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Run through all transformer layers + final norm.
+
+        positions and timestamps are forwarded to each layer for TO-RoPE.
+        Both are ignored when use_torope=False.
+        """
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, positions=positions, timestamps=timestamps)
         return self.final_norm(x)
 
     # ── KV-cached inference ──
@@ -852,7 +1128,15 @@ class NTPModel(nn.Module):
                 x[:, mask] = self.token_embs[l](tokens[:, mask])
         return x
 
-    def _transformer_forward_cached(self, x: torch.Tensor, kv_caches=None):
+    def _transformer_forward_cached(
+        self,
+        x: torch.Tensor,
+        kv_caches=None,
+        positions: Optional[torch.Tensor] = None,
+        timestamps: Optional[torch.Tensor] = None,
+        kv_positions: Optional[torch.Tensor] = None,
+        kv_timestamps: Optional[torch.Tensor] = None,
+    ):
         """Transformer forward with per-layer KV cache.
 
         Returns:
@@ -862,14 +1146,19 @@ class NTPModel(nn.Module):
         new_caches = []
         for i, layer in enumerate(self.layers):
             cache_i = kv_caches[i] if kv_caches is not None else None
-            x, new_cache = layer(x, kv_cache=cache_i, use_cache=True)
+            x, new_cache = layer(
+                x, kv_cache=cache_i, use_cache=True,
+                positions=positions, timestamps=timestamps,
+                kv_positions=kv_positions, kv_timestamps=kv_timestamps,
+            )
             new_caches.append(new_cache)
         return self.final_norm(x), new_caches
 
     @torch.no_grad()
     def forward_cached(self, input_tokens=None, generated_tokens=None, kv_caches=None,
-                        ctx_time_gaps=None, ctx_action_levels=None,
-                        step_time_gap=None, step_action_level=None):
+                        ctx_side_features=None, step_side_features=None,
+                        ctx_timestamps=None, step_timestamp=None,
+                        kv_positions_cache=None, kv_timestamps_cache=None):
         """Inference-only forward with KV cache.
 
         Calling patterns:
@@ -878,15 +1167,22 @@ class NTPModel(nn.Module):
                 — encodes only *new* tokens using cached context.
 
         Args:
-            ctx_time_gaps: (B, T_ctx) time gap buckets, only used on cold start.
-            ctx_action_levels: (B, T_ctx) action levels, only used on cold start.
-            step_time_gap: (B, T_new) time gap for incremental generated tokens.
-            step_action_level: (B, T_new) action level for incremental generated tokens.
+            ctx_side_features: dict of side features for context tokens, e.g.
+                {"time_gaps": (B,T_ctx) long, "action_levels": (B,T_ctx) long}.
+            step_side_features: dict of side features for new (generated) tokens.
+            ctx_timestamps: (B, T_ctx) float timestamps in hours (TO-RoPE path).
+            step_timestamp: (B, T_new) float timestamps for new tokens (TO-RoPE path).
+            kv_positions_cache: (B, T_kv) positions already in KV cache (TO-RoPE incremental).
+            kv_timestamps_cache: (B, T_kv) timestamps already in KV cache (TO-RoPE incremental).
 
         Returns:
             logits: (B, C) logits for the next token.
             kv_caches: list of per-layer caches for reuse.
+            (kv_positions, kv_timestamps) — updated position/timestamp caches (TO-RoPE only).
         """
+        ctx_sf = ctx_side_features or {}
+        step_sf = step_side_features or {}
+
         if kv_caches is None:
             # Cold start — encode full sequence
             tokens = input_tokens
@@ -895,20 +1191,39 @@ class NTPModel(nn.Module):
             T = tokens.size(1)
             device = tokens.device
             positions = torch.arange(T, device=device).unsqueeze(0)
-            # Pad ctx features to full sequence length (zeros for generated positions)
-            tg = al = None
-            if ctx_time_gaps is not None:
-                T_ctx = ctx_time_gaps.size(1)
-                pad = torch.zeros(ctx_time_gaps.size(0), T - T_ctx,
-                                  dtype=torch.long, device=device)
-                tg = torch.cat([ctx_time_gaps, pad], dim=1)
-            if ctx_action_levels is not None:
-                T_ctx = ctx_action_levels.size(1)
-                pad = torch.zeros(ctx_action_levels.size(0), T - T_ctx,
-                                  dtype=torch.long, device=device)
-                al = torch.cat([ctx_action_levels, pad], dim=1)
-            x = self.embed_with_features(tokens, positions, tg, al)
-            out, kv_caches = self._transformer_forward_cached(x)
+
+            # Pad each ctx side feature to full sequence length
+            padded_sf = {}
+            for key, feat in ctx_sf.items():
+                if feat is not None:
+                    T_ctx = feat.size(1)
+                    if T_ctx < T:
+                        pad = torch.zeros(feat.size(0), T - T_ctx,
+                                          dtype=feat.dtype, device=device)
+                        padded_sf[key] = torch.cat([feat, pad], dim=1)
+                    else:
+                        padded_sf[key] = feat
+            x = self.embed_with_features(tokens, positions, padded_sf)
+
+            # TO-RoPE: build full timestamp tensor for context
+            if self.use_torope:
+                if ctx_timestamps is not None:
+                    T_ctx = ctx_timestamps.size(1)
+                    ts_pad = torch.zeros(ctx_timestamps.size(0), T - T_ctx,
+                                         dtype=torch.float, device=device)
+                    timestamps = torch.cat([ctx_timestamps.float(), ts_pad], dim=1)
+                else:
+                    timestamps = torch.zeros(tokens.size(0), T,
+                                             dtype=torch.float, device=device)
+            else:
+                timestamps = None
+
+            out, kv_caches = self._transformer_forward_cached(
+                x, positions=positions, timestamps=timestamps)
+
+            # Return updated KV position/timestamp caches for incremental decode
+            new_kv_pos = positions if self.use_torope else None
+            new_kv_ts = timestamps if self.use_torope else None
         else:
             # Incremental — only new tokens
             offset = kv_caches[0].size(1)
@@ -918,16 +1233,38 @@ class NTPModel(nn.Module):
             x = self._embed_tokens_at_offset(new_tokens, offset)
             positions = torch.arange(offset, offset + T_new, device=device).unsqueeze(0)
             x = x + self._get_pos_emb(positions)
-            if step_time_gap is not None and hasattr(self, 'time_gap_emb'):
-                x = x + self.time_gap_emb(step_time_gap)
-            if step_action_level is not None and hasattr(self, 'action_emb'):
-                x = x + self.action_emb(step_action_level)
-            out, kv_caches = self._transformer_forward_cached(x, kv_caches)
+            x = self._apply_embed_add_sf(x, step_sf)
+
+            # TO-RoPE: pass full KV positions/timestamps so RoPE angles are correct
+            if self.use_torope:
+                ts_new = step_timestamp.float() if step_timestamp is not None \
+                    else torch.zeros(new_tokens.size(0), T_new, device=device)
+                if kv_positions_cache is not None:
+                    B_kv = kv_positions_cache.size(0)
+                    full_pos = torch.cat([kv_positions_cache,
+                                          positions.expand(B_kv, -1)], dim=1)
+                    kv_ts_base = kv_timestamps_cache.float() if kv_timestamps_cache is not None \
+                        else torch.zeros(B_kv, offset, device=device)
+                    full_ts = torch.cat([kv_ts_base,
+                                         ts_new.expand(B_kv, -1)], dim=1)
+                else:
+                    full_pos = positions
+                    full_ts = ts_new
+                out, kv_caches = self._transformer_forward_cached(
+                    x, kv_caches,
+                    positions=positions, timestamps=ts_new,
+                    kv_positions=full_pos, kv_timestamps=full_ts,
+                )
+                new_kv_pos = full_pos
+                new_kv_ts = full_ts
+            else:
+                out, kv_caches = self._transformer_forward_cached(x, kv_caches)
+                new_kv_pos = new_kv_ts = None
 
         T_total = kv_caches[0].size(1)
         target_layer = T_total % self.n_sid_layers
         logits = self.output_projs[target_layer](out[:, -1, :])
-        return logits, kv_caches
+        return logits, kv_caches, new_kv_pos, new_kv_ts
 
     def forward(
         self,
@@ -942,8 +1279,7 @@ class NTPModel(nn.Module):
         item_embeddings: Optional[torch.Tensor] = None,
         contrastive_weight: float = 0.0,
         contrastive_temp: float = 0.07,
-        time_gaps: Optional[torch.Tensor] = None,
-        action_levels: Optional[torch.Tensor] = None,
+        side_features: Optional[Dict] = None,
     ):
         """Forward pass — supports both legacy (sliding window) and packed modes.
 
@@ -965,8 +1301,9 @@ class NTPModel(nn.Module):
             item_embeddings: (B, N_items, E) target item embeddings (for contrastive).
             contrastive_weight: weight α for contrastive loss.
             contrastive_temp: InfoNCE temperature τ.
-            time_gaps: (B, T) time gap bucket indices (optional side feature).
-            action_levels: (B, T) action level indices (optional side feature).
+            side_features: dict of optional side feature tensors, e.g.
+                {"time_gaps": (B,T) long, "action_levels": (B,T) long,
+                 "timestamps": (B,T) float hours}.
         """
         if packed_targets is not None:
             return self._forward_packed(
@@ -976,8 +1313,7 @@ class NTPModel(nn.Module):
                 item_embeddings=item_embeddings,
                 contrastive_weight=contrastive_weight,
                 contrastive_temp=contrastive_temp,
-                time_gaps=time_gaps,
-                action_levels=action_levels,
+                side_features=side_features,
             )
 
         device = input_tokens.device
@@ -985,7 +1321,9 @@ class NTPModel(nn.Module):
         if self.parallel:
             positions = torch.arange(self.seq_len, device=device).unsqueeze(0)
             x = self._embed_tokens(input_tokens) + self._get_pos_emb(positions)
-            out = self._transformer_forward(x)
+            tp_pos = positions if self.use_torope else None
+            tp_ts = torch.zeros(1, self.seq_len, device=device) if self.use_torope else None
+            out = self._transformer_forward(x, positions=tp_pos, timestamps=tp_ts)
             s = out[:, -1, :]
             return [self.output_projs[l](s) for l in range(self.n_sid_layers)]
 
@@ -998,7 +1336,10 @@ class NTPModel(nn.Module):
         T = tokens.size(1)
         positions = torch.arange(T, device=device).unsqueeze(0)
         x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
-        out = self._transformer_forward(x)
+        # For TO-RoPE: pass positions (timestamps default to zeros inside each layer)
+        torope_pos = positions if self.use_torope else None
+        torope_ts = torch.zeros(1, T, device=device) if self.use_torope else None
+        out = self._transformer_forward(x, positions=torope_pos, timestamps=torope_ts)
 
         if return_last_n == 1:
             target_layer = T % self.n_sid_layers
@@ -1022,8 +1363,7 @@ class NTPModel(nn.Module):
         item_embeddings: Optional[torch.Tensor] = None,
         contrastive_weight: float = 0.0,
         contrastive_temp: float = 0.07,
-        time_gaps: Optional[torch.Tensor] = None,
-        action_levels: Optional[torch.Tensor] = None,
+        side_features: Optional[Dict] = None,
     ) -> torch.Tensor:
         """LM-style forward on packed user sequences. Returns scalar loss.
 
@@ -1037,18 +1377,26 @@ class NTPModel(nn.Module):
             item_embeddings: (B, N_items, E) — target item embeddings.
             contrastive_weight: α for contrastive loss.
             contrastive_temp: InfoNCE temperature τ.
-            time_gaps: (B, S) — time gap bucket indices.
-            action_levels: (B, S) — action level indices.
+            side_features: dict of optional tensors, e.g.
+                {"time_gaps": (B,S) long, "action_levels": (B,S) long,
+                 "timestamps": (B,S) float hours for TO-RoPE}.
         Returns:
             loss: scalar
         """
+        sf = side_features or {}
         B, S = input_tokens.size()
         device = input_tokens.device
         L = self.n_sid_layers
 
         positions = torch.arange(S, device=device).unsqueeze(0)
-        x = self.embed_with_features(input_tokens, positions, time_gaps, action_levels)
-        hidden = self._transformer_forward(x)  # (B, S, D)
+        x = self.embed_with_features(input_tokens, positions, sf)
+        tp_pos = positions if self.use_torope else None
+        if self.use_torope:
+            timestamps = sf.get('timestamps')
+            tp_ts = timestamps if timestamps is not None else torch.zeros(1, S, device=device)
+        else:
+            tp_ts = None
+        hidden = self._transformer_forward(x, positions=tp_pos, timestamps=tp_ts)  # (B, S, D)
 
         # Flatten for efficient per-layer gather
         hidden_flat = hidden.reshape(-1, self.embed_dim)  # (B*S, D)

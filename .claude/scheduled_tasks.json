@@ -1,3 +1,18 @@
 {
+<<<<<<< HEAD
   "tasks": []
+=======
+  "tasks": [
+    {
+      "id": "06a63b7f",
+      "cron": "*/2 * * * *",
+      "prompt": "实验队列守护进程 — 读取 experiments/queue_state.json 和 experiments/queue.txt 管理实验链。\n\n每次触发：\n\n1. 读 queue_state.json，获取 current/log/done_string\n2. 如果 status=pending_gpu：检查 log 文件是否存在且有内容，如有则改 status=running\n3. 读 log 最新内容（tail -30）\n\n**健康检查 — 如发现以下任意情况，立即 kill 进程（kill $(cat /tmp/exp039b.pid 2>/dev/null) 或 pkill -f \"exp039b\"），更新 status=stopped，告知用户具体原因：**\n- log 中出现 Traceback / Error / exitcode : 1（非 SIGTERM）\n- 连续 3 次检查 step 数字没有增加（训练卡住）\n- reward_mean 持续为 0 超过 50 steps（reward 信号消失）\n- advantage_mean 绝对值 > 50（数值爆炸）\n- clip_fraction > 0.99 且持续 20+ steps（策略崩溃）\n\n**效果预警 — 如发现以下情况，告知用户但不自动停止（由用户决定）：**\n- inline eval R@500 < 50%（低于 exp038b-ep1 ref 62.1% 较多）\n- reward_mean 在 100 steps 后仍 < 0.1\n\n**正常时：**\n- 报告最新 step、reward_mean、clip_fraction、advantage_mean（从 log grep）\n- 如果 log 出现 done_string：\n  a. 读 train_meta.json，更新 experiments/log.md 对应 EXP-039B 的 Results/Analysis\n  b. git add experiments/ && git commit -m \"EXP-039B complete: ...\" && ./push.sh\n  c. 读 queue.txt，找下一个未完成实验（exp-040.sh），nohup 启动，更新 queue_state.json\n  d. 如队列已空：status=done，告知用户",
+      "createdAt": 1777386753854,
+      "recurring": true,
+      "createdBySessionId": "b98b6f86-0c89-464c-9b86-10e5f0e2cb8f",
+      "createdByPid": 4076,
+      "createdByProcStart": "39234"
+    }
+  ]
+>>>>>>> origin/master
 }

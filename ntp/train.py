@@ -59,6 +59,28 @@ def log(is_main, msg):
         print(msg, flush=True)
 
 
+def compute_split_masks(lengths, split_positions, seq_len, device):
+    """Compute valid/train/eval boolean masks for packed sequences.
+
+    Args:
+        lengths:         (B,) actual sequence lengths
+        split_positions: (B,) index separating train / eval tokens
+        seq_len:         T — number of prediction positions (= padded_len - 1 for train)
+        device:          target device
+
+    Returns:
+        valid_mask: (B, T) — position i is valid if token[i+1] exists
+        train_mask: (B, T) — valid & token[i+1] is a training token (< split_pos)
+        eval_mask:  (B, T) — valid & token[i+1] is an eval token (>= split_pos)
+    """
+    arange = torch.arange(seq_len, device=device).unsqueeze(0)
+    valid_mask = arange < (lengths.unsqueeze(1) - 1)
+    sp = split_positions.unsqueeze(1) - 1
+    train_mask = valid_mask & (arange < sp)
+    eval_mask  = valid_mask & (arange >= sp)
+    return valid_mask, train_mask, eval_mask
+
+
 # ============================================================
 # Data preparation
 # ============================================================
@@ -116,7 +138,7 @@ def _action_bitmap_to_level(bm):
     return 1
 
 
-def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
+def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print, min_action_level=1):
     """Vectorized user interaction grouping using numpy. Returns sorted per-user item lists.
 
     Returns:
@@ -152,6 +174,17 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
     ts_f = ts_f[iid_mask]
     actions_f = actions_f[iid_mask]
 
+    # RSFT: filter by minimum action quality level (min_action_level >= 2 keeps only strong/trade)
+    if min_action_level > 1:
+        level_mask = np.array([_action_bitmap_to_level(int(bm)) >= min_action_level
+                               for bm in actions_f])
+        orig_indices = orig_indices[level_mask]
+        uids_f = uids_f[level_mask]
+        iids_f = iids_f[level_mask]
+        ts_f = ts_f[level_mask]
+        actions_f = actions_f[level_mask]
+        verbose_fn(f"  RSFT (min_action_level={min_action_level}): {len(uids_f):,} interactions kept")
+
     verbose_fn(f"  Valid interactions: {len(uids_f):,}")
 
     # Sort by (uid, ts) using numpy lexsort (secondary key first)
@@ -175,7 +208,9 @@ def _build_user_items(behavior_data, content_to_tokens, verbose_fn=print):
 def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_len=512,
                             n_eval_target=50000, verbose_fn=print,
                             exposure_neg_data=None, entp_k=5,
-                            shift_features=False, action_l2_only=False):
+                            behavior_v2_data=None,
+                            shift_features=False, action_l2_only=False,
+                            min_action_level=1):
     """Build unified per-user sequences with split_pos for train/eval masking.
 
     Each user → one complete SID token sequence. split_pos marks the boundary
@@ -204,7 +239,14 @@ def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_le
     verbose_fn(f"  SID: {n_layers} layers, codebooks={n_clusters_per_layer}")
     verbose_fn(f"  Unique SIDs: {len(_sid_to_items):,}")
 
-    if exposure_neg_data is not None:
+    if behavior_v2_data is not None:
+        # ── V2 mode: behavior positives + inline session negatives ──
+        return _build_sequences_from_behavior_v2(
+            behavior_v2_data, content_to_tokens, n_layers, n_clusters_per_layer,
+            entp_k, max_seq_len, n_eval_target, verbose_fn,
+            shift_features=shift_features, action_l2_only=action_l2_only,
+            min_action_level=min_action_level)
+    elif exposure_neg_data is not None:
         # ── ENTP mode: compact positive + neg_iids from PySpark ──
         return _build_sequences_from_exposure(
             exposure_neg_data, content_to_tokens, n_layers, n_clusters_per_layer,
@@ -213,11 +255,12 @@ def build_unified_sequences(sid_dict, behavior_data=None, n_items=10, max_seq_le
     else:
         # ── Legacy mode: behavior data only ──
         if behavior_data is None:
-            raise ValueError("Either behavior_data or exposure_neg_data must be provided")
+            raise ValueError("behavior_data, behavior_v2_data, or exposure_neg_data must be provided")
         return _build_sequences_from_behavior(
             behavior_data, content_to_tokens, n_layers, n_clusters_per_layer,
             max_seq_len, n_eval_target, verbose_fn,
-            shift_features=shift_features, action_l2_only=action_l2_only)
+            shift_features=shift_features, action_l2_only=action_l2_only,
+            min_action_level=min_action_level)
 
 
 def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
@@ -324,23 +367,28 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
         for toks in user_tokens:
             flat.extend(toks)
 
-        # Compute time_gaps (action_levels = 1 for all since fake bitmap)
+        # Compute time_gaps, action_levels, and continuous timestamps (relative hours)
         time_gaps = []
         action_levels = []
+        timestamps = []  # relative hours from first item, one value per token position
+        t0_seq = float(user_ts[0])
         for i in range(n):
             if i == 0:
                 bucket = 0
             else:
                 delta = float(user_ts[i] - user_ts[i - 1])
                 bucket = _compute_time_gap_bucket(delta)
+            rel_hours = (float(user_ts[i]) - t0_seq) / 3600.0
             for _ in range(n_layers):
                 time_gaps.append(bucket)
                 action_levels.append(1)
+                timestamps.append(rel_hours)
 
         if shift_features:
             L = n_layers
             time_gaps = [0] * L + time_gaps[:-L]
             action_levels = [0] * L + action_levels[:-L]
+            timestamps = [0.0] * L + timestamps[:-L]
 
         sequences.append({
             'tokens': flat,
@@ -349,6 +397,7 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
             'neg_l0': user_neg_l0,
             'time_gaps': time_gaps,
             'action_levels': action_levels,
+            'timestamps': timestamps,
         })
 
         if split_item_idx == n:
@@ -406,14 +455,201 @@ def _build_sequences_from_exposure(exposure_neg_data, content_to_tokens,
     return sequences, n_layers, n_clusters_per_layer, split_ts, seq_stats
 
 
+def _build_sequences_from_behavior_v2(behavior_v2_data, content_to_tokens,
+                                      n_layers, n_clusters_per_layer,
+                                      entp_k, max_seq_len, n_eval_target,
+                                      verbose_fn, shift_features=False,
+                                      action_l2_only=False, min_action_level=1):
+    """Build sequences from behavior_v2 data (positives + inline session negatives).
+
+    behavior_v2_data: output of load_behavior_v2_data()
+        positives: dict with uid, iid, action_bitmap, first_ts, session_id
+        neg_lookup: dict[(uid, session_id)] -> List[str] neg iids
+    """
+    positives = behavior_v2_data['positives']
+    neg_lookup = behavior_v2_data['neg_lookup']
+
+    uids_s, iids_s, ts_s, actions_s, starts, ends, sorted_orig_indices = \
+        _build_user_items(positives, content_to_tokens, verbose_fn,
+                          min_action_level=min_action_level)
+
+    session_ids_all = positives['session_id']
+
+    sorted_ts = np.sort(ts_s)
+    total_items = len(sorted_ts)
+    split_idx = max(0, min(total_items - 1, total_items - n_eval_target))
+    split_ts = float(sorted_ts[split_idx])
+    actual_eval = int((sorted_ts > split_ts).sum())
+    pct = 100.0 * split_idx / total_items if total_items > 0 else 0
+    verbose_fn(f"  Time split: {actual_eval:,} eval items targeted "
+               f"(~{pct:.1f}th percentile, split_ts={split_ts:.0f})")
+
+    max_items = max_seq_len // n_layers
+    sequences = []
+    n_train_only = n_eval_only = n_both = n_truncated = 0
+    n_neg_total = n_users_with_negs = 0
+    raw_items_per_user = []
+
+    for u in range(len(starts)):
+        s, e = starts[u], ends[u]
+        n = e - s
+        if n < 2:
+            continue
+
+        raw_items_per_user.append(n)
+        user_iids = iids_s[s:e]
+        user_ts = ts_s[s:e]
+        user_actions = actions_s[s:e]
+        user_orig_idx = sorted_orig_indices[s:e]
+
+        if n > max_items:
+            n_truncated += 1
+            offset = n - max_items
+            user_iids = user_iids[offset:]
+            user_ts = user_ts[offset:]
+            user_actions = user_actions[offset:]
+            user_orig_idx = user_orig_idx[offset:]
+            n = max_items
+
+        user_tokens = [content_to_tokens[iid] for iid in user_iids]
+
+        # Build neg_l0 per item from session-level neg_lookup
+        uid = positives['uid'][user_orig_idx[0]]
+        user_neg_l0 = []
+        user_has_negs = False
+        for oi in user_orig_idx:
+            iid = positives['iid'][oi]
+            sess = session_ids_all[oi]
+            neg_iids = neg_lookup.get((uid, sess), [])
+            neg_l0 = [-1] * entp_k
+            j = 0
+            for neg_iid in neg_iids:
+                if neg_iid == iid:
+                    continue
+                neg_toks = content_to_tokens.get(neg_iid)
+                if neg_toks is not None:
+                    neg_l0[j] = int(neg_toks[0])
+                    j += 1
+                    if j >= entp_k:
+                        break
+            if j > 0:
+                n_neg_total += j
+                user_has_negs = True
+            user_neg_l0.append(neg_l0)
+        if user_has_negs:
+            n_users_with_negs += 1
+
+        split_item_idx = n
+        for i in range(n):
+            if user_ts[i] > split_ts:
+                split_item_idx = i
+                break
+
+        split_token_pos = split_item_idx * n_layers
+        eval_cids = [user_iids[i] for i in range(split_item_idx, n)]
+
+        flat = []
+        for toks in user_tokens:
+            flat.extend(toks)
+
+        time_gaps = []
+        action_levels = []
+        timestamps = []  # relative hours from first item, one value per token position
+        t0_seq = float(user_ts[0])
+        for i in range(n):
+            if i == 0:
+                bucket = 0
+            else:
+                delta = float(user_ts[i] - user_ts[i - 1])
+                bucket = _compute_time_gap_bucket(delta)
+            level = _action_bitmap_to_level(int(user_actions[i]))
+            rel_hours = (float(user_ts[i]) - t0_seq) / 3600.0
+            for _ in range(n_layers):
+                time_gaps.append(bucket)
+                action_levels.append(level)
+                timestamps.append(rel_hours)
+
+        if action_l2_only:
+            for i in range(len(action_levels)):
+                if (i + 1) % n_layers != 0:
+                    action_levels[i] = 0
+
+        if shift_features:
+            L = n_layers
+            time_gaps = [0] * L + time_gaps[:-L]
+            action_levels = [0] * L + action_levels[:-L]
+            timestamps = [0.0] * L + timestamps[:-L]
+
+        sequences.append({
+            'tokens': flat,
+            'split_pos': split_token_pos,
+            'eval_cids': eval_cids,
+            'neg_l0': user_neg_l0,
+            'time_gaps': time_gaps,
+            'action_levels': action_levels,
+            'timestamps': timestamps,
+        })
+
+        if split_item_idx == n:
+            n_train_only += 1
+        elif split_item_idx == 0:
+            n_eval_only += 1
+        else:
+            n_both += 1
+
+    if not sequences:
+        raise ValueError("No valid sequences")
+
+    total_tokens = sum(len(s['tokens']) for s in sequences)
+    avg_len = total_tokens / len(sequences)
+    n_eval_items = sum(len(s['eval_cids']) for s in sequences)
+    raw_arr = np.array(raw_items_per_user)
+    pcts = np.percentile(raw_arr, [25, 50, 75, 90, 95, 99, 99.9])
+    seq_stats = {
+        'n_users': len(raw_arr),
+        'max_items': max_items,
+        'items_per_user_mean': round(float(raw_arr.mean()), 1),
+        'items_per_user_p25': int(pcts[0]),
+        'items_per_user_p50': int(pcts[1]),
+        'items_per_user_p75': int(pcts[2]),
+        'items_per_user_p90': int(pcts[3]),
+        'items_per_user_p95': int(pcts[4]),
+        'items_per_user_p99': int(pcts[5]),
+        'items_per_user_p999': int(pcts[6]),
+        'items_per_user_max': int(raw_arr.max()),
+        'n_truncated': n_truncated,
+        'truncated_pct': round(100.0 * n_truncated / len(raw_arr), 2),
+    }
+    verbose_fn(f"  Unified sequences: {len(sequences):,}, "
+               f"{total_tokens:,} tokens, avg {avg_len:.0f} tok/seq")
+    verbose_fn(f"  Items/user: mean={seq_stats['items_per_user_mean']}, "
+               f"p50={seq_stats['items_per_user_p50']}, "
+               f"p90={seq_stats['items_per_user_p90']}, "
+               f"p95={seq_stats['items_per_user_p95']}, "
+               f"p99={seq_stats['items_per_user_p99']}, "
+               f"max={seq_stats['items_per_user_max']}")
+    verbose_fn(f"  Truncated at {max_items} items: {n_truncated:,} / {len(raw_arr):,} "
+               f"({seq_stats['truncated_pct']:.2f}%)")
+    verbose_fn(f"  Split: {n_both:,} train+eval, "
+               f"{n_train_only:,} train-only, {n_eval_only:,} eval-only")
+    verbose_fn(f"  Eval items: {n_eval_items:,}")
+    avg_neg = n_neg_total / max(len(sequences), 1)
+    verbose_fn(f"  ENTP negatives (session): {n_neg_total:,} total, "
+               f"avg {avg_neg:.1f}/seq (K={entp_k}), "
+               f"{n_users_with_negs:,}/{len(sequences):,} users with negs")
+    return sequences, n_layers, n_clusters_per_layer, split_ts, seq_stats
+
+
 def _build_sequences_from_behavior(behavior_data, content_to_tokens,
                                    n_layers, n_clusters_per_layer,
                                    max_seq_len, n_eval_target, verbose_fn,
                                    shift_features=False,
-                                   action_l2_only=False):
+                                   action_l2_only=False,
+                                   min_action_level=1):
     """Build sequences from behavior data only (no ENTP negatives)."""
     uids_s, iids_s, ts_s, actions_s, starts, ends, _ = \
-        _build_user_items(behavior_data, content_to_tokens, verbose_fn)
+        _build_user_items(behavior_data, content_to_tokens, verbose_fn,
+                          min_action_level=min_action_level)
 
     # Find split_ts
     sorted_ts = np.sort(ts_s)
@@ -467,9 +703,11 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
         for toks in user_tokens:
             flat.extend(toks)
 
-        # Compute time_gaps and action_levels (replicated across n_layers tokens per item)
+        # Compute time_gaps, action_levels, and continuous timestamps
         time_gaps = []
         action_levels = []
+        timestamps = []
+        t0_seq = float(user_ts[0])
         for i in range(n):
             if i == 0:
                 bucket = 0  # BOS
@@ -477,9 +715,11 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
                 delta = float(user_ts[i] - user_ts[i - 1])
                 bucket = _compute_time_gap_bucket(delta)
             level = _action_bitmap_to_level(int(user_actions[i]))
+            rel_hours = (float(user_ts[i]) - t0_seq) / 3600.0
             for _ in range(n_layers):
                 time_gaps.append(bucket)
                 action_levels.append(level)
+                timestamps.append(rel_hours)
 
         if action_l2_only:
             for i in range(len(action_levels)):
@@ -490,6 +730,7 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
             L = n_layers
             time_gaps = [0] * L + time_gaps[:-L]
             action_levels = [0] * L + action_levels[:-L]
+            timestamps = [0.0] * L + timestamps[:-L]
 
         sequences.append({
             'tokens': flat,
@@ -497,6 +738,7 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
             'eval_cids': eval_cids,
             'time_gaps': time_gaps,
             'action_levels': action_levels,
+            'timestamps': timestamps,
         })
 
         if split_item_idx == n:
@@ -556,9 +798,12 @@ def _build_sequences_from_behavior(behavior_data, content_to_tokens,
 class UnifiedSequenceDataset(torch.utils.data.Dataset):
     """Dataset of unified per-user sequences with split_pos."""
 
+    # Keys that should be loaded as float32; all others default to long.
+    _FLOAT_KEYS = {'timestamps'}
+
     def __init__(self, tokens_list, split_pos_list, neg_l0_list=None,
                  sid_to_embedding=None, n_sid_layers=None,
-                 time_gaps_list=None, action_levels_list=None):
+                 side_features_lists=None):
         """
         Args:
             tokens_list: list of 1D token lists (variable length)
@@ -566,16 +811,18 @@ class UnifiedSequenceDataset(torch.utils.data.Dataset):
             neg_l0_list: optional list of 2D lists (n_items, K) neg L0 tokens
             sid_to_embedding: optional dict mapping SID tuple → mean embedding (np array)
             n_sid_layers: number of SID layers (needed to chunk tokens into SID tuples)
-            time_gaps_list: optional list of 1D int lists (same length as tokens)
-            action_levels_list: optional list of 1D int lists (same length as tokens)
+            side_features_lists: dict[str, list[list]] of per-token side features.
+                Known keys: "time_gaps" (long), "action_levels" (long),
+                "timestamps" (float32 relative hours).
         """
         self.tokens_list = tokens_list
         self.split_pos_list = split_pos_list
         self.neg_l0_list = neg_l0_list
         self.sid_to_embedding = sid_to_embedding
         self.n_sid_layers = n_sid_layers
-        self.time_gaps_list = time_gaps_list
-        self.action_levels_list = action_levels_list
+        self.side_features_lists = side_features_lists or {}
+        # Preserve insertion order so collate can reconstruct keys
+        self._sf_keys = list(self.side_features_lists.keys())
 
     def __len__(self):
         return len(self.tokens_list)
@@ -600,11 +847,10 @@ class UnifiedSequenceDataset(torch.utils.data.Dataset):
                     embs[i] = emb
             item = item + (torch.from_numpy(embs),)
 
-        # Side features: time_gaps, action_levels
-        if self.time_gaps_list is not None:
-            item = item + (torch.tensor(self.time_gaps_list[idx], dtype=torch.long),)
-        if self.action_levels_list is not None:
-            item = item + (torch.tensor(self.action_levels_list[idx], dtype=torch.long),)
+        # Side features in declared order (collate reconstructs by position)
+        for key in self._sf_keys:
+            dtype = torch.float32 if key in self._FLOAT_KEYS else torch.long
+            item = item + (torch.tensor(self.side_features_lists[key][idx], dtype=dtype),)
 
         return item
 
@@ -615,8 +861,12 @@ def unified_collate_fn(batch):
     Tuple elements after (tokens, split_pos) are detected by type:
     - ndim==2 + dtype==long → neg_l0 (n_items, K)
     - ndim==2 + dtype==float32 → item_embs (n_items, E)
-    - ndim==1 + dtype==long → side feature (time_gaps or action_levels)
-    Side features appear in order: time_gaps first, then action_levels.
+    - ndim==1 + any dtype → side feature (in declaration order from dataset)
+
+    The last element of the returned tuple is always a dict[str, Tensor] of
+    side features if any were declared, otherwise an empty dict.
+    The dict is keyed by the sf_keys injected via ``make_collate_fn``.
+    When called as a bare function (legacy), side features are unnamed.
     """
     n_elems = len(batch[0])
     seqs = [b[0] for b in batch]
@@ -625,7 +875,7 @@ def unified_collate_fn(batch):
     # Classify remaining elements
     neg_l0s = None
     item_embs_list = None
-    side_features = []  # list of lists of 1D tensors
+    sf_tensors = []   # list of (feat_list, dtype) in appearance order
 
     for elem_idx in range(2, n_elems):
         sample = batch[0][elem_idx]
@@ -633,8 +883,8 @@ def unified_collate_fn(batch):
             neg_l0s = [b[elem_idx] for b in batch]
         elif sample.ndim == 2 and sample.dtype == torch.float32:
             item_embs_list = [b[elem_idx] for b in batch]
-        elif sample.ndim == 1 and sample.dtype == torch.long:
-            side_features.append([b[elem_idx] for b in batch])
+        elif sample.ndim == 1:
+            sf_tensors.append(([b[elem_idx] for b in batch], sample.dtype))
 
     lengths = torch.tensor([len(s) for s in seqs], dtype=torch.long)
     split_pos = torch.tensor(split_positions, dtype=torch.long)
@@ -647,11 +897,13 @@ def unified_collate_fn(batch):
 
     if neg_l0s is not None:
         K = neg_l0s[0].size(1)
-        n_layers = 3
+        n_layers = None
         for i, nl in enumerate(neg_l0s):
             if nl.size(0) > 0:
                 n_layers = lengths[i].item() // nl.size(0)
                 break
+        assert n_layers is not None and n_layers > 0, \
+            "unified_collate_fn: all neg_l0 samples are empty — cannot infer n_layers"
 
         S = max_len - 1
         neg_padded = torch.full((len(seqs), S, K), -1, dtype=torch.long)
@@ -678,9 +930,9 @@ def unified_collate_fn(batch):
             item_embs_padded[i, :emb.size(0)] = emb
         result.append(item_embs_padded)
 
-    # Pad side features (1D long tensors, same length as tokens → pad to max_len)
-    for feat_list in side_features:
-        feat_padded = torch.zeros(len(seqs), max_len, dtype=torch.long)
+    # Pad and collect side features — appended as individual tensors in order
+    for feat_list, dtype in sf_tensors:
+        feat_padded = torch.zeros(len(seqs), max_len, dtype=dtype)
         for i, feat in enumerate(feat_list):
             feat_padded[i, :len(feat)] = feat
         result.append(feat_padded)
@@ -791,9 +1043,11 @@ def train_packed(
     contrastive_dim=0,
     sid_to_embedding=None,
     dry_run=False,
-    time_gaps_list=None,
-    action_levels_list=None,
+    side_features_lists=None,
     use_segment_emb=False,
+    use_torope=False,
+    torope_time_split=0.5,
+    use_gate_attn=False,
 ):
     """Train NTPModel or NTPProbe with unified sequences (causal LM style).
 
@@ -809,15 +1063,16 @@ def train_packed(
         contrastive_temp: InfoNCE temperature τ.
         contrastive_dim: projection dimension for contrastive head.
         sid_to_embedding: dict mapping SID tuple → mean embedding (for contrastive).
+        side_features_lists: dict[str, list[list]] of per-token side features.
+            Known keys: "time_gaps" (long), "action_levels" (long),
+            "timestamps" (float32 relative hours).
     """
+    sf_lists = side_features_lists or {}
 
     # Determine contrastive item embedding dimension from sid_to_embedding
     _contrastive_item_dim = 0
     if contrastive_weight > 0 and sid_to_embedding is not None:
         _contrastive_item_dim = next(iter(sid_to_embedding.values())).shape[0]
-
-    use_time_gap = time_gaps_list is not None
-    use_action_level = action_levels_list is not None
 
     if model_type == 's-tier':
         use_moe = n_experts >= 2
@@ -826,12 +1081,13 @@ def train_packed(
         if contrastive_weight > 0:
             _extra_kwargs['contrastive_dim'] = contrastive_dim
             _extra_kwargs['contrastive_item_dim'] = _contrastive_item_dim
-        if use_time_gap:
-            _extra_kwargs['n_time_buckets'] = 16
-        if use_action_level:
-            _extra_kwargs['n_action_levels'] = 4
         if use_segment_emb:
             _extra_kwargs['use_segment_emb'] = True
+        if use_torope:
+            _extra_kwargs['use_torope'] = True
+            _extra_kwargs['torope_time_split'] = torope_time_split
+        if use_gate_attn:
+            _extra_kwargs['use_gate_attn'] = True
         model = NTPModel(
             n_clusters_per_layer=n_clusters_per_layer,
             n_sid_layers=n_layers,
@@ -843,8 +1099,9 @@ def train_packed(
             n_experts=max(n_experts, 1),
             top_k=top_k,
             expert_dim=_expert_dim,
-            parallel=False,  # packed = always causal AR
+            parallel=False,
             max_seq_len=max_seq_len,
+            active_features=list(sf_lists.keys()),
             **_extra_kwargs,
         ).to(device)
     else:
@@ -900,19 +1157,17 @@ def train_packed(
             warnings.filterwarnings('ignore', message='.*find_unused_parameters.*')
         model = DDP(model, device_ids=[local_rank], **ddp_kwargs)
 
-    n_side_features = int(use_time_gap) + int(use_action_level)
-    if n_side_features > 0:
-        log(is_main, f"  Side features: time_gap={use_time_gap}, "
-                      f"action_level={use_action_level}, segment_emb={use_segment_emb}")
+    if sf_lists:
+        log(is_main, f"  Side features: {list(sf_lists.keys())}, segment_emb={use_segment_emb}")
 
     # Data is already pre-sharded (one shard per rank from preprocess-ntp)
     dataset = UnifiedSequenceDataset(
         tokens_list, split_pos_list, neg_l0_list,
         sid_to_embedding=sid_to_embedding if contrastive_weight > 0 else None,
         n_sid_layers=n_layers if contrastive_weight > 0 else None,
-        time_gaps_list=time_gaps_list,
-        action_levels_list=action_levels_list,
+        side_features_lists=sf_lists,
     )
+    sf_keys = dataset._sf_keys  # preserve key order for batch unpacking
     train_loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -951,7 +1206,8 @@ def train_packed(
         # Base: (padded, lengths, split_pos)
         # +ENTP: ... + (neg_padded, neg_mask)
         # +contrastive: ... + (item_embs,)
-        # +side features: ... + (time_gaps,) + (action_levels,)
+        # +side features (long): ... + (time_gaps,) + (action_levels,)
+        # +timestamps (float32): ... + (timestamps,)
         batch = list(batch)
         padded, lengths, split_positions = batch[0], batch[1], batch[2]
         idx = 3
@@ -959,8 +1215,6 @@ def train_packed(
         neg_padded = None
         neg_mask_batch = None
         batch_item_embs = None
-        batch_time_gaps = None
-        batch_action_levels = None
 
         if use_entp:
             neg_padded = batch[idx].to(device, non_blocking=True)
@@ -971,12 +1225,10 @@ def train_packed(
             batch_item_embs = batch[idx].to(device, non_blocking=True)
             idx += 1
 
-        if use_time_gap:
-            batch_time_gaps = batch[idx].to(device, non_blocking=True)
-            idx += 1
-
-        if use_action_level:
-            batch_action_levels = batch[idx].to(device, non_blocking=True)
+        # Unpack side features in key order (same order dataset emits them)
+        batch_sf = {}
+        for key in sf_keys:
+            batch_sf[key] = batch[idx].to(device, non_blocking=True)
             idx += 1
 
         padded = padded.to(device, non_blocking=True)
@@ -988,13 +1240,10 @@ def train_packed(
         input_tokens = padded[:, :-1]
         target_tokens = padded[:, 1:]
 
-        # Valid mask: position i is valid if i+1 < length
-        arange = torch.arange(T - 1, device=device).unsqueeze(0)
-        valid_mask = arange < (lengths.unsqueeze(1) - 1)
+        _, train_mask, _ = compute_split_masks(lengths, split_positions, T - 1, device)
 
-        # Train mask: position i predicts token[i+1]. Token[i+1] is train when
-        # i+1 < split_pos, i.e. i < split_pos - 1.
-        train_mask = valid_mask & (arange < (split_positions.unsqueeze(1) - 1))
+        # Shift side features by 1 (input = tokens[:-1])
+        model_sf = {k: v[:, :-1] for k, v in batch_sf.items()}
 
         loss = model(
             input_tokens,
@@ -1006,8 +1255,7 @@ def train_packed(
             item_embeddings=batch_item_embs,
             contrastive_weight=contrastive_weight,
             contrastive_temp=contrastive_temp,
-            time_gaps=batch_time_gaps[:, :-1] if batch_time_gaps is not None else None,
-            action_levels=batch_action_levels[:, :-1] if batch_action_levels is not None else None,
+            side_features=model_sf or None,
         )
 
         optimizer.zero_grad()
@@ -1021,6 +1269,21 @@ def train_packed(
         # tokens processed this step (across all ranks)
         step_tokens = int(lengths.sum().item()) * world_size
         total_tokens += step_tokens
+
+        # Sanity print on first step: show what positions/timestamps actually enter the model
+        if step == 0 and is_main:
+            S = input_tokens.size(1)
+            train_pos = torch.arange(S, device=input_tokens.device)
+            log(is_main, f"  [sanity] train  positions[:8]  = {train_pos[:8].tolist()}")
+            log(is_main, f"  [sanity] train  positions[-4:]  = {train_pos[-4:].tolist()}")
+            if 'time_gaps' in batch_sf:
+                tg_sample = batch_sf['time_gaps'][0, :8].tolist()
+                log(is_main, f"  [sanity] train  time_gaps[0,:8] = {tg_sample}")
+            if 'timestamps' in batch_sf:
+                ts_sample = batch_sf['timestamps'][0, :8].tolist()
+                log(is_main, f"  [sanity] train  timestamps[0,:8] = {ts_sample}")
+            elif use_torope:
+                log(is_main, f"  [sanity] train  timestamps = zeros (not in pipeline)")
 
         if dry_run and step >= 1:
             log(is_main, f"  Dry run complete (2 steps, loss={total_loss/2:.4f})")
@@ -1146,10 +1409,13 @@ def save_checkpoint(output_dir, probe, n_clusters_per_layer, n_layers, n_items,
         }
         if hasattr(probe, 'use_segment_emb') and probe.use_segment_emb:
             probe_config['use_segment_emb'] = True
-        if hasattr(probe, 'time_gap_emb'):
-            probe_config['n_time_buckets'] = probe.time_gap_emb.num_embeddings
-        if hasattr(probe, 'action_emb'):
-            probe_config['n_action_levels'] = probe.action_emb.num_embeddings
+        if hasattr(probe, 'active_features') and probe.active_features:
+            probe_config['active_features'] = probe.active_features
+        if hasattr(probe, 'use_torope') and probe.use_torope:
+            probe_config['use_torope'] = True
+            probe_config['torope_time_split'] = probe.torope_time_split
+        if getattr(probe.layers[0], 'attn_gate', None) is not None:
+            probe_config['use_gate_attn'] = True
     else:
         probe_config = {
             'model_type': 'probe',
@@ -1248,12 +1514,16 @@ def parse_args():
     parser.add_argument('--dry_run', action='store_true',
                         help='Run 2 steps only (smoke test)')
     # Side information features (EXP-023)
-    parser.add_argument('--use_time_gap', action='store_true', default=False,
-                        help='Enable time gap embedding (16 buckets)')
-    parser.add_argument('--use_action_level', action='store_true', default=False,
-                        help='Enable action level embedding (4 levels)')
     parser.add_argument('--use_segment_emb', action='store_true', default=False,
                         help='Enable segment embedding (item_pos + layer_pos)')
+    # TO-RoPE (feat-5, arxiv 2510.20455) — architecture flag, not a data feature
+    parser.add_argument('--use_torope', action='store_true', default=False,
+                        help='Enable TO-RoPE (Time-and-Order RoPE). Replaces learnable pos_emb '
+                             'with split-by-dim rotary encoding.')
+    parser.add_argument('--torope_time_split', type=float, default=0.5,
+                        help='Fraction of RoPE planes for time encoding (default 0.5)')
+    parser.add_argument('--use_gate_attn', action='store_true', default=False,
+                        help='Enable GateAttention: sigmoid gate on attention output.')
     return parser.parse_args()
 
 
@@ -1345,6 +1615,17 @@ def _run_inline_eval(probe, sid_cache_dir, preprocessed_dir, n_layers,
               flush=True)
 
     # ── Beam search recall (split 5K across ranks) ──
+    # Sanity: show the first eval context's positions so we can verify train/infer alignment
+    if is_main and eval_sequences:
+        _s0 = eval_sequences[0]
+        _ctx_len = _s0['split_pos']
+        _ctx_pos = list(range(_ctx_len))
+        print(f"  [sanity] eval   ctx positions[:8]  = {_ctx_pos[:8]}")
+        print(f"  [sanity] eval   ctx positions[-4:] = {_ctx_pos[max(0,_ctx_len-4):]}")
+        print(f"  [sanity] eval   ctx len={_ctx_len}, gen positions start at {_ctx_len}")
+        if probe.use_torope:
+            print(f"  [sanity] eval   timestamps = zeros (ctx_timestamps not passed to beam search)")
+
     log(is_main, f"  Building sid_to_items from {sid_cache_dir}")
     sid_to_items = _build_sid_to_items(sid_cache_dir)
     sid_trie = SIDTrie(sid_to_items, n_layers)
@@ -1452,12 +1733,16 @@ def main():
     tokens_list = shard_data['tokens_list']
     split_pos_list = shard_data['split_pos_list']
     neg_l0_list = shard_data.get('neg_l0_list')
-    time_gaps_list = shard_data.get('time_gaps_list') if args.use_time_gap else None
-    action_levels_list = shard_data.get('action_levels_list') if args.use_action_level else None
+    side_features_lists = {}
+    from ntp.features import REGISTRY as _FEAT_REG
+    for key, fdef in _FEAT_REG.items():
+        list_key = f'{key}_list'
+        if list_key in shard_data:
+            side_features_lists[key] = shard_data[list_key]
+    sf_desc = ', '.join(side_features_lists.keys()) if side_features_lists else 'none'
     log(is_main, f"  Rank {local_rank}: loaded {len(tokens_list):,} seqs from shard"
                  + (f" (with ENTP neg data)" if neg_l0_list is not None else "")
-                 + (f" (time_gap)" if time_gaps_list is not None else "")
-                 + (f" (action_level)" if action_levels_list is not None else ""))
+                 + (f" (side_features: {sf_desc})" if side_features_lists else ""))
     log(is_main, f"  Layers: {n_layers}, n_items: {n_items}, max_seq_len: {max_seq_len}")
 
     n_train = prep_meta['n_seqs']
@@ -1592,9 +1877,11 @@ def main():
                 top_k=cfg.get('top_k', 2),
                 expert_dim=cfg.get('expert_dim', 1024),
                 max_seq_len=cfg.get('max_seq_len', max_seq_len),
-                n_time_buckets=cfg.get('n_time_buckets', 0),
-                n_action_levels=cfg.get('n_action_levels', 0),
+                active_features=cfg.get('active_features', []),
                 use_segment_emb=cfg.get('use_segment_emb', False),
+                use_torope=cfg.get('use_torope', False),
+                torope_time_split=cfg.get('torope_time_split', 0.5),
+                use_gate_attn=cfg.get('use_gate_attn', False),
             )
         else:
             probe = NTPProbe(
@@ -1664,9 +1951,11 @@ def main():
             contrastive_dim=args.contrastive_dim,
             sid_to_embedding=sid_to_embedding,
             dry_run=args.dry_run,
-            time_gaps_list=time_gaps_list,
-            action_levels_list=action_levels_list,
+            side_features_lists=side_features_lists,
             use_segment_emb=args.use_segment_emb,
+            use_torope=args.use_torope,
+            torope_time_split=args.torope_time_split,
+            use_gate_attn=args.use_gate_attn,
         )
 
         # Update W&B config with model-specific info discovered during training

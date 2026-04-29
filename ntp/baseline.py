@@ -120,7 +120,11 @@ class NTPProbe(nn.Module):
                 packed_mask: Optional[torch.Tensor] = None,
                 neg_l0_tokens: Optional[torch.Tensor] = None,
                 neg_l0_mask: Optional[torch.Tensor] = None,
-                entp_weight: float = 0.0):
+                entp_weight: float = 0.0,
+                item_embeddings=None,
+                contrastive_weight: float = 0.0,
+                contrastive_temp: float = 0.07,
+                side_features=None):
         """
         Args:
             input_tokens: (B, seq_len) history SID tokens

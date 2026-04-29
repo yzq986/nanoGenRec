@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import itertools
 import json
 import os
 import time
@@ -190,12 +191,17 @@ def train_dpo(
     max_steps=None,
     pure_dpo=False,
     dpo_epochs=1,
+    ntp_epochs=1,
+    mid_checkpoint_dir=None,
+    n_items=0,
     wandb_run=None,
 ):
     """Joint NTP + DPO training, or pure DPO (when pure_dpo=True).
 
     Joint mode: NTP (large batches) and DPO (small batches) each step.
         total_loss = ntp_loss + dpo_weight * dpo_loss
+    ntp_epochs > 1 loops the NTP loader multiple times so that the total NTP
+        step count matches the DPO 3-epoch cycle (ratio-matching design).
     Pure DPO mode: only DPO loss, steps driven by DPO pair epochs.
     """
     # ── Load policy model (from SFT checkpoint) ──
@@ -359,7 +365,7 @@ def train_dpo(
             n_batches = min(n_batches, max_steps)
         log(is_main, f"  Pure DPO mode: {n_dpo_batches} batches/epoch × {dpo_epochs} epochs = {n_batches} steps")
     else:
-        n_batches = len(ntp_loader)
+        n_batches = len(ntp_loader) * ntp_epochs
         if max_steps:
             n_batches = min(n_batches, max_steps)
 
@@ -372,8 +378,8 @@ def train_dpo(
                      f"DPO batch={dpo_batch_size}, n_rej={dpo_n_rejected}, "
                      f"β={dpo_beta}, lr={lr}")
     else:
-        log(is_main, f"  Training: {n_batches} steps, NTP batch={batch_size}, "
-                     f"DPO batch={dpo_batch_size}, n_rej={dpo_n_rejected}, "
+        log(is_main, f"  Training: {n_batches} steps (NTP {len(ntp_loader)} steps/epoch × {ntp_epochs} epochs), "
+                     f"NTP batch={batch_size}, DPO batch={dpo_batch_size}, n_rej={dpo_n_rejected}, "
                      f"λ={dpo_weight}, β={dpo_beta}, lr={lr}")
 
     # ── Training loop ──
@@ -551,9 +557,10 @@ def train_dpo(
                       f"gnorm={grad_norm:.2f}{margin_str}, ETA {eta}")
 
     else:
-        # Joint NTP + DPO: iterate over NTP loader, sample DPO each step
-        for step, ntp_batch in enumerate(ntp_loader):
-            if max_steps and step >= max_steps:
+        # Joint NTP + DPO: iterate over NTP loader (possibly multiple epochs), sample DPO each step
+        ntp_iter = itertools.chain.from_iterable(itertools.repeat(ntp_loader, ntp_epochs))
+        for step, ntp_batch in enumerate(ntp_iter):
+            if step >= n_batches:
                 break
 
             optimizer.zero_grad()
@@ -662,6 +669,42 @@ def train_dpo(
                       f"gnorm={grad_norm:.2f}{margin_str}, "
                       f"{toks_per_sec:.0f} tok/s, ETA {eta}")
 
+            # Save mid-epoch checkpoints at each NTP epoch boundary (for multi-epoch runs)
+            ntp_epoch_len = len(ntp_loader)
+            if (is_main and mid_checkpoint_dir and ntp_epochs > 1
+                    and (step + 1) % ntp_epoch_len == 0
+                    and (step + 1) < n_batches):
+                epoch_num = (step + 1) // ntp_epoch_len
+                ep_dir = f"{mid_checkpoint_dir}-ep{epoch_num}"
+                avg_ntp_mid = total_ntp_loss / (step + 1)
+                avg_dpo_mid = total_dpo_loss / (step + 1)
+                mid_summary = {
+                    'n_params': n_params,
+                    'avg_ntp_loss': round(avg_ntp_mid, 6),
+                    'avg_dpo_loss': round(avg_dpo_mid, 6),
+                    'avg_total_loss': round(avg_ntp_mid + dpo_weight * avg_dpo_mid, 6),
+                    'dpo_weight': dpo_weight,
+                    'dpo_beta': dpo_beta,
+                    'ntp_epochs': ntp_epochs,
+                    'mid_epoch': epoch_num,
+                    'n_steps': step + 1,
+                }
+                log(is_main, f"  [mid-checkpoint] Saving epoch {epoch_num} checkpoint to {ep_dir}")
+                save_checkpoint(
+                    output_dir=ep_dir,
+                    probe=raw_policy,
+                    n_clusters_per_layer=n_clusters_per_layer,
+                    n_layers=n_layers,
+                    n_items=n_items,
+                    avg_loss=avg_ntp_mid + dpo_weight * avg_dpo_mid,
+                    n_params=n_params,
+                    sid_cache_dir=sid_cache_dir,
+                    preprocessed_dir=preprocessed_dir,
+                    model_type=model_type,
+                    n_train=len(ntp_tokens_list),
+                    train_summary=mid_summary,
+                )
+
     actual_steps = min(step + 1, n_batches) if 'step' in dir() else 0
     avg_ntp = total_ntp_loss / max(actual_steps, 1)
     avg_dpo = total_dpo_loss / max(actual_steps, 1)
@@ -688,6 +731,7 @@ def train_dpo(
         'difficulty': difficulty,
         'pure_dpo': pure_dpo,
         'dpo_epochs': dpo_epochs if pure_dpo else 0,
+        'ntp_epochs': ntp_epochs if not pure_dpo else 0,
         'total_tokens': total_tokens,
         'wall_time_s': round(elapsed, 1),
         'batch_size': batch_size,
@@ -741,8 +785,7 @@ def train_grpo(
     a2po=False,             # True → A2PO: amplify neg-adv penalty for hard negatives
     a2po_alpha=1.0,         # A2PO gate scale
     nll_reg=0.0,            # NLL regularization weight: add -nll_reg * log p(best) per group
-    time_gaps_list=None,    # side features: list of int lists (same len as tokens)
-    action_levels_list=None,
+    side_features_lists=None,  # dict[str, list[list]] — auto-detected from shard by caller
     ref_checkpoint=None,    # if set, load ref model from here instead of sft_checkpoint
     max_steps=None,
     wandb_run=None,
@@ -815,8 +858,7 @@ def train_grpo(
     # ── NTP DataLoader ──
     ntp_dataset = UnifiedSequenceDataset(
         ntp_tokens_list, ntp_split_pos_list,
-        time_gaps_list=time_gaps_list,
-        action_levels_list=action_levels_list,
+        side_features_lists=side_features_lists,
     )
     ntp_loader = DataLoader(
         ntp_dataset,
@@ -838,14 +880,15 @@ def train_grpo(
 
     algo = 'ECPO' if delta > 0.0 else 'GRPO'
     beam_mode = 'on-policy' if on_policy_beam else 'off-policy'
-    has_features = time_gaps_list is not None or action_levels_list is not None
+    sf_keys = ntp_dataset._sf_keys   # ordered list of feature names in the batch
+    has_features = bool(sf_keys)
     log(is_main, f"  Training ({algo}): {n_batches} steps, NTP batch={batch_size}, "
                  f"GRPO batch={grpo_batch_size}, G={group_size}, "
                  f"rl_ratio={rl_data_ratio}, λ={grpo_weight}, ε={eps}"
                  + (f", δ={delta}" if delta > 0.0 else "")
                  + (f", A2PO α={a2po_alpha}" if a2po else "")
                  + (f", nll_reg={nll_reg}" if nll_reg > 0.0 else "")
-                 + (f", side_features=True" if has_features else "")
+                 + (f", side_features={sf_keys}" if has_features else "")
                  + f", lr={lr}, beam={beam_mode}")
 
     policy_model.train()
@@ -895,38 +938,32 @@ def train_grpo(
 
     # ── Context pool padding helper ──
     def _pad_contexts(ctx_entries):
-        """Pad a list of (tokens, time_gaps, action_levels) tuples.
+        """Pad a list of (tokens, side_features_dict) tuples.
 
         Returns:
             padded:  (B, T_max) token tensor
             lengths: (B,) actual lengths
-            tg_pad:  (B, T_max) or None
-            al_pad:  (B, T_max) or None
+            sf_pad:  dict[str, (B, T_max) Tensor] — padded side features (on device)
         """
         token_lists = [e[0] for e in ctx_entries]
-        tg_lists    = [e[1] for e in ctx_entries]
-        al_lists    = [e[2] for e in ctx_entries]
+        sf_dicts    = [e[1] for e in ctx_entries]
         lengths = torch.tensor([len(t) for t in token_lists], dtype=torch.long)
         T = int(lengths.max().item())
         B = len(ctx_entries)
         padded = torch.zeros(B, T, dtype=torch.long)
         for i, t in enumerate(token_lists):
             padded[i, :len(t)] = torch.tensor(t, dtype=torch.long)
-        has_tg = tg_lists[0] is not None
-        has_al = al_lists[0] is not None
-        tg_pad = None
-        al_pad = None
-        if has_tg:
-            tg_pad = torch.zeros(B, T, dtype=torch.long)
-            for i, tg in enumerate(tg_lists):
-                tg_pad[i, :len(tg)] = torch.tensor(tg, dtype=torch.long)
-        if has_al:
-            al_pad = torch.zeros(B, T, dtype=torch.long)
-            for i, al in enumerate(al_lists):
-                al_pad[i, :len(al)] = torch.tensor(al, dtype=torch.long)
-        return (padded.to(device), lengths.to(device),
-                tg_pad.to(device) if tg_pad is not None else None,
-                al_pad.to(device) if al_pad is not None else None)
+
+        sf_pad = {}
+        for key in (sf_dicts[0].keys() if sf_dicts else []):
+            feat = torch.zeros(B, T, dtype=torch.long)
+            for i, sf in enumerate(sf_dicts):
+                vals = sf.get(key, [])
+                if vals:
+                    feat[i, :len(vals)] = torch.tensor(vals, dtype=torch.long)
+            sf_pad[key] = feat.to(device)
+
+        return (padded.to(device), lengths.to(device), sf_pad)
 
     # ── GRPO step helper ──
     def _grpo_step(sampled_contexts, weight=1.0):
@@ -950,27 +987,28 @@ def train_grpo(
             beam_model = raw_policy if (on_policy_beam or use_sampling) else ref_model
             if on_policy_beam or use_sampling:
                 beam_model.eval()  # temporarily switch policy to eval for generation
-            for ctx_tokens, ctx_tg, ctx_al in sampled_contexts:
+            for ctx_tokens, ctx_sf_dict in sampled_contexts:
                 ctx_t = torch.tensor(ctx_tokens, dtype=torch.long,
                                      device=device).unsqueeze(0)  # (1, T)
-                tg_t = (torch.tensor(ctx_tg, dtype=torch.long, device=device).unsqueeze(0)
-                        if ctx_tg is not None else None)
-                al_t = (torch.tensor(ctx_al, dtype=torch.long, device=device).unsqueeze(0)
-                        if ctx_al is not None else None)
+                ctx_sf_t = {k: torch.tensor(v, dtype=torch.long, device=device).unsqueeze(0)
+                            for k, v in ctx_sf_dict.items()} or None
                 # carry-forward: gen_action_level = last context item's action_level
-                gen_al = int(ctx_al[-1]) if ctx_al is not None else 0
+                gen_sf = {}
+                if 'action_levels' in ctx_sf_dict and ctx_sf_dict['action_levels']:
+                    gen_sf['action_levels'] = int(ctx_sf_dict['action_levels'][-1])
+                gen_sf['time_gaps'] = 0
                 with torch.no_grad():
                     if use_sampling:
                         beams, _scores, _ = constrained_sampling(
                             beam_model, ctx_t, sid_trie, n_samples=group_size,
-                            ctx_time_gaps=tg_t, ctx_action_levels=al_t,
-                            gen_time_gap=0, gen_action_level=gen_al,
+                            ctx_side_features=ctx_sf_t,
+                            gen_side_features=gen_sf or None,
                             temperature=sampling_temperature)
                     else:
                         beams, _scores, _ = constrained_beam_search(
                             beam_model, ctx_t, sid_trie, beam_size=group_size,
-                            ctx_time_gaps=tg_t, ctx_action_levels=al_t,
-                            gen_time_gap=0, gen_action_level=gen_al)
+                            ctx_side_features=ctx_sf_t,
+                            gen_side_features=gen_sf or None)
                 # beams: (1, actual_beams, n_layers)
                 cands = beams[0]   # (actual_beams, n_layers)
                 if is_main and n_grpo_steps == 0 and len(all_sids_list) == 0:
@@ -986,18 +1024,11 @@ def train_grpo(
 
             # 2. Expand contexts to match candidate count
             counts = group_offsets_t[1:] - group_offsets_t[:-1]   # (B,)
-            ctx_padded, ctx_lengths, tg_padded, al_padded = _pad_contexts(sampled_contexts)
+            ctx_padded, ctx_lengths, sf_padded = _pad_contexts(sampled_contexts)
             ctx_exp = torch.repeat_interleave(ctx_padded, counts, dim=0)
             len_exp = torch.repeat_interleave(ctx_lengths, counts, dim=0)
-            tg_exp  = torch.repeat_interleave(tg_padded, counts, dim=0) if tg_padded is not None else None
-            al_exp  = torch.repeat_interleave(al_padded, counts, dim=0) if al_padded is not None else None
-            # carry-forward gen_action_level per context (last token in context)
-            gen_al_per_ctx = None
-            if al_padded is not None:
-                last_al = torch.stack([
-                    al_padded[i, ctx_lengths[i] - 1] for i in range(len(sampled_contexts))
-                ])  # (B,)
-                gen_al_per_ctx = torch.repeat_interleave(last_al, counts, dim=0)  # (N,)
+            sf_exp  = {k: torch.repeat_interleave(v, counts, dim=0)
+                       for k, v in sf_padded.items()}
 
             # 3. Rewards (detached — no gradient through reward fn)
             with torch.no_grad():
@@ -1008,19 +1039,15 @@ def train_grpo(
                 ref_lp = compute_sid_logprobs_batch(
                     ref_model, ctx_exp, len_exp, all_sids_t, n_layers,
                     max_chunk=max_chunk,
-                    ctx_time_gaps=tg_exp, ctx_action_levels=al_exp,
-                    gen_time_gap=0, gen_action_level=0)
+                    ctx_side_features=sf_exp or None,
+                    gen_side_features=None)
 
             # 5. Policy log-probs (with grad)
-            # gen_action_level per-sample carry-forward: passed as scalar=0 when no features
-            # (compute_sid_logprobs_batch accepts scalar gen_action_level only; for per-sample
-            # carry-forward we fall back to 0 since the SID positions use a single gen_al
-            # broadcast; the main signal is in ctx_action_levels which vary per token)
             policy_lp = compute_sid_logprobs_batch(
                 raw_policy, ctx_exp, len_exp, all_sids_t, n_layers,
                 max_chunk=max_chunk,
-                ctx_time_gaps=tg_exp, ctx_action_levels=al_exp,
-                gen_time_gap=0, gen_action_level=0)
+                ctx_side_features=sf_exp or None,
+                gen_side_features=None)
 
             # 6. Loss
             if delta > 0.0:
@@ -1059,7 +1086,7 @@ def train_grpo(
                 reward_metrics = reward_fn.metrics()
 
             del all_sids_t, ctx_padded, ctx_lengths, ctx_exp, len_exp
-            del tg_padded, al_padded, tg_exp, al_exp, gen_al_per_ctx
+            del sf_padded, sf_exp
             del policy_lp, ref_lp, rewards
 
         return loss_val, diag, reward_metrics
@@ -1082,8 +1109,10 @@ def train_grpo(
         padded = ntp_batch[0].to(device, non_blocking=True)
         lengths = ntp_batch[1].to(device, non_blocking=True)
         split_positions = ntp_batch[2].to(device, non_blocking=True)
-        ntp_time_gaps = ntp_batch[3].to(device, non_blocking=True) if has_features and len(ntp_batch) > 3 else None
-        ntp_action_levels = ntp_batch[4].to(device, non_blocking=True) if has_features and len(ntp_batch) > 4 else None
+        # Side features: batch tail tensors in sf_keys order → build dict
+        ntp_sf = {}
+        for i, key in enumerate(sf_keys):
+            ntp_sf[key] = ntp_batch[3 + i].to(device, non_blocking=True)
         T = padded.shape[1]
 
         input_tokens = padded[:, :-1]
@@ -1096,8 +1125,7 @@ def train_grpo(
             input_tokens,
             packed_targets=target_tokens,
             packed_mask=train_mask,
-            time_gaps=ntp_time_gaps[:, :-1] if ntp_time_gaps is not None else None,
-            action_levels=ntp_action_levels[:, :-1] if ntp_action_levels is not None else None,
+            side_features={k: v[:, :-1] for k, v in ntp_sf.items()} or None,
         )
         ntp_loss.backward()
         del padded, input_tokens, target_tokens, valid_mask, train_mask
@@ -1309,6 +1337,9 @@ def parse_args():
                         help='Max training steps (default: full epoch)')
     parser.add_argument('--dpo_epochs', type=int, default=1,
                         help='Number of epochs over DPO pairs (pure_dpo mode, default: 1)')
+    parser.add_argument('--ntp_epochs', type=int, default=1,
+                        help='Number of epochs over NTP data in Joint mode (default: 1). '
+                             'Use >1 to cycle NTP for ratio-matching with DPO data volume.')
     parser.add_argument('--pure_dpo', action='store_true',
                         help='Pure DPO mode: no NTP loss, steps driven by DPO pairs')
     parser.add_argument('--difficulty', type=str, default='all',
@@ -1390,6 +1421,7 @@ def main():
                     'max_steps': args.max_steps,
                     'pure_dpo': args.pure_dpo,
                     'dpo_epochs': args.dpo_epochs,
+                    'ntp_epochs': args.ntp_epochs,
                     'n_preference_pairs': len(all_pairs),
                 },
             )
@@ -1455,6 +1487,9 @@ def main():
             max_steps=args.max_steps,
             pure_dpo=args.pure_dpo,
             dpo_epochs=args.dpo_epochs,
+            ntp_epochs=args.ntp_epochs,
+            mid_checkpoint_dir=args.output_dir if args.ntp_epochs > 1 else None,
+            n_items=prep_meta['n_items'],
             wandb_run=wandb_run,
         )
 
@@ -2031,15 +2066,17 @@ def grpo_main():
     shard_data = load_shard(shard_path)
     tokens_list = shard_data['tokens_list']
     split_pos_list = shard_data['split_pos_list']
-    time_gaps_list = shard_data.get('time_gaps_list')
-    action_levels_list = shard_data.get('action_levels_list')
-    if time_gaps_list is not None:
-        log(is_main, f"  NTP shard: {len(tokens_list):,} seqs, side features: time_gap + action_level (rank {local_rank})")
-    else:
-        log(is_main, f"  NTP shard: {len(tokens_list):,} seqs (rank {local_rank})")
+    from ntp.features import REGISTRY as _FEAT_REG
+    sf_lists = {}
+    for key in _FEAT_REG:
+        if f'{key}_list' in shard_data:
+            sf_lists[key] = shard_data[f'{key}_list']
+    log(is_main, f"  NTP shard: {len(tokens_list):,} seqs"
+                 + (f", side features: {list(sf_lists.keys())}" if sf_lists else "")
+                 + f" (rank {local_rank})")
 
     # ── Build context pool (eval portion of the shard) ──
-    # Each entry: (tokens_list, time_gaps_list_or_None, action_levels_list_or_None)
+    # Each entry: (ctx_tokens: List[int], ctx_side_features: dict[str, list])
     context_pool = []
     for i, (tokens, split_pos) in enumerate(zip(tokens_list, split_pos_list)):
         n_sid = n_layers
@@ -2050,15 +2087,9 @@ def grpo_main():
             if len(ctx) >= n_sid:
                 start = max(0, len(ctx) - 510)
                 ctx_tokens = list(ctx[start:])
-                ctx_tg = None
-                ctx_al = None
-                if time_gaps_list is not None:
-                    tg_seq = time_gaps_list[i][:ctx_len]
-                    ctx_tg = list(tg_seq[start:])
-                if action_levels_list is not None:
-                    al_seq = action_levels_list[i][:ctx_len]
-                    ctx_al = list(al_seq[start:])
-                context_pool.append((ctx_tokens, ctx_tg, ctx_al))
+                ctx_sf = {key: list(vals[i][:ctx_len][start:])
+                          for key, vals in sf_lists.items()}
+                context_pool.append((ctx_tokens, ctx_sf))
     log(is_main, f"  Context pool: {len(context_pool):,} contexts")
 
     # ── Build SIDTrie ──
@@ -2197,8 +2228,7 @@ def grpo_main():
         a2po=getattr(args, 'a2po', False),
         a2po_alpha=getattr(args, 'a2po_alpha', 1.0),
         nll_reg=getattr(args, 'nll_reg', 0.0),
-        time_gaps_list=time_gaps_list,
-        action_levels_list=action_levels_list,
+        side_features_lists=sf_lists,
         ref_checkpoint=getattr(args, 'ref_checkpoint', None),
         max_steps=max_steps,
         wandb_run=wandb_run,

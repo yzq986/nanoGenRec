@@ -1,0 +1,41 @@
+{
+  "name": "exp044-torope-ts05-noseg",
+  "model_type": "s-tier",
+  "n_params": 45650432,
+  "n_active_params": 17338880,
+  "total_tokens": 132633768,
+  "total_flops": 13798325923799040,
+  "sid_cache": "experiments/sid_cache/exp026-0.6b-14d",
+  "eval": {
+    "ppl": 251.0598,
+    "layer_ppl": [
+      606.8661,
+      35.3797,
+      740.9053
+    ],
+    "avg_loss": 5.525691,
+    "depth_hit@10": [
+      0.1242,
+      0.0791,
+      0.0358
+    ],
+    "depth_hit@10_indep": [
+      0.1238,
+      0.6726,
+      0.2339
+    ],
+    "depth_acc_beam": [
+      0.026,
+      0.018,
+      0.018
+    ],
+    "target_sid_found_rate": 0.603,
+    "n_eval_positions": 148078,
+    "n_eval_items": 49166,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.113,
+    "item_recall@50": 0.272,
+    "item_recall@100": 0.358,
+    "item_recall@500": 0.601
+  }
+}

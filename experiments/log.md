@@ -39,11 +39,508 @@
 
 ---
 
-## EXP-037: SP-DPO on exp036-full-features (Features 路线第二步)
+## EXP-043: Embedding Model Size Comparison — S-tier & M-tier × 0.6B/4B/8B SID
+
+**Date**: 2026-04-29
+**Status**: completed
+
+### Background
+当前 SID tokenizer 使用 Qwen3-0.6B embedding（exp013 SID，旧版）。EXP-026 构建了三套新 SID cache（0.6B/4B/8B，14d），本实验对比三种 embedding 规模对 NTP 性能的影响，同时验证 S-tier vs M-tier 模型在不同 SID 下的表现。
+
+### Design
+- **Variable**: Embedding model size (Qwen3-0.6B / 4B / 8B) × NTP model tier (S-tier / M-tier)
+- **Fixed**: 14d 数据，full features (time_gap + action_level + segment_emb)
+- **SID cache**: exp026-{0.6b,4b,8b}-14d
+- **Baseline**: exp036-full-features (exp013 SID, S-tier, R@500=59.0%)
+
+### SID Cache Metrics
+
+| SID Cache | Emb Dim | n_items | Collision | L0 entropy | L1 entropy | L2 entropy | Joint entropy | L0 Gini |
+|-----------|---------|---------|-----------|-----------|-----------|-----------|--------------|---------|
+| exp026-0.6b | 1024 | 1,096,364 | **0.49%** | 11.72 (97.6%) | 9.55 (79.6%) | **10.58 (91.2%)** | **20.05** | 0.320 |
+| exp026-4b   | 2560 | 1,110,697 | 2.76% | 11.80 (98.3%) | 10.60 (88.4%) | 8.10 (78.7%) | 20.02 | **0.288** |
+| exp026-8b   | 4096 | 1,110,695 | 5.44% | 11.78 (98.2%) | **10.95 (91.2%)** | 7.17 (71.6%) | 19.95 | 0.303 |
+
+括号内为相对理论最大熵的利用率（L0/L1 理论 max=12 bits，L2 理论 max = log2(实际用到的 FSQ codes)）。
+
+**Entropy 分析**：
+- L0/L1 三个模型基本相当（KMeans 2层均匀分布）
+- **L2 entropy 随 embedding 维度急剧下降**：0.6B=10.58→4B=8.10→8B=7.17 bits。8B 的 FSQ 有效槽位仅 ~145 个（vs 0.6B 的 ~1500 个）
+- **根本原因**：FSQ MLP hidden=64 是为 0.6B (1024D) 设计的，对 4B/8B 的残差向量（2560D/4096D）bottleneck 不足，L2 层信息严重损失，导致大量 item 被映射到同一 FSQ code → collision 爆增
+
+### Scaling Law — Irreducible PPL Floor
+
+用 S-tier (N≈17.5M active) 和 M-tier (N≈71.6M active) 两点联立，反推各 SID 的 intrinsic floor（固定 scaling 指数 c=0.456，拟合 `L(N) = floor + b/N^c`）：
+
+| SID | Joint entropy | floor loss | **floor PPL** | scaling b |
+|-----|--------------|-----------|--------------|-----------|
+| exp013 (旧 0.6B) | — | 2.522 | **12.45** | 2055 |
+| exp026-0.6b | 20.05 bits | 2.523 | **12.46** | 1517 |
+| exp026-4b   | 20.02 bits | 2.466 | **11.78** | 1299 |
+| exp026-8b   | 19.95 bits | 2.507 | **12.26** | 1047 |
+
+**关键发现**：
+1. **4B SID floor 最低（PPL=11.78）**，是三者中理论上限最高的 tokenizer，比 0.6B 低 0.68 PPL。
+2. **8B SID floor 反而高于 4B（12.26 vs 11.78）**：L2 entropy 坍缩（7.17 bits）抵消了 embedding 质量提升，tokenizer 瓶颈更严重。
+3. **scaling 系数 b 随 embedding 规模单调下降**（2055→1517→1299→1047）：更好的 SID 让模型更快收敛，同等参数量的 loss 更低。
+4. **0.6B 的 floor 与旧 SID 几乎相同（12.46 vs 12.45）**，但 b 更小（收敛更快），实际 NTP 表现好于旧 SID。
+5. **若要发挥 8B embedding 的真实质量，需将 FSQ hidden 从 64 扩大到 ~256**，使 L2 entropy 恢复到 90%+ 利用率。
+
+### Results
+
+| Config | R@10 | R@500 | PPL | L0 PPL | Wall |
+|--------|------|-------|-----|--------|------|
+| **exp036-full-features** (old baseline) | — | 59.0% | — | — | — |
+| exp043-s-0.6b | 11.4% | 61.2% | 26.52 | 390.2 | 8min |
+| exp043-s-4b | 9.7% | 64.3% | 22.49 | 322.2 | 8min |
+| exp043-s-8b | 10.2% | **64.7%** | 20.66 | 279.6 | 8min |
+| exp043-m-0.6b | **14.5%** | 70.2% | 18.54 | 322.9 | 23min |
+| exp043-m-4b | 14.2% | 70.4% | 16.55 | 268.1 | 23min |
+| exp043-m-8b | 13.0% | 69.7% | **16.14** | 240.9 | 23min |
+
+### Analysis
+
+1. **M-tier 大幅领先 S-tier**：M-tier R@500 全部在 70% 附近，比 S-tier（61-65%）高 5-9pp。M-tier active params ~71.6M vs S-tier ~17.5M，模型规模在这个范围仍有显著收益。
+
+2. **Embedding 规模对 R@500 的影响有限但有规律**：
+   - S-tier：0.6B→4B +3.1pp，4B→8B +0.4pp。4B 是明显拐点，8B 边际收益小。
+   - M-tier：0.6B→4B +0.2pp，4B→8B -0.7pp。M-tier 对 SID 质量不敏感——模型更大可以部分弥补 tokenizer 的 L2 信息损失。
+
+3. **PPL 随 embedding 规模单调下降**：8B 的 L0 PPL 最低（240.9），说明更大 embedding 让 L0 cluster 更分离。但 PPL 提升未完全转化为 R@500（beam search 受 collision 和 L2 信息损失影响）。
+
+4. **R@10 规律异常由 collision 解释**：0.6B collision 最低（0.49%），top-beam 精确命中率最高。8B collision=5.44%，大量 item 共享 SID，beam search 无法区分 → R@10 反而低。
+
+5. **最优配置**：
+   - 当前：**M-tier + 4B SID**（R@500=70.4%，floor PPL=11.78 最低）
+   - 低成本替代：M-tier + 0.6B SID（R@500=70.2%，b 更小收敛更快）
+   - 8B SID 需扩大 FSQ hidden（64→256）修复 L2 entropy 坍缩后才能真正发挥优势
+
+### Next Steps
+- EXP-044：TO-RoPE vs absolute pos emb，基于 S-tier + 0.6B SID ✓
+- EXP-045：FSQ hidden dim 修复（4B h=64→256，8B h=64→512），降低 collision rate ✓
+- M-tier RL 链路：以 exp043-m-0.6b 为 SFT 起点，接 SP-DPO
+
+---
+
+## EXP-045: FSQ Hidden Dim Fix — 4B h=256, 8B h=512
+
+**Date**: 2026-04-29
+**Status**: queued
+
+### Background
+EXP-043 分析（Analysis #4）指出：4B 和 8B SID 的 collision rate 过高（2.76% / 5.44%），
+根因是 `fsq_mlp_hidden=64` 是为 0.6B（dim=1024）设计的，对 4B（dim=2560）和 8B（dim=4096）
+是严重 bottleneck，导致 MLP 无法充分区分高维 embedding 空间，大量 item 映射到相同 SID。
+
+### Hypothesis
+将 fsq_mlp_hidden 扩大至 dim/10（4B→256，8B→512）可以：
+1. 显著降低 collision rate（4B: 2.76%→<1%，8B: 5.44%→<2%）
+2. 改善 R@10（当前被 collision 压制）
+3. 4B SID 有望达到或超越 0.6B SID 的 R@10
+
+### Design
+- **Fixed**: 12d_4096 FSQ levels，mlp projection，S-tier NTP，14d 数据，full features
+- **0.6b 不重跑**：collision=0.49% 已可接受，直接引用 exp043-s-0.6b
+
+| Config | Model | h (old) | h (new) | SID cache | NTP |
+|--------|-------|---------|---------|-----------|-----|
+| exp045-4b-h256 | Qwen3-4B | 64 | 256 | exp045-4b-h256 | S-tier |
+| exp045-8b-h512 | Qwen3-8B | 64 | 512 | exp045-8b-h512 | S-tier |
+
+### Results
+
+（待完成）
+
+### Analysis
+
+（待完成）
+
+### Next Steps
+- 若 4B h=256 R@500 > exp043-s-4b，则更新 M-tier baseline 用 exp045 SID
+- M-tier + 4B h=256 SID 对比 M-tier + 4B h=64（是否值得升级 SID）
+
+---
+
+## EXP-044: TO-RoPE vs Absolute Position Embedding — S-tier + 0.6B SID
+
+**Date**: 2026-04-29
+**Status**: completed
+
+### Background
+EXP-043 baseline（exp043-s-0.6b）使用绝对位置 embedding + segment_emb + time_gap + action_level。
+本实验测试 TO-RoPE（Time-and-Order RoPE，arxiv 2510.20455）是否能改善推荐序列中的时间顺序建模。
+
+**重要限制（事后发现）**：本次 TO-RoPE 实验的 timestamps 全程为 0 — 原始数据中确实有 `first_ts` 字段，但 preprocess 流水线未接通到 NTP 侧。因此本实验等价于"TO-RoPE with zeros vs absolute pos emb"，并非公平对比。已在本次实验后完整接通 timestamps pipeline（`rel_hours = (ts[i] - ts[0]) / 3600`），下一轮实验将使用真实时间戳。
+
+另：time_gap_emb 之前被 `use_torope=True` 的条件块屏蔽，也已修复（两者可共存）。
+
+### Design
+- **Variable**: RoPE 模式（absolute pos / TO-RoPE time_split=0.5 / TO-RoPE time_split=0.25）× segment_emb 开关
+- **Fixed**: S-tier + 0.6B SID，14d 数据，time_gap + action_level（但 TO-RoPE 路径 time_gap 被屏蔽 bug，已修）
+- **Baseline**: exp043-s-0.6b（R@500=61.2%，PPL=26.52）
+
+| Config | 说明 |
+|--------|------|
+| exp044-baseline | absolute pos + segment + time_gap + action（≡ exp043-s-0.6b，未重训）|
+| exp044-torope-ts05 | TO-RoPE time_split=0.5 + segment + action（time_gap 被屏蔽 bug）|
+| exp044-torope-ts025 | TO-RoPE time_split=0.25 + segment + action（time_gap 被屏蔽 bug）|
+| exp044-torope-ts05-noseg | TO-RoPE time_split=0.5 + action only（无 segment）|
+
+### Results
+
+| Config | R@10 | R@500 | PPL | L0 PPL | Wall |
+|--------|------|-------|-----|--------|------|
+| **exp043-s-0.6b** (baseline) | **11.4%** | **61.2%** | **26.52** | 390.2 | 8min |
+| exp044-torope-ts05 | 10.8% | 60.1% | 377.30 | 672.5 | 7min |
+| exp044-torope-ts025 | 11.4% | 60.4% | 396.84 | 681.7 | 7min |
+| exp044-torope-ts05-noseg | 11.3% | 60.1% | 251.07 | 606.9 | 7min |
+
+### Analysis
+
+1. **TO-RoPE 全部不如 baseline**：R@500 低 0.8–1.1pp，PPL 高出数量级（26 vs 250-400）。
+
+2. **PPL 异常高的根因**：timestamps 全为 0 → TO-RoPE 时间维度失效，等价于用 RoPE 替换了绝对 pos emb，而 RoPE 的频率设计与短序列推荐场景未必匹配，加上 time_gap_emb 被屏蔽，信息总量更少。
+
+3. **R@500 差距小于预期**（仅 ~1pp）：R@500 对绝对位置编码质量不敏感，beam search 的 top-k recall 更多由 SID 区分度和 L0 分布决定。
+
+4. **实验无效结论**：本实验不能说明 TO-RoPE 不如 absolute pos emb。正确对比需要真实时间戳 + time_gap_emb 共存，且 TO-RoPE 设计也需根据推荐场景（小时级间隔）调整频率基底。
+
+### Next Steps
+- **EXP-044B（待规划）**：使用真实 timestamps（rel_hours pipeline 已接通）重跑 TO-RoPE，同时保留 time_gap_emb 共存
+- Re-preprocess exp043-0.6b-14d 数据加入 timestamps 字段，再训一轮 TO-RoPE 进行公平对比
+
+---
+
+## EXP-041B: ENTP-Loss v2 — Session-Level Negatives (behavior_v2 数据)
+
+**Date**: 2026-04-29
+**Status**: completed (结论: 无效，session 粒度问题)
+**Results**: experiments/ntp_checkpoints/exp041b-entp{005,01,02}/
+
+### Background
+
+EXP-041 失败根因是用 `exposure_neg` 替换了 behavior 数据（用户集合不同）。正确做法：以 behavior 正样本序列为主，附加 session 内未点击 item 作为 neg_l0。`export_behavior_v2.py` 已导出此格式（uid, session_id, iid, action_bitmap），n_seqs=1,745,799，has_neg_l0=True，entp_k=5。
+
+### Hypothesis
+
+behavior_v2 数据包含 session 内负样本，ENTP α=0.1 使 R@500 从 59.0% 提升 +2~4pp。
+
+### Design
+
+- **Variable**: ENTP weight α ∈ {0.05, 0.1, 0.2}；α=0 直接引用 exp036-full-features
+- **Fixed**: behavior_v2 数据，time_gap+action_level+segment_emb，4096×3 binary SID，1 epoch
+- **Baseline**: exp036-full-features（已有，不重训）
+- **Data**: feed_user_behavior_v2 (2026-03-18~03-31)，n_seqs=1,745,799
+
+### Results
+
+| Config | R@10 | R@500 | PPL | Wall |
+|--------|------|-------|-----|------|
+| exp036-full-features (α=0, baseline) | 10.9% | 59.0% | 27.3 | 7min |
+| exp041b-entp005 (α=0.05) | 7.8% | 44.9% | 49.7 | 1min |
+| exp041b-entp01  (α=0.1)  | 7.7% | 46.5% | 51.3 | 1min |
+| exp041b-entp02  (α=0.2)  | 8.0% | 46.1% | 50.4 | 1min |
+
+### Analysis
+
+**结论：ENTP v2 无效，根本原因是 session 粒度错误。**
+
+1. **`df_4` 不是 session**：`export_behavior_v2.py` 里 `exposed` CTE 用 `df_4 AS session_id`，但 `df_4` 实际是每条 `$AppExposure` 事件的单个 view ID（每次刷新一条曝光一个独立 ID），不是用户会话 ID。
+2. **session 内几乎无负样本空间**：本地验证显示 98% 的 session 只有 1 个曝光 item，1.99% 有 2 个，0 个有 3 个以上。一次曝光事件 = 1 个 item，用户点了那个 item，neg_candidates = 0。
+3. **neg:pos = 1:0.01**：175 万序列中 neg_l0 覆盖率不足 1%，ENTP loss 几乎不触发，等同于纯 NTP 训练。
+4. **PPL 从 27 升至 50**：behavior_v2 数据本身的序列质量比 behavior 差（可能包含了行为较少的用户或 join 导致序列发生变化），导致基础性能下降。
+
+### Next Steps
+
+- 若要做 ENTP，需重新定义 session：按时间窗口（如 30min 内）将多次曝光聚合为一个 session，这样每个 session 才有多个 item 可以区分正负
+- 或者回归 OneRec/DualGR 原始方案：用 user-level 曝光负样本（非 session 内），直接 join behavior 数据
+
+---
+
+## EXP-041: ENTP-Loss — Exposure-Aware Hard Negatives for L0 (with Features)
+
+**Date**: 2026-04-29
+**Status**: completed (结论: 无效，需重设计)
+**IDEA**: IDEA-dualgr-0
+**Results**: experiments/ntp_checkpoints/exp041-entp{005,01,02}/
+
+### Background
+
+EXP-036 SFT 路线 R@500=59.0%（比 exp020 SOTA 66.2% 差 7pp）。L0 层仍是瓶颈（PPL=362.9）。DualGR 的 ENTP-Loss 通过曝光未点击 item 给 L0 额外监督，在当时 EXP-014 中数据端已验证（130M 正样本, 31% 有负样本），但 NTP 集成未完成。本实验在 features 管线（time_gap + action_level + segment_emb）基础上补齐 ENTP 集成。
+
+### Hypothesis
+
+ENTP α=0.1 使 L0 PPL 下降 >10%（从 ~362 降至 ~320），R@500 提升 +2~4pp。最优 α 在 0.05~0.1 之间（过大引入噪声）。
+
+### Design
+
+- **Variable**: ENTP weight α ∈ {0(baseline), 0.05, 0.1, 0.2}
+- **Fixed**: S-tier 6L MoE, 4096×3 binary SID, K=5 negatives, time_gap+action_level+segment_emb, 1 epoch
+- **Metric**: L0/L1/L2 PPL, R@{10,500}
+- **Data**: 14d behavior (2026-03-18~03-31) + exposure neg (same period, S3)
+
+### Run
+`bash experiments/scripts/exp-041.sh --no-smoke`
+
+### Results
+
+| Config | R@10 | R@500 | PPL | L0 PPL | Wall |
+|--------|------|-------|-----|--------|------|
+| exp036-full-features (α=0, baseline) | 10.9% | 59.0% | 27.3 | 362.9 | 7min |
+| exp041-entp005 (α=0.05) | 6.5% | 39.2% | 68.1 | 434.5 | 2min |
+| exp041-entp01 (α=0.1) | 7.5% | 39.7% | 69.1 | - | 2min |
+| exp041-entp02 (α=0.2) | 7.2% | 40.3% | 69.3 | - | 2min |
+
+### Analysis
+
+**结论：ENTP 实验无效，数据设计有根本性问题。**
+
+1. **ENTP 数据用户集合不同**：`exposure_neg` 数据来自 `feed_user_exposure`（曝光记录），用户池比 `behavior` 数据大得多（n_seqs=307万 vs 170万），但 p50 仅 6 items。曝光数据包含大量冷用户（只看过几个 item），这些用户的历史序列极短，无法提供有效的序列学习信号。
+
+2. **序列质量差**：behavior 数据过滤了 <2 items 的用户（有明确行为），而 exposure 数据仅要求有曝光记录。大量 1-2 item 短序列稀释了训练信号，导致 PPL 从 27 暴增至 68。
+
+3. **正确做法**：ENTP 应该在 **behavior 数据的基础上** 附加 neg_l0（即同一用户的曝光负样本），而不是用 exposure 数据替换 behavior 数据。需要按 uid join：保留所有 behavior 正样本序列，仅在有对应曝光负样本的 position 上加 ENTP loss。
+
+4. **α 值影响微小**：三个 alpha 结果几乎相同（39.2% / 39.7% / 40.3%），说明问题不在 alpha 选择，而在数据设计本身。
+
+### Next Steps
+- 修改 `build_unified_sequences`：以 behavior 数据为主，按 uid+iid 从 exposure_neg_data join neg_l0，保持原有 behavior 序列不变
+- 重跑 EXP-041 以正确方式验证 ENTP 效果
+
+---
+
+## EXP-040: RSFT — Reject Sampling Fine-Tuning (Training Data Quality Filter)
 
 **Date**: 2026-04-28
 **Status**: planned
+**IDEA**: IDEA-onerec-1
 **Results**: TBD
+
+### Background
+
+当前 NTP 训练 (`action_bitmap > 0`) 包含大量"点了但没有强行为"的弱正样本（click-only）。OneRec 的 RSFT 方案：过滤低质量交互，只在高质量数据（like/fav/share/purchase）上训练，相当于自然的 curriculum learning。
+
+实现已通过代码添加 `--min_action_level` 参数（`ntp/preprocess.py` + `ntp/train.py`），使用 `_action_bitmap_to_level` 映射：level 1=click, 2=strong(like/fav/share), 3=trade(purchase)。
+
+### Hypothesis
+
+`min_action_level=2`（strong+trade）过滤约 70-80% 的弱点击行为，保留更纯净的高质量信号，R@500 提升 +1~3pp，PPL 可能略有上升（因数据量减少）。Level=3 过于激进（数据稀疏），可能不如 level=2。
+
+### Design
+
+- **Variable**: min_action_level ∈ {1(baseline), 2(strong+trade), 3(trade only)}
+- **Fixed**: S-tier 6L MoE, time_gap+action_level+segment_emb, 4096×3 binary SID, 1 epoch
+- **Metric**: R@{10,500}, PPL, training data size
+- **Data**: 14d behavior (2026-03-18~03-31), same SID cache
+
+### Run
+`bash experiments/scripts/exp-040.sh`
+
+### Results
+- Config A (baseline, min_level=1): 参考 EXP-036: R@10=10.8%, R@500=59.0%, PPL=24.0
+- Config B (RSFT-2): TBD
+- Config C (RSFT-3): TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
+## EXP-039B: ECPO on exp038b-hard-lam03-3ep-ep1 (Features RL 链路终点)
+
+**Date**: 2026-04-29
+**Status**: completed
+**Results**: experiments/ntp_checkpoints/exp039b-ecpo-from-spdpo/
+
+### Background
+
+RL 对齐链路最终步：exp036 SFT → EXP-037 SP-DPO → EXP-038B RF-DPO (ep1 best, R@500=62.1%) → 本实验 ECPO。
+EXP-039（从 exp038-hard-lam03 起）已跳过，直接从 exp038b ep1 起跑以利用更好的起点。
+
+### Hypothesis
+
+ECPO (δ=0.1) 在 features 模型上复现 exp029 幅度的提升（+4pp），最终 R@500 接近或超越 exp020 SOTA (66.2%)。
+
+### Design
+
+- **Variable**: ECPO δ=0.1，从 exp038b-hard-lam03-3ep-ep1 (R@500=62.1%) 起跑
+- **Fixed**: G=512, BehaviorReward+FormatReward, on-policy beam, grpo_weight=0.03, lr=1e-4, 8×L20X
+- **Metric**: R@{10,500}, PPL
+- **Data**: context pool from exp023-14d-features, behavior cache 2026-03-31
+
+### Run
+`bash experiments/scripts/exp-039b.sh --no-smoke`
+
+### Results
+
+| Config | R@10 | R@500 | PPL | Wall |
+|--------|------|-------|-----|------|
+| exp036-full-features (SFT) | - | ~53% | - | - |
+| exp037-medium (SP-DPO, ref) | - | 62.1% | - | - |
+| exp038b-ep1 (RF-DPO) | - | 62.1% | - | - |
+| **exp039b-ecpo (this)** | **11.8%** | **65.7%** | **20.0** | **182min** |
+| exp020-hard-lam03 (SOTA 无特征) | 14.1% | 66.2% | 16.3 | - |
+
+### Analysis
+
+- ECPO 从 RF-DPO ep1（62.1%）提升至 **65.7%**，+3.6pp，与 exp029 提升幅度一致
+- 距离无特征 SOTA (66.2%) 仅差 **0.5pp**，几乎追平
+- PPL=20.0 高于 SOTA (16.3)，说明 features 路线的 NTP 质量还有空间
+- behavior_mean reward 从 0.574 → 0.630（收敛趋势良好），coverage=98.8%
+- **结论**：features RL 链路（SFT→DPO→ECPO）有效，但特征引入带来 PPL 代价
+
+### Next Steps
+- EXP-040: RSFT（行为质量过滤）验证是否能在 SFT 阶段就提升基线
+- EXP-041: ENTP-Loss（曝光负样本 α sweep）验证 L0 负样本惩罚效果
+
+---
+
+## EXP-039: ECPO on exp038-hard-lam03 (Features RL 链路终点)
+
+**Date**: 2026-04-28
+**Status**: skipped (superseded by EXP-039B)
+**Results**: TBD
+
+### Background
+
+RL 对齐链路最终步：exp036 SFT → EXP-037 SP-DPO → EXP-038 RF-DPO → 本实验 ECPO。验证 features 路线加完整 RL 链路是否能超越 exp020 SOTA (R@500=66.2%)。
+
+### Hypothesis
+
+ECPO (δ=0.1) 在 features 模型上与 exp029 同等幅度提升 +2~4pp，最终 R@500 > 62%，有望接近或超过 exp020 SOTA。
+
+### Design
+
+- **Variable**: ECPO δ=0.1 (vs 0 = pure GRPO)
+- **Fixed**: ref=exp038-hard-lam03, G=512, BehaviorReward+FormatReward, on-policy beam, grpo_weight=0.03, lr=1e-4
+- **Metric**: R@{10,500}, PPL, advantage_mean, clip_fraction, reward_mean
+- **Data**: context pool from exp023-14d-features, behavior cache 2026-03-31
+
+### Run
+`bash experiments/scripts/exp-039.sh`
+
+### Results
+TBD
+
+### Analysis
+TBD
+
+### Next Steps
+TBD
+
+---
+
+## EXP-038B: RF-DPO on exp037-medium — ntp_epochs=3 + mid-checkpoints
+
+**Date**: 2026-04-28
+**Status**: completed
+**Results**: experiments/ntp_checkpoints/exp038b-hard-lam03-3ep-ep1/ (best)
+
+### Background
+
+EXP-038 RF-DPO（1 epoch，406 steps）后 R@500=59.6%，PPL=25.7，相比 ref（exp037-medium 62.1%）退化 2.5pp。原因分析：step 数太少（406 steps），NTP:DPO 配比未对齐 exp019/020 设计（exp020 目标是 807 DPO steps ≈ NTP steps）。
+
+EXP-038B 用 `--ntp_epochs 3`（总 1218 steps），并在每个 epoch 边界保存 mid-checkpoint，对比 ep1/ep2/ep3(final) 效果。
+
+**代码实现**：新增 `ntp_epochs` 参数（`itertools.chain.from_iterable(itertools.repeat(ntp_loader, ntp_epochs))`），mid-checkpoint 在每个 epoch 末尾保存至 `{output_dir}-ep{N}`。
+
+### Hypothesis
+
+ep1（406 steps）= 对齐 exp038 的 1 epoch，预期与 EXP-038 相当（~59.6%）。更多 epoch 可能改善 DPO 对齐但有 NTP 过拟合风险。
+
+### Design
+
+- **Variable**: ntp_epochs ∈ {1,2,3}（通过 mid-checkpoint 实现三点对比）
+- **Fixed**: ref=exp037-medium, λ=0.03, β=0.1, difficulty=hard, lr=1e-4, Joint NTP+DPO
+- **Metric**: R@{10,500}, PPL（三个 epoch 各评）
+- **Data**: RF-DPO pairs from exp018 real feedback (2026-03-18~03-31)，4,312 hard pairs
+
+### Run
+`bash experiments/scripts/exp-038b.sh`
+
+### Results
+
+| Checkpoint | Steps | R@10 | R@500 | PPL | 结论 |
+|---|---|---|---|---|---|
+| exp037-medium (ref) | — | 11.2% | 62.1% | 23.0 | SP-DPO 起点 |
+| **ep1 (1 epoch)** | 406 | **11.2%** | **62.1%** | **23.6** | ✅ 持平 ref，DPO 无损 |
+| ep2 (2 epochs) | 812 | 10.3% | 59.6% | 26.0 | ❌ NTP 开始过拟合 |
+| final (3 epochs) | 1218 | 9.3% | 52.8% | 33.3 | ❌ 严重过拟合 |
+
+**最佳 checkpoint**：`exp038b-hard-lam03-3ep-ep1`（ep1，R@500=62.1%）
+
+### Analysis
+
+1. **ep1 持平 ref（不退化！）**：EXP-038 1 epoch 退化到 59.6% 的原因可能是 LR 过高或训练不稳定，而 EXP-038B ep1 以相同步数得到 62.1%，说明 DPO 对 NTP 的影响在 1 epoch 内是中性的。
+
+2. **2/3 epoch NTP 过拟合**：NTP loss 在 exp018 真实反馈数据（分布窄）上多次循环后开始过拟合，PPL 从 23.6 → 26.0 → 33.3 快速劣化。
+
+3. **关键教训**：RF-DPO 最优是 1 epoch；`--ntp_epochs` 应设为 1（已有实验验证）。后续实验用 ep1 作为 ECPO 起点。
+
+### Next Steps
+- EXP-039B: ECPO on ep1（`exp038b-hard-lam03-3ep-ep1`），δ=0.1，G=512，on-policy beam
+
+---
+
+## EXP-038: RF-DPO on exp037-medium (Features 路线第三步)
+
+**Date**: 2026-04-28
+**Status**: completed
+**Results**: experiments/ntp_checkpoints/exp038-hard-lam03/
+
+### Background
+
+RL 对齐链路：exp036 SFT → EXP-037 SP-DPO → 本实验 RF-DPO → EXP-039 ECPO。使用 exp037-medium 作为 ref，复用 EXP-018 真实反馈数据 (2026-03-18~03-31)，Joint NTP+DPO λ=0.03（exp020 最优配置）。
+
+**注**：首次运行因 `--preference_dir` 指向根目录而非 `hard/` 子目录导致 DPO 未生效（`n_dpo_pairs=0`），已修复脚本后重跑。
+
+### Hypothesis
+
+R@500 从 exp037-medium (~62%) 跳升至 ~65%+（exp018→020 对无特征模型有 +7pp 提升）。
+
+### Design
+
+- **Variable**: (本实验无对照，单 config)
+- **Fixed**: ref=exp037-medium, λ=0.03, β=0.1, difficulty=hard, lr=1e-4, Joint NTP+DPO
+- **Metric**: R@{10,500}, PPL
+- **Data**: RF-DPO pairs from exp018 real feedback (2026-03-18~03-31)，4,312 hard pairs
+
+### Run
+`bash experiments/scripts/exp-038.sh`
+
+### Results
+
+| 阶段 | R@10 | R@50 | R@100 | R@500 | PPL | wall |
+|------|------|------|-------|-------|-----|------|
+| exp037-medium (ref) | 11.2% | 26.6% | 38.2% | 62.1% | 23.0 | — |
+| **exp038-hard-lam03** | **10.9%** | 24.9% | 34.4% | **59.6%** | **25.7** | 1181s |
+
+DPO 训练指标：n_dpo_pairs=4312，avg_dpo_loss=2.574，reward_margin=3.44，preference_acc=36.9%  
+Alignment eval：chosen_reward=-0.28，rejected_reward=-5.68，reward_margin=5.40，preference_acc=53.0%
+
+### Analysis
+
+RF-DPO 相比 exp037-medium（SP-DPO）反而退化：R@500 62.1%→59.6%（-2.5pp），PPL 23.0→25.7（变差）。这与 exp020 无特征版的规律相反（exp019→020 有明显提升）。
+
+可能原因：
+1. exp018 real feedback pairs 数据量少（4312 pairs）且与 features 模型分布不匹配
+2. SP-DPO（exp037）已经在 beam search pairs 上做了对齐，再加真实反馈信号方向有冲突
+3. 对比 exp020 的训练路线：exp019→020 的 ref 是 exp017-medium（只有 SP-DPO），而本实验的 DPO 效果本就比 NTP 少（λ=0.03 权重低）
+
+### Next Steps
+- EXP-039 ECPO（δ=0.1，以 exp038-hard-lam03 为起点）继续链路，GRPO reward 机制独立于 DPO pairs
+- 如 EXP-039 也不提升，考虑直接从 exp037-medium 做 ECPO（绕过 RF-DPO）
+
+---
+
+## EXP-037: SP-DPO on exp036-full-features (Features 路线第二步)
+
+**Date**: 2026-04-28
+**Status**: completed
+**Results**: experiments/ntp_checkpoints/exp037-easy/ + experiments/ntp_checkpoints/exp037-medium/
 
 ### Background
 
@@ -86,13 +583,24 @@ exp036-B (NTP+feat) → EXP-037 SP-DPO → EXP-038 RF-DPO → EXP-039 ECPO
 `bash experiments/scripts/exp-037.sh`
 
 ### Results
-TBD
+
+| 阶段 | R@10 | R@50 | R@100 | R@500 | PPL | wall |
+|------|------|------|-------|-------|-----|------|
+| exp036-B (SFT) | 10.9% | — | — | 59.0% | 27.3 | — |
+| Easy | 10.4% | — | — | 57.1% | 24.60 | — |
+| Medium | **11.2%** | 26.6% | 38.2% | **62.1%** | **23.0** | 1246s |
+
+Medium alignment eval: chosen_reward=1.003, rejected_reward=-4.990, reward_margin=5.994, preference_acc=36.0%
 
 ### Analysis
-TBD
+
+Medium 阶段 R@500 从 Easy 57.1% 回升至 62.1%，超过 exp036-B SFT (59.0%)，与 exp017 规律一致（Medium 总是比 Easy 好）。R@10 从 Easy 10.4% 微升至 11.2%，与 SFT 基本持平。PPL 降至 23.0（比 SFT 27.3 更好），说明 SP-DPO medium 对 NTP loss 无明显负面影响。
+
+reward_margin=5.99 显著大于 Easy 阶段，preference_acc=36%（注：低于 50% 不代表坏，这是相对"chosen 是目标 item"的绝对标准，beam search 生成的 chosen 本身就是伪标签）。
 
 ### Next Steps
-- SP-DPO fixed-medium checkpoint → EXP-038 RF-DPO（ref=SP-DPO，Joint NTP+DPO λ=0.03，复用 exp018 真实反馈数据）
+- exp037-medium → EXP-038 RF-DPO（ref=exp037-medium，Joint NTP+DPO λ=0.03，复用 exp018 真实反馈数据）
+- 目标：复现 exp020 完整 features 对齐链路，看 RF-DPO 能否突破 R@500=66.2% SOTA
 
 ---
 

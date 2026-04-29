@@ -238,3 +238,51 @@ git commit -m "EXP-002 results: NTP Recall vs Cluster Size" || echo "Nothing to 
 echo ""
 echo "EXP-002 complete!"
 ```
+
+## 启动实验后：加入队列
+
+每次生成实验脚本后，**必须**将该实验追加到队列文件，并确认守护 cron 存活：
+
+### 1. 追加到队列
+```bash
+echo "exp-NNN.sh  /tmp/expNNN.log  EXP-NNN complete!" >> experiments/queue.txt
+```
+
+如果实验有多个中间 checkpoint（multi-epoch），加 POST_HOOK：
+```bash
+echo "exp-NNN.sh  /tmp/expNNN.log  EXP-NNN complete!  EVAL_MID_CHECKPOINTS=exp-NNN-output-name" >> experiments/queue.txt
+```
+
+### 2. 如果是第一个实验（队列为空），还需要：
+```bash
+# 启动实验
+nohup bash experiments/scripts/exp-NNN.sh --no-smoke > /tmp/expNNN.log 2>&1 &
+EXP_PID=$!
+
+# 初始化 queue_state.json
+python3 -c "
+import json
+state = {
+  'current': 'exp-NNN.sh',
+  'log': '/tmp/expNNN.log',
+  'done_string': 'EXP-NNN complete!',
+  'status': 'running',
+  'pid': ${EXP_PID}
+}
+json.dump(state, open('experiments/queue_state.json', 'w'), indent=2)
+"
+
+# 确认守护 cron 存在（CronList），没有则用 CronCreate 创建（见 CLAUDE.md 守护 Cron prompt）
+```
+
+### 3. 如果队列已有实验在跑，只需追加
+守护 cron 会自动检测 queue.txt 的新条目，上一个实验完成后自动启动新追加的实验，无需其他操作。
+
+### queue.txt 完整格式参考
+```
+# 注释行忽略，空行忽略
+# SCRIPT            LOG                  DONE_STRING           POST_HOOK(可选)
+exp-038b.sh  /tmp/exp038b.log  EXP-038B complete!  EVAL_MID_CHECKPOINTS=exp038b-hard-lam03-3ep
+exp-039b.sh  /tmp/exp039b.log  EXP-039B complete!
+exp-040.sh   /tmp/exp040.log   EXP-040 complete!
+```
