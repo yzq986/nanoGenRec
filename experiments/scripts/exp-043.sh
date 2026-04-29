@@ -29,6 +29,7 @@ cd "${REPO_ROOT}"
 
 N_GPUS="${N_GPUS:-$(python -c 'import torch; print(max(1, torch.cuda.device_count()))')}"
 CKPT_DIR="experiments/ntp_checkpoints"
+BEHAVIOR_CACHE="/mnt/workspace/gr-demo-behavior-cache"
 DATE_START="2026-03-18"
 DATE_END="2026-03-31"
 
@@ -72,6 +73,7 @@ if [ "${SKIP_SMOKE}" == false ] && [ "${START_FROM}" -le 1 ]; then
         --n_shards 1 \
         --date_start "${DATE_START}" \
         --date_end "${DATE_END}" \
+        --behavior_path "${BEHAVIOR_CACHE}" \
         --shift_features \
         --max_seqs 200
     torchrun --nproc_per_node="${N_GPUS}" run.py train-ntp \
@@ -109,6 +111,7 @@ preprocess_sid() {
             --n_shards "${N_GPUS}" \
             --date_start "${DATE_START}" \
             --date_end "${DATE_END}" \
+            --behavior_path "${BEHAVIOR_CACHE}" \
             --shift_features
     else
         echo "  [data] ${NTP_DATA} already exists, skipping preprocess."
