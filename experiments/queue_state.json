@@ -2,7 +2,7 @@
   "current": "exp-044.sh",
   "log": "/tmp/exp044c.log",
   "done_string": "EXP-044 complete!",
-  "status": "running",
-  "started_at": "2026-04-29 17:06",
+  "status": "done",
+  "completed_at": "2026-04-29 17:18",
   "pid": 321510
 }

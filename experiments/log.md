@@ -116,8 +116,58 @@
    - 8B SID 需扩大 FSQ hidden（64→256）修复 L2 entropy 坍缩后才能真正发挥优势
 
 ### Next Steps
-- EXP-044：TO-RoPE vs absolute pos emb，基于 S-tier + 0.6B SID
+- EXP-044：TO-RoPE vs absolute pos emb，基于 S-tier + 0.6B SID ✓
 - M-tier RL 链路：以 exp043-m-0.6b 为 SFT 起点，接 SP-DPO
+
+---
+
+## EXP-044: TO-RoPE vs Absolute Position Embedding — S-tier + 0.6B SID
+
+**Date**: 2026-04-29
+**Status**: completed
+
+### Background
+EXP-043 baseline（exp043-s-0.6b）使用绝对位置 embedding + segment_emb + time_gap + action_level。
+本实验测试 TO-RoPE（Time-and-Order RoPE，arxiv 2510.20455）是否能改善推荐序列中的时间顺序建模。
+
+**重要限制（事后发现）**：本次 TO-RoPE 实验的 timestamps 全程为 0 — 原始数据中确实有 `first_ts` 字段，但 preprocess 流水线未接通到 NTP 侧。因此本实验等价于"TO-RoPE with zeros vs absolute pos emb"，并非公平对比。已在本次实验后完整接通 timestamps pipeline（`rel_hours = (ts[i] - ts[0]) / 3600`），下一轮实验将使用真实时间戳。
+
+另：time_gap_emb 之前被 `use_torope=True` 的条件块屏蔽，也已修复（两者可共存）。
+
+### Design
+- **Variable**: RoPE 模式（absolute pos / TO-RoPE time_split=0.5 / TO-RoPE time_split=0.25）× segment_emb 开关
+- **Fixed**: S-tier + 0.6B SID，14d 数据，time_gap + action_level（但 TO-RoPE 路径 time_gap 被屏蔽 bug，已修）
+- **Baseline**: exp043-s-0.6b（R@500=61.2%，PPL=26.52）
+
+| Config | 说明 |
+|--------|------|
+| exp044-baseline | absolute pos + segment + time_gap + action（≡ exp043-s-0.6b，未重训）|
+| exp044-torope-ts05 | TO-RoPE time_split=0.5 + segment + action（time_gap 被屏蔽 bug）|
+| exp044-torope-ts025 | TO-RoPE time_split=0.25 + segment + action（time_gap 被屏蔽 bug）|
+| exp044-torope-ts05-noseg | TO-RoPE time_split=0.5 + action only（无 segment）|
+
+### Results
+
+| Config | R@10 | R@500 | PPL | L0 PPL | Wall |
+|--------|------|-------|-----|--------|------|
+| **exp043-s-0.6b** (baseline) | **11.4%** | **61.2%** | **26.52** | 390.2 | 8min |
+| exp044-torope-ts05 | 10.8% | 60.1% | 377.30 | 672.5 | 7min |
+| exp044-torope-ts025 | 11.4% | 60.4% | 396.84 | 681.7 | 7min |
+| exp044-torope-ts05-noseg | 11.3% | 60.1% | 251.07 | 606.9 | 7min |
+
+### Analysis
+
+1. **TO-RoPE 全部不如 baseline**：R@500 低 0.8–1.1pp，PPL 高出数量级（26 vs 250-400）。
+
+2. **PPL 异常高的根因**：timestamps 全为 0 → TO-RoPE 时间维度失效，等价于用 RoPE 替换了绝对 pos emb，而 RoPE 的频率设计与短序列推荐场景未必匹配，加上 time_gap_emb 被屏蔽，信息总量更少。
+
+3. **R@500 差距小于预期**（仅 ~1pp）：R@500 对绝对位置编码质量不敏感，beam search 的 top-k recall 更多由 SID 区分度和 L0 分布决定。
+
+4. **实验无效结论**：本实验不能说明 TO-RoPE 不如 absolute pos emb。正确对比需要真实时间戳 + time_gap_emb 共存，且 TO-RoPE 设计也需根据推荐场景（小时级间隔）调整频率基底。
+
+### Next Steps
+- **EXP-044B（待规划）**：使用真实 timestamps（rel_hours pipeline 已接通）重跑 TO-RoPE，同时保留 time_gap_emb 共存
+- Re-preprocess exp043-0.6b-14d 数据加入 timestamps 字段，再训一轮 TO-RoPE 进行公平对比
 
 ---
 
