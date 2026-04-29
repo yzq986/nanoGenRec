@@ -23,8 +23,10 @@ import torch.nn.functional as F
 from ntp.model import (
     NTPModel,
     TransformerLayer,
+    SIDTrie,
     build_torope_freqs,
     apply_torope,
+    constrained_beam_search,
 )
 
 
@@ -366,6 +368,87 @@ def test_plain_model_backward_compat():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 7. constrained_beam_search with TO-RoPE — train/infer position consistency
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _make_trie(n_clusters=32, n_layers=3, n_items=20, seed=42):
+    """Build a small SIDTrie with random SIDs."""
+    rng = torch.Generator()
+    rng.manual_seed(seed)
+    sid_to_items = {}
+    for i in range(n_items):
+        tokens = torch.randint(0, n_clusters, (n_layers,), generator=rng).tolist()
+        sid_str = '_'.join(str(t) for t in tokens)
+        if sid_str not in sid_to_items:
+            sid_to_items[sid_str] = set()
+        sid_to_items[sid_str].add(i)
+    return SIDTrie(sid_to_items, n_layers)
+
+
+def test_torope_beam_search_kv_positions_passed():
+    """constrained_beam_search with TO-RoPE model produces valid beams (non-trivial logits).
+
+    This is a regression test for the bug where kv_positions_cache was not
+    passed in incremental decode steps, causing RoPE angles to be computed
+    only from the new token's position instead of the full KV sequence.
+    Symptom: PPL >> 100 despite normal training loss.
+    """
+    model = _make_torope_model(n_layers=3, clusters=32, embed_dim=32,
+                               n_heads=4, n_transformer_layers=2)
+    trie = _make_trie(n_clusters=32, n_layers=3, n_items=20)
+
+    B, T_ctx = 2, 6
+    ctx = torch.randint(0, 32, (B, T_ctx))
+
+    with torch.no_grad():
+        beams, scores, _ = constrained_beam_search(model, ctx, trie, beam_size=5)
+
+    assert beams.shape[0] == B, f"Expected B={B} beams, got {beams.shape[0]}"
+    assert beams.shape[2] == 3, f"Expected 3-token SIDs, got depth {beams.shape[2]}"
+    assert beams.shape[1] > 0, "No beams returned"
+    # Scores should be finite (not -inf/nan), indicating valid logit paths
+    assert scores.isfinite().all(), f"Non-finite beam scores: {scores}"
+    # Logits should not be degenerate — at least one score > -100
+    assert (scores > -100).any(), f"All scores collapsed: {scores}"
+    print(f"  [PASS] TO-RoPE beam search returns valid beams {beams.shape}, "
+          f"max_score={scores.max().item():.2f}")
+
+
+def test_torope_beam_search_logits_differ_from_plain():
+    """TO-RoPE beam search logit distribution differs from plain model (RoPE is active)."""
+    model_rope  = _make_torope_model(seed=0)
+    model_plain = _make_plain_model(seed=0)
+    trie = _make_trie()
+
+    B, T_ctx = 1, 8
+    ctx = torch.randint(0, 32, (B, T_ctx))
+
+    with torch.no_grad():
+        beams_rope,  scores_rope,  _ = constrained_beam_search(model_rope,  ctx, trie, beam_size=5)
+        beams_plain, scores_plain, _ = constrained_beam_search(model_plain, ctx, trie, beam_size=5)
+
+    # The two models have different architectures → scores must differ
+    diff = (scores_rope - scores_plain).abs().max().item()
+    assert diff > 1e-3, f"TO-RoPE and plain beam scores too similar (diff={diff:.2e})"
+    print(f"  [PASS] TO-RoPE vs plain beam scores differ (diff={diff:.2e})")
+
+
+def test_torope_beam_search_deterministic():
+    """Same input → same beams (determinism check)."""
+    model = _make_torope_model()
+    trie  = _make_trie()
+    ctx   = torch.randint(0, 32, (1, 8))
+
+    with torch.no_grad():
+        beams_a, scores_a, _ = constrained_beam_search(model, ctx, trie, beam_size=5)
+        beams_b, scores_b, _ = constrained_beam_search(model, ctx, trie, beam_size=5)
+
+    assert torch.equal(beams_a, beams_b),  "Beam tokens not deterministic"
+    assert torch.equal(scores_a, scores_b), "Beam scores not deterministic"
+    print("  [PASS] TO-RoPE beam search is deterministic")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # main
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -400,6 +483,11 @@ if __name__ == '__main__':
 
     print("\n6. Backward compatibility")
     test_plain_model_backward_compat()
+
+    print("\n7. constrained_beam_search with TO-RoPE")
+    test_torope_beam_search_kv_positions_passed()
+    test_torope_beam_search_logits_differ_from_plain()
+    test_torope_beam_search_deterministic()
 
     print("\n" + "=" * 60)
     print("All TO-RoPE tests passed!")

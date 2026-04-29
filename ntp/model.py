@@ -199,6 +199,7 @@ def constrained_beam_search(
     gen_time_gap: int = None,
     gen_action_level: int = None,
     sampling_temperature: float = 0.0,
+    ctx_timestamps: torch.Tensor = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, list]:
     """Trie-constrained beam search / sampling with KV cache.
 
@@ -239,10 +240,15 @@ def constrained_beam_search(
         return _constrained_beam_search_legacy(
             model, input_tokens, trie, beam_size, prefix)
 
+    # ctx_kv_pos/ctx_kv_ts track TO-RoPE position/timestamp caches across incremental steps
+    ctx_kv_pos = None
+    ctx_kv_ts  = None
+
     if ctx_kv_caches is None:
-        initial_logits, ctx_kv_caches, _, _ = model.forward_cached(
+        initial_logits, ctx_kv_caches, ctx_kv_pos, ctx_kv_ts = model.forward_cached(
             input_tokens, ctx_time_gaps=ctx_time_gaps,
-            ctx_action_levels=ctx_action_levels)
+            ctx_action_levels=ctx_action_levels,
+            ctx_timestamps=ctx_timestamps)
 
     # ── Build step feature tensors for generated tokens ──
     _has_tg = gen_time_gap is not None and hasattr(model, 'time_gap_emb')
@@ -262,17 +268,22 @@ def constrained_beam_search(
         beams = prefix.unsqueeze(1)  # (B, 1, P)
         start_step = P
         step_kv = [c.clone() for c in ctx_kv_caches]
+        step_kv_pos = ctx_kv_pos
+        step_kv_ts  = ctx_kv_ts
         stg_pfx = torch.full((B, P), gen_time_gap, dtype=torch.long,
                              device=device) if _has_tg else None
         sal_pfx = torch.full((B, P), gen_action_level, dtype=torch.long,
                              device=device) if _has_al else None
-        current_logits, step_kv, _, _ = model.forward_cached(
+        current_logits, step_kv, step_kv_pos, step_kv_ts = model.forward_cached(
             generated_tokens=prefix, kv_caches=step_kv,
-            step_time_gap=stg_pfx, step_action_level=sal_pfx)
+            step_time_gap=stg_pfx, step_action_level=sal_pfx,
+            kv_positions_cache=step_kv_pos, kv_timestamps_cache=step_kv_ts)
     else:
         beams = torch.zeros(B, 1, 0, dtype=torch.long, device=device)
         start_step = 0
         step_kv = [c.clone() for c in ctx_kv_caches]
+        step_kv_pos = ctx_kv_pos
+        step_kv_ts  = ctx_kv_ts
         current_logits = initial_logits
     scores = torch.zeros(B, 1, device=device)
 
@@ -283,9 +294,13 @@ def constrained_beam_search(
         if step > start_step:
             last_tokens = beams[:, :, -1].reshape(B * n_beams, 1)
             stg_step, sal_step = _step_features(B * n_beams)
-            current_logits, step_kv, _, _ = model.forward_cached(
+            # All beams share the same positions — take first row and expand
+            kv_pos_step = step_kv_pos[:1].expand(B * n_beams, -1) if step_kv_pos is not None else None
+            kv_ts_step  = step_kv_ts[:1].expand(B * n_beams, -1)  if step_kv_ts  is not None else None
+            current_logits, step_kv, step_kv_pos, step_kv_ts = model.forward_cached(
                 generated_tokens=last_tokens, kv_caches=step_kv,
-                step_time_gap=stg_step, step_action_level=sal_step)
+                step_time_gap=stg_step, step_action_level=sal_step,
+                kv_positions_cache=kv_pos_step, kv_timestamps_cache=kv_ts_step)
 
         log_probs = F.log_softmax(
             current_logits.view(B, n_beams, -1), dim=-1)
@@ -1225,10 +1240,13 @@ class NTPModel(nn.Module):
                 ts_new = step_timestamp.float() if step_timestamp is not None \
                     else torch.zeros(new_tokens.size(0), T_new, device=device)
                 if kv_positions_cache is not None:
-                    full_pos = torch.cat([kv_positions_cache, positions], dim=1)
+                    B_kv = kv_positions_cache.size(0)
+                    full_pos = torch.cat([kv_positions_cache,
+                                          positions.expand(B_kv, -1)], dim=1)
                     kv_ts_base = kv_timestamps_cache.float() if kv_timestamps_cache is not None \
-                        else torch.zeros(new_tokens.size(0), offset, device=device)
-                    full_ts = torch.cat([kv_ts_base, ts_new], dim=1)
+                        else torch.zeros(B_kv, offset, device=device)
+                    full_ts = torch.cat([kv_ts_base,
+                                         ts_new.expand(B_kv, -1)], dim=1)
                 else:
                     full_pos = positions
                     full_ts = ts_new
