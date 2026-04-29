@@ -1,0 +1,627 @@
+Break the Inaccessible Boundary: Distilling Post-Conversion
+Content for User Retention Modeling
+Tianbao Ma*, Ruochen Yang*, Chengen Li, Yuexin Shi, Jiangxia Cao†,
+Linxun Chen, Zhaojie Liu, Yanan Niu, Han Li and Kun Gai
+Kuaishou Technology, Beijing, China
+{matianbao, yangruochen, lichengen, shiyuexin, caojiangxia, chenxi36, zhaotianxing, niuyanan, lihan08}@kuaishou.com,
+gai.kun@qq.com
+Abstract
+User retention is a key metric to measure long-term engagement
+in modern platforms. In real-time bidding (RTB) advertising sys-
+tem for user re-engagement, the retention model is required to
+predict future revisit probability at bidding time, before the user
+converts and consumes any content. Although post-conversion
+content, termed Onboarding Content, provides highly informa-
+tive signals for retention prediction, directly using it in training
+causes severe feature leakage and creates a gap between train-
+ing and serving. To address this issue, we propose OCARM, a
+two-stage distillation-aligned framework for Onboarding Content
+Augmented Retention Modeling, enabling the model to implicitly
+capture future content using only observable features during infer-
+ence. In the first stage, we deliberately expose onboarding content
+to train a hierarchical encoder that produces teacher representa-
+tions. In the second stage, a user encoder is aligned with the frozen
+teacher through distillation, allowing the model to approximate the
+inaccessible onboarding signals without leakage. Extensive offline
+experiments and online A/B tests demonstrate that our framework
+achieves consistent improvements in a real-world growth scenario.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Recommender systems, Retention Modeling, Feature Leakage
+1
+Introduction
+User retention serves as a critical metric for assessing long-term
+user engagement, capturing the sustained value of user-platform
+interactions and representing a core optimization objective in mod-
+ern recommender systems [7] and user growth scenarios [1]. Unlike
+immediate short-term feedback signals such as clicks and stays, re-
+tention more accurately reflects users’ overall satisfaction and value
+perception, indicating whether a platform can consistently deliver
+sufficient value to drive sustained revisits and realize a positive
+return on marketing investment. Consequently, in real-time bid-
+ding (RTB) advertising systems designed for user re-engagement,
+the predictive accuracy of retention prediction directly determines
+the decisions regarding bidding strategies, audience targeting and
+budget allocation, ultimately influencing the conversion efficiency
+and incremental returns of the overall campaign.
+Optimizing retention modeling has emerged as a pivotal chal-
+lenge in industrial user growth, with increasing research in recent
+* Equal Contributions, Jiangxia Cao is the corresponding author.
+Outside
+Inside
+Conversion
+Click
+Ad Delivery
+Onboarding Content
+Retention
+RTB System
+Recommender System
+❌
+Inaccessibility
+Figure 1: The journey of user retention, where bidding deci-
+sion is made prior to conversion, and the onboarding content
+is inaccessible at this time.
+years [2, 6, 8, 9]. Despite diverse technical approaches, existing
+methods largely share the same idea, which is to enhance long-
+term retention by optimizing recommendation policies to deliver
+more relevant and engaging content. These approaches are predom-
+inantly deployed in the post-acquisition phase, where users have
+already entered the platform and their interactions are managed by
+recommendation systems. In this setting, the platform possesses
+abundant prior user profiles and behavior contexts, leveraging them
+as the input features for the model to optimize retention targets.
+However, in the scenarios of user re-engagement driven by ad-
+vertisements, this optimization process undergoes a fundamental
+difference due to the inaccessibility of information. As shown in
+Figure 1, the retention prediction model included in RTB system
+operates at the bidding stage. At this upstream growth decision
+point, the system is required to forecast a user’s subsequent revisit
+probability and retention trajectory without entering the platform
+or consuming any content. The user journey proceeds through ad
+delivery, conversion (click to open app), and after which the user be-
+gins to interact with in-app content. We define the post-conversion
+content consumption experience, that is, the videos watched or
+the interactions performed, as the Onboarding Content. Conse-
+quently, a temporal inaccessibility boundary naturally emerges at
+the conversion node. Information to the left of this boundary, in-
+cluding static user profiles, historical behavior sequences and ad
+context, is fully observable at decision time. While to the right,
+encompassing the onboarding content and its derived interaction
+feedback, constitutes unobserved future signals that are strictly
+inaccessible during the bidding stage.
+Notably, the onboarding content on the future side of this bound-
+ary carries exceptionally powerful predictive signals for retention.
+Consistent with prior work that incorporates such content as the
+vehicle for observational inputs or reward features in retention
+arXiv:2604.25839v1  [cs.IR]  28 Apr 2026
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Tianbao Ma*, Ruochen Yang*, Chengen Li, Yuexin Shi, Jiangxia Cao†,
+Linxun Chen, Zhaojie Liu, Yanan Niu, Han Li and Kun Gai
+prediction, we conduct a feature leakage experiment by deliber-
+ately injecting onboarding content into training, and observe a
+substantial AUC gain (Section 3.2). This confirms that the content
+user experiences after returning exerts a strong predictive influ-
+ence on their subsequent revisit [3]. However, precisely due to the
+high information density and strong posterior correlation of this
+signal, directly incorporating it into training induces severe feature
+leakage. The model learns to rely on future signals that are sys-
+tematically absent during inference, resulting in an irreconcilable
+distribution gap between training and serving.
+Consequently, the core challenge lies in bridging the informa-
+tion barrier between growth system and recommendation system,
+that is, enabling downstream content supply to inversely guide up-
+stream bidding and conversion decisions. A natural intuition is to
+feed user features into the recommendation model at bidding time
+to predict pseudo labels for potential content interactions. How-
+ever, preference mismatch and the prohibitive cost under real-time
+bidding constraints prevents the acquisition of explicit content.
+Nevertheless, we observe that although the exact onboarding
+content remains unknown at bidding time, user’s static profiles
+and historical preferences implicitly constrain the distribution of
+content consuming after re-engaging. This constraint arises since
+the onboarding content recommendation heavily depend on the
+same observable priors either. Therefore, learning a mapping from
+observable user features into the latent space of onboarding content
+representations allows the model to approximate feature interac-
+tions, without requiring direct access to unobserved information.
+To this end, we propose a two-stage distillation-aligned frame-
+work OCARM for Onboarding Content Augmented Retention
+Modeling, enabling the retention model to implicitly perceive fu-
+ture consumed content at inference time without feature leakage,
+thus providing high-quality signals for model optimization. In the
+first stage, we intentionally allow feature leakage during training by
+jointly encoding future interaction sequence logs together with the
+retention model inputs, and train an onboarding content encoder
+to produce teacher representations. The encoder employs hierarchi-
+cal attention to compress sequential content representations while
+capturing both intra-day and inter-day temporal causality. In the
+second stage, a user encoder is trained to align with the frozen on-
+boarding content representations via distillation objective, thereby
+approximating unobserved future features. Therefore, at inference
+time, the model requires only observable features for informative
+retention prediction for bidding decisions.
+We conduct extensive offline experiments to evaluate the ef-
+fectiveness of onboarding content distillation in bridging growth
+system and recommendation system. The A/B tests also demon-
+strate the value of our approach in a real growth scenario.
+2
+Methodology
+As the overview depicted in Figure 2, by deliberately leaking the
+onboarding content and encoding to obtain distilled signals, we
+align the user representation and enable informative inference.
+2.1
+Preliminary
+At bidding time, the observable user-side features include the user
+profile 𝑥𝑢and behavioral sequences, such as historical interac-
+tions 𝑥(𝑖)
+𝑠
+and ad contexts 𝑥(𝑎)
+𝑠
+. In contrast, the onboarding content
+sequence is unavailable at bidding time. We denote it by 𝑥𝑐=
+{𝑣0, 𝑣1, . . . , 𝑣𝑛}, spanning up to 𝐷days, where 𝑣𝑖∈𝑥𝑐corresponds
+to an item interacted with by user 𝑢after conversion.
+The prediction target 𝑦is defined as the revisit frequency LT_d
+of a user over the next 𝑑days. Therefore the retention prediction
+task at serving time can be formulated as the conditional proba-
+bility 𝑝(𝑦|𝑥𝑢), since 𝑥𝑢is the only information available for online
+inference before conversions. However, during training, the se-
+quence of onboarding content 𝑥𝑐is accessible and can be leveraged
+as auxiliary information for retention modeling learning.
+2.2
+Onboarding Content Leakage Encoding
+In the first stage, we aim to obtain high-quality onboarding content
+representations as supervision signals for subsequent distillation.
+To this end, we deliberately leak such information during training
+to learn the onboarding content encoder.
+Hierarchical Attention Encoder (HAE). Users may interact
+with items for multiple days after conversion, yielding long engage-
+ment sequences with hundreds of interactions. The raw onboard-
+ing content sequence 𝑥𝑐may span multiple days with hundreds of
+interactions. While such sequence reveals temporal evolution of
+user engagement, it also presents modeling and compression chal-
+lenges. Notably, the sequence is inherently hierarchical, consisting
+of fine-grained interaction patterns within each day and higher-
+level behavioral evolution across days. To capture this structure,
+we adopt a two-level hierarchical attention encoder that models
+both intra-day dependencies and inter-day dynamics.
+Specifically, we split the onboarding content sequence by cal-
+endar day 𝑑∈{1, . . . , 𝐷}, take the first 𝑁interactions of each day
+and embed them into a sequence of item representations H(𝑑) =
+{ℎ(𝑑)
+0 , . . . ,ℎ(𝑑)
+𝑁}. Then a cross-attention layer uses the user profile
+embedding 𝑥𝑢as the query, with the item representations as keys
+and values:
+𝑠(𝑑) = CrossAttn(𝑥𝑢, H(𝑑), H(𝑑)).
+(1)
+Thus, we achieve the focused compression within the single day
+and obtain a compact semantic representation 𝑠(𝑑).
+The day-level representation sequence {𝑠(1), . . . ,𝑠(𝐷)} are then
+fed into a causal self-attention layer. By introducing a causal mask,
+each day is allowed to attend only to current and preceding repre-
+sentations, enabling the model to capture temporal dependencies
+across days without accessing future information:
+˜𝑠(1), . . . , ˜𝑠(𝐷) = CausalSelfAttn(𝑠(1), . . . ,𝑠(𝐷)).
+(2)
+This causal structure prevents future leakage and preserves the
+chronological semantics of engagement evolution, since representa-
+tions of earlier days are not influenced by subsequent interactions.
+Based on the resulting sequence, we use the representation of 𝑑
+day ˜𝑠(𝑑) for the LT_d prediction task (e.g., ˜𝑠(1) for LT1 and ˜𝑠(7) for
+LT7), as it provides a compact summary of the user’s engagement
+history up to this day.
+Joint Training. The onboarding content embedding after MLP
+projecting 𝑒𝑐= MLP(˜𝑠) is concatenated with the original retention
+
+
+Kuaishou Tech
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
++
+Day 1
+…
+Day 2
+Day D
+Cross Attention
+Cross Attention
+Cross Attention
+Causal Self Attention
+…
+…
+MLP
+MLP
+Retention Model !
+Intra-day
+Inter-day
+…
+Q-Former
++
+TaskTower
+TaskTower
+User Profile
+Behavior Sequences
+…
+Feature Leakage
+Feature Leakage
+Onboarding Content 
+q
+k/v
+Concat
+HAE
+SFE
+…
+LT1
+LT_D
+…
+Onboarding Content 
+Embedding Layer !
+HAE !
+User Profile
+Accessible Feature
+Behavior Sequences
+y!"#
+y!"_%
+Retention Model !
+User Profile
+Behavior Sequences
+Onboarding Content 
+Embedding Layer !
+y!"#
+y!"_%
+HAE ❄
+SFE !
+Alignment Loss
+Retention Model ❄
+User Profile
+Behavior Sequences
+Embedding Layer ❄
+y!"#
+y!"_%
+SFE ❄
+Stop-
+gradient
+User Profile
+Accessible Feature
++
+Q-Former
+Concat
+Concat
+LT1
+LT_D
+Historical 
+Interactions
+Ad
+Contexts
+Training Stage 1
+Training Stage 2
+Inference
+Figure 2: Overview of the proposed framework OCARM. In Stage 1, HAE learns teacher representations from deliberately
+leaked onboarding content. In Stage 2, SFE is trained to align with the frozen teacher through distillation based on accessible
+user-side features. During inference, only SFE is activated for retention prediction without feature leakage.
+model’s features, with the whole framework is jointly optimized
+under the retention prediction objective:
+L𝑆𝑡𝑎𝑔𝑒1 = BCE(𝑓𝑟𝑒𝑡𝑒𝑛𝑡𝑖𝑜𝑛([𝑥𝑢;𝑒𝑐]),𝑦),
+(3)
+where 𝑓𝑟𝑒𝑡𝑒𝑛𝑡𝑖𝑜𝑛(·) is the retention model and [; ] denotes concatena-
+tion. Such end-to-end training encourages the learned onboarding
+content representation to better align with the retention task, en-
+suring the retention model’s awareness of the onboarding content.
+2.3
+User Representation Distillation Alignment
+In the second stage, we aim to train a user encoder, which maps ob-
+servable user features to a user representation that approximates the
+onboarding content representation. Thus we froze the onboarding
+content encoder and align user representation through distillation.
+Sequence Fusion Encoder (SFE). Besides the user profile 𝑥𝑢,
+the observable user features also include multiple heterogeneous
+behavior sequences, such as historical interactions 𝑥(𝑖)
+𝑠
+and ad con-
+texts 𝑥(𝑎)
+𝑠
+. However, considering that the training sample is a re-
+engaged user, whose historical interactions are far removed from
+the bidding time, thus exhibiting severe temporal staleness. More-
+over, ad contexts are influenced by exposure and delivery mecha-
+nisms, which may carry limited personalized intent. We therefore
+use the user profile as a unified anchor of user specific preference
+and concatenate with each item embedding 𝑒(𝑚)
+𝑗
+of the heteroge-
+neous sequence 𝑥(𝑚)
+𝑠
+, where 𝑚∈{𝑖,𝑎, . . . }. Consequently, we have
+the user conditioned representation sequence:
+H(𝑚) = {ℎ(𝑚)
+0
+, . . . ,ℎ(𝑚)
+𝑛
+}, 𝑤ℎ𝑒𝑟𝑒ℎ(𝑚)
+𝑗
+= [𝑒(𝑚)
+𝑗
+;𝑥𝑢].
+(4)
+We then use a small set of 𝐾learnable query tokens together
+with sequence-specific Q-Former [5] modules to compress multiple
+variable-length behavior sequences into fixed-length user interest
+representations:
+𝑠(𝑚) = Q-Former(H(𝑚)).
+(5)
+In this way, heterogeneous sequences are mapped into a unified
+representation space. We then integrate the user-side features and
+construct task-specific towers for retention prediction over different
+horizons. Each tower consisting of a feature interaction layer and
+a projection head to produce a user representation tailored to the
+retention task:
+𝑒𝑢= TaskTower([𝑥𝑢;𝑠(𝑚)]).
+(6)
+Distillation Alignment. To achieve an approximate estimation
+of the invisible information, we adopt distillation to align user
+representation with onboarding content representation. Concretely,
+for each task 𝑡, the output of the onboarding content encoder 𝑒(𝑘)
+𝑐
+from the former stage serves as the teacher signal, while that of
+the user encoder 𝑒(𝑘)
+𝑢
+serves as the student representation. We then
+minimize the representation gap measured by a similarity-based
+loss L𝑠𝑖𝑚(e.g., cosine similarity loss):
+L𝑎𝑙𝑖𝑔𝑛=
+∑︁
+𝑡∈Task
+L𝑠𝑖𝑚(𝑒(𝑡)
+𝑢, sg(𝑒(𝑡)
+𝑐)),
+(7)
+where sg(·) denotes the stop-gradient operator to stabilize the dis-
+tillation target and prevent the collapse of the representation.
+To ensure the representation alignment remains in service of the
+retention objective and preserves the stability of the core task, we
+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Tianbao Ma*, Ruochen Yang*, Chengen Li, Yuexin Shi, Jiangxia Cao†,
+Linxun Chen, Zhaojie Liu, Yanan Niu, Han Li and Kun Gai
+Table 1: Overall performance of the model with different
+training stage. The performance of the full model is bold,
+and the upper bound is underline.
+Method
+LT1
+LT7
+AUC
+GAUC
+AUC
+GAUC
+Base
+0.7297
+0.7227
+0.6903
+0.6909
+OCARM
+w/ Stage 1 (Upper Bound)
+0.7468
+0.7371
+0.7002
+0.7007
+w/ Stage 2
+0.6709
+0.6719
+0.6430
+0.6435
+w/ Stage 1 + 2 (Full)
+0.7369
+0.7311
+0.6949
+0.6957
+Table 2: Performance gains over the base model of several
+variants with different encoder architecture.
+Variant
+Content Encoder
+User Encoder
+ΔAUC (%)
+LT1
+LT7
+Base
+-
+-
+-
+-
+Variant 1
+MLP
+MLP
++0.35
++0.23
+Variant 2
+HAE
+MLP
++0.56
++0.32
+Variant 3
+HAE
+SFE
++0.72
++0.46
+further combine the aligned user representation with the retention
+model’s features and jointly optimize:
+L𝑆𝑡𝑎𝑔𝑒2 = BCE(𝑓𝑟𝑒𝑡𝑒𝑛𝑡𝑖𝑜𝑛([𝑥𝑢;𝑒𝑢]),𝑦) + 𝜆L𝑎𝑙𝑖𝑔𝑛.
+(8)
+2.4
+Inference
+During inference, the framework relies only on the main reten-
+tion model 𝑓𝑟𝑒𝑡𝑒𝑛𝑡𝑖𝑜𝑛(·) and the latent representation of onboarding
+content estimated by the user encoder 𝑔𝑢(·):
+ˆ𝑦= 𝑓𝑟𝑒𝑡𝑒𝑛𝑡𝑖𝑜𝑛([𝑥𝑢;𝑔𝑢(𝑥𝑢)]),
+(9)
+while the onboarding content encoder is discarded after training.
+This design enables informative retention prediction without intro-
+ducing feature leakage.
+3
+Experiments
+3.1
+Experimental Settings
+To validate the effectiveness of our proposed framework, we con-
+duct extensive offline and online experiments.
+Dataset. We construct an industrial dataset collected from a
+widely used short-video platform to conduct offline analysis. The
+dataset includes millions of users and billions of interaction records.
+Evaluation. We define two retention prediction tasks, LT1 and
+LT7, corresponding to 1-day and 7-day engagement frequency re-
+spectively. We follow the widely used evaluation metrics, AUC and
+GAUC, to evaluate model performance.
+Implementation. We ensure that all features are visible during
+training, but onboarding content is unavailable during evaluation.
+We adopt PPNET [4] as the framework of the retention model.
+3.2
+Offline Experiments Analysis
+Table 1 summarizes the offline results with different training-stage
+configurations. Using Stage 1 alone, where onboarding content is
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Similarity
+0.00
+0.25
+0.50
+0.75
+1.00
+1.25
+1.50
+1.75
+2.00
+ AUC
+Base
+Variant 1
+Variant 2
+Variant 3
+Upper Bound
+(a) LT1
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Similarity
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+ AUC
+Base
+Variant 1
+Variant 2
+Variant 3
+Upper Bound
+(b) LT7
+Figure 3: Performance gains of retention task from increased
+representation similarity.
+Table 3: Online A/B test result of real industrial scenario.
+Metric
+Non-Uninstalled
+Uninstalled
+Re-engaged Devices
++20.468%
++34.430%
+LT30
++11.548%
++22.179%
+deliberately leaked during training, yields substantial gains over the
+base model. This confirms that onboarding content provides strong
+informative signals for retention prediction and can be viewed as an
+upper bound. Using Stage 2 alone by jointly training HAE (without
+stop-gradient) and SFE leads to significant performance degradation.
+A possible reason is that, without a well-learned teacher represen-
+tation, direct alignment introduces unstable optimization and even
+representation collapse, thereby degrading alignment learning. In
+comparison, the full two-stage framework first learns reliable on-
+boarding content representations and then transfers them through
+distillation, enabling the model to approximate inaccessible infor-
+mation at inference time. As a result, it achieves clear improvements
+over the base model while avoiding feature leakage, validating the
+effectiveness of our two-stage distillation-aligned framework.
+We further investigate the performance of several variants with
+different encoder architectures:
+• Variant 1 adopts MLP for content encoder and user encoder.
+• Variant 2 replaces the MLP of content encoder with HAE.
+• Variant 3 (Full) further replaces the user encoder with SFE.
+Table 2 shows that stronger encoder architectures consistently
+improve retention prediction, suggesting that better network de-
+signs more effectively exploit onboarding content signals. Figure 3
+further provides mechanistic evidence for this trend. As the simi-
+larity between the user representation and the onboarding content
+representation increases, the performance grows monotonically.
+This suggests that variants with better alignment achieve larger
+retention gains. Meanwhile, the remaining gap to the upper bound
+indicates that approximating inaccessible information still leaves
+substantial room for improvement and exploration.
+3.3
+Online A/B Test
+We deploy our framework in the RTB system of a short-video
+platform, with the result during multiple days of A/B test shown in
+Table 3. The result shows that our method consistently improves
+retention prediction across diverse user groups. Notably, the gains
+are much larger for uninstalled users than for non-uninstalled users,
+suggesting that our approach is particularly effective at identifying
+the long-term value of hard-to-retain users. Overall, these findings
+
+
+Kuaishou Tech
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+demonstrate the effectiveness and practical value of our method in
+real industrial scenario.
+4
+Conclusion
+In this paper, we identify the temporal visibility gap in RTB reten-
+tion prediction, where the most predictive onboarding content is
+inaccessible at bidding time. We then propose OCARM, a two-stage
+distillation-aligned framework that first encodes leaked onboarding
+content via hierarchical attention as teacher signals, then trains a
+user encoder to approximate these representations from observ-
+able features alone. Offline and online experiments on a real-world
+short-video platform validate the effectiveness of our framework.
+References
+[1] Shifu Bie, Jiangxia Cao, Zixiao Luo, Yichuan Zou, Lei Liang, Lu Zhang, Linxun
+Chen, Zhaojie Liu, Xuanping Li, Guorui Zhou, et al. 2026. PushGen: Push Notifi-
+cations Generation with LLM. In Proceedings of the Nineteenth ACM International
+Conference on Web Search and Data Mining. 1073–1077.
+[2] Qingpeng Cai, Shuchang Liu, Xueliang Wang, Tianyou Zuo, Wentao Xie, Bin Yang,
+Dong Zheng, Peng Jiang, and Kun Gai. 2023. Reinforcing user retention in a billion
+scale short video recommender system. In Companion Proceedings of the ACM Web
+Conference 2023. 421–426.
+[3] Jiangxia Cao, Ruochen Yang, Xiang Chen, Changxin Lao, Yueyang Liu, Yusheng
+Huang, Yuanhao Tian, Xiangyu Wu, Shuang Yang, Zhaojie Liu, et al. 2026. Fore-
+sight Prediction Enhanced Live-Streaming Recommendation. In Proceedings of
+the Nineteenth ACM International Conference on Web Search and Data Mining.
+1078–1082.
+[4] Jianxin Chang, Chenbin Zhang, Yiqun Hui, Dewei Leng, Yanan Niu, Yang Song,
+and Kun Gai. 2023. Pepnet: Parameter and embedding personalized network
+for infusing with personalized prior information. In Proceedings of the 29th ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining. 3795–3804.
+[5] Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi. 2023. Blip-2: Bootstrapping
+language-image pre-training with frozen image encoders and large language
+models. In International conference on machine learning. PMLR, 19730–19742.
+[6] Ziru Liu, Shuchang Liu, Bin Yang, Zhenghai Xue, Qingpeng Cai, Xiangyu Zhao,
+Zijian Zhang, Lantao Hu, Han Li, and Peng Jiang. 2024. Modeling user reten-
+tion through generative flow networks. In Proceedings of the 30th ACM SIGKDD
+Conference on Knowledge Discovery and Data Mining. 5497–5508.
+[7] Shen Wang, Yusheng Huang, Ruochen Yang, Shuang Wen, Pengbo Xu, Jiangxia
+Cao, Yueyang Liu, Kuo Cai, Chengcheng Guo, Shiyao Wang, et al. 2026. OneLive:
+Dynamically Unified Generative Framework for Live-Streaming Recommendation.
+arXiv preprint arXiv:2602.08612 (2026).
+[8] Yuyan Wang, Jing Zhong, Yuxin Cui, Zhaohui Guo, Chuanqi Wei, Yanchen Wang,
+and Zellux Wang. 2025. Not All Impressions Are Created Equal: Psychology-
+Informed Retention Optimization for Short-Form Video Recommendation. In
+Proceedings of the Nineteenth ACM Conference on Recommender Systems. 1022–
+1025.
+[9] Kesen Zhao, Lixin Zou, Xiangyu Zhao, Maolin Wang, and Dawei Yin. 2023. User
+retention-oriented recommendation with decision transformer. In Proceedings of
+the ACM Web Conference 2023. 1141–1149.
