@@ -169,15 +169,15 @@ def generate_semantic_ids_fsq(
     device = model.primary_device
 
     layer_assignments = []
-    current_residuals = embeddings.clone()
+    # Keep residuals on GPU throughout to avoid CPU bottleneck
+    current_residuals = embeddings.clone().to(device)
 
     # Normalize input once (layer 0 only)
     if normalize_residuals:
-        normalized = []
         chunk_size = 100000
+        normalized = []
         for i in range(0, n_samples, chunk_size):
-            chunk = current_residuals[i:i+chunk_size].to(device)
-            chunk = F.normalize(chunk, p=2, dim=1).cpu()
+            chunk = F.normalize(current_residuals[i:i+chunk_size], p=2, dim=1)
             normalized.append(chunk)
         current_residuals = torch.cat(normalized, dim=0)
 
@@ -187,14 +187,14 @@ def generate_semantic_ids_fsq(
         assignments = kmeans.predict(current_residuals).cpu().numpy()
         layer_assignments.append(assignments)
 
-        new_residuals = []
+        # Compute residuals on GPU
         chunk_size = 50000
+        new_residuals = []
         for i in range(0, n_samples, chunk_size):
             chunk = current_residuals[i:i+chunk_size]
-            chunk_assignments = torch.tensor(assignments[i:i+chunk_size])
-            assigned_centroids = kmeans.centroids[chunk_assignments].cpu()
-            residual = chunk - assigned_centroids
-            new_residuals.append(residual)
+            chunk_assignments = torch.tensor(assignments[i:i+chunk_size], device=device)
+            assigned_centroids = kmeans.centroids[chunk_assignments]
+            new_residuals.append(chunk - assigned_centroids)
         current_residuals = torch.cat(new_residuals, dim=0)
 
     # Layer 3: FSQ
