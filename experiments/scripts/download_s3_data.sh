@@ -27,6 +27,9 @@ usage() {
     echo "  sid-0.6b           SID cache (Qwen3-0.6B, 14d) → experiments/sid_cache/exp026-0.6b-14d"
     echo "  sid-4b             SID cache (Qwen3-4B,  14d) → experiments/sid_cache/exp026-4b-14d"
     echo "  sid-8b             SID cache (Qwen3-8B,  14d) → experiments/sid_cache/exp026-8b-14d"
+    echo "  emb-cache-0.6b     Embedding cache (qwen3-0.6b) → EFS embedding_cache/qwen3-0.6b/"
+    echo "  emb-cache-4b       Embedding cache (qwen3-4b)   → EFS embedding_cache/qwen3-4b/"
+    echo "  emb-cache-8b       Embedding cache (qwen3-8b)   → EFS embedding_cache/qwen3-8b/"
     echo "  qwen3-emb-0.6b     Qwen3-Embedding-0.6B  (~1.2GB)"
     echo "  qwen3-emb-4b       Qwen3-Embedding-4B    (~7.8GB)"
     echo "  qwen3-emb-8b       Qwen3-Embedding-8B    (~15GB)"
@@ -63,6 +66,18 @@ case "${DATASET}" in
     sid-8b)
         S3_PATH="${S3_BASE}/sid_cache/exp026-8b-14d"
         LOCAL_DIR="experiments/sid_cache/exp026-8b-14d"
+        ;;
+    emb-cache-0.6b)
+        S3_PATH="s3://example-bucket/gr-demo/embedding_cache_backup/qwen3-0.6b"
+        LOCAL_DIR="${HOME}/gr_demo_cache/embedding_cache/qwen3-0.6b"
+        ;;
+    emb-cache-4b)
+        S3_PATH="s3://example-bucket/gr-demo/embedding_cache_backup/qwen3-4b"
+        LOCAL_DIR="${HOME}/gr_demo_cache/embedding_cache/qwen3-4b"
+        ;;
+    emb-cache-8b)
+        S3_PATH="s3://example-bucket/gr-demo/embedding_cache_backup/qwen3-8b"
+        LOCAL_DIR="${HOME}/gr_demo_cache/embedding_cache/qwen3-8b"
         ;;
     qwen3-emb-0.6b)
         S3_PATH="${S3_BASE}/models/Qwen3-Embedding-0.6B"
