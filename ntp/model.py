@@ -1204,7 +1204,8 @@ class NTPModel(nn.Module):
                 tokens = torch.cat([input_tokens, generated_tokens], dim=1)
             T = tokens.size(1)
             device = tokens.device
-            positions = torch.arange(T, device=device).unsqueeze(0)
+            pos_raw = torch.arange(T, device=device).unsqueeze(0)
+            positions = (pos_raw // self.n_sid_layers) if self.use_torope else pos_raw
 
             # Pad each ctx side feature to full sequence length
             padded_sf = {}
@@ -1245,7 +1246,8 @@ class NTPModel(nn.Module):
             T_new = new_tokens.size(1)
             device = new_tokens.device
             x = self._embed_tokens_at_offset(new_tokens, offset)
-            positions = torch.arange(offset, offset + T_new, device=device).unsqueeze(0)
+            pos_raw = torch.arange(offset, offset + T_new, device=device).unsqueeze(0)
+            positions = (pos_raw // self.n_sid_layers) if self.use_torope else pos_raw
             x = x + self._get_pos_emb(positions)
             x = self._apply_embed_add_sf(x, step_sf)
 
@@ -1348,10 +1350,10 @@ class NTPModel(nn.Module):
             tokens = input_tokens
 
         T = tokens.size(1)
-        positions = torch.arange(T, device=device).unsqueeze(0)
+        pos_raw = torch.arange(T, device=device).unsqueeze(0)
+        positions = pos_raw
         x = self._embed_tokens(tokens) + self._get_pos_emb(positions)
-        # For TO-RoPE: pass positions (timestamps default to zeros inside each layer)
-        torope_pos = positions if self.use_torope else None
+        torope_pos = (pos_raw // self.n_sid_layers) if self.use_torope else None
         torope_ts = torch.zeros(1, T, device=device) if self.use_torope else None
         out = self._transformer_forward(x, positions=torope_pos, timestamps=torope_ts)
 
@@ -1404,11 +1406,15 @@ class NTPModel(nn.Module):
 
         positions = torch.arange(S, device=device).unsqueeze(0)
         x = self.embed_with_features(input_tokens, positions, sf)
-        tp_pos = positions if self.use_torope else None
         if self.use_torope:
+            # Item-level positions: tokens of the same item share the same index.
+            # Avoids conflicting signals where position-RoPE separates tokens that
+            # time-RoPE sees as simultaneous (same timestamp within an item).
+            tp_pos = (positions // L)
             timestamps = sf.get('timestamps')
             tp_ts = timestamps if timestamps is not None else torch.zeros(1, S, device=device)
         else:
+            tp_pos = None
             tp_ts = None
         hidden = self._transformer_forward(x, positions=tp_pos, timestamps=tp_ts)  # (B, S, D)
 
