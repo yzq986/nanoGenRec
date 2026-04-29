@@ -1283,15 +1283,14 @@ def train_packed(
                 tg_sample = batch_sf['time_gaps'][0, :8].tolist()
                 log(is_main, f"  [sanity] train  time_gaps[0,:8] = {tg_sample}")
             if 'timestamps' in batch_sf:
-                ts_sample = batch_sf['timestamps'][0, :8].tolist()
-                log(is_main, f"  [sanity] train  timestamps[0,:8] = {ts_sample}")
-                # Check batch-wide: first seq item always has rel_hours=0, use batch max
-                ts_max = float(batch_sf['timestamps'].max())
-                if ts_max == 0.0:
+                ts_row = batch_sf['timestamps'][0]
+                nonzero_vals = ts_row[ts_row != 0].tolist()
+                ts_preview = nonzero_vals[:4] if nonzero_vals else ts_row[:4].tolist()
+                label = "first nonzero vals" if nonzero_vals else "all zero (seq[0])"
+                log(is_main, f"  [sanity] train  timestamps[0] {label}: {[f'{v:.2f}' for v in ts_preview]}")
+                if float(batch_sf['timestamps'].max()) == 0.0:
                     log(is_main, "  [WARNING] use_torope=True but timestamps are ALL ZERO (batch max=0) — "
                                  "train-infer mismatch! preprocess-ntp may be missing timestamps.")
-                else:
-                    log(is_main, f"  [sanity] train  timestamps batch_max={ts_max:.2f}h  (first-item zeros are expected)")
             elif use_torope:
                 log(is_main, "  [WARNING] use_torope=True but 'timestamps' not in shard data — "
                              "train-infer mismatch! beam search will use zeros at inference time.")
