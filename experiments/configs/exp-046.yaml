@@ -1,0 +1,7 @@
+name: exp046-gate-attn
+description: "GateAttention — sigmoid gate on attn output, s-tier baseline"
+base: _base.yaml
+
+# delta from base
+use_segment_emb: true
+use_gate_attn: true
