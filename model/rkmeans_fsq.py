@@ -34,11 +34,13 @@ class ResKmeansFSQ:
         fsq_mlp_hidden: int = 128,
         fsq_epochs: int = 50,
     ):
-        # Accept int, "4096", or "4096,2048" — normalise to List[int]
+        # Accept int, "4096", or "4096,2048" — normalise to List[int] of length 2
         if isinstance(n_kmeans_clusters, str):
             n_kmeans_clusters = [int(x) for x in n_kmeans_clusters.split(",")]
         if isinstance(n_kmeans_clusters, int):
             n_kmeans_clusters = [n_kmeans_clusters, n_kmeans_clusters]
+        if len(n_kmeans_clusters) == 1:
+            n_kmeans_clusters = [n_kmeans_clusters[0], n_kmeans_clusters[0]]
         self.n_kmeans_clusters = n_kmeans_clusters  # List[int], one per KMeans layer
         self.fsq_levels = fsq_levels
         self.n_features = n_features
