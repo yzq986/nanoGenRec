@@ -1,4 +1,29 @@
 {
+  "262ea8d6b183": {
+    "config": {
+      "date_end": "2026-03-31",
+      "date_start": "2026-03-18",
+      "fsq_epochs": 50,
+      "fsq_levels": "12d_4096",
+      "fsq_mlp_hidden": 128,
+      "fsq_projection": "mlp",
+      "model": "qwen3-4b",
+      "num_clusters": "4096,2048",
+      "phase": "tokenizer"
+    },
+    "git_commit": "30688b3b727f",
+    "name": "exp049-4b-nc4096x2048-h128",
+    "registered_at": "2026-04-30T13:37:28.622548",
+    "results": {
+      "collision_rate": 0.01972725234694972,
+      "gini_d1": 0.28699615011065416,
+      "gini_d2": 0.3882159817096802,
+      "gini_d3": 0.019508382797476242,
+      "n_items": 1110697,
+      "n_unique_sids": 1088786
+    },
+    "results_updated_at": "2026-04-30T13:43:01.273460"
+  },
   "35d32cec620d": {
     "backfilled": true,
     "config": {
@@ -181,6 +206,31 @@
       "ppl": 467.508,
       "target_sid_found_rate": 0.349
     }
+  },
+  "4993a5415b1c": {
+    "config": {
+      "date_end": "2026-03-31",
+      "date_start": "2026-03-18",
+      "fsq_epochs": 50,
+      "fsq_levels": "12d_4096",
+      "fsq_mlp_hidden": 128,
+      "fsq_projection": "mlp",
+      "model": "qwen3-4b",
+      "num_clusters": "8192,4096",
+      "phase": "tokenizer"
+    },
+    "git_commit": "52987a41ef2d",
+    "name": "exp049-4b-nc8192x4096-h128",
+    "registered_at": "2026-04-30T13:24:53.463949",
+    "results": {
+      "collision_rate": 0.012807273270748043,
+      "gini_d1": 0.3192141248030447,
+      "gini_d2": 0.2793911873589381,
+      "gini_d3": 0.012726747260903837,
+      "n_items": 1110697,
+      "n_unique_sids": 1096472
+    },
+    "results_updated_at": "2026-04-30T13:31:16.197372"
   },
   "54e72469ffdb": {
     "config": {
@@ -429,6 +479,31 @@
       "ppl": 26.518,
       "target_sid_found_rate": 0.615
     }
+  },
+  "f6b3aca79965": {
+    "config": {
+      "date_end": "2026-03-31",
+      "date_start": "2026-03-18",
+      "fsq_epochs": 50,
+      "fsq_levels": "12d_4096",
+      "fsq_mlp_hidden": 128,
+      "fsq_projection": "mlp",
+      "model": "qwen3-4b",
+      "num_clusters": "8192,2048",
+      "phase": "tokenizer"
+    },
+    "git_commit": "30688b3b727f",
+    "name": "exp049-4b-nc8192x2048-h128",
+    "registered_at": "2026-04-30T13:31:16.246173",
+    "results": {
+      "collision_rate": 0.014124464187802777,
+      "gini_d1": 0.31914706958695604,
+      "gini_d2": 0.31701473605356667,
+      "gini_d3": 0.014017114784510731,
+      "n_items": 1110697,
+      "n_unique_sids": 1095009
+    },
+    "results_updated_at": "2026-04-30T13:37:28.568235"
   },
   "f8e0bfe25e8c": {
     "backfilled": true,
