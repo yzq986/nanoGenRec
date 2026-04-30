@@ -61,8 +61,8 @@ def parse_args():
                         help='Output directory (default: experiments/sid_cache/{model})')
     parser.add_argument('--device', type=str, default='cuda')
     # Tokenizer config overrides (default: TOKENIZER_CONFIG)
-    parser.add_argument('--num_clusters', type=int, default=None,
-                        help='Override KMeans clusters per layer')
+    parser.add_argument('--num_clusters', type=str, default=None,
+                        help='KMeans clusters per layer: int or "L1,L2" e.g. "4096,2048"')
     parser.add_argument('--fsq_levels', type=str, default=None,
                         help='Override FSQ levels key (e.g. 12d_4096)')
     parser.add_argument('--fsq_projection', type=str, default=None,
@@ -425,7 +425,9 @@ def main():
     print("SID Preprocessing")
     print("=" * 60)
     print(f"  Model:      {model_key} (dim={embedding_dim})")
-    print(f"  Tokenizer:  KMeans {TOKENIZER_CONFIG['num_clusters']}x2 + MLP-FSQ h={TOKENIZER_CONFIG['fsq_mlp_hidden']}")
+    nc = TOKENIZER_CONFIG['num_clusters']
+    nc_str = nc if isinstance(nc, str) else str(nc)
+    print(f"  Tokenizer:  KMeans [{nc_str}] + MLP-FSQ h={TOKENIZER_CONFIG['fsq_mlp_hidden']}")
     print(f"  Output:     {output_dir}")
     print()
 
