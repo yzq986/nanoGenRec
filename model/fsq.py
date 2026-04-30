@@ -353,14 +353,16 @@ class LearnedFSQLayer:
         self.encoder.train()
         self.decoder.train()
 
+        # Pin entire residuals on GPU for the duration of training — no per-batch transfer
+        residuals_gpu = residuals.to(device)
+
         for epoch in range(self.epochs):
-            perm = torch.randperm(N)
+            perm = torch.randperm(N, device=device)
             epoch_loss = 0.0
             n_batches = 0
 
             for i in range(0, N, self.batch_size):
-                batch_idx = perm[i:i + self.batch_size]
-                batch = residuals[batch_idx].to(device)
+                batch = residuals_gpu[perm[i:i + self.batch_size]]
 
                 z = self.encoder(batch)           # (B, d)
                 z_q = self._quantize_ste(z)       # (B, d) with STE
