@@ -1,14 +1,14 @@
 """NTP data preprocessing — build unified sequences and save as shards.
 
-Single-process command that prepares data for DDP training.
+Single-process, multi-worker command that prepares data for DDP training.
 Each shard contains unified per-user sequences (tokens + split_pos + eval_cids).
 During training, each rank loads only its own shard.
 
 Usage:
     python run.py preprocess-ntp \\
-        --sid_cache experiments/sid_cache/qwen3-0.6b \\
-        --output_dir experiments/ntp_data/exp013 \\
-        --n_shards 8
+        --sid_cache experiments/sid_cache/exp049-0.6b-nc8192-h128 \\
+        --output_dir experiments/ntp_data/exp049-0.6b-nc8192-h128 \\
+        --n_workers 64
 
 Output:
     {output_dir}/
@@ -18,61 +18,128 @@ Output:
 
 import argparse
 import json
+import multiprocessing
 import os
 import time
 
 import numpy as np
+import pandas as pd
 
-from ntp.train import build_unified_sequences
+from ntp.train import (
+    _parse_sid_dict, _build_user_items,
+    _VIEW_EXIT_BIT, _STRONG_POSITIVE_MASK, _TRADE_MASK,
+    _TIME_GAP_BOUNDARIES,
+)
+
+# ── Vectorized helpers ─────────────────────────────────────────────────────────
+
+_BOUNDARIES_ARR = np.array(_TIME_GAP_BOUNDARIES, dtype=np.float64)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description='Preprocess NTP data into shards')
-    parser.add_argument('--sid_cache', type=str, required=True,
-                        help='Path to preprocess-sid cache dir')
-    parser.add_argument('--output_dir', type=str, required=True,
-                        help='Output directory for shards')
-    parser.add_argument('--n_shards', type=int, default=8,
-                        help='Number of training shards (should match world_size)')
-    parser.add_argument('--n_items', type=int, default=10,
-                        help='Number of history items per sequence')
-    parser.add_argument('--max_seq_len', type=int, default=512,
-                        help='Max packed sequence length in tokens')
-    parser.add_argument('--n_eval_target', type=int, default=50000,
-                        help='Target number of eval items (determines time split)')
-    parser.add_argument('--date_start', type=str, default=None,
-                        help='Behavior data start date (YYYY-MM-DD)')
-    parser.add_argument('--date_end', type=str, default=None,
-                        help='Behavior data end date (YYYY-MM-DD)')
-    parser.add_argument('--behavior_path', type=str, default='auto',
-                        help='Local behavior cache dir or "auto" (S3)')
-    parser.add_argument('--entp_weight', type=float, default=0.0,
-                        help='If > 0, load exposure data and build neg_l0 for ENTP loss')
-    parser.add_argument('--exposure_neg_path', type=str, default=None,
-                        help='Local dir for exposure neg parquet (skips S3). '
-                             'e.g. /mnt/workspace/gr-demo-exposure-neg/2026-03-01_2026-03-31')
-    parser.add_argument('--behavior_v2_path', type=str, default=None,
-                        help='Local dir for behavior_v2 parquet (positives + inline session negatives). '
-                             'e.g. /mnt/workspace/gr-demo-behavior-v2')
-    parser.add_argument('--entp_k', type=int, default=5,
-                        help='Max negative L0 tokens per position for ENTP')
-    parser.add_argument('--shift_features', action='store_true', default=False,
-                        help='Shift time_gap/action_level by one item to avoid target leakage')
-    parser.add_argument('--action_l2_only', action='store_true', default=False,
-                        help='Zero out action_level at L0/L1 positions, keep only at L2')
-    parser.add_argument('--min_action_level', type=int, default=1,
-                        help='RSFT: min quality level to keep (1=all, 2=strong+trade, 3=trade only)')
-    return parser.parse_args()
+def _time_gap_buckets_vec(ts_arr):
+    """ts_arr: 1-D float array for one user → bucket int array, same length."""
+    deltas = np.diff(ts_arr.astype(np.float64))
+    deltas = np.maximum(deltas, 0.0)
+    buckets = np.searchsorted(_BOUNDARIES_ARR, deltas, side='right').astype(np.int8)
+    return np.concatenate([[0], buckets])   # first item = BOS = 0
 
+
+def _bitmap_to_level_vec(bm_arr):
+    """bm_arr: int32 array → level int8 array (1=weak, 2=strong, 3=trade)."""
+    bm = bm_arr.astype(np.int32) & ~_VIEW_EXIT_BIT
+    level = np.ones(len(bm), dtype=np.int8)
+    level[(bm & _STRONG_POSITIVE_MASK) != 0] = 2
+    level[(bm & _TRADE_MASK) != 0] = 3
+    return level
+
+
+# ── Per-chunk worker ───────────────────────────────────────────────────────────
+
+def _process_chunk(args):
+    """Build sequences for a slice of users. Called in worker processes."""
+    (user_indices, starts, ends,
+     iid_idx_s, ts_s, actions_s,
+     token_matrix, n_layers,
+     split_ts, max_items,
+     shift_features, action_l2_only) = args
+
+    sequences = []
+    n_truncated = 0
+    raw_items_per_user = []
+
+    for u in user_indices:
+        s, e = int(starts[u]), int(ends[u])
+        n = e - s
+        if n < 2:
+            continue
+
+        raw_items_per_user.append(n)
+        u_idx = iid_idx_s[s:e]   # int32 indices into token_matrix
+        u_ts  = ts_s[s:e].astype(np.float64)
+        u_act = actions_s[s:e]
+
+        if n > max_items:
+            n_truncated += 1
+            off = n - max_items
+            u_idx = u_idx[off:]
+            u_ts  = u_ts[off:]
+            u_act = u_act[off:]
+            n = max_items
+
+        # token flat — numpy take, C-layer, no Python loop
+        flat = token_matrix[u_idx].flatten().tolist()   # list[int], len = n*n_layers
+
+        # split point
+        split_item_idx = int(np.searchsorted(u_ts, split_ts, side='right'))
+        split_item_idx = min(split_item_idx, n)
+        split_token_pos = split_item_idx * n_layers
+
+        # eval_cids — store as Python list of iid index (decoded later? no — we need original iids)
+        # u_idx contains token_matrix row indices; we need original iid strings
+        # They're passed in via iids_s (not passed here to save memory).
+        # We store u_idx slice for eval_cids — caller resolves back to strings.
+        eval_idx = u_idx[split_item_idx:].tolist()   # int32 indices
+
+        # time_gaps and action_levels — vectorized
+        tg = _time_gap_buckets_vec(u_ts)                  # (n,) int8
+        al = _bitmap_to_level_vec(u_act.astype(np.int32)) # (n,) int8
+
+        # repeat n_layers times per item
+        tg_tok = np.repeat(tg, n_layers).tolist()
+        al_tok = np.repeat(al, n_layers).tolist()
+
+        # relative timestamps (hours from first item), repeated per layer
+        rel_h = ((u_ts - u_ts[0]) / 3600.0).astype(np.float32)
+        ts_tok = np.repeat(rel_h, n_layers).tolist()
+
+        if action_l2_only:
+            # zero out action_level at non-L2 positions
+            for i in range(len(al_tok)):
+                if (i + 1) % n_layers != 0:
+                    al_tok[i] = 0
+
+        if shift_features:
+            L = n_layers
+            tg_tok  = [0]  * L + tg_tok[:-L]
+            al_tok  = [0]  * L + al_tok[:-L]
+            ts_tok  = [0.0]* L + ts_tok[:-L]
+
+        sequences.append({
+            'flat':            flat,
+            'split_token_pos': split_token_pos,
+            'eval_idx':        eval_idx,
+            'time_gaps':       tg_tok,
+            'action_levels':   al_tok,
+            'timestamps':      ts_tok,
+        })
+
+    return sequences, n_truncated, raw_items_per_user
+
+
+# ── save / load helpers (unchanged interface) ─────────────────────────────────
 
 def save_shard(sequences, path):
-    """Save unified sequences (tokens + split_pos + eval_cids) as .npz.
-
-    Args:
-        sequences: list of dicts with 'tokens', 'split_pos', 'eval_cids',
-                   and optionally 'neg_l0' (list of K ints per item),
-                   'time_gaps' (list of int), 'action_levels' (list of int).
-    """
+    """Save unified sequences (tokens + split_pos + eval_cids) as .npz."""
     if not sequences:
         np.savez_compressed(
             path,
@@ -108,7 +175,7 @@ def save_shard(sequences, path):
         eval_cids_flat.extend(seq['eval_cids'])
         eval_cids_offsets.append(eval_cids_offsets[-1] + len(seq['eval_cids']))
         if has_neg:
-            neg = seq['neg_l0']  # list of lists, shape (n_items, K)
+            neg = seq['neg_l0']
             if neg_l0_k is None and len(neg) > 0:
                 neg_l0_k = len(neg[0])
             for row in neg:
@@ -141,11 +208,7 @@ def save_shard(sequences, path):
 
 
 def load_shard(path):
-    """Load shard → (tokens_list, split_pos_list[, neg_l0_list]).
-
-    Returns dict with keys: 'tokens_list', 'split_pos_list', and optionally
-    'neg_l0_list', 'time_gaps_list', 'action_levels_list'.
-    """
+    """Load shard → dict with keys: tokens_list, split_pos_list, and optionals."""
     data = np.load(path, allow_pickle=True)
     tokens = data['tokens']
     offsets = data['offsets']
@@ -176,22 +239,18 @@ def load_shard(path):
         tokens_list.append(tokens[start:end].tolist())
         split_pos_list.append(int(split_pos[i]))
         if has_neg:
-            n_items = int(neg_offsets[i + 1] - neg_offsets[i])
             flat_start = int(neg_offsets[i]) * neg_k
             flat_end = int(neg_offsets[i + 1]) * neg_k
             chunk = neg_flat[flat_start:flat_end].astype(int).tolist()
             neg_l0_list.append([chunk[j * neg_k:(j + 1) * neg_k]
-                                for j in range(n_items)])
+                                for j in range(int(neg_offsets[i+1]-neg_offsets[i]))])
         if has_features:
             time_gaps_list.append(time_gaps_all[start:end].tolist())
             action_levels_list.append(action_levels_all[start:end].tolist())
         if has_timestamps:
             timestamps_list.append(timestamps_all[start:end].tolist())
 
-    result = {
-        'tokens_list': tokens_list,
-        'split_pos_list': split_pos_list,
-    }
+    result = {'tokens_list': tokens_list, 'split_pos_list': split_pos_list}
     if has_neg:
         result['neg_l0_list'] = neg_l0_list
     if has_features:
@@ -203,10 +262,7 @@ def load_shard(path):
 
 
 def load_shard_full(path):
-    """Load full shard data → list of dicts with tokens, split_pos, eval_cids.
-
-    Also includes time_gaps and action_levels if present in shard.
-    """
+    """Load full shard data → list of dicts with tokens, split_pos, eval_cids."""
     data = np.load(path, allow_pickle=True)
     tokens = data['tokens']
     offsets = data['offsets']
@@ -240,106 +296,196 @@ def load_shard_full(path):
     return sequences
 
 
+# ── CLI ────────────────────────────────────────────────────────────────────────
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Preprocess NTP data into shards')
+    parser.add_argument('--sid_cache', type=str, required=True)
+    parser.add_argument('--output_dir', type=str, required=True)
+    parser.add_argument('--n_shards', type=int, default=8,
+                        help='Number of output shards (should match DDP world_size)')
+    parser.add_argument('--n_workers', type=int, default=32,
+                        help='Worker processes for parallel sequence building')
+    parser.add_argument('--n_items', type=int, default=10)
+    parser.add_argument('--max_seq_len', type=int, default=512)
+    parser.add_argument('--n_eval_target', type=int, default=50000)
+    parser.add_argument('--date_start', type=str, default=None)
+    parser.add_argument('--date_end', type=str, default=None)
+    parser.add_argument('--behavior_path', type=str, default='auto')
+    parser.add_argument('--entp_weight', type=float, default=0.0)
+    parser.add_argument('--exposure_neg_path', type=str, default=None)
+    parser.add_argument('--behavior_v2_path', type=str, default=None)
+    parser.add_argument('--entp_k', type=int, default=5)
+    parser.add_argument('--shift_features', action='store_true', default=False)
+    parser.add_argument('--action_l2_only', action='store_true', default=False)
+    parser.add_argument('--min_action_level', type=int, default=1)
+    return parser.parse_args()
+
+
 def main():
     args = parse_args()
 
-    # Skip if output already exists
     out_meta = os.path.join(args.output_dir, 'meta.json')
     if os.path.exists(out_meta):
         print(f"Output already exists at {args.output_dir}, skipping.")
         return
 
     t0 = time.time()
-
     print("=" * 60)
     print("NTP Data Preprocessing")
     print("=" * 60)
 
-    # ── Load SID cache ──
+    # ── Step 1: Load SID cache ─────────────────────────────────────────────────
     print(f"\nStep 1: Loading SID cache from {args.sid_cache}")
     sid_dict = np.load(
         os.path.join(args.sid_cache, 'semantic_ids.npy'), allow_pickle=True
     ).item()
     print(f"  SID assignments: {len(sid_dict):,}")
 
-    # ── Load data ──
-    exposure_neg_data = None
-    behavior_data = None
-    behavior_v2_data = None
+    content_to_tokens, n_layers, n_clusters_per_layer, _sid_to_items = \
+        _parse_sid_dict(sid_dict)
+    print(f"  SID: {n_layers} layers, codebooks={n_clusters_per_layer}")
+    print(f"  Unique SIDs: {len(_sid_to_items):,}")
 
+    # Build vectorized token lookup
+    all_cids = list(content_to_tokens.keys())
+    token_matrix = np.array([content_to_tokens[c] for c in all_cids], dtype=np.int32)
+    # shape: (N_items, n_layers)
+    del sid_dict, _sid_to_items
+
+    # ── Step 2: Load behavior data ─────────────────────────────────────────────
     if args.behavior_v2_path is not None:
-        # V2 mode: behavior positives + inline session negatives
-        print("\nStep 2: Loading behavior_v2 data (positives + inline negatives)")
+        print("\nStep 2: Loading behavior_v2 data")
         from eval.batch import load_behavior_v2_data
         behavior_v2_data = load_behavior_v2_data(
             local_path=args.behavior_v2_path,
             date_start=args.date_start, date_end=args.date_end)
-        print(f"  Positives: {len(behavior_v2_data['positives']['uid']):,}")
-        print(f"  Neg lookup entries: {len(behavior_v2_data['neg_lookup']):,}")
+        behavior_data = behavior_v2_data['positives']
+        print(f"  Positives: {len(behavior_data['uid']):,}")
     elif args.entp_weight > 0:
-        # Legacy ENTP mode: load compact positive+neg_iids from PySpark export
-        print("\nStep 2: Loading ENTP negative data")
-        from eval.batch import load_exposure_neg_data
-        exposure_neg_data = load_exposure_neg_data(
-            date_start=args.date_start, date_end=args.date_end,
-            local_path=args.exposure_neg_path)
-        print(f"  Positives with negatives: {len(exposure_neg_data['uid']):,}")
-
-        # Filter out negatives that share L0 with their positive (gradient conflict).
-        print("\n  Filtering neg_iids sharing L0 with positive...")
-        content_to_tokens = {}
-        for cid, sid_str in sid_dict.items():
-            if isinstance(sid_str, str):
-                content_to_tokens[cid] = [int(t) for t in sid_str.split('_')]
-            else:
-                content_to_tokens[cid] = [int(t) for t in sid_str]
-        n_before = 0
-        n_after = 0
-        iids = exposure_neg_data['iid']
-        neg_iids_list = exposure_neg_data['neg_iids']
-        for i in range(len(iids)):
-            pos_toks = content_to_tokens.get(iids[i])
-            if pos_toks is None:
-                continue
-            pos_l0 = pos_toks[0]
-            old_negs = neg_iids_list[i]
-            n_before += len(old_negs)
-            filtered = [nid for nid in old_negs
-                        if content_to_tokens.get(nid, (None,))[0] != pos_l0]
-            neg_iids_list[i] = filtered
-            n_after += len(filtered)
-        drop_pct = (1 - n_after / max(n_before, 1)) * 100
-        print(f"  Neg items: {n_before:,} → {n_after:,} ({drop_pct:.1f}% dropped, same-L0)")
-        del content_to_tokens
+        raise NotImplementedError("ENTP mode not yet ported to parallel preprocess. Use legacy torchrun path.")
     else:
         print("\nStep 2: Loading behavior data")
         from eval.batch import load_all_behavior_data
         behavior_data = load_all_behavior_data(
             date_start=args.date_start, date_end=args.date_end,
             behavior_path=args.behavior_path)
+        behavior_v2_data = None
         print(f"  Interactions: {len(behavior_data['uid']):,}")
 
-    # ── Build unified sequences ──
-    print("\nStep 3: Building unified sequences")
-    sequences, n_layers, n_clusters_per_layer, split_ts, seq_stats = \
-        build_unified_sequences(
-            sid_dict, behavior_data=behavior_data,
-            n_items=args.n_items, max_seq_len=args.max_seq_len,
-            n_eval_target=args.n_eval_target,
-            exposure_neg_data=exposure_neg_data, entp_k=args.entp_k,
-            behavior_v2_data=behavior_v2_data,
-            shift_features=args.shift_features,
-            action_l2_only=args.action_l2_only,
-            min_action_level=args.min_action_level)
+    # ── Step 3: Group + sort users ─────────────────────────────────────────────
+    print("\nStep 3: Grouping and sorting users")
+    uids_s, iids_s, ts_s, actions_s, starts, ends, _ = \
+        _build_user_items(behavior_data, content_to_tokens,
+                          min_action_level=args.min_action_level)
+    del behavior_data, behavior_v2_data, content_to_tokens
 
-    del sid_dict, behavior_data, exposure_neg_data, behavior_v2_data  # free memory
+    # Vectorized iid → token_matrix row index
+    cat = pd.Categorical(iids_s, categories=all_cids)
+    iid_idx_s = cat.codes.astype(np.int32)
+    del cat, all_cids
+    print(f"  iid index built, {(iid_idx_s < 0).sum()} unknown iids (should be 0)")
 
-    # ── Save shards ──
-    n_total = len(sequences)
+    # Compute split_ts
+    sorted_ts = np.sort(ts_s)
+    total_items = len(sorted_ts)
+    split_idx = max(0, min(total_items - 1, total_items - args.n_eval_target))
+    split_ts = float(sorted_ts[split_idx])
+    actual_eval = int((sorted_ts > split_ts).sum())
+    pct = 100.0 * split_idx / total_items if total_items > 0 else 0
+    print(f"  Time split: {actual_eval:,} eval items (~{pct:.1f}th percentile, split_ts={split_ts:.0f})")
+    del sorted_ts
+
+    max_items = args.max_seq_len // n_layers
+    n_users = len(starts)
+    print(f"  Users: {n_users:,}, max_items_per_user={max_items}")
+
+    # ── Step 4: Parallel sequence building ────────────────────────────────────
+    n_workers = min(args.n_workers, os.cpu_count() or 1, n_users)
+    print(f"\nStep 4: Building sequences ({n_workers} workers)")
+
+    user_chunks = np.array_split(np.arange(n_users), n_workers)
+    chunk_args = [
+        (chunk.tolist(), starts, ends,
+         iid_idx_s, ts_s, actions_s,
+         token_matrix, n_layers,
+         split_ts, max_items,
+         args.shift_features, args.action_l2_only)
+        for chunk in user_chunks
+    ]
+
+    t_seq = time.time()
+    with multiprocessing.Pool(n_workers) as pool:
+        results = pool.map(_process_chunk, chunk_args)
+    print(f"  Pool.map done in {time.time() - t_seq:.1f}s")
+
+    # Flatten results; resolve eval_idx → original iid strings
+    # iid_idx_s maps position → token_matrix row; we need reverse: row → iid string
+    # Rebuild idx_to_cid from iids_s (original string array, same order as iid_idx_s)
+    # Use unique iid_idx values to reconstruct — faster: build once from iids_s
+    idx_to_cid = {}
+    for cid_str, idx in zip(iids_s, iid_idx_s):
+        if idx not in idx_to_cid:
+            idx_to_cid[int(idx)] = cid_str
+    del iids_s, iid_idx_s, ts_s, actions_s, token_matrix
+
+    sequences = []
+    total_truncated = 0
+    raw_items_all = []
+    n_train_only = n_eval_only = n_both = 0
+
+    for chunk_seqs, n_trunc, raw_items in results:
+        total_truncated += n_trunc
+        raw_items_all.extend(raw_items)
+        for s in chunk_seqs:
+            eval_cids = [idx_to_cid[i] for i in s['eval_idx']]
+            split_item_idx = s['split_token_pos'] // n_layers
+            n_seq = (len(s['flat']) // n_layers)
+            if split_item_idx == n_seq:
+                n_train_only += 1
+            elif split_item_idx == 0:
+                n_eval_only += 1
+            else:
+                n_both += 1
+            sequences.append({
+                'tokens':        s['flat'],
+                'split_pos':     s['split_token_pos'],
+                'eval_cids':     eval_cids,
+                'time_gaps':     s['time_gaps'],
+                'action_levels': s['action_levels'],
+                'timestamps':    s['timestamps'],
+            })
+
+    del results, idx_to_cid
+
+    total_tokens = sum(len(s['tokens']) for s in sequences)
+    avg_len = total_tokens / max(len(sequences), 1)
     n_eval_items = sum(len(s['eval_cids']) for s in sequences)
-    shard_size = n_total // args.n_shards
+    raw_arr = np.array(raw_items_all)
+    pcts = np.percentile(raw_arr, [25, 50, 75, 90, 95, 99, 99.9])
+    seq_stats = {
+        'n_users': len(raw_arr),
+        'max_items': max_items,
+        'items_per_user_mean': round(float(raw_arr.mean()), 1),
+        'items_per_user_p50': int(pcts[1]),
+        'items_per_user_p90': int(pcts[3]),
+        'items_per_user_p99': int(pcts[5]),
+        'items_per_user_max': int(raw_arr.max()),
+        'n_truncated': total_truncated,
+        'truncated_pct': round(100.0 * total_truncated / max(len(raw_arr), 1), 2),
+    }
+    print(f"  Sequences: {len(sequences):,}, {total_tokens:,} tokens, avg {avg_len:.0f} tok/seq")
+    print(f"  Items/user: mean={seq_stats['items_per_user_mean']}, "
+          f"p50={seq_stats['items_per_user_p50']}, p90={seq_stats['items_per_user_p90']}, "
+          f"p99={seq_stats['items_per_user_p99']}, max={seq_stats['items_per_user_max']}")
+    print(f"  Truncated: {total_truncated:,} ({seq_stats['truncated_pct']:.2f}%)")
+    print(f"  Split: {n_both:,} train+eval, {n_train_only:,} train-only, {n_eval_only:,} eval-only")
+    print(f"  Eval items: {n_eval_items:,}")
 
-    print(f"\nStep 4: Saving {args.n_shards} shards")
+    # ── Step 5: Save shards ────────────────────────────────────────────────────
+    n_total = len(sequences)
+    shard_size = n_total // args.n_shards
+    print(f"\nStep 5: Saving {args.n_shards} shards")
     os.makedirs(args.output_dir, exist_ok=True)
 
     for i in range(args.n_shards):
@@ -348,12 +494,11 @@ def main():
         shard_path = os.path.join(args.output_dir, f'train_shard_{i}.npz')
         save_shard(sequences[start:end], shard_path)
         file_size = os.path.getsize(shard_path) / 1e6
-        print(f"  shard {i}: {end - start:,} seqs -> {shard_path} ({file_size:.1f}MB)")
+        print(f"  shard {i}: {end - start:,} seqs → {shard_path} ({file_size:.1f}MB)")
 
-    has_neg = args.entp_weight > 0 or args.behavior_v2_path is not None
     del sequences
 
-    # ── Save metadata ──
+    # ── Step 6: Save metadata ─────────────────────────────────────────────────
     meta = {
         'n_layers': n_layers,
         'n_clusters_per_layer': n_clusters_per_layer,
@@ -365,13 +510,12 @@ def main():
         'split_ts': float(split_ts),
         'sid_cache': args.sid_cache,
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'has_neg_l0': has_neg,
-        'entp_k': args.entp_k if has_neg else 0,
+        'has_neg_l0': False,
+        'entp_k': 0,
         'min_action_level': args.min_action_level,
         'seq_stats': seq_stats,
     }
-    meta_path = os.path.join(args.output_dir, 'meta.json')
-    with open(meta_path, 'w') as f:
+    with open(out_meta, 'w') as f:
         json.dump(meta, f, indent=2)
     print(f"  meta.json saved")
 

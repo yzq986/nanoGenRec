@@ -105,10 +105,13 @@ gen_side_features['time_gaps'] = 0  # 目标 item 时间间隔未知时默认 0
 ## 训练命令
 
 ```bash
-# 预处理
+# 预处理（单进程，多 worker，不需要 torchrun）
 python run.py preprocess-ntp \
-    --sid_cache experiments/sid_cache/exp026-0.6b-14d \
-    --date_start 2026-03-18 --date_end 2026-03-31
+    --sid_cache experiments/sid_cache/exp049-0.6b-nc8192-h128 \
+    --output_dir experiments/ntp_data/exp049-0.6b-nc8192-h128 \
+    --date_start 2026-03-18 --date_end 2026-03-31 \
+    --behavior_path /mnt/workspace/gr-demo-behavior-cache \
+    --n_workers 64
 
 # 训练（torchrun 多卡）
 torchrun --nproc_per_node=8 run.py train-ntp \
