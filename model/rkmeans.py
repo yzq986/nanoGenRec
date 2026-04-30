@@ -2,7 +2,7 @@
 
 from typing import List
 
-import numpy as np
+import numpy as np  # used only in CPU fallback path (faiss.Kmeans requires numpy)
 import torch
 import torch.nn.functional as F
 
@@ -70,7 +70,7 @@ class FaissKMeansLayer:
 
             # Cluster utilization stats (GPU)
             assignments = torch.cdist(data_gpu, self.centroids, p=2).argmin(dim=1)
-            cluster_counts = torch.bincount(assignments, minlength=self.n_clusters).cpu().numpy()
+            cluster_counts = torch.bincount(assignments, minlength=self.n_clusters)
         else:
             # CPU fallback path
             data_np = data.cpu().numpy().astype(np.float32)
@@ -79,16 +79,17 @@ class FaissKMeansLayer:
             km.train(data_np)
             self.centroids = torch.tensor(km.centroids, dtype=torch.float32)
             _, assignments_np = km.index.search(data_np, 1)
-            cluster_counts = np.bincount(assignments_np.squeeze(1), minlength=self.n_clusters)
+            cluster_counts = torch.bincount(
+                torch.tensor(assignments_np.squeeze(1)), minlength=self.n_clusters)
             best_inertia = km.obj[-1]
             del km
 
-        n_used = (cluster_counts > 0).sum()
+        n_used = (cluster_counts > 0).sum().item()
         utilization = n_used / self.n_clusters
         print(f"  Final: Inertia: {best_inertia:.6f}")
         print(f"  Final: Utilization: {utilization:.1%} ({n_used}/{self.n_clusters})")
-        print(f"  Final: Cluster counts - min: {cluster_counts.min()}, "
-              f"max: {cluster_counts.max()}, mean: {cluster_counts.mean():.1f}")
+        print(f"  Final: Cluster counts - min: {cluster_counts.min().item()}, "
+              f"max: {cluster_counts.max().item()}, mean: {cluster_counts.float().mean().item():.1f}")
 
         gc.collect()
         if torch.cuda.is_available():
