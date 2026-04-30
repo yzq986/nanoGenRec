@@ -1,0 +1,60 @@
+{
+  "n_train": 1709380,
+  "n_eval": 49456,
+  "n_clusters_per_layer": [
+    4096,
+    4096,
+    4096
+  ],
+  "n_layers": 3,
+  "n_items": 10,
+  "n_params": 224484352,
+  "train_loss": 2.852799,
+  "sid_cache": "experiments/sid_cache/exp026-0.6b-14d",
+  "preprocessed_dir": "/mnt/workspace/gr-demo/experiments/ntp_data/exp044b-0.6b-14d",
+  "timestamp": "2026-04-30 11:27:46",
+  "train": {
+    "n_params": 224484352,
+    "n_active_params": 73489408,
+    "total_tokens": 132624432,
+    "total_flops": 58478945964097536,
+    "throughput_tok_per_s": 94418.3,
+    "wall_time_s": 1404.6,
+    "batch_size": 152,
+    "world_size": 8,
+    "n_batches": 1405,
+    "max_seq_len": 512
+  },
+  "eval": {
+    "ppl": 17.6408,
+    "layer_ppl": [
+      315.6257,
+      6.6418,
+      2.6635
+    ],
+    "avg_loss": 2.870217,
+    "depth_hit@10": [
+      0.2182,
+      0.2067,
+      0.2061
+    ],
+    "depth_hit@10_indep": [
+      0.2173,
+      0.8682,
+      0.9062
+    ],
+    "depth_acc_beam": [
+      0.035,
+      0.024,
+      0.023
+    ],
+    "target_sid_found_rate": 0.696,
+    "n_eval_positions": 148078,
+    "n_eval_items": 49166,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.155,
+    "item_recall@50": 0.356,
+    "item_recall@100": 0.466,
+    "item_recall@500": 0.695
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "exp048-m-2dim",
+  "model_type": "s-tier",
+  "n_params": 224484352,
+  "n_active_params": 73489408,
+  "total_tokens": 132613776,
+  "total_flops": 58474247345307648,
+  "sid_cache": "experiments/sid_cache/exp026-0.6b-14d",
+  "eval": {
+    "ppl": 17.6706,
+    "layer_ppl": [
+      317.5599,
+      6.709,
+      2.6341
+    ],
+    "avg_loss": 2.8719,
+    "depth_hit@10": [
+      0.2173,
+      0.2052,
+      0.2047
+    ],
+    "depth_hit@10_indep": [
+      0.2164,
+      0.8669,
+      0.9051
+    ],
+    "depth_acc_beam": [
+      0.032,
+      0.025,
+      0.023
+    ],
+    "target_sid_found_rate": 0.702,
+    "n_eval_positions": 148078,
+    "n_eval_items": 49166,
+    "n_recall_samples": 1000,
+    "item_recall@10": 0.151,
+    "item_recall@50": 0.341,
+    "item_recall@100": 0.455,
+    "item_recall@500": 0.701
+  }
+}
