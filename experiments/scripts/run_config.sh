@@ -5,6 +5,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Use gr conda env for GPU support (faiss-gpu, torch cu128)
+GR_ENV="/home/dev/.conda/envs/gr"
+[ -d "${GR_ENV}" ] && export PATH="${GR_ENV}/bin:${PATH}"
 cd "${REPO_ROOT}"
 
 CONFIG="${1:?Usage: $0 <config.yaml>}"

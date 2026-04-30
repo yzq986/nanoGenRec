@@ -2,7 +2,7 @@
   "current": "run_config.sh experiments/configs/exp-047.yaml",
   "log": "/tmp/exp047.log",
   "done_string": "exp047 complete",
-  "status": "pending_gpu",
-  "pid": null,
+  "status": "running",
+  "pid": 740974,
   "next_queue": []
 }
