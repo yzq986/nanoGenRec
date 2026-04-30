@@ -14,7 +14,7 @@ Tokenizer ✅ → NTP ✅ → RL 对齐 ← (当前) → 部署
 | 阶段 | SOTA | 实验 | 文档 |
 |------|------|------|------|
 | **Tokenizer** | 4096×3 binary `[2]×12`，snHR=0.095，CR=0.89% | EXP-012 | [experiments/logs/tokenizer/README.md](experiments/logs/tokenizer/README.md) |
-| **Embedding** | exp049-0.6b-nc8192-h128，CR=0.42%，Gini_d2=0.2375 | EXP-049 | ↑ |
+| **Embedding** | 0.6b: snHR=0.092，CR=0.42%；**4b: snHR=0.131**，CR=1.28%（nc=8192，snHR 是跨模型唯一可信指标） | EXP-049 | ↑ |
 | **NTP** | M-tier bare R@500=**70.2%**；L-tier SFT R@500=64.1% | EXP-043/047 | [experiments/logs/ntp/README.md](experiments/logs/ntp/README.md) |
 | **RL 对齐** | ECPO R@500=**65.7%**（S-tier 链路）；L-tier 链路待启动 | EXP-039B | [experiments/logs/rl/README.md](experiments/logs/rl/README.md) |
 

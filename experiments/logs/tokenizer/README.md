@@ -28,13 +28,26 @@ Embedding → KMeans → FSQ codebook，生成 3-token Semantic ID（SID）。
 
 ## Proxy Metrics（无需训 NTP 评估 codebook）
 
-| Metric | 含义 | 越低越好 |
-|--------|------|---------|
-| **Gini_d2** | L1+L2 prefix 分配均匀度（FORGE） | ✅ |
-| Collision Rate | 共享 SID 的 item 比例 | ✅ |
-| snHR | 语义邻居保留率（FORGE embedding HR） | ❌（越高越好）|
+| Metric | 含义 | 方向 | 度量目标 |
+|--------|------|------|---------|
+| **snHR** | 语义邻居保留率（FORGE）| 越高越好 | **embedding 语义质量**（首选）|
+| **Gini_d2** | L1+L2 prefix 分配均匀度（FORGE）| 越低越好 | tokenizer 内部结构均匀度 |
+| Collision Rate | 共享 SID 的 item 比例 | 越低越好 | tokenizer 容量利用率 |
 
-计算 Gini：`python -c "..." metrics/cluster_balance.py`（或直接用 `metrics/cluster_balance.ClusterBalanceMetric`）
+### ⚠️ 重要：snHR vs Gini_d2 的适用范围不同（EXP-049 验证）
+
+**Gini_d2 不能用于比较不同 embedding 模型的质量。**
+
+EXP-049 实测：4b embedding 的 Gini_d2（0.2530）**差于** 0.6b（0.2375），但 snHR（0.1307）却**优于** 0.6b（0.0919）42%。原因：Gini_d2 衡量的是 KMeans 层间负载均衡，4b embedding 语义聚集更强导致分布天然不均匀，KMeans 反而难以均匀切割——这是高质量 embedding 的副产品，不是缺陷。
+
+| 场景 | 用哪个 |
+|------|--------|
+| 比较不同 embedding 模型（0.6b vs 4b）| **snHR**（唯一可信指标）|
+| 比较同一 embedding 下不同 nc 配置 | Gini_d2 和 snHR 均可（两者方向一致）|
+| 快速 tokenizer 结构健康检查 | Gini_d2（无需行为数据）|
+
+计算 snHR：`python -m experiments.scripts.run_snhr`（需行为数据）
+计算 Gini：`python -c "..." metrics/cluster_balance.py`
 
 ## 实验列表
 
