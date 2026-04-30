@@ -153,8 +153,13 @@ def load_model_from_checkpoint(ckpt_path, device):
         map_location=device, weights_only=False)
     cfg = dict(ckpt['config'])
     model_type = cfg.pop('model_type', 'probe')
-    for _legacy in ('n_time_buckets', 'n_action_levels', 'parallel'):
+    for _legacy in ('n_time_buckets', 'n_action_levels', 'parallel', 'use_rope'):
         cfg.pop(_legacy, None)
+
+    # Deserialize rope_dims dicts → RopeDimSpec objects
+    if 'rope_dims' in cfg and cfg['rope_dims'] is not None:
+        from ntp.model import RopeDimSpec
+        cfg['rope_dims'] = [RopeDimSpec(**d) for d in cfg['rope_dims']]
 
     if model_type == 's-tier':
         model = NTPModel(**cfg)
