@@ -23,57 +23,73 @@ class FaissKMeansLayer:
         self.centroids = None  # torch.Tensor on cuda
 
     def train(self, data: torch.Tensor, niter: int = 25, nredo: int = 1, verbose: bool = True):
-        """Train KMeans on data using FAISS.
+        """Train KMeans on data using FAISS DatasetAssignGPU (fully GPU, no CPU transfer).
 
-        Args:
-            data: (N, D) torch tensor
-            niter: number of Lloyd's iterations
-            nredo: number of restarts, keep best
-            verbose: print progress
+        Uses faiss.contrib.torch.clustering.DatasetAssignGPU so data never leaves GPU.
+        nredo is handled manually: run nredo times with different seeds, keep best inertia.
+        Falls back to CPU numpy path when gpu=False.
         """
         import faiss
         import gc
+        from faiss.contrib.clustering import kmeans as _kmeans_contrib
 
-        # faiss.Kmeans.train() only accepts numpy — required CPU copy, not avoidable
-        data_np = data.cpu().numpy().astype(np.float32)
-
-        use_gpu = self.gpu
-        if use_gpu and faiss.get_num_gpus() == 0:
+        if faiss.get_num_gpus() == 0 and self.gpu:
             raise RuntimeError(
                 "[rkmeans] gpu=True but faiss.get_num_gpus()==0. "
                 "Check LD_LIBRARY_PATH includes /usr/local/nvidia/lib64."
             )
-        kmeans = faiss.Kmeans(
-            self.n_features,
-            self.n_clusters,
-            niter=niter,
-            nredo=nredo,
-            verbose=verbose,
-            gpu=use_gpu,
-            seed=42,
-        )
-        kmeans.train(data_np)
 
-        self.centroids = torch.tensor(kmeans.centroids, dtype=torch.float32)
-        if torch.cuda.is_available():
-            self.centroids = self.centroids.cuda()
+        if self.gpu:
+            # Fully GPU path — DatasetAssignGPU, no CPU transfer
+            import faiss.contrib.torch_utils  # noqa: F401
+            from faiss.contrib.torch.clustering import DatasetAssignGPU
 
-        # Compute cluster assignment stats
-        _, assignments = kmeans.index.search(data_np, 1)
-        assignments = assignments.squeeze(1)
-        cluster_counts = np.bincount(assignments, minlength=self.n_clusters)
+            data_gpu = data.cuda() if not data.is_cuda else data
+            res = faiss.StandardGpuResources()
+            dataset = DatasetAssignGPU(res, data_gpu)
+
+            best_centroids = None
+            best_inertia = float('inf')
+            for redo in range(nredo):
+                centroids = _kmeans_contrib(
+                    k=self.n_clusters, data=dataset,
+                    niter=niter, seed=42 + redo, verbose=verbose,
+                )
+                # Compute inertia: mean squared distance to nearest centroid
+                dists = torch.cdist(data_gpu, centroids, p=2) ** 2
+                inertia = dists.min(dim=1).values.sum().item()
+                if verbose or nredo > 1:
+                    print(f"  Outer iteration {redo + 1} / {nredo}: inertia={inertia:.2f}")
+                if inertia < best_inertia:
+                    best_inertia = inertia
+                    best_centroids = centroids
+                    if verbose and nredo > 1:
+                        print("  Objective improved: keep new clusters")
+
+            self.centroids = best_centroids  # GPU tensor
+
+            # Cluster utilization stats (GPU)
+            assignments = torch.cdist(data_gpu, self.centroids, p=2).argmin(dim=1)
+            cluster_counts = torch.bincount(assignments, minlength=self.n_clusters).cpu().numpy()
+        else:
+            # CPU fallback path
+            data_np = data.cpu().numpy().astype(np.float32)
+            km = faiss.Kmeans(self.n_features, self.n_clusters,
+                              niter=niter, nredo=nredo, verbose=verbose, gpu=False, seed=42)
+            km.train(data_np)
+            self.centroids = torch.tensor(km.centroids, dtype=torch.float32)
+            _, assignments_np = km.index.search(data_np, 1)
+            cluster_counts = np.bincount(assignments_np.squeeze(1), minlength=self.n_clusters)
+            best_inertia = km.obj[-1]
+            del km
 
         n_used = (cluster_counts > 0).sum()
         utilization = n_used / self.n_clusters
-        inertia = kmeans.obj[-1] if len(kmeans.obj) > 0 else float('nan')
-
-        print(f"  Final: Inertia: {inertia:.6f}")
+        print(f"  Final: Inertia: {best_inertia:.6f}")
         print(f"  Final: Utilization: {utilization:.1%} ({n_used}/{self.n_clusters})")
         print(f"  Final: Cluster counts - min: {cluster_counts.min()}, "
               f"max: {cluster_counts.max()}, mean: {cluster_counts.mean():.1f}")
 
-        # Free FAISS GPU resources
-        del kmeans
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
