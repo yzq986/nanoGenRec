@@ -233,6 +233,124 @@ def build_eval_cmd(name: str, n_gpus: int, n_recall: int = 1000) -> list[str]:
     ]
 
 
+# ── Tokenizer (preprocess-sid) support ──────────────────────────────────────
+
+TOKENIZER_HASH_EXCLUDE = {"behavior_path", "output_dir", "date_start", "date_end", "seed"}
+
+def build_preprocess_sid_cmd(resolved: dict, name: str) -> list[str]:
+    output_dir = str(SID_CACHE_ROOT / name)
+    behavior_cache = "/mnt/workspace/gr-demo-behavior-cache"
+    cmd = [
+        "python", "run.py", "preprocess-sid",
+        "--model",      resolved["model"],
+        "--output_dir", output_dir,
+        "--behavior_path", resolved.get("behavior_path", behavior_cache),
+        "--date_start", resolved["date_start"],
+        "--date_end",   resolved["date_end"],
+        "--num_clusters", str(resolved["num_clusters"]),
+        "--fsq_levels",   resolved["fsq_levels"],
+        "--fsq_mlp_hidden", str(resolved["fsq_mlp_hidden"]),
+        "--fsq_projection", resolved.get("fsq_projection", "mlp"),
+    ]
+    if resolved.get("fsq_epochs"):
+        cmd += ["--fsq_epochs", str(resolved["fsq_epochs"])]
+    return cmd
+
+
+def compute_gini(counts):
+    import numpy as np
+    x = np.sort(np.array(counts, dtype=np.float64))
+    n = len(x)
+    total = x.sum()
+    if total == 0 or n == 0:
+        return 0.0
+    idx = np.arange(1, n + 1, dtype=np.float64)
+    return float((2 * (idx * x).sum() / (n * total)) - (n + 1) / n)
+
+
+def eval_sid_metrics(sid_dir: Path) -> dict:
+    """Compute CR and Gini_d1/d2/d3 from a SID cache directory."""
+    import numpy as np
+    from collections import Counter
+    sid_file = sid_dir / "semantic_ids.npy"
+    if not sid_file.exists():
+        return {}
+    data = np.load(sid_file, allow_pickle=True).item()
+    sids = list(data.values())
+    n_items = len(sids)
+    parts = [s.split("_") for s in sids]
+    n_unique = len(Counter(sids))
+    collision = 1.0 - n_unique / n_items
+    ginis = []
+    for depth in range(1, len(parts[0]) + 1):
+        prefixes = ["_".join(p[:depth]) for p in parts]
+        counts = list(Counter(prefixes).values())
+        ginis.append(compute_gini(counts))
+    return {
+        "n_items": n_items,
+        "n_unique_sids": n_unique,
+        "collision_rate": collision,
+        "gini_d1": ginis[0] if len(ginis) > 0 else None,
+        "gini_d2": ginis[1] if len(ginis) > 1 else None,
+        "gini_d3": ginis[2] if len(ginis) > 2 else None,
+    }
+
+
+def run_one_tokenizer(name: str, resolved: dict, force: bool) -> dict:
+    """Run preprocess-sid + compute Gini/CR. Returns results dict."""
+    h = config_hash(resolved)
+    registry = load_registry()
+
+    print(f"\n{'='*60}")
+    print(f"  Variant: {name}  (hash={h})")
+
+    similar = find_similar(registry, resolved)
+    if similar:
+        print_similar(similar)
+
+    exact = [s for s in similar if s["n_diffs"] == 0]
+    if exact and not force:
+        cr = exact[0]["results"].get("collision_rate")
+        print(f"\n  !! IDENTICAL config already in registry: {exact[0]['name']}")
+        if cr is not None:
+            print(f"     CR={cr:.2%} — skipping. Use --force to re-run.")
+        else:
+            print(f"     No results yet — skipping. Use --force to re-run.")
+        return exact[0]["results"]
+
+    sid_dir = SID_CACHE_ROOT / name
+    if (sid_dir / "config.json").exists() and not force:
+        print(f"\n  SID cache found, skipping preprocess.")
+    else:
+        register_experiment(name, resolved, h)
+        cmd = build_preprocess_sid_cmd(resolved, name)
+        print(f"\n  CMD: {' '.join(cmd)}\n")
+        r = subprocess.run(cmd, cwd=str(REPO_ROOT))
+        if r.returncode != 0:
+            print(f"\n  ERROR: preprocess-sid failed (exit {r.returncode})"); sys.exit(r.returncode)
+
+    results = eval_sid_metrics(sid_dir)
+    if results:
+        update_results(h, results)
+        print(f"  CR={results['collision_rate']:.2%}  Gini_d2={results.get('gini_d2', '?'):.4f}  n_items={results['n_items']:,}")
+    return results
+
+
+def print_tokenizer_summary(variant_results: list[tuple[str, dict]]):
+    print(f"\n{'='*75}")
+    print(f"  Tokenizer Results Summary")
+    print(f"  {'Name':<35} {'N_items':>9} {'CR':>8} {'Gini_d1':>8} {'Gini_d2':>8} {'Gini_d3':>8}")
+    print(f"  {'-'*35} {'-'*9} {'-'*8} {'-'*8} {'-'*8} {'-'*8}")
+    for name, res in variant_results:
+        def fmt(v): return f"{v:.4f}" if isinstance(v, float) else "  n/a"
+        n = res.get("n_items", "?")
+        n_s = f"{n:,}" if isinstance(n, int) else str(n)
+        cr = res.get("collision_rate")
+        cr_s = f"{cr:.2%}" if isinstance(cr, float) else "  n/a"
+        print(f"  {name:<35} {n_s:>9} {cr_s:>8} {fmt(res.get('gini_d1')):>8} "
+              f"{fmt(res.get('gini_d2')):>8} {fmt(res.get('gini_d3')):>8}")
+
+
 def run_one(name: str, resolved: dict, n_gpus: int, force: bool, no_smoke: bool) -> dict:
     """Train + eval one variant. Returns results dict."""
     h = config_hash(resolved)
@@ -334,7 +452,9 @@ def main():
         if not variants:
             print(f"ERROR: variant '{args.only}' not found"); sys.exit(1)
 
-    print(f"\nExperiment: {exp_name}  ({len(variants)} variant(s))")
+    # phase may come from base YAML — read from first resolved variant
+    phase = raw.get("phase") or (variants[0][1].get("phase") if variants else None) or "ntp"
+    print(f"\nExperiment: {exp_name}  ({len(variants)} variant(s))  phase={phase}")
 
     if args.check:
         registry = load_registry()
@@ -346,26 +466,36 @@ def main():
                 print_similar(similar)
         sys.exit(0)
 
-    n_gpus = args.n_gpus
-    if n_gpus is None:
-        try:
-            import torch
-            n_gpus = max(1, torch.cuda.device_count())
-        except Exception:
-            n_gpus = 1
-    print(f"  GPUs: {n_gpus}")
-
     variant_results = []
-    for name, resolved in variants:
-        results = run_one(name, resolved, n_gpus, force=args.force, no_smoke=args.no_smoke)
-        variant_results.append((name, results))
 
-    print_summary(variant_results)
+    if phase == "tokenizer":
+        for name, resolved in variants:
+            results = run_one_tokenizer(name, resolved, force=args.force)
+            variant_results.append((name, results))
+        print_tokenizer_summary(variant_results)
+    else:
+        n_gpus = args.n_gpus
+        if n_gpus is None:
+            try:
+                import torch
+                n_gpus = max(1, torch.cuda.device_count())
+            except Exception:
+                n_gpus = 1
+        print(f"  GPUs: {n_gpus}")
+
+        for name, resolved in variants:
+            results = run_one(name, resolved, n_gpus, force=args.force, no_smoke=args.no_smoke)
+            variant_results.append((name, results))
+        print_summary(variant_results)
 
     if args.commit:
         subprocess.run(["git", "add", "experiments/"], cwd=str(REPO_ROOT))
-        r500s = [f"{r.get('item_recall@500', 0):.1%}" for _, r in variant_results if r]
-        msg = f"{exp_name} complete: {', '.join(r500s)}"
+        if phase == "tokenizer":
+            crs = [f"CR={r.get('collision_rate', 0):.2%}" for _, r in variant_results if r]
+            msg = f"{exp_name} complete: {', '.join(crs)}"
+        else:
+            r500s = [f"{r.get('item_recall@500', 0):.1%}" for _, r in variant_results if r]
+            msg = f"{exp_name} complete: {', '.join(r500s)}"
         subprocess.run(["git", "commit", "-m", msg,
                         "--trailer", "Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"],
                        cwd=str(REPO_ROOT))
