@@ -109,7 +109,6 @@ which is globally optimal but computationally infeasible under
 industrial time constraints. As a result, most existing reranking
 arXiv:2604.05314v1  [cs.IR]  7 Apr 2026
 
-
 Conference’17, July 2017, Washington, DC, USA
 Trovato and Tobin, et al.
 Pos 1
@@ -250,7 +249,6 @@ Generator-based methods directly produce a final list by captur-
 ing mutual influences among items. Also referred to as one-stage
 methods [27, 29], these approaches originally relied on behavioral
 
-
 Next-Scale Generative Reranking: A Tree-based Generative Rerank Method at Meituan
 Conference’17, July 2017, Washington, DC, USA
 logs for training. For example, Seq2Slate [4] employs a pointer
@@ -381,7 +379,6 @@ L𝑠= {x𝑠
 (6)
 Subsequently, we extract multi-scale context information of L𝑠.
 For any position 𝑡∈[𝑚], its multi-scale context is calculated by
-
 
 Conference’17, July 2017, Washington, DC, USA
 Trovato and Tobin, et al.
@@ -600,7 +597,6 @@ x𝑠
 Item-to-Tree Attention Scoring and Binary Split. We first generate
 the anchor vector ˜𝑔(𝑘) by aggregating the refined representations
 
-
 Next-Scale Generative Reranking: A Tree-based Generative Rerank Method at Meituan
 Conference’17, July 2017, Washington, DC, USA
 through self-attention, capturing a global set-level view of the cur-
@@ -794,7 +790,6 @@ To validate the superior performance of NSGR, we conducted ex-
 tensive offline experiments on the Meituan dataset and verified the
 superiority of NSGR in online A/B tests. In this section, we first
 
-
 Conference’17, July 2017, Washington, DC, USA
 Trovato and Tobin, et al.
 introduce the experimental setup, including the dataset and base-
@@ -917,7 +912,6 @@ generator-based methods(e.g. PRM), evaluator-generator methods
 also improve the CTR prediction because they evaluate more can-
 didate lists. 3. Our proposed NSGR brings 0.0045/0.0153 absolute
 AUC and 0.0047/0.0160 absolute GAUC on Taobao/Meituan dataset,
-
 
 Next-Scale Generative Reranking: A Tree-based Generative Rerank Method at Meituan
 Conference’17, July 2017, Washington, DC, USA
@@ -1122,7 +1116,6 @@ analysis reveals three fundamental characteristics: 1. Each rank-
 ing position predominantly retains its originally top-ranked item,
 demonstrating persistent positional inertia. 2. Allocation probabili-
 ties exhibit a consistent decay pattern as positional displacement
-
 
 Conference’17, July 2017, Washington, DC, USA
 Trovato and Tobin, et al.
@@ -1451,7 +1444,6 @@ model to reduce calculations and increase link consistency.
 We also conducted a rigorous A/B test for eight weeks, from
 August 2025 to October 2025. Specifically, we assigned NSGR with
 
-
 Next-Scale Generative Reranking: A Tree-based Generative Rerank Method at Meituan
 Conference’17, July 2017, Washington, DC, USA
 NSG
@@ -1609,7 +1601,6 @@ sequential behavior data for click-through rate prediction. In Proceedings of th
 [26] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
 Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
 2023. Recommender systems with generative retrieval. Advances in Neural
-
 
 Conference’17, July 2017, Washington, DC, USA
 Trovato and Tobin, et al.

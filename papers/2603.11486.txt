@@ -92,7 +92,6 @@ ther refine this paradigm through architectural scal-
 1
 arXiv:2603.11486v1  [cs.IR]  12 Mar 2026
 
-
 ing and training improvements (Zhou et al., 2025c;
 Liu et al., 2025; Zhou et al., 2025a). Compared
 to classical recommendation architectures, these
@@ -197,7 +196,6 @@ feature interaction modules for prediction (Naumov
 et al., 2019; Lee and Lee, 2019; Batmaz et al., 2019;
 Ivchenko et al., 2022). While effective in practice,
 2
-
 
 the multi-stage design inherently constrains down-
 stream models by the capacity and recall limits of
@@ -311,7 +309,6 @@ mean variance of weights is about 0.1, and extreme
 values is about 2.0. While activation maximum
 3
 
-
 Variance
 AbsMax
 AbsP99
@@ -419,7 +416,6 @@ block-wise quantization, using a 1 × 128 granu-
 larity for activations along the last dimension and
 4
 
-
 Activation
 (FP16)
 Weights
@@ -521,7 +517,6 @@ mized inference stack enables substantial latency
 reduction and throughput improvement under pro-
 duction serving configurations.
 5
-
 
 5
 Experiments
@@ -665,7 +660,6 @@ promising recommendation effectiveness in real-
 world settings.
 6
 
-
 5.4
 Analysis and Discussion
 The experimental results support two main ob-
@@ -769,7 +763,6 @@ Dan Alistarh. 2022. Gptq: Accurate post-training
 quantization for generative pre-trained transformers.
 arXiv preprint arXiv:2210.17323.
 7
-
 
 Dmytro Ivchenko, Dennis Van Der Staay, Colin Taylor,
 Xing Liu, Will Feng, Rahul Kindi, Anirudh Sudar-

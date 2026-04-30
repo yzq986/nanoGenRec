@@ -88,7 +88,6 @@ ing efficiently while preserving prior knowledge. SPOT
 1
 arXiv:2603.01683v1  [cs.CL]  2 Mar 2026
 
-
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 Step 1: Understand the 
 question: What percentage 
@@ -204,7 +203,6 @@ acle to perform surgical edits, which can be either a human
 being or a stronger teacher model. The Oracle is provided
 2
 
-
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 with y−and optionally the ground truth, then instructed to
 only modify incorrect reasoning steps, while maintaining
@@ -265,7 +263,7 @@ rθ(x, y) = β log πθ(y|x)
 DPO maximizes the margin between the chosen response
 y+ and the rejected response y−:
 LDPO = −Ex,y+,y−∼D[log σ
-rθ(x, y+)−rθ(x, y−)
+ rθ(x, y+)−rθ(x, y−)
 
 ] (4)
 Reward-SFT
@@ -276,7 +274,7 @@ mizes the likelihood of tokens directly, this objective simply
 maximizes the probability of the chosen response y+ being
 classified as “correct” under the implicit reward formulation:
 LRW-SFT = −Ex,y+∼D[log σ
-rθ(x, y+)
+ rθ(x, y+)
 
 ]
 (5)
@@ -318,7 +316,6 @@ distinction between these two objectives lies entirely in
 the dynamic scaling coefficient of the gradient.
 3
 
-
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 The gradient for SFT with respect to the model parameters
 θ is:
@@ -331,7 +328,7 @@ rθ from Equation (3):
 ∂r
 ∇θrθ(x, y+)
 = −
-1−σ(rθ(x, y+))
+ 1−σ(rθ(x, y+))
 
 ·β∇θ log πθ(y+|x) (7)
 Comparing Equation (6) and Equation (7) reveals a fun-
@@ -431,7 +428,6 @@ cific failure modes hindering this goal: the “pull-up” effect
 inherent in positive-only training (e.g., SFT, Reward-SFT)
 and the inadequacy of relative ranking (DPO) for reasoning
 4
-
 
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 0
@@ -544,15 +540,14 @@ reward-shift δ to the BCE loss:
 LSPoT-BCO = −Ex,y+,y−∼D
 
 log σ
-rθ(x, y+)−δ
+ rθ(x, y+)−δ
 
 +
 log σ
-−
-rθ(x, y−)−δ
+ −
+ rθ(x, y−)−δ
   (10)
 5
-
 
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 where δ = 1
@@ -655,7 +650,6 @@ could inherently generate, to ensure a fair comparison with
 Rejection sampling Fine-Tuning (RFT). All methods are
 compared using the same amount of training data.
 6
-
 
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 Table 1. Main results for in-domain reasoning, OOD reasoning, and general instruction following (OOD non-reasoning). We
@@ -885,7 +879,6 @@ reasoning capabilities. This suggests that preference opti-
 mization without fine-grained supervision, is insufficient for
 7
 
-
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 Table 2. Comparison on loss objectives. We find that SPoT-BCO yields the best overall results. SPoT-BCE is more competitive on
 keeping general abilities. DPO mitigates catastrophic forgetting but shows no clear improvements for in-domain reasoning. Although
@@ -1105,7 +1098,6 @@ show promise for domains such as code generation, agentic
 planning, and reducing hallucinations.
 8
 
-
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 Acknowledgements
 This work is supported by Hong Kong Research Grant Coun-
@@ -1201,7 +1193,6 @@ optimization with a reference-free reward. In NeurIPS,
 2024.
 9
 
-
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 Mukherjee, S., Yuan, L., Hakkani-Tur, D., and Peng, H.
 Reinforcement learning finetunes small subnetworks in
@@ -1269,7 +1260,6 @@ evaluation for large language models. arXiv preprint
 arXiv:2311.07911, 2023.
 10
 
-
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 A. Extended Related Work
 Catastrophic Forgetting
@@ -1321,7 +1311,6 @@ systematically tune the hyperparameters for the baselines. Regarding learning ra
 and 2 × 10−7 for Llama3.1-8B-Instruct. For SFT, RFT, and SFT+, we use learning rates of 5 × 10−6 (Qwen3-8B) and
 1 × 10−6 (Llama3.1-8B-Instruct). The batch size is set to 32 for all the methods.
 11
-
 
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 D. Change Ratio of Rectification
@@ -1379,7 +1368,6 @@ Ground truth is computed using a perfect solver within GAMEBoT. We parse the mod
 extract the final answers and verify them against the game engine’s ground truth.
 12
 
-
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 F. Rectification Prompt
 Rectification Prompt Without Ground Truth
@@ -1412,12 +1400,10 @@ G. Rectification Samples
 Figure 6. Random Rectification Example 1. Left: answer from Qwen3-8B; Right: rectification by Gemini 2.5 Pro.
 13
 
-
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 Figure 7. Random Rectification Example 2. Left: answer from Qwen3-8B; Right: rectification by Gemini 2.5 Pro.
 Figure 8. Random Rectification Example 3. Left: answer from Qwen3-8B; Right: rectification by Gemini 2.5 Pro.
 14
-
 
 Surgical Post-Training: Cutting Errors, Keeping Knowledge
 Figure 9. Random Rectification Example 4. Left: answer from Qwen3-8B; Right: rectification by Gemini 2.5 Pro.

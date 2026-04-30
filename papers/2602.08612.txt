@@ -95,7 +95,6 @@ a single framework. On the other hand, Transformers are built
 around attention and FFN, whose computation is dominated by
 arXiv:2602.08612v1  [cs.IR]  9 Feb 2026
 
-
 Conference’17, July 2017, Washington, DC, USA
 Kuaishou Reco et al.
 Follow
@@ -214,7 +213,6 @@ Kuaishou’s live-streaming recommendation system, and large-
 scale online A/B tests show significant and consistent improve-
 ments on core business metrics, verifying its practical value in
 real industrial scenarios.
-
 
 OneLive
 Conference’17, July 2017, Washington, DC, USA
@@ -372,7 +370,6 @@ Dynamic Content Understanding. To model cross-modal live-
 streaming content, we employ a MLLM to generate representation
 embeddings. Given the trade-off between contextual integrity and
 
-
 Conference’17, July 2017, Washington, DC, USA
 Kuaishou Reco et al.
 Table 1: The Code Utilization Rate (UR) and Collision Rate (CR) under diverse codebook settings. The embeddings are collected
@@ -528,7 +525,6 @@ get streamer SID (e.g., 3×500 ≫3, where 𝑛= 3,𝑙= 500 denote the
 number and per-sequence length). As a result, vast majority of com-
 putation goes to the encoder stage, wasted on redundant or noisy
 interactions in long sequences rather than target SID generation.
-
 
 OneLive
 Conference’17, July 2017, Washington, DC, USA
@@ -688,7 +684,6 @@ LMTP𝑘:= −log 𝑝(𝑞𝑘:2|[BOS],𝑞<2, 𝐸),
 where 𝑤𝑘is smaller for subsequent MTP modules than for the
 main-decoder.
 
-
 Conference’17, July 2017, Washington, DC, USA
 Kuaishou Reco et al.
 0
@@ -826,7 +821,6 @@ std(𝑟)
 Subsequently, we perform policy optimization:
 • DPO: We choose the authors with highest advantage as the posi-
 tive sample 𝑜𝑝𝑜𝑠, and the lowest one as the negative sample 𝑜𝑛𝑒𝑔.
-
 
 OneLive
 Conference’17, July 2017, Washington, DC, USA
@@ -1041,7 +1035,6 @@ generalization during inference.
 • Architecture: Results of architecture show that, under similar
 parameter quantity, Decoder-Only allocates more computation
 
-
 Conference’17, July 2017, Washington, DC, USA
 Kuaishou Reco et al.
 Table 4: The comparison of QPS improvement and computa-
@@ -1226,7 +1219,6 @@ achieve stable training and optimized inference through Sequential
 MTP and QK normalization, and align personalized preferences via
 multi-objective reinforcement learning. Extensive offline and online
 
-
 OneLive
 Conference’17, July 2017, Washington, DC, USA
 experiments demonstrate the effectiveness of OneLive. Now One-
@@ -1383,7 +1375,6 @@ Liu, and Aixin Sun. 2025. OneTrans: Unified Feature Interaction and Sequence
 Modeling with One Transformer in Industrial Recommender. arXiv preprint
 arXiv:2510.26104 (2025).
 
-
 Conference’17, July 2017, Washington, DC, USA
 Kuaishou Reco et al.
 [40] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
@@ -1507,7 +1498,6 @@ duction experiment, while even worse with SID Codes for capturing
 instant rather than synthesized content) for subsequent prediction,
 which hinders the model’s ability to distribute dynamically from
 such coarse-gained and static representations. This highlights and
-
 
 OneLive
 Conference’17, July 2017, Washington, DC, USA
@@ -1647,7 +1637,6 @@ ACC@𝑎𝑙𝑙= 1
 𝑖=1
 I( ˆ𝑞𝑖= 𝑞𝑖),
 (33)
-
 
 Conference’17, July 2017, Washington, DC, USA
 Kuaishou Reco et al.

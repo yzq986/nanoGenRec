@@ -105,7 +105,6 @@ enjoyed), requiring sensitivity to distant yet relevant history.
 ten aligns with time-of-day/day-of-week/season (e.g., party
 arXiv:2510.20455v1  [cs.IR]  23 Oct 2025
 
-
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Wei et al.
 Figure 1: Illustration of typical user behavior sequence. Sev-
@@ -215,7 +214,6 @@ Preliminaries
 Rotary Position Embeddings (RoPE)
 Given input sequence embeddings 𝑋∈R𝑇×𝑑model (with 𝑇time
 steps and model width 𝑑model), Multi-Head Attention (MHA) [22]
-
 
 Rotate Both Ways: Time-and-Order RoPE for Generative Recommendation
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
@@ -435,7 +433,6 @@ the units of 𝜏(e.g., seconds or days), set
 𝜆max
 ,
 
-
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Wei et al.
 and log-space between them: 𝜔𝑡
@@ -574,7 +571,6 @@ plane, where ( ˜𝜔𝑝
 𝑘) governs the plane’s sensitivity to order vs.
 time.
 
-
 Rotate Both Ways: Time-and-Order RoPE for Generative Recommendation
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 (a) Index only
@@ -691,7 +687,6 @@ Discussion: Destructive interference. When the gaps disagree
 𝑘| is moderate), the cosine product
 is attenuated while the interference (sine) term grows, driving
 cos(Δ𝜃𝑖𝑗,𝑘) toward zero or negative values: a large time-induced
-
 
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Wei et al.
@@ -876,7 +871,6 @@ an online gaming platform, which consists of tens of millions
 of users and their interations with content on this platform
 over one year. This dataset presents more challenges from
 
-
 Rotate Both Ways: Time-and-Order RoPE for Generative Recommendation
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Aspect
@@ -1020,7 +1014,6 @@ ing full shuffle and multi-epoch training. We use a learning rate of
 0.001, batch size of 128 and dropout ratio of 0.2. For proprietary
 dataset, the maximum sequence length is set to 1024.
 
-
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Wei et al.
 5.2
@@ -1108,7 +1101,6 @@ in the angle/frequency domain. With this unified view, we discuss
 expressivity–stability trade-offs and how this framework provides
 principled knobs for frequency capacity allocation. To instantiate
 the framework, three practical designs are derived and presented: (i)
-
 
 Rotate Both Ways: Time-and-Order RoPE for Generative Recommendation
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
@@ -1282,7 +1274,6 @@ outperforms absolute embeddings and relative-bias baselines. Our
 findings demonstrate the potential of TO-RoPE as an effective build-
 ing block for modeling user behavior sequence in recommendation
 systems.
-
 
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Wei et al.

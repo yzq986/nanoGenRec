@@ -103,7 +103,6 @@ ing sequence length short for efficiency. A growing line of work
 so that the action at step 𝑡can attend to its same-step item I𝑡. This
 arXiv:2510.16804v1  [cs.IR]  19 Oct 2025
 
-
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Wei et al.
 design captures (ii) causal direction “action given item” but it dou-
@@ -243,7 +242,6 @@ The scoring task (or referred to as ranking in some existing work
 𝑝(𝑎𝑡+1 | 𝑖𝑡+1, history) or E[𝑎𝑡+1 | 𝑖𝑡+1, history], where 𝑎can be
 watch time, like, purchase value, playtime, etc. Scoring operates
 after retrieval (in industrial setting the retrieval stage typically
-
 
 The Layout Is the Model: On Action-Item Coupling in Generative Recommendation
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
@@ -416,7 +414,6 @@ hidden state to predict both 𝑖𝑡+1 and 𝑎𝑡+1 from inputs like (𝑖�
 (𝑖𝑡+1,𝑎𝑡+1), one might add conditioning on the item as a patch. This
 can be done as late fusion between the target item embedding
 and the autoregressive model’s last-layer hidden state. [7] employs
-
 
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Wei et al.
@@ -594,7 +591,6 @@ where ℎ(𝐼)
 𝑡−1 is the retrieved item-centric vector and the fusion 𝑓is
 realized by the MLP and short-range attention in transformer layers.
 
-
 The Layout Is the Model: On Action-Item Coupling in Generative Recommendation
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 This fusion creates a compact joint code of “what was shown” and
@@ -699,7 +695,6 @@ block-causal mask:
 • history tokens use standard causal visibility;
 • each candidate token attends to all history/itself and no other
 candidates.
-
 
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Wei et al.
@@ -837,7 +832,6 @@ tens of thousands of items, over a period of more than one
 year. We use the last day of data for evaluation. For scoring
 task, we select one duration related action and one purchase
 related action.
-
 
 The Layout Is the Model: On Action-Item Coupling in Generative Recommendation
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
@@ -979,7 +973,6 @@ the industry standard interleaved approach. Results can be seen in
 Table 4. Our proposed LAC approach tend to achieve overall decent
 tradeoff in multi-task scoring setting, compared to the interleaved
 approach.
-
 
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Wei et al.
@@ -1154,7 +1147,6 @@ Question. How do Interleaved and Non-interleaved layouts dif-
 fer in training efficiency under equal hardware and comparable
 model/data settings?
 
-
 The Layout Is the Model: On Action-Item Coupling in Generative Recommendation
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Result. We compare the training time the proposed non-interleaved
@@ -1193,7 +1185,6 @@ large-scale proprietary data show that LAC achieves superior ac-
 curacy–efficiency trade-offs, matching or surpassing interleaved
 baselines while reducing compute, and outperforming late-fusion
 alternatives.
-
 
 Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
 Wei et al.

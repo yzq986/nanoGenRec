@@ -106,7 +106,6 @@ are much less frequent than impressions and clicks, they directly
 determine key business metrics such as revenue and orders [2, 26].
 arXiv:2603.28124v1  [cs.IR]  30 Mar 2026
 
-
 Acronym ’XX, June 03–05, 2018, Woodstock, NY
 Trovato et al.
 ...
@@ -271,7 +270,6 @@ iors in user interaction histories. Concretely, RCPM implements
 a reverse curriculum as a one-shot decoder-side prefix by tracing
 backward from the conversion target. Rather than simply selecting
 the most recent actions, it employs a pay-conditioned user query
-
 
 RCLRec: Reverse Curriculum Learning for Modeling Sparse Conversions in Generative Recommendation
 Acronym ’XX, June 03–05, 2018, Woodstock, NY
@@ -442,7 +440,6 @@ log𝑝𝜃
  yℓ| 𝑆𝑢, epay, y<ℓ ,
 y = [Gprefix; zpay],
 (6)
-
 
 Acronym ’XX, June 03–05, 2018, Woodstock, NY
 Trovato et al.
@@ -660,7 +657,6 @@ suggesting that a small number of carefully selected interactions
 already capture most of the conversion-relevant context and that
 longer prefixes mainly introduce noise.
 
-
 RCLRec: Reverse Curriculum Learning for Modeling Sparse Conversions in Generative Recommendation
 Acronym ’XX, June 03–05, 2018, Woodstock, NY
 Table 2: Ablation results on the industrial dataset.
@@ -821,7 +817,6 @@ Trillion-parameter sequential transducers for generative recommendations. arXiv
 preprint arXiv:2402.17152 (2024).
 [26] Yukun Zheng, Jiang Bian, Guanghao Meng, Chao Zhang, Honggang Wang,
 Zhixuan Zhang, Sen Li, Tao Zhuang, Qingwen Liu, and Xiaoyi Zeng. 2022.
-
 
 Acronym ’XX, June 03–05, 2018, Woodstock, NY
 Trovato et al.

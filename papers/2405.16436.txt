@@ -72,7 +72,6 @@ Generalization to New Prompt Distributions
 1
 arXiv:2405.16436v3  [cs.LG]  4 Dec 2024
 
-
 6
 Experiments
 13
@@ -153,7 +152,6 @@ et al., 2024). We illustrate such an issue inherent to overoptimization in Figur
 In this work, we propose a new RLHF algorithm to mitigate reward overoptimization. From a high level,
 our theoretical algorithm seeks the best LLM for an adversarially chosen reward model that minimizes the
 2
-
 
 desired  
 responses
@@ -251,7 +249,6 @@ minimax objective, which is further reduced to a single minimization problem for
 inner problem adopts a closed form solution. Inspired by recent RLHF research that uses reward-model-free
 3
 
-
 methods to align LLMs (Rafailov et al., 2023), we further re-parameterize the reward model via its corre-
 sponding KL-regularized optimal policy. Then the minimization objective of the reward modeling naturally
 translates to a target that directly aligns the LLM, which we call Regularized Preference Optimization (RPO;
@@ -307,7 +304,6 @@ et al. (2024) share similar algorithmic components as RPO proposed in this work.
 style regularization during preference optimization. However, theoretical understanding of how SFT loss can
 4
 
-
 help alignment remains unknown. In contrast, we provide theoretical justifications to the SFT loss as an
 implicit adversarial regularizer that provably mitigates overoptimization in preference learning.
 RLHF: theoretical investigation.
@@ -362,7 +358,6 @@ An LLM, which is defined as a policy π(·|·) : X 7→∆(A), can take a prompt
 a response a ∈A obeying a ∼π(·|x).
 5
 
-
 Preference model.
 Given any reward function r : X × A 7→R belonging to certain reward class R which
 represents the “human’s rating” of LLM responses given some prompts, we consider the Bradley-Terry model
@@ -371,7 +366,7 @@ the probability of a1 being preferred to a0 (denoted by y = 1, otherwise y = 0) 
 Pr(y = 1|x, a1, a0) =
 exp(r(x, a1))
 exp(r(x, a1)) + exp(r(x, a0)) = σ
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 
 ,
 (2.1)
@@ -439,13 +434,12 @@ r∈R
 a0∼πbase(·|x)
 h
 r(x, a1) −r(x, a0) −β · KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 + LD(r)
 )
 ,
 6
-
 
 Algorithm 1 Theoretical Algorithm: Maximin Objective
 1: Input: Preference dataset D, parameters β, η > 0, reference policy πref, baseline policy πbase.
@@ -455,14 +449,14 @@ it becomes the cross-entropy loss) over the preference dataset D, defined as
 LD(r) = −bED
 
 yi log
-σ
-r(xi, a1
+ σ
+ r(xi, a1
 i ) −r(xi, a0
 i )
 
 + (1 −yi) log
-σ
-r(xi, a0
+ σ
+ r(xi, a0
 i ) −r(xi, a1
 i )
 
@@ -493,7 +487,7 @@ r∈R
 a0∼πbase(·|x)
 h
 r(x, a1) −r(x, a0) −β · KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 + LD(r)
 )
@@ -522,7 +516,6 @@ erence Optimization (DPO) (Rafailov et al., 2023) and goes beyond to further add
 issue in offline RLHF by incorprating an SFT loss as an explicit adversarial regularizer.
 7
 
-
 An equivalent minimax objective.
 If the reward model class R satisfies certain regularity conditions,
 which we discuss in detail in Section 5.2, the minimax theorem holds: solving the maximin objective (3.2)
@@ -535,7 +528,7 @@ r∈R max
 a0∼πbase(·|x)
 h
 r(x, a1) −r(x, a0) −β · KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 + LD(r)
 )
@@ -550,7 +543,7 @@ max
 Ex∼d0,a∼π(·|x)
 h
 r(x, a) −β · KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 .
 (4.2)
@@ -561,13 +554,13 @@ to the maximization problem (4.2) is given by
 πr(·|x) =
 1
 Zr(x) · πref(·|x) · exp
-β−1r(x, ·)
+ β−1r(x, ·)
 
 , Zr(x) =
 Z
 a∈A
 exp
-β−1r(x, a)
+ β−1r(x, a)
 
 dπref(a|x),
 and correspondingly the optimal value of (4.2) is given by (4.2) = Ex∼d0[β · log(Zr(x))].
@@ -631,7 +624,6 @@ then the corresponding optimal KL-regularized policy πbr also solves the maximi
 Proof of Proposition 4.2. Please see Section 5.2 for a formal statement and proof of Theorem 4.2.
 8
 
-
 Algorithm 2 Practical Algorithm: Regularized Preference Optimization (RPO)
 1: Input: Preference dataset D, parameters β, η > 0, reference policy πref, baseline policy πbase.
 2: Output: Policy πbθ obtained by optimizing objective (4.5).
@@ -691,7 +683,7 @@ where the derivative of the DPO loss ∇θLDPO(θ) is given by the following,
 ∇θLDPO(θ) = −bED
 
 β · σ
-brθ(x, arej) −brθ(x, acho)
+ brθ(x, arej) −brθ(x, acho)
 
 |
 {z
@@ -728,7 +720,6 @@ o
 .
 (5.1)
 9
-
 
 5.1
 Establishing the Sample Complexity of Maximin Objective (Algorithm 1)
@@ -806,15 +797,15 @@ in Algorithm 1. Then the output policy bπ of Algorithm 1 satisfies that with pr
 Gapπ(bπ) ≤
 √
 6 ·
-1 + exp(R)
+ 1 + exp(R)
 2 ·
-CµD(R; π, πbase)
+ CµD(R; π, πbase)
 2 + 1
 
 · ι + 4 · Ex∼d0
 h
 KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 4
 √
@@ -832,7 +823,6 @@ of the preferred responses in the dataset. In this case, the SFT loss in the RPO
 the LLM to imitate the preferred responses. We choose this baseline policy in our experiments (Section 6).
 10
 
-
 5.2
 Equivalence between Maximin and Minimax Objectives
 In this section, we formally show that under certain regularity assumptions, the theoretical target (maximin
@@ -843,7 +833,7 @@ First, for notational simplicity, we denote the optimization target we investiga
 ϕ(π, r) := η · Ex∼d0,a1∼π(·|x),a0∼πref(·|x)
 h
 r(x, a1) −r(x, a0) −β · DKL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 + LD(r), (5.2)
 for any (π, r) ∈Π × R. Our result relies on the following assumptions on the reward model class R.
@@ -903,7 +893,6 @@ with probability at least 1 −δ, where e
 O(·) hides the same factors as shown in Theorem 5.3 for Algorithm 1.
 Proof of Corollary 5.7. This is a direct corollary of Theorem 5.3 and Theorem 5.6.
 11
-
 
 5.3
 Generalization to New Prompt Distributions
@@ -994,7 +983,6 @@ training dataset of the gemma series (Argilla-DPO-
 Mix-7K), MT-Bench, and AlpacaEval 2.0.
 12
 
-
 6
 Experiments
 In this experiment section, we provide a detailed empirical analysis of RPO to highlight the following four
@@ -1050,7 +1038,6 @@ show a more illustrative comparison between DPO and RPO, we provide the barplot 
 of pairwise examples annotated by GPT-4 in Figures 5 and 6. We observe that for both beta and gemma
 series, RPO has a better performance than DPO in terms of both RPO/DPO-SFT and RPO-DPO win rates.
 13
-
 
 Win rate (%)
 RPO (beta)
@@ -1211,7 +1198,6 @@ or accessing extra preference data. This also sheds light on the potential of mi
 better alignment and generalization performance.
 14
 
-
 RPO also improves math, reasoning, and coding abilities.
 In addition to the MT-Bench and Al-
 pacaEval 2.0 benchmarks, we further use benchmarks on math, reasoning, and coding tasks for evaluations of
@@ -1258,7 +1244,6 @@ in Neural Information Processing Systems 36. 5
 Bradley, R. A. and Terry, M. E. (1952). Rank analysis of incomplete block designs: I. the method of
 paired comparisons. Biometrika 39 324–345. 6
 15
-
 
 Carlini, N., Tramer, F., Wallace, E., Jagielski, M., Herbert-Voss, A., Lee, K., Roberts, A.,
 Brown, T., Song, D., Erlingsson, U. et al. (2021). Extracting training data from large language
@@ -1311,7 +1296,6 @@ with instrumental variables in confounded markov decision processes. arXiv prepr
 5
 16
 
-
 Ganguli, D., Lovitt, L., Kernion, J., Askell, A., Bai, Y., Kadavath, S., Mann, B., Perez, E.,
 Schiefer, N., Ndousse, K. et al. (2022). Red teaming language models to reduce harms: Methods,
 scaling behaviors, and lessons learned. arXiv preprint arXiv:2209.07858 . 2
@@ -1363,7 +1347,6 @@ S., Slama, K., Ray, A. et al. (2022). Training language models to follow instruc
 feedback. Advances in neural information processing systems 35 27730–27744. 2, 4, 5, 7
 17
 
-
 Pacchiano, A., Saha, A. and Lee, J. (2021). Dueling rl: reinforcement learning with trajectory prefer-
 ences. arXiv preprint arXiv:2111.04850 . 5
 Pal, A., Karkhanis, D., Dooley, S., Roberts, M., Naidu, S. and White, C. (2024). Smaug: Fixing
@@ -1408,7 +1391,6 @@ Tunstall, L., Beeching, E., Lambert, N., Rajani, N., Huang, S., Rasul, K., Rush,
 Wolf, T. (2023a). The alignment handbook. https://github.com/huggingface/alignment-handbook.
 29
 18
-
 
 Tunstall, L., Beeching, E., Lambert, N., Rajani, N., Rasul, K., Belkada, Y., Huang, S., von
 Werra, L., Fourrier, C., Habib, N. et al. (2023b). Zephyr: Direct distillation of lm alignment.
@@ -1456,7 +1438,6 @@ arXiv preprint
 arXiv:2403.05171 . 5
 19
 
-
 Zhao, Y., Joshi, R., Liu, T., Khalman, M., Saleh, M. and Liu, P. J. (2023).
 Slic-hf: Sequence
 likelihood calibration with human feedback. arXiv preprint arXiv:2305.10425 . 4
@@ -1474,7 +1455,6 @@ Ziegler, D. M., Stiennon, N., Wu, J., Brown, T. B., Radford, A., Amodei, D., Chr
 Irving, G. (2019). Fine-tuning language models from human preferences. arXiv preprint arXiv:1909.08593
 . 2, 4
 20
-
 
 A
 Further Discussions
@@ -1532,7 +1512,6 @@ an intermediate quantity in the calculation of the DPO loss. Therefore, our prop
 any additional computation overhead compared with the vanilla DPO.
 21
 
-
 B
 Proofs for Sample Complexity Analysis
 B.1
@@ -1585,7 +1564,7 @@ r⋆(x, a)
 = Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
 h
 r⋆(x, a1) −r⋆(x, a0) −β · KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 −η−1 · min
 r∈R
@@ -1594,7 +1573,7 @@ r∈R
 a0∼πbase(·|x)
 h
 r(x, a1) −r(x, a0) −β · KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 + LD(r)
 )
@@ -1605,22 +1584,22 @@ r∈R
 a0∼πbase(·|x)
 h
 r(x, a1) −r(x, a0) −β · KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 + LD(r)
 )
 −Ex∼d0,a1∼bπ(·|x),a0∼πbase(·|x)
 h
 r⋆(x, a1) −r⋆(x, a0) −β · KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 + β · Ex∼d0
 h
 KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 
 −KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 := Term (A) + Term (B) + Term (C),
 (B.1)
@@ -1628,7 +1607,7 @@ where in the above Term (A), Term (B), and Term (C) are abbreviations for
 Term (A) = Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
 h
 r⋆(x, a1) −r⋆(x, a0) −β · KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 −η−1 · min
 r∈R
@@ -1637,7 +1616,7 @@ r∈R
 a0∼πbase(·|x)
 h
 r(x, a1) −r(x, a0) −β · KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 + LD(r)
 )
@@ -1650,27 +1629,26 @@ r∈R
 a0∼πbase(·|x)
 h
 r(x, a1) −r(x, a0) −β · KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 + LD(r)
 )
 −Ex∼d0,a1∼bπ(·|x),a0∼πbase(·|x)
 h
 r⋆(x, a1) −r⋆(x, a0) −β · KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 ,
 22
-
 
 and
 Term (C) = β · Ex∼d0
 h
 KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 
 −KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 .
 In the following, we analyze Term (A) and Term (B) respectively.
@@ -1680,7 +1658,7 @@ Term (A)
 = Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
 h
 r⋆(x, a1) −r⋆(x, a0) −β · KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 (B.2)
 −η−1 · min
@@ -1690,14 +1668,14 @@ r∈R
 a0∼πbase(·|x)
 h
 r(x, a1) −r(x, a0) −β · KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 + LD(r)
 )
 ≤Ex∼d0,a1∼π(·|x),a0∼πref(·|x)
 h
 r⋆(x, a1) −r⋆(x, a0) −β · KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 −η−1 · min
 r∈R
@@ -1706,7 +1684,7 @@ r∈R
 a0∼πbase(·|x)
 h
 r(x, a1) −r(x, a0) −β · KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 + LD(r)
 )
@@ -1714,10 +1692,10 @@ r(x, a1) −r(x, a0) −β · KL
 r∈R
 (
 Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
-hr⋆(x, a1) −r⋆(x, a0)
+h r⋆(x, a1) −r⋆(x, a0)
 
 −
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 i
 −η−1 · LD(r)
 )
@@ -1733,25 +1711,25 @@ r∈R
 a0∼πbase(·|x)
 h
 r(x, a1) −r(x, a0) −β · KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 + LD(r)
 )
 −Ex∼d0,a1∼bπ(·|x),a0∼πbase(·|x)
 h
 r⋆(x, a1) −r⋆(x, a0) −β · KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 ≤Ex∼d0,a1∼bπ(·|x),a0∼πbase(·|x)
 h
 r⋆(x, a1) −r⋆(x, a0) −β · KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 + η−1 · LD(r⋆)
 −Ex∼d0,a1∼bπ(·|x),a0∼πbase(·|x)
 h
 r⋆(x, a1) −r⋆(x, a0) −β · KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 = η−1 · LD(r⋆),
 (B.3)
@@ -1766,10 +1744,10 @@ r∈R
 (
 Ex∼d0,a1∼π(·|x),
 a0∼πbase(·|x)
-hr⋆(x, a1) −r⋆(x, a0)
+h r⋆(x, a1) −r⋆(x, a0)
 
 −
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 i
 + η−1 ·
 
@@ -1778,10 +1756,10 @@ LD(r⋆) −LD(r)
 + β · Ex∼d0
 h
 KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 
 −KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 .
 In the following, we upper bound the right hand side of (B.4) via relating the MLE loss difference term to
@@ -1792,7 +1770,7 @@ LD(r⋆) −LD(r) ≤−2 · E(x,a1,a0)∼µD(·,·,·)
 h
 D2
 Hellinger
-Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
 i
 + 3
 N · log
@@ -1802,69 +1780,68 @@ N · log
 ,
 23
 
-
 where we recall that we use the subscript r in Pr to emphasize the dependence of the probabilistic model on
 the reward model. Here Nε(R, ∥· ∥∞) denotes the ε-covering number of the reward model class and R is the
 upper bound on the reward functionss (Assumption 5.1). Now to facilitate the calculation, we lower bound
 the Hellinger distance by total variation (TV) distance as
 D2
 Hellinger
-Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
 
 ≥D2
 TV
-Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
 
 ,
 By the expression of the probability model Pr, we can further write the TV distance above as
 DTV
-Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
 
 = 1
 2 ·
 σ
-r⋆(x, a1) −r⋆(x, a0)
+ r⋆(x, a1) −r⋆(x, a0)
 
 −σ
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 
 + 1
 2 ·
 σ
-r⋆(x, a0) −r⋆(x, a1)
+ r⋆(x, a0) −r⋆(x, a1)
 
 −σ
-r(x, a0) −r(x, a1)
+ r(x, a0) −r(x, a1)
 
 =
 σ
-r⋆(x, a1) −r⋆(x, a0)
+ r⋆(x, a1) −r⋆(x, a0)
 
 −σ
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 ,
 (B.5)
 where in the second equality we use the fact that σ(−z) = 1 −σ(z). Now by Lemma B.2 and the condition
 that r(x, a) ∈[0, R] for any (x, a, r) ∈X × A × R (Assumption 5.1), we know that
 σ
-r⋆(x, a1) −r⋆(x, a0)
+ r⋆(x, a1) −r⋆(x, a0)
 
 −σ
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
  ≥κ ·
 
-r⋆(x, a1) −r⋆(x, a0)
+ r⋆(x, a1) −r⋆(x, a0)
 
 −
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 ,
 where κ = 1/(1 + exp(R))2. As a result, the difference of the MLE loss is upper bounded by
 LD(r⋆) −LD(r) ≤−2κ2 · E(x,a1,a0)∼µD(·,·,·)
 
-r⋆(x, a1) −r⋆(x, a0)
+ r⋆(x, a1) −r⋆(x, a0)
 
 −
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 
 2
 + 3
@@ -1877,20 +1854,20 @@ N · log
 On the other hand, the reward difference term in (B.4), which is evaluated on actions from π and πbase, can
 be related to the reward difference evaluated on the data distribution µD via Assumption 5.2, i.e.,
 Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
-hr⋆(x, a1) −r⋆(x, a0)
+h r⋆(x, a1) −r⋆(x, a0)
 
 −
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 i
 (B.7)
 ≤CµD(R; π, πbase)
 s
 E(x,a1,a0)∼µD
 
-r⋆(x, a1) −r⋆(x, a0)
+ r⋆(x, a1) −r⋆(x, a0)
 
 −
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 
 2
 .
@@ -1899,10 +1876,10 @@ Finally, combining (B.6), (B.7), and (B.4), denoting
 s
 E(x,a1,a0)∼µD
 
-r⋆(x, a1) −r⋆(x, a0)
+ r⋆(x, a1) −r⋆(x, a0)
 
 −
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 
 2
 ,
@@ -1922,13 +1899,13 @@ o
 + β · Ex∼d0
 h
 KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 
 −KL
-bπ(·|x)∥πref(·|x)
+ bπ(·|x)∥πref(·|x)
 i
 ≤
-CµD(R; π, πbase)
+ CµD(R; π, πbase)
 2η
 8κ2
 +
@@ -1940,7 +1917,7 @@ CµD(R; π, πbase)
 + β · Ex∼d0
 h
 KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 ,
 where in the second inequality we use that fact that az−bz2 ≤a2/(4b) for any z ∈R and that KL-divergence
@@ -1964,14 +1941,14 @@ we conclude that with probability at least 1 −δ and ε = (6 · (1 + eR) · N)
 Gapπ(bπ) ≤
 √
 6
-1 + exp(R)
-2 CµD(R; π, πbase)
+ 1 + exp(R)
+2  CµD(R; π, πbase)
 2 + 1
 
 ι + 4Ex∼d0
 h
 KL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 4
 √
@@ -1981,7 +1958,6 @@ where we denote ι =
 p
 log (Nε(R, ∥· ∥∞)/δ) with ε = (6 · (1 + eR) · N)−1. This proves Theorem 5.3.
 24
-
 
 B.3
 Technical Lemmas
@@ -1993,7 +1969,7 @@ LD(r⋆) −LD(r) ≤−2 · E(x,a1,a0)∼µD(·,·,·)
 h
 D2
 Hellinger
-Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
 i
 + 3
 N · log
@@ -2009,7 +1985,7 @@ LD(r⋆) −LD(r) ≤−2 · E(x,a1,a0)∼µD(·,·,·)
 h
 D2
 Hellinger
-Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
 i
 + 2
 N · log
@@ -2024,7 +2000,7 @@ LD(r⋆) −LD(r) = LD(r⋆) −LD(r†) + LD(r†) −LD(r)
 h
 D2
 Hellinger
-Pr⋆(·|x, a1, a0)∥Pr†(·|x, a1, a0)
+ Pr⋆(·|x, a1, a0)∥Pr†(·|x, a1, a0)
 i
 + 2
 N · log
@@ -2036,7 +2012,7 @@ N · log
 h
 D2
 Hellinger
-Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
 i
 + 2
 N · log
@@ -2048,7 +2024,7 @@ N · log
 h
 D2
 Hellinger
-Pr†(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr†(·|x, a1, a0)∥Pr(·|x, a1, a0)
 i
 ,
 (B.9)
@@ -2063,12 +2039,12 @@ i=1
 yi · log
  
 σ
-r(xi, a1
+ r(xi, a1
 i ) −r(xi, a0
 i )
 
 σ
-r†(xi, a1
+ r†(xi, a1
 i ) −r†(xi, a0
 i )
 
@@ -2081,12 +2057,12 @@ i=1
 (1 −yi) · log
  
 σ
-r(xi, a0
+ r(xi, a0
 i ) −r(xi, a1
 i )
 
 σ
-r†(xi, a0
+ r†(xi, a0
 i ) −r†(xi, a1
 i )
 
@@ -2099,17 +2075,17 @@ N
 X
 i=1
 yi · σ
-r(xi, a1
+ r(xi, a1
 i ) −r(xi, a0
 i )
 
 −σ
-r†(xi, a1
+ r†(xi, a1
 i ) −r†(xi, a0
 i )
 
 σ
-r†(xi, a1
+ r†(xi, a1
 i ) −r†(xi, a0
 i )
 
@@ -2119,17 +2095,17 @@ N
 X
 i=1
 (1 −yi) · σ
-r(xi, a0
+ r(xi, a0
 i ) −r(xi, a1
 i )
 
 −σ
-r†(xi, a0
+ r†(xi, a0
 i ) −r†(xi, a1
 i )
 
 σ
-r†(xi, a0
+ r†(xi, a0
 i ) −r†(xi, a1
 i )
 
@@ -2140,30 +2116,29 @@ N
 N
 X
 i=1
-r(xi, a1
+ r(xi, a1
 i ) −r(xi, a0
 i )
 
 −
-r†(xi, a1
+ r†(xi, a1
 i ) −r†(xi, a0
 i )
 
 (1 + eR)−1
 25
 
-
 + 1
 N
 N
 X
 i=1
-r(xi, a0
+ r(xi, a0
 i ) −r(xi, a1
 i )
 
 −
-r†(xi, a0
+ r†(xi, a0
 i ) −r†(xi, a1
 i )
 
@@ -2173,24 +2148,24 @@ i )
 On the other hand, we upper bound the hellinger distance between Pr and Pr†, for any (x, a1, a0) ∈X ×A×A,
 D2
 Hellinger
-Pr†(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr†(·|x, a1, a0)∥Pr(·|x, a1, a0)
 
 ≤DTV
-Pr†(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr†(·|x, a1, a0)∥Pr(·|x, a1, a0)
 
 =
 σ
-r†(x, a1) −r†(x, a0)
+ r†(x, a1) −r†(x, a0)
 
 −σ
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 
 ≤
 
-r†(x, a1) −r†(x, a0)
+ r†(x, a1) −r†(x, a0)
 
 −
-r(x, a1) −r(x, a0)
+ r(x, a1) −r(x, a0)
 
 ≤2 · ∥r† −r∥∞≤2ε,
 (B.11)
@@ -2202,7 +2177,7 @@ LD(r⋆) −LD(r) ≤−2 · E(x,a1,a0)∼µD(·,·,·)
 h
 D2
 Hellinger
-Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
 i
 + 2
 N · log
@@ -2216,7 +2191,7 @@ LD(r⋆) −LD(r) ≤−2 · E(x,a1,a0)∼µD(·,·,·)
 h
 D2
 Hellinger
-Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
+ Pr⋆(·|x, a1, a0)∥Pr(·|x, a1, a0)
 i
 + 3
 N · log
@@ -2230,19 +2205,19 @@ Lemma B.2 (Sigmoid function). For any real numbers z1, z2 ∈[−R, R], it holds
 where the constant κ = 1/(1 + exp(R))2.
 Proof of Lemma B.2. Since the sigmoid function σ(·) is differentiable, we know that for any z1, z2 ∈[−R, R],
 there exists some ξ(z1, z2) ∈[−R, R] such that
-σ(z1) −σ(z2) = σ′ξ(z1, z2)
+σ(z1) −σ(z2) = σ′ ξ(z1, z2)
 
 · (z1 −z2).
 Notice that σ′(z) = σ(z) · (1 −σ(z)), we can obtain that
-1 ≥σ′ξ(z1, z2)
+1 ≥σ′ ξ(z1, z2)
 
 = σ
-ξ(z1, z2)
+ ξ(z1, z2)
 
 ·
 
 1 −σ
-ξ(z1, z2)
+ ξ(z1, z2)
 
 =
 1
@@ -2265,7 +2240,6 @@ Notice that σ′(z) = σ(z) · (1 −σ(z)), we can obtain that
 (1 + exp(R))2 .
 This completes the proof of Lemma B.2.
 26
-
 
 C
 Proofs for Equivalence between Maximin and Minimax Objec-
@@ -2353,7 +2327,6 @@ is also continuous on R. As a result, all the conditions of Lemma C.2 are satisf
 holds in our problem setup, finishing the proof of Lemma C.1.
 27
 
-
 Lemma C.2 (Minimax theorem (Fan, 1953)). Let X be a nonempty set (not necessarily topologized) and Y
 be a nonempty compact topological space. Let f : X × Y 7→R be lower semicontinuous on Y. Suppose that f
 is concave-like on X and convex-like on Y, i.e., for any x1, x2 ∈X, α ∈[0, 1], there exists x3 ∈X such that
@@ -2370,7 +2343,7 @@ Lemma C.3 (Unique maximizer of ϕ). Consider the function ϕ defined as
 ϕ(π, r) := η · Ex∼d0,a1∼π(·|x),a0∼πbase(·|x)
 h
 r(x, a1) −r(x, a0) −β · DKL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 i
 + LD(r).
 Then given any r ∈R, the maximimzer of ϕ(·, r) is unique on the support of d0.
@@ -2383,7 +2356,7 @@ n
 Ex∼d0,a1∼π(·|x)
 h
 r(x, a1) −β · DKL
-π(·|x)∥πref(·|x)
+ π(·|x)∥πref(·|x)
 io
 = η · max
 π∈Π
@@ -2406,7 +2379,7 @@ Cr = Ex∼d0
 Z
 a∈A
 dπref(a|x) · exp
-β−1 · r(x, a)
+ β−1 · r(x, a)
 
 is a constant independent of π. Therefore, the maximizer of ϕ(·, r) on the support of d0 must equal to
 πr(·|x) =
@@ -2425,7 +2398,7 @@ Ea∼π⋆(·|x)[r⋆(x, a)] −Ea∼πbr(·|x)[r⋆(x, a)]
 = Ex∼d0
 d1(x)
 d0(x) ·
-Ea∼π⋆(·|x)[r⋆(x, a)] −Ea∼πbr(·|x)[r⋆(x, a)]
+ Ea∼π⋆(·|x)[r⋆(x, a)] −Ea∼πbr(·|x)[r⋆(x, a)]
 
 ≤C∞(d0, d1) · Ex∼d0
 Ea∼π⋆(·|x)[r⋆(x, a)] −Ea∼πbr(·|x)[r⋆(x, a)]
@@ -2442,7 +2415,6 @@ Ex∼d0
 = Gapπ⋆(πbr),
 (D.2)
 28
-
 
 Therefore, by combining (D.1) and (D.2), invoking Corollary 5.7, we have that
 Ex∼d1,a∼π⋆(·|x)[r⋆(x, a)] −Ex∼d1,a∼πbr(·|x)[r⋆(x, a)] ≤e
@@ -2522,7 +2494,6 @@ has shown to prefer the answer in the first position (Wang et al., 2023a), we ra
 between two answers during the evaluation to ensure a fair comparison.
 29
 
-
 Benchmark evaluation.
 We use the default configuration for the evaluations on MT-Bench1 and Al-
 pacaEval 2.02. By default, the annotator of MT-Bench is the latest version of GPT-4. The default annotator
@@ -2595,7 +2566,6 @@ Table 6: Pairwise Length-Control (LC) win rates (left vs. right) for gemma serie
 1https://github.com/lm-sys/FastChat/tree/main/fastchat/llm_judge
 2https://github.com/tatsu-lab/alpaca_eval/tree/main
 30
-
 
 F
 Experiments on Math, Reasoning, and Coding Tasks

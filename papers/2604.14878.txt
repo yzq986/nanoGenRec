@@ -100,7 +100,6 @@ large-scale industrial recommender systems remains challenging.
 First, to handle high-volume traffic and ensure user experience,
 arXiv:2604.14878v1  [cs.IR]  16 Apr 2026
 
-
 SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
 Yanyan Zou et al.
 industrial systems typically employ the pagination request mecha-
@@ -231,7 +230,6 @@ strict inference budgets. Special tokens (e.g., <sep>) are kept un-
 merged to serve as explicit indicators of structural separation. Cru-
 cially, this optimization is confined to the prefilling phase, while the
 
-
 GenRec: A Preference-Oriented Generative Framework for Large-Scale Recommendation
 SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
 Decoder Layers
@@ -325,7 +323,6 @@ term, weighted by 𝛼, imposes a negative log-likelihood constraint
 over positive trajectories D+. Distinct from standard KL-divergence
 penalties, this NLL regularizer explicitly anchors the policy to the
 real-world users’ behavior, mitigating over-optimization towards.
-
 
 SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
 Yanyan Zou et al.
@@ -506,7 +503,6 @@ Online A/B Testing
 We deploy both base SFT and RL-Aligned models on JD’s home-
 page feed recommendation platform with 10% traffic each over one
 
-
 GenRec: A Preference-Oriented Generative Framework for Large-Scale Recommendation
 SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
 0
@@ -659,7 +655,6 @@ References
 [1] Shuai Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin Ge, Sibo Song, Kai
 Dang, Peng Wang, Shijie Wang, Jun Tang, et al. 2025. Qwen2. 5-vl technical
 report. arXiv preprint arXiv:2502.13923 (2025).
-
 
 SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
 Yanyan Zou et al.

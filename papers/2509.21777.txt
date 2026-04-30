@@ -57,7 +57,6 @@ trillion-scale deployments.
 1
 arXiv:2509.21777v1  [cs.CL]  26 Sep 2025
 
-
 Preprint
 However, existing systems typically target only one interaction mode. Query-aware search and
 query-free feed recommendation remain siloed: some models focus exclusively on search, while
@@ -93,7 +92,6 @@ As large generative models emerge in recommendation and search, the focus of app
 shifted toward addressing long-standing challenges such as: unifying search and recommendation,
 modeling evolving user preferences, and incorporating temporal patterns into sequential prediction.
 2
-
 
 Preprint
 Model
@@ -184,7 +182,6 @@ Zhai et al. (2024) incorporating relative temporal bias into self-attention, ena
 modeling of temporal dependencies.
 3
 
-
 Preprint
 3
 METHOD
@@ -241,7 +238,6 @@ serving as the foundation for feed-style recommendation. By masking out query si
 ing only item and action embeddings, the model learns a pure representation of evolving user intent:
 econtext = MLPfusion([0; e⟨item⟩; eaction]).
 4
-
 
 Preprint
 With the causal attetnion structure, this ensures that feed recommendation can be performed directly
@@ -301,7 +297,6 @@ time intervals. The full mathematical formulation of RoPE-based temporal attenti
 a worked example illustrating how absolute timestamps translate into relative rotations, is provided
 in Appendix.
 5
-
 
 Preprint
 3.5
@@ -380,7 +375,6 @@ experimental setup and evaluation metrics, followed by comparative results again
 baselines. We then analyze various model components through ablation studies to understand their
 individual contributions.
 6
-
 
 Preprint
 Table 2: Performance of using Book Review dataset in recommendation task with all 686k Items as
@@ -585,7 +579,6 @@ or purchased item two days after training, without query information; evaluated 
 training, with query information; evaluated by Recall over the full item set for retrieval and MRR
 7
 
-
 Preprint
 Table 4: Performance and ablation results across recommendation and search tasks on the Session-
 US dataset. For the Full model, all parameters are trained jointly; results are reported either by
@@ -681,7 +674,6 @@ On the Book Review dataset with 686K candidate items (Table 2), SynerGen achieve
 highly competitive performance across all metrics. Trained with only collaborative embedding, Syn-
 8
 
-
 Preprint
 erGen-ID attains the highest Recall, demonstrating the strength of the generative backbone. HLLM-
 1B-Scratch achieves slightly higher NDCG@10 (4.02), indicating better ranking of the top few
@@ -736,7 +728,6 @@ training proving particularly impactful. Future work includes extending the fram
 modal inputs and exploring adaptive retrieval–ranking trade-offs for even more efficient deploy-
 ment.
 9
-
 
 Preprint
 REFERENCES
@@ -793,7 +784,6 @@ Greg Linden, Brent Smith, and Jeremy York. Amazon. com recommendations: Item-to-
 orative filtering. IEEE Internet computing, 7(1):76–80, 2003.
 10
 
-
 Preprint
 Jinhan Liu, Qiyu Chen, Junjie Xu, Junjie Li, Baoli Li, and Sulong Xu. A unified search and recom-
 mendation framework based on multi-scenario learning for ranking in e-commerce. Proceedings
@@ -849,7 +839,6 @@ ment, CIKM ’21, pp. 2373–2382. ACM, October 2021. doi: 10.1145/3459637.34824
 http://dx.doi.org/10.1145/3459637.3482489.
 11
 
-
 Preprint
 Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhaojie Gong,
 Fangda Gu, Michael He, et al. Actions speak louder than words: Trillion-parameter sequential
@@ -862,7 +851,6 @@ Unify-
 ing search and recommendation: A generative paradigm inspired by information theory. ArXiv,
 abs/2504.06714, 2025. URL https://api.semanticscholar.org/CorpusID:277634440.
 12
-
 
 Preprint
 A
@@ -949,7 +937,6 @@ relative gap is ∼32M. To make training feasible, we shorten history duration (
 Combining both yields an effective context length of ∼125K. Following Su et al. (2021), the rotation
 base is then set accordingly (e.g., ∼7.8e6 for 125K), ensuring robust coverage of temporal gaps.
 13
-
 
 Preprint
 C
