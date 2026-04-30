@@ -1,0 +1,1757 @@
+PROMISE: Process Reward Models Unlock Test-Time Scaling
+Laws in Generative Recommendations
+Chengcheng Guo*
+guochengcheng03@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Kuo Cai*
+caikuo@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Yu Zhou
+zhouyu12@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Qiang Luo†
+luoqiang@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Ruiming Tang†
+tangruiming@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Han Li
+lihan08@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Kun Gai
+gai.kun@qq.com
+Unaffiliated
+Beijing, China
+Guorui Zhou
+zhouguorui@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Abstract
+Generative Recommendation has emerged as a promising paradigm,
+reformulating recommendation as a sequence-to-sequence genera-
+tion task over hierarchical Semantic IDs. However, existing methods
+suffer from a critical issue we term Semantic Drift, where errors in
+early, high-level tokens irreversibly divert the generation trajectory
+into irrelevant semantic subspaces. Inspired by Process Reward
+Models (PRMs) that enhance reasoning in Large Language Models,
+we propose Promise, a novel framework that integrates dense,
+step-by-step verification into generative models. Promise features
+a lightweight PRM to assess the quality of intermediate inference
+steps, coupled with a PRM-guided Beam Search strategy that lever-
+ages dense feedback to dynamically prune erroneous branches.
+Crucially, our approach unlocks Test-Time Scaling Laws for recom-
+mender systems: by increasing inference compute, smaller models
+can match or surpass larger models. Extensive offline experiments
+and online A/B tests on a large-scale platform demonstrate that
+Promise effectively mitigates Semantic Drift, significantly improv-
+ing recommendation accuracy while enabling efficient deployment.
+CCS Concepts
+• Information systems →Recommender systems.
+* Equal contribution.
+† Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2026 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+Keywords
+Process Reward Model, Generative Recommendation, Recommen-
+dation System, Test-time Scaling
+ACM Reference Format:
+Chengcheng Guo*, Kuo Cai*, Yu Zhou, Qiang Luo†, Ruiming Tang†, Han Li,
+Kun Gai, and Guorui Zhou. 2026. PROMISE: Process Reward Models Unlock
+Test-Time Scaling Laws in Generative Recommendations. In Proceedings of
+Make sure to enter the correct conference title from your rights confirmation
+email (Conference acronym ’XX). ACM, New York, NY, USA, 11 pages. https:
+//doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Recommender Systems (RS) have witnessed a fundamental shift
+from the conventional "Retrieve-then-Rank" pipeline to Generative
+Recommendation [15]. Inspired by Large Language Models (LLMs)
+[1, 19], this paradigm reformulates recommendation as a sequence-
+to-sequence generation task [26]. By directly generating the next
+item identifier, these models facilitate end-to-end learning of user
+preferences. They demonstrate superior modeling precision and re-
+markable scaling capabilities [47, 48]. Consequently, this approach
+has rapidly emerged as a mainstream direction, with applications
+spanning from e-commerce to short-video platforms [3, 6, 38].
+A key driver of this success is the adoption of Semantic IDs (SIDs)
+[29]. Unlike random atomic IDs, Semantic IDs are discrete token
+sequences derived from hierarchical quantization methods, such
+as RQ-VAE [14] or Residual K-means [22]. Leading approaches like
+TIGER [26], LC-Rec [44], and One-series models [6, 38] leverage
+these tokens to represent items for generative retrieval. However,
+these methods suffer from a critical issue that we formally define as
+Semantic Drift, where the generation trajectory gradually deviates
+from the user’s true intent due to error accumulation [2, 28]. This
+phenomenon is rooted in Exposure Bias—the discrepancy between
+training and inference. During training, models typically employ
+Teacher Forcing, where the next token is predicted conditioned on
+the ground-truth history. In contrast, during inference, the model
+must operate autoregressively, conditioning on its own previously
+arXiv:2601.04674v1  [cs.IR]  8 Jan 2026
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Guo et al.
+5268
+7635
+793
+Ground Truth
+Encoder
+User Request
+[x1, …, xt-1]
+Decoder
+4453
+7412
+5268
+7635
+7746
+1749
+-10.50
+4000
+1586
+-9.37
+-8.87
+1000
+1330
+795
+-4.46
+1
+…
+…
+…
+4453
+7412
+5268
+7635
+7746
+1749
+-10.50
+4000
+1586
+-9.37
+-8.87
+1000
+1330
+795
+-4.46
+1
+…
+…
+…
+-6.73
+-3.62
+-3.69
+-7.32
+(at 2nd step)
+Target SID
+Retrieved
+Fail to Retrieve
+Target SID
+Irrelevant Item
+(Semantic Drift)
+Irrelevant Item
+(Semantic Drift)
+PRM
+log(prob)
+log(prob)
+Rank
+SID1
+SID2
+log(prob)
+log(prob)
+Rank
+SID1
+SID2
+PRM Score
+(a) Standard SID Generation (K = 1000)
+(b) PRM-guided Generation (K+ = 4000, K’ = 1000)
+SID1
+SID2
+SID3
+Encoder
+User Request
+[x1, …, xt-1]
+Decoder
+(at 2nd step)
+Figure 1: A specific case of SID generation based on the same
+user 𝑢and context 𝑐using standard beam search and PRM-
+guided beam search, respectively. (a): We observe the seman-
+tic drift where the model generates irrelevant SIDs, failing
+to retrieve target SIDs. (b): With PRM-guided search, the
+PRM evaluates and ranks the generation quality. The model
+successfully selects target SIDs and eliminates erroneous out-
+puts caused by semantic drift.
+generated tokens. This mismatch means the model is never exposed
+to its own prediction errors during training. Consequently, when a
+deviation occurs at inference time—especially in high-level seman-
+tic tokens—the model lacks the capability to recover, causing the
+generation to drift into an irrelevant semantic subspace (e.g., from
+"Electronics" to "Home Appliances").
+A parallel challenge is observed in LLMs, particularly within
+complex mathematical reasoning and code generation tasks [4, 37].
+In these domains, a single logical error in an intermediate step
+often propagates, rendering the final solution incorrect [7]. Recent
+breakthroughs demonstrate that Process Reward Models (PRMs)
+[17]—which evaluate the correctness of intermediate reasoning
+steps—can effectively address the sparse signal limitations of Out-
+come Reward Models (ORMs), which rely solely on final answer
+supervision [35, 36, 43]. By providing dense, step-by-step feedback,
+PRMs enable more reliable reasoning. Furthermore, they support
+advanced inference strategies like Tree-of-Thoughts (ToT) [39] and
+Monte Carlo Tree Search (MCTS) [41], where evaluating interme-
+diate states is crucial. This success highlights a general principle:
+in specified generative tasks, verifying intermediate trajectories
+is essential for mitigating error accumulation, thereby ensuring
+robust and correct results.
+We identify a natural correspondence between the chain-of-
+thought in reasoning and the coarse-to-fine generation trajectory
+of Semantic IDs. In the hierarchical ID structure, initial tokens
+serve as high-level semantic anchors (e.g., "Electronics"), while sub-
+sequent tokens refine the specific details (e.g., "Sony Headphones").
+Analogous to a wrong initial step in a mathematical derivation, an
+error in a leading token acts as a spatial mis-routing, irreversibly
+diverting the generation into an incorrect semantic subspace. This
+renders all subsequent fine-grained predictions ineffective, as the
+model searches within a completely wrong item cluster. Current
+SID-based generative models lack the ability to evaluate interme-
+diate steps, leaving them unable to detect and stop Semantic Drift
+before it becomes irreversible.
+Motivated by these findings, we propose Promise (PROcess Re-
+ward Models unlock Test-tIme Scaling Laws in GEnerative Recom-
+mendations), a novel framework that seamlessly integrates Process
+Reward Models into generative models. Our method comprises two
+core components:
+• A lightweight path-level PRM, trained end-to-end together
+with the generative backbone, is explicitly optimized to super-
+vise intermediate inference steps. Crucially, unlike the generative
+backbone, which is trained via Teacher Forcing and thus blind to
+its own errors (Exposure Bias), the PRM is trained on sampled
+trajectories containing both positive and negative examples. This
+enables it to detect and penalize deviations in real-time. By arrest-
+ing these deviations early, it effectively mitigates Semantic Drift,
+preventing the cascade of errors and ensuring recommendations
+remain aligned with user preferences.
+• A PRM-guided Beam Search strategy during inference. By
+leveraging dense feedback from the Path-level PRM, we prune
+low-quality branches early and explore high-potential semantic
+subspaces.
+Significantly, this approach unlocks Test-Time Scaling Laws for
+recommendation: by increasing the search width (inference com-
+pute), our smaller model outperforms larger models. This offers a
+flexible trade-off between latency and quality, allowing for latency-
+constrained search in industrial settings while maintaining lower
+computational costs compared to scaling model parameters.
+Our main contributions can be summarized as follows:
+• We identify and formally define the Semantic Drift phenome-
+non in Generative Recommendation. We draw a novel parallel
+between the hierarchical generation of Semantic IDs and Chain-
+of-Thought reasoning in LLMs, highlighting the necessity of
+intermediate verification for robust retrieval.
+• We propose a novel framework that integrates PRMs into gen-
+erative models. To our knowledge, this is the first work to em-
+ploy dense supervision (Path-level PRM) and PRM-Guided Beam
+Search to align intermediate generation steps with user prefer-
+ences.
+• We empirically demonstrate Test-Time Scaling Laws for Genera-
+tive Recommendation. Our results show that scaling inference
+computing via PRM-guided search enables smaller models to
+outperform larger baselines, providing a flexible and efficient
+paradigm for industrial-scale recommendation.
+• We conduct extensive offline experiments and validate our method
+through online A/B tests on a large-scale platform, demonstrating
+significant improvements in core business metrics.
+2
+Preliminary
+2.1
+Item Tokenization
+Each item 𝑥∈X is represented by an embedding ℎ∈R𝑑ℎ, which
+is quantized via Q : R𝑑ℎ→{1, . . . , 𝑀}𝑑into a 𝑑-layer discrete
+Semantic ID [𝑠1,𝑠2, . . . ,𝑠𝑑] with codebook size 𝑀.
+
+PROMISE: Process Reward Models Unlock Test-Time Scaling Laws in Generative Recommendations
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+2.2
+Next-token Prediction
+For a user 𝑢and context 𝑐, let 𝑥𝑡be an interacted item. We extract
+𝑢’s preceding interaction sequence [𝑥1, ...,𝑥𝑡−1]. The goal of gener-
+ation recommendations is to maximize the conditional probability
+of truly interacted item 𝑥𝑡given 𝑢, 𝑐and 𝑢’s historical sequence:
+𝑝𝜃{𝑥𝑡| 𝑥1, ..., 𝑥𝑡−1, 𝑢, 𝑐}. Item quantization allows generative mod-
+els to predict 𝑥𝑡in multiple steps. For instance, target item 𝑥𝑡is
+mapped into a Semantic ID path [𝑠𝑡,1,𝑠𝑡,2, . . . ,𝑠𝑡,𝑑]. Therefore, it can
+be further transformed into maximizing the conditional probability
+from each inference step:
+𝑝𝜃(𝑥𝑡| 𝑢, 𝑐) =
+𝑑
+Ö
+𝑏=1
+𝑝𝜃{𝑠𝑡,𝑏| 𝑠𝑡,1, ..., 𝑠𝑡,𝑏−1, 𝑥1, ..., 𝑥𝑡−1, 𝑢, 𝑐}.
+(1)
+With Eq. 1, NTP loss is defined as the negative log-likelihood of the
+ground-truth path:
+LNTP
+𝑥𝑡
+= −
+𝑑
+∑︁
+𝑏=1
+log𝑝𝜃
+ 𝑠𝑡,𝑏| 𝑠𝑡,1, . . . ,𝑠𝑡,𝑏−1,𝑥1, . . . ,𝑥𝑡−1,𝑢,𝑐 .
+(2)
+During inference, beam search is employed to autoregressively
+generate the Semantic ID sequence step-by-step, where at each step
+the top-𝐾most probable paths are retained based on the conditional
+probabilities.
+2.3
+Generative Backbone
+The encoder maps historical sequence [𝑥1, . . . ,𝑥𝑡−1] to a hidden
+state sequence E(𝐿) ∈R(𝑡−1)×𝑑ℎ. This is achieved through 𝐿blocks
+of bidirectional self-attention and feed-forward networks.
+The decoder takes the encoder output E(𝐿) and an autoregres-
+sively generated prefix of the target Semantic ID path [𝑠𝑡,1, . . . ,𝑠𝑡,𝑏−1]
+to predict the next token 𝑠𝑡,𝑏, using self-attention over the gener-
+ated prefix, cross-attention over E(𝐿), and FFNs. Its final hidden
+state for the 𝑏-th position, denoted h𝑡,𝑏, is projected via a linear
+layer and matched against a learnable codebook embedding ma-
+trix C𝑏∈R𝑀×𝑑ℎ. The conditional probability for the next token is
+computed as a softmax over the dot product scores:
+𝑝𝜃
+ 𝑠𝑡,𝑏| 𝑠𝑡,1, . . . ,𝑠𝑡,𝑏−1,𝑥1, . . . ,𝑥𝑡−1,𝑢,𝑐 =
+exp
+
+h⊤
+𝑡,𝑏C𝑏[𝑠]
+
+𝑀Í
+𝑚=1
+exp
+
+h⊤
+𝑡,𝑏C𝑏[𝑚]
+ , (3)
+where C𝑏[𝑠] denotes the embedding of token 𝑠in the𝑏-th codebook.
+2.4
+Semantic Drift
+A critical challenge in Next-Token Prediction (NTP) for generative
+recommendation stems from the discrepancy between training and
+inference, formally known as exposure bias. During training, the
+model maximizes the likelihood of the next token conditioned on
+the ground-truth history (teacher forcing). This limits the model’s
+exposure to its own prediction errors. Conversely, during infer-
+ence, the model generates tokens autoregressively and relies on its
+previously generated sequence. Since the model is never exposed
+to erroneous intermediate states during training, early prediction
+errors inevitably accumulate.
+In the specific context of Semantic IDs, we define this error prop-
+agation as Semantic Drift. Unlike unstructured text generation,
+Semantic IDs typically employ hierarchical quantization, where
+early tokens encode coarse-grained semantics (e.g., item categories)
+and later tokens capture fine-grained details. Consequently, a de-
+viation in the initial steps causes the generation trajectory to di-
+verge irreversibly into irrelevant semantic sub-spaces. Furthermore,
+when the model encounters these out-of-distribution (OOD) states,
+it tends to revert to the marginal distribution of the training data.
+This exacerbates popularity bias, leading the generated path toward
+generic, high-frequency items rather than specific, long-tail user
+preferences. To assess the extent of semantic drift, we later intro-
+duce a novel metric HRecall@𝑏@𝑘in Section 4.4.1 to quantify this
+phenomenon.
+3
+Methodology
+3.1
+Overview
+Fig. 2 illustrates the overall framework of Promise. We take an
+encoder-decoder approach, where the encoder takes user behavior
+sequence [𝑥1, ...,𝑥𝑡−1] as the input, and the decoder autoregres-
+sively generates the Semantic ID path. Upon that, Sec. 3.2 intro-
+duces a novel process reward model to address the problem of error
+propagation and accumulation in generative recommenders. Then,
+how process reward system achieves test-time scaling of generative
+models is explained in Sec. 3.3.
+3.2
+Path-Level PRM
+To address semantic drift, we propose a Process Reward Model
+(PRM) for generative recommendation. This section first introduces
+the definitions of positive and negative examples within the reward
+mechanism. We then describe the corresponding training objective.
+Furthermore, although our reward mechanism is agnostic to the
+specific model architecture, to enable efficient online deployment,
+we propose a lightweight, low-latency attention-based model ar-
+chitecture suitable for industrial-scale recommendation scenarios,
+which will be detailed subsequently.
+3.2.1
+Positive Samples. The ground-truth item 𝑥𝑡is quantized
+into a 𝑑-layer Semantic ID path [𝑠𝑡,1,𝑠𝑡,2, . . . ,𝑠𝑡,𝑑]. Naturally, this
+complete path of length 𝑑is the positive path for 𝑥𝑡at depth 𝑑. Due
+to the nature of residual quantization, for the model to retrieve this
+positive path at depth𝑑, it must be able to retrieve the corresponding
+path [𝑠𝑡,1,𝑠𝑡,2, . . . ,𝑠𝑡,𝑑−1] at depth 𝑑−1. Hence, the positive path at
+depth 𝑏is its prefix of length 𝑏:
+Spos
+𝑥𝑡,𝑏= [𝑠𝑡,1, . . . , 𝑠𝑡,𝑏],
+𝑏≤𝑑,
+(4)
+where 𝑏denotes the path length.
+3.2.2
+Negative Sampling Strategy. The negative sampling strat-
+egy within our reward mechanism is key to mitigating semantic
+drift. Unlike NTP, which learns solely from positive examples, our
+proposed PRM introduces a negative sampling strategy. By being
+trained on both positive and negative samples, the PRM acquires
+the ability to discriminate between relevant and irrelevant Semantic
+ID paths. This capacity allows it to identify erroneous intermediate
+SID reasoning paths during inference, thereby alleviating the se-
+mantic drift problem. Empirical experiments in Sec. 4.4 illustrate
+that by eliminating prediction errors, recommendation results can
+be more aligned with user preferences, leading to improved recom-
+mendation metrics.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Guo et al.
+…
+x1
+xt-2
+xt-1
+xt
+x2
+x3
+x4
+Encoder Block
+...
+User Features
+...
+...
++
++
++
++
++
+User History
+Positional 
+Embedding
+User History
+Next Item
+<a_45>
+<b_67>
+<c_13>
+Item Quantization
+<BOS>
+<a_45>
+<b_67>
+<a_45>
+<b_67>
+<c_13>
+𝓛𝐍𝐓𝐏
+Decoder Block
+Emb Lookup
+Neg
+Neg
+Neg
+MLP
+Path-level PRM Block
+Path Token
+𝓢𝒙𝒕,𝟏
+$%&
+𝓢𝒙𝒕,𝟐
+$%&
+𝓢𝒙𝒕,𝟑
+$%&
+Neg Sampling
+Negative Samples
+Positive Samples
+xt
+Next Item
+<a_45>
+<b_67>
+SID
+<c_13>
+Prefix
+𝓢𝒙𝒕,𝟏
+𝒑𝒐𝒔 = [45]
+𝓢𝒙𝒕,𝟐
+𝒑𝒐𝒔 = [45, 67]
+𝓢𝒙𝒕,𝟑
+𝒑𝒐𝒔 = [45, 67, 13]
+𝓥𝟏\ {𝓢𝒙𝒕,𝟏
+𝐩𝐨𝐬}
+Uniform Samp.
+𝓢𝒙𝒕,𝟏
+𝐧𝐞𝐠,𝟏
+𝓢𝒙𝒕,𝟏
+𝐧𝐞𝐠,𝑵
+𝓢𝒙𝒕,𝟏
+𝐧𝐞𝐠,𝟐
+…
+…
+Lookup
+𝓥𝟐\ {𝓢𝒙𝒕,𝟐
+𝐩𝐨𝐬}
+Uniform Samp.
+𝓢𝒙𝒕,𝟐
+𝐧𝐞𝐠,𝟏
+𝓢𝒙𝒕,𝟐
+𝐧𝐞𝐠,𝑵
+𝓢𝒙𝒕,𝟐
+𝐧𝐞𝐠,𝟐
+…
+…
+Lookup
+𝓥𝟑\ {𝓢𝒙𝒕,𝟑
+𝐩𝐨𝐬}
+Uniform Samp.
+𝓢𝒙𝒕,𝟑
+𝐧𝐞𝐠,𝟏
+𝓢𝒙𝒕,𝟑
+𝐧𝐞𝐠,𝑵
+𝓢𝒙𝒕,𝟑
+𝐧𝐞𝐠,𝟐
+…
+…
+Lookup
+(d) Online Inference Pipeline
+Encoder
+User History
+User Features
+<BOS>
+K+ SID
+Candidates
+Select
+Top K’ < K+ 
+<SID1>
+<SID2>
+<SID1>
+<SID2>
+<SID3>
+Decoder
+Path-level PRM & Top K’ Select
+Output
+Scores
+Scores
+Scores
+𝓛2𝐧𝐟𝐨𝐍𝐂𝐄
+Reward Model Optimization
+𝓛𝒙𝒕,𝟏
+𝐈𝐧𝐟𝐨𝐍𝐂𝐄= -log
+exp{     }
+exp{     } + ∑exp{     }
+𝓛𝒙𝒕,𝟏
+𝐈𝐧𝐟𝐨𝐍𝐂𝐄= -log
+exp{     }
+exp{     } + ∑exp{     }
+𝓛𝒙𝒕,𝟏
+𝐈𝐧𝐟𝐨𝐍𝐂𝐄= -log
+exp{     }
+exp{     } + ∑exp{     }
+(a) Encoder
+(b) Decoder
+(c) Path-level PRM
+Figure 2: Overall framework of Promise. (a) and (b): An encoder-decoder architecture optimized via the NTP loss. (c): The
+Path-level PRM assesses the quality of SID reasoning paths. During training, an InfoNCE loss is used to maximize the score
+of the ground-truth SID path relative to negative paths. (d): An illustration of Model inference. At each generation step, the
+encoder-decoder produces a candidate set of 𝐾+ SIDs. These are then evaluated by the Path-level PRM, which selects the top
+𝐾′ < 𝐾+ optimal tokens to proceed with the next step of autoregressive prediction.
+During the construction of the quantization model, the allocated
+codebook space often far exceeds the number of actual items. As a
+result, not all Semantic ID combinations correspond to real items.
+We refer to paths that map to existing items as valid paths. Let
+V𝑏denote the set of all valid Semantic ID paths of length 𝑏that
+correspond to existing items in the catalog. For a given positive item
+𝑥𝑡with its positive path prefix Spos
+𝑥𝑡,𝑏∈V𝑏at depth 𝑏, we construct
+a negative sample set N𝑥𝑡,𝑏by uniformly sampling 𝑁distinct paths
+from the valid path set, excluding the positive path itself:
+N𝑥𝑡,𝑏= {Sneg,𝑖| Sneg,𝑖∼Uniform(V𝑏\ {Spos
+𝑥𝑡,𝑏}), 𝑖= 1, . . . , 𝑁}.
+(5)
+Thus, the PRM is exposed not only to relevant user-SID combina-
+tions but also to irrelevant ones. The inclusion of these negative
+training samples enables the PRM to recognize erroneous interme-
+diate states during inference.
+3.2.3
+Reward Models Optimization. Based on the above definitions,
+the PRM learns a mapping F : given a user 𝑢, context 𝑐, and a
+candidate SID sequence of length 𝑏(where 1 ≤𝑏≤𝑑), it outputs a
+relevance score for that sequence with respect to the user:
+F : (𝑢,𝑐, [𝑠1, . . . ,𝑠𝑏]) ↦→𝑦∈R.
+(6)
+Note that the proposed process reward mechanism is fundamentally
+agnostic to the specific choice of model architecture implementing
+F .
+For each positive sample 𝑥𝑡, there exists a corresponding positive
+path across the 𝑑Semantic ID layers. Considering the 𝑏-th layer,
+where 1 ≤𝑏≤𝑑, the positive path Spos
+𝑥𝑡,𝑏= [𝑠𝑡,1, . . . , 𝑠𝑡,𝑏] is fed
+into the F module in parallel with 𝑁sampled negative paths. The
+positive logit 𝑦Spos
+𝑥𝑡,𝑏is obtained by F (𝑢,𝑐, Spos
+𝑥𝑡,𝑏). For each negative
+path Sneg ∈N𝑥𝑡,𝑏, we compute its logit 𝑦Sneg = F (𝑢,𝑐, Sneg).
+The InfoNCE loss is employed at depth 𝑏to maximize the logit
+for the positive path relative to the sampled negatives:
+LInfoNCE
+𝑥𝑡,𝑏
+= −log
+exp{𝑦Spos
+𝑥𝑡,𝑏}
+exp{𝑦Spos
+𝑥𝑡,𝑏} + Í
+Sneg∈N𝑥𝑡,𝑏exp{𝑦Sneg} .
+(7)
+We sum the InfoNCE losses across different path-levels:
+LInfoNCE
+𝑥𝑡
+=
+𝑑
+∑︁
+𝑏=1
+LInfoNCE
+𝑥𝑡,𝑏
+.
+(8)
+The next-token prediction task and the PRM task are trained jointly
+in an end-to-end manner. The complete loss function is defined as:
+LTotal
+𝑥𝑡
+= LNTP
+𝑥𝑡
++ LInfoNCE
+𝑥𝑡
+.
+(9)
+3.2.4
+Lightweight PRM Architecture. While the mapping function
+F : (𝑢,𝑐, [𝑠1, . . . ,𝑠𝑏]) ↦→𝑦∈R is architecture-agnostic, we propose
+a specific lightweight, low-latency PRM design for practical deploy-
+ment. This design utilizes cross-attention for GPU-parallelizable
+acceleration, enabling rapid scoring of a large set of candidate
+paths. Furthermore, it reuses encoder-side features, leveraging the
+encoder’s powerful representation capacity to reduce the parameter
+count of the PRM module.
+
+PROMISE: Process Reward Models Unlock Test-Time Scaling Laws in Generative Recommendations
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+For any SID depth𝑏∈{1, . . . ,𝑑} and SID path S = [𝑠·,1, . . . ,𝑠·,𝑏] ∈
+{1, ..., 𝑀}𝑏, we define 𝑃S as the representation vector correspond-
+ing to this path. Each path is mapped to a unique embedding vector,
+which serves as the target-side input for the path-level PRM:
+𝑃S = EmbLookup([𝑠·,1, . . . , 𝑠·,𝑏]).
+(10)
+Note that we do not use the raw SID tokens for representation.
+Instead, to ensure efficiency, we represent them with a single token
+in order to reduce attention computation.
+We employ a path-level cross-attention mechanism to evaluate
+any intermediate path. Specifically, the intermediate path repre-
+sentation 𝑃S serves as the query. The final encoder output 𝐸(𝐿),
+which captures rich user interest information through multiple
+self-attention layers over the historical sequence—is reused as the
+key and value in this component, ensuring efficient feature reuse
+alongside the main generation task.
+We stack 𝐹layers of cross-attention with residual connections,
+each followed by a feed-forward network. For layer 𝑖∈{1, ..., 𝐹}:
+𝑃(𝑖)′
+S
+= 𝑃(𝑖)
+S + CrossAttn(𝑃(𝑖−1)
+S
+, 𝐸(𝐿), 𝐸(𝐿)),
+𝑃(𝑖)
+S = 𝑃(𝑖)′
+S
++ FFN(RMSNorm(𝑃(𝑖)′
+S )).
+(11)
+After processing through multiple stacked layers of path-level
+cross-attention, the candidate path representation has been suf-
+ficiently interacted with the user representation. A subsequent
+Multi-Layer Perceptron (MLP) then outputs a single scalar logit.
+This logit serves as the reward score for the path S = [𝑠·,1, . . . ,𝑠·,𝑏],
+conditioned on 𝑢and 𝑐:
+𝑦S = 𝑀𝐿𝑃(𝑃(𝐹)
+S ).
+(12)
+3.3
+Inference Strategy
+BOS
+BOS
+Output
+Output
+Output
+Output
+Path retrieved
+by generation
+Path eliminated
+by generation
+Path accepted
+by PRM
+Path rejected
+by PRM
+Traditional Beam Search
+PRM-guided Beam Search
+Figure 3: Illustration of our test-time scaled beam search
+method compared with traditional beam search for SID gen-
+eration.
+Pioneering research in LLMs has demonstrated that by reason-
+ably increasing test-time computational resources, smaller models
+can surpass the capabilities of larger ones. Similarly, after construct-
+ing our process reward model, we can enhance the capability of
+the generative recommendation model by increasing the number
+of candidates considered at test time.
+Algorithm 1 Beam Search with Path-level PRM
+1: Initialize B(0) ←{[BOS]}
+{Initial beam with BOS token}
+2: S(0) ←{0}
+{Initial scores}
+3: Compute encoder output 𝐸(𝐿) = 𝐸([𝑥1, ...,𝑥𝑡−1])
+4: for 𝑏= 1 to 𝑑do
+5:
+C ←∅
+{Candidate paths}
+6:
+S𝐶←∅
+{Candidate scores}
+7:
+for each path P ∈B(𝑏−1) with score 𝑠∈S(𝑏−1) do
+8:
+Compute decoder output 𝐷(𝐿) for P
+9:
+Compute distribution 𝑝(𝑠𝑏) = softmax(𝐷(𝐿)
+𝑏
+𝑇𝐶𝑏)
+10:
+Extract top-𝐾tokens {(𝑠(𝑘)
+𝑏
+, 𝑝𝑘)}𝐾
+𝑘=1 where 𝑝𝑘= 𝑝(𝑠(𝑘)
+𝑏
+)
+11:
+for 𝑘= 1 to 𝐾do
+12:
+P′ ←P ⊕𝑠(𝑘)
+𝑏
+{Path extension}
+13:
+𝑠′ ←𝑠+ log𝑝𝑘
+{Score update}
+14:
+C ←C ∪{P′}
+15:
+S𝐶←S𝐶∪{𝑠′}
+16:
+end for
+17:
+end for
+18:
+Select top-𝐾+ paths candidates C𝐾+ from C based on S𝐶
+19:
+Use path-level PRM Eq. (10 - 12) to calculate path scores
+YC𝐾+ on paths candidates C𝐾+
+20:
+Select top-𝐾′ paths candidates C𝐾′ from C𝐾+ based on YC𝐾+
+{Rank intermediate path qualities}
+21:
+Update B(𝑏) ←{P(1), ..., P(𝐾′)}
+22:
+Update S(𝑏) ←{𝑠(1), ...,𝑠(𝐾′)}
+23: end for
+24: return B(𝑑)
+{Top-𝐾′ complete paths of length 𝑑}
+Specifically, in generative recommenders without PRMs, stan-
+dard beam search is typically employed with a fixed beam size,
+denoted as 𝐾. After computing the dot product between the code-
+book and the decoder’s output vector, the top-𝐾most promising
+paths are selected for the next decoding step. Simply increasing
+𝐾would allow the model to consider more SID path possibilities,
+but it would also linearly increase the computational complexity
+of each decoder step, making it an impractical test-time scaling
+strategy.
+Our designed lightweight path-level PRM can efficiently and in
+parallel evaluate the scores of intermediate reasoning trajectories.
+As shown in Algorithm. 1, when the beam size is increased to
+𝐾+ ≫𝐾, the path-level PRM can serve as a process reward model
+to score these paths and select a much smaller subset 𝐾′ ≪𝐾+ in
+descending order of scores to feed into the subsequent decoding
+step. In particular, if we set 𝐾′ to match the original beam size (i.e.,
+𝐾′ = 𝐾), the computational resources on the decoder side remain
+unchanged before and after scaling. The only additional cost comes
+from the lightweight cross-attention computation. This allows for
+a significant improvement in the quality of generation at each step,
+and consequently in the final recommendation accuracy, with only
+a marginal increase in inference cost.
+In Section 4, we provide a detailed analysis of the effectiveness
+of this test-time scaling scheme. Subsequent empirical experiments
+verify that the additional computation introduced by the path-level
+cross attention is negligible compared to the entire generative de-
+coding process, ensuring efficient inference-time scaling.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Guo et al.
+Table 1: Performance of Promise compared with baselines on public datasets. Bold indicates the best result, underline indicates
+the second best. Baseline results are taken from the original papers or reported under identical settings [9, 26]. Experiments
+show that the proposed method outperforms baselines in Recall@k and NDCG@k (𝑘∈{5, 10}).
+Methods
+Sports and Outdoors
+Beauty
+Recall@5
+NDCG@5
+Recall@10
+NDCG@10
+Recall@5
+NDCG@5
+Recall@10
+NDCG@10
+Traditional
+GRU4REC [10]
+0.0129
+0.0086
+0.0204
+0.0110
+0.0164
+0.0099
+0.0283
+0.0137
+Caser [34]
+0.0116
+0.0072
+0.0194
+0.0097
+0.0205
+0.0131
+0.0347
+0.0176
+HGN [23]
+0.0189
+0.0120
+0.0313
+0.0159
+0.0325
+0.0206
+0.0512
+0.0266
+S3-Rec [49]
+0.0251
+0.0161
+0.0385
+0.0204
+0.0387
+0.0244
+0.0647
+0.0327
+Bert4Rec [31]
+0.0115
+0.0075
+0.0191
+0.0099
+0.0203
+0.0124
+0.0347
+0.0170
+SASRec [12]
+0.0233
+0.0154
+0.0350
+0.0192
+0.0387
+0.0249
+0.0605
+0.0318
+Generative
+TIGER [26]
+0.0264
+0.0181
+0.0400
+0.0225
+0.0454
+0.0321
+0.0648
+0.0384
+HSTU [40]
+0.0258
+0.0165
+0.0414
+0.0215
+0.0469
+0.0314
+0.0704
+0.0389
+ActionPiece [9]
+0.0316
+0.0205
+0.0500
+0.0264
+0.0511
+0.0340
+0.0775
+0.0424
+Promise
+0.0450
+0.0296
+0.0689
+0.0373
+0.0536
+0.0345
+0.0821
+0.0437
+Improv.
++42.41%
++44.39%
++37.80%
++42.19%
++4.90%
++1.47%
++5.60%
++3.07%
+4
+Experiments
+We conduct extensive empirical experiments on both mass real
+industrial data and public benchmarks to answer the following
+research questions:
+RQ1: How well does our proposed generative recommender with
+process reward mechanism outperform strong discriminative and
+generative recommendation baselines?
+RQ2: Can online A/B tests in a real industrial environment demon-
+strate positive user feedback from our method?
+RQ3: How does the process reward mechanism help mitigate se-
+mantic drift?
+RQ4: How does PRM contribute to overall performance at each
+step?
+RQ5: Are the test-time scaling laws in generative recommenders
+validated?
+RQ6: Is test-time scaling via the path-level PRM more efficient than
+simply scaling up model parameters?
+RQ7: How do hyper-parameter settings affect the model perfor-
+mance?
+4.1
+Offline Public Dataset Experiments (RQ1)
+4.1.1
+Datasets. The Amazon Review dataset [24] is commonly
+used as a benchmark for generative recommenders. It contains
+user reviews and corresponding item metadata from Amazon span-
+ning from May 1996 to July 2014. The dataset includes multiple
+categories; we select the Beauty and Sports and Outdoors cate-
+gories for experiments. For data preprocessing, as well as training,
+validation, and test set splitting, we follow the same protocol as
+TIGER [26]. Users with fewer than five reviews are filtered out.
+User interaction sequences are sorted chronologically; the last item
+in each sequence is held out for testing, the second-to-last item is
+used for validation, and the remaining items are used for model
+training.
+4.1.2
+Baselines. We select baselines from two perspectives. First,
+traditional sequential modeling methods include:
+• GRU4REC [10]: Classic sequential modeling approach based on
+RNNs.
+• Caser [34]: A sequential recommendation model that employs
+convolutional operations to capture user preferences.
+• HGN [23]: Enhancing traditional sequential recommendation
+through an efficient hierarchical gating mechanism.
+• S3-Rec [49]: Improving sequential recommendation capability
+by using self-supervised pretraining to enrich feature represen-
+tations.
+• Bert4Rec [31]: A model that employs bidirectional self-attention
+to model user behavior sequences.
+• SASRec [12]: Causal self-attentions for next-item predictions
+with binary cross-entropy loss.
+Secondly, generative recommendation methods include:
+• TIGER [26]: TIGER adopts a Transformer-based sequence-to-
+sequence approach, in which the decoder autoregressively pre-
+dicts Semantic IDs of the target item.
+• HSTU [40]: A model for observing scaling laws in industrial
+recommendation scenarios.
+• ActionPiece [9]: ActionPiece explicitly incorporates contextual
+information when tokenizing action sequences.
+4.1.3
+Implementation details. We employ RQ-VAE to quantize items
+into a 3-level codebook with size 𝑀= 256. The model is trained us-
+ing the Adam optimizer with a learning rate of 0.001 for 200 epochs.
+Early stopping is applied with a patience of 20. The checkpoint
+achieving the best validation performance is used for testing. The
+input sequence length for the encoder is set to 40. The hidden size
+is 256.
+4.1.4
+Metrics. Following Rajput et al. [26], we employ Recall@𝑘
+and NDCG@𝑘for evaluation, specifically at 𝑘= 5 and 𝑘= 10.
+4.1.5
+Results. Experimental results are illustrated in Table. 1. Tradi-
+tional sequential modeling methods perform relatively weaker than
+generative approaches. Among generative recommendation meth-
+ods, Semantic-ID-based approaches, owing to their coarse-to-fine
+generation scheme, achieve better results.
+
+PROMISE: Process Reward Models Unlock Test-Time Scaling Laws in Generative Recommendations
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 2: Overall performance on industrial-scale dataset. The best results are in bold. The second-best are underlined. Our
+method significantly outperforms all baselines (paired t-test, 𝑝< 0.05).
+Method
+Recall@100
+NDCG@100
+Recall@500
+NDCG@500
+Recall@1000
+NDCG@1000
+GRank [33]
+0.1010
+0.00472
+0.2396
+0.01089
+0.3178
+0.01422
+MPFormer [32]
+0.0706
+0.00331
+0.1581
+0.00694
+0.2010
+0.00843
+MISS [8]
+0.0844
+0.00283
+0.2033
+0.00741
+0.2441
+0.00892
+GPRP [45]
+0.0414
+0.00147
+0.0661
+0.00299
+0.0929
+0.00415
+Kuaiformer [21]
+0.0622
+0.00293
+0.1388
+0.00625
+0.1761
+0.00796
+CRM [20]
+0.0409
+0.00215
+0.0977
+0.00485
+0.1437
+0.00683
+Promise (𝐾+ = 4000)
+0.1494 (+47.92%)
+0.00652 (+38.14%)
+0.2836 (+18.36%)
+0.01231 (+13.04%)
+0.3358 (+5.66%)
+0.01445 (+1.62%)
+Promise (𝐾+ = 6000)
+0.1609 (+59.31%)
+0.00663 (+40.47%)
+0.3017 (+25.92%)
+0.01272 (+16.80%)
+0.3637 (+14.44%)
+0.01504 (+5.77%)
+Compared with these strong Semantic-ID-based baselines, Promise,
+through its process-reward mechanism and test-time scaling strat-
+egy, amplifies the benefits of Semantic-ID-based generative recom-
+mendation. After effectively addressing semantic drift, our model
+demonstrates state-of-the-art performance. Against the best base-
+line, ActionPiece [9], Promise shows superior results across dif-
+ferent datasets and metrics. This improvement is attributed to the
+proposed path-level PRM, which mitigates the semantic-drift issue
+overlooked in conventional beam search, reduces error accumula-
+tion during search, and thereby leads to promising experimental
+outcomes.
+4.2
+Industrial-scale Experiments (RQ1)
+4.2.1
+Datasets. Although our method shows improvements on
+public datasets, real-world industrial environments involve sig-
+nificantly larger data scales, longer user sequences, and more se-
+vere exposure bias, meaning that gains on public benchmarks may
+not fully reflect practical value. Therefore, we conduct additional
+performance evaluations on Kuaishou—one of the world’s largest
+short-video platforms.
+We train our model (including baselines) via online learning
+using real user logs from the Kuaishou app. These logs cover over
+400 million daily active users, generate approximately 50 billion
+user interactions per day, and involve more than 100 million items
+optimized daily by the model. To handle such a large item corpus,
+we quantize their multi-modal representations using Residual K-
+means [22] with a tokenizer of depth 𝑑= 3 and codebook size
+𝑀= 8192.
+Furthermore, we will later present results from online A/B tests
+conducted on real users to further validate the practical benefits of
+Promise in industrial settings.
+4.2.2
+Baselines. We compare the proposed method with six pub-
+licly published recommendation models that have been fully de-
+ployed on the industrial environments:
+• GRank [33]: A structured-index-free retrieval paradigm with an
+end-to-end ranking module.
+• MPFormer [32]: A transformer-based recommendation model
+employing multi-objective estimation.
+• MISS [8]: A multi-modal tree-based retrieval integrating both
+collaborative and multi-modal sequence search.
+• GPRP [45]: A model that addresses selection biases in cascaded
+recommendation systems.
+• Kuaiformer [21]: A transformer-based approach using next-
+token prediction and Approximate Nearest Neighbor search.
+• CRM [20]: A transformer-based retrieval model with controllable
+conditioning.
+4.2.3
+Implementation Details. The hidden size is set to 1024. In
+PRM-guided beam search, the global beam size 𝐾is set equal to 𝐾′
+(𝐾= 𝐾′ = 1000). Regarding the expanded candidate size 𝐾+, we
+report results for both 4000 and 6000. The user sequence length is
+256. The numbers of encoder and decoder blocks are set to 4, while
+the number of PRM blocks is set to 1 to ensure inference efficiency.
+4.2.4
+Metrics. We use Recall@𝑘and NDCG@𝑘to evaluate. Since
+models are often required to return hundreds to thousands of items
+in online production environments, we set 𝑘∈{100, 500, 1000}.
+4.2.5
+Results. Experimental results are reported in Tab. 2. From
+these results, we observe that:
+• Promise consistently outperforms all baselines. Compared
+to the strongest baseline, relative improvements reach 47.92%
+and 59.31% in Recall@100 for 𝐾+ = 4000 and 𝐾+ = 6000, respec-
+tively. This indicates that the proposed path-level PRM, serving
+as a process reward model, can more accurately capture user
+preferences and improve recommendation metrics.
+• Promise exhibits greater advantages at smaller retrieval
+sizes. In particular, the improvement in NDCG@100 over the
+strongest baseline is as high as 40.47%. This shows that Promise
+effectively ranks items of interest higher in the generated result
+set, demonstrating the strong discriminative capability of the
+path-level PRM.
+4.3
+Online A/B Test Result (RQ2)
+To validate the practical value of the proposed method in a real
+industrial setting, we conducted online A/B tests on two short-video
+applications: Kuaishou and Kuaishou Lite. We allocate 5% of the
+total users (around 20 million users) to the experimental group and
+another 5% to the control group for each app. The control group
+used a generative recommendation model with a traditional beam
+search, while the experimental group applied the PRM with a PRM-
+guided search. Detailed configurations are provided in Section 4.6.
+The experiment lasted for 7 days.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Guo et al.
+Table 3: Online A/B Test Results of Promise. Confidence intervals (CI) are calculated with 0.05 significance level.
+Apps
+Total App
+Usage Time
+Total App
+Usage Time (CI)
+App Usage Time
+per User
+App Usage Time
+Per User (CI)
+Total Video
+Watch Time
+Watch Time
+per Video View
+Kuaishou
++0.121%
+[+0.04%, +0.20%]
++0.120%
+[+0.06%, +0.18%]
++0.431%
++0.440%
+Kuaishou Lite
++0.131%
+[+0.03%,+ 0.23%]
++0.160%
+[+0.07%,+ 0.25%]
++0.398%
++0.296%
+Results are presented in Table 3, showing that Promise signifi-
+cantly increases the time users spend watching videos within the
+apps. At a 95% confidence level, users in the experimental group
+exhibited significantly higher app usage time compared to the base-
+line. Specifically, on Kuaishou Lite, we observed an increase in total
+app usage time by 0.131% and in app usage time per user by
+0.160%. These results strongly demonstrate the practical value of
+our method in industrial recommendation scenarios.
+4.4
+Ablation Studies (RQ3 & RQ4)
+Table 4: Ablation experiment results on industrial dataset.
+The best results are highlighted in bold. 𝐾+
+𝑏denotes the size
+of the candidate set scored by the PRM at the 𝑏-th Semantic
+ID generation step. If no PRM is applied, it is marked as "-";
+otherwise, the candidate set size is set to 𝐾+
+𝑏= 4000.
+ID
+PRM Settings
+Performance
+K+
+1
+K+
+2
+K+
+3
+HRecall@1
+@1000
+HRecall@2
+@1000
+HRecall@3
+@1000
+(1)
+-
+-
+-
+0.9238
+0.3718
+0.2296
+(2) 4000
+-
+-
+0.9431
+0.3738
+0.2322
+(3)
+-
+4000
+-
+0.9238
+0.4435
+0.2544
+(4)
+-
+-
+4000
+0.9238
+0.3718
+0.2650
+(5)
+-
+4000
+4000
+0.9238
+0.4435
+0.3199
+(6) 4000
+-
+4000
+0.9431
+0.3738
+0.2746
+(7) 4000
+4000
+-
+0.9431
+0.4711
+0.2633
+(8) 4000
+4000
+4000
+0.9431
+0.4711
+0.3358
+We conduct ablation experiments on an industrial dataset, as
+presented in Table 4. The global beam size is fixed at 𝐾= 1000
+across all settings. Our experiments comprehensively explore all
+possible configurations: applying no discrimination at any step,
+applying it at only one step, at two steps, and at all three steps.
+4.4.1
+Metrics. We propose Hierarchical Recall (HRecall@𝑏@𝑘)
+to measure semantic drift by evaluating the rate at which recom-
+mendation performance degrades as the intermediate reasoning
+step progresses. This definition is generalized from Guo et al. [8]:
+Assume the beam search runs for 𝑑steps, and let S be the set of
+ground-truth items. Define S(𝑏) = {𝑠[: 𝑏] | 𝑠∈S} as the set of
+ground-truth prefixes at step 𝑏(where 𝑏≤𝑑). Let B(𝑏) be the set
+of 𝑘paths retained by the beam at step 𝑏. The hierarchical recall at
+step 𝑏is defined as:
+HRecall@𝑏@𝑘= |B(𝑏) Ñ S(𝑏) |
+|S(𝑏) |
+.
+(13)
+Based on this metric, we can fairly compare the generation quality
+at intermediate steps across different configurations. When 𝑏= 𝑑,
+the hierarchical recall is equivalent to the standard recall metric,
+i.e., HRecall@𝑑@𝑘= Recall@𝑘.
+4.4.2
+Results. Overall, the results in Table 4 confirm that applying
+the PRM at each step improves performance.
+For RQ3, which examines whether the proposed method allevi-
+ates semantic drift by filtering erroneous intermediate reasoning
+steps, we analyze the comparisons between configurations. Com-
+paring (1) vs. (2)–(4) reveals that reducing intermediate reasoning
+error at a single step leads to improved overall recommendation
+performance. Similarly, results for (5)–(7), where the PRM is ac-
+tive at two steps, show further gains compared to activating it at
+only one step. (8), where the PRM is applied at all three reasoning
+steps, continues to improve over (5)–(7). These results demonstrate
+that error accumulation in Semantic ID generation is effectively
+mitigated, confirming that the semantic drift can be resolved.
+Regarding RQ4, which aims to verify whether the proposed PRM
+contributes to overall performance at each step of multi-step Se-
+mantic ID reasoning, the ablation study confirms that our designed
+process reward mechanism is effective at every reasoning step. Its
+cumulative application leads to consistent improvements in recom-
+mendation performance.
+4.5
+Validation of Test-time Scaling Laws (RQ5)
+To validate the test-time scaling laws in generative recommendation
+systems—namely, that increasing computation during inference im-
+proves recommendation performance, we progressively increase
+the number of path candidates 𝐾+ following Algorithm 1 and ob-
+serve the changes in HRecall@𝑏@1000 on industrial dataset, as
+shown in Fig. 4. Here we set 𝐾= 𝐾′ = 1000. The gray line rep-
+resents the baseline performance under traditional beam search.
+Additionally, experiments with brute-force increasing the global
+beam size 𝐾under traditional beam search are included and marked
+with red triangles in the figure.
+From Fig. 4, improvements in HRecall@𝑏@1000 are observed
+for 𝑏∈{1, 2, 3} as 𝐾+ increases. This indicates that the proposed
+path-level PRM can select an increasing number of optimal paths
+from the candidate set when 𝐾+ is enlarged. The gains at the second
+and third steps are particularly significant: for example, with 𝐾+ =
+6000, HRecall@3@1000 reaches 36.37%, far exceeding the baseline
+value of 22.98%. Importantly, the global beam size remains fixed at
+𝐾= 1000, meaning no additional computational resources for the
+decoder. The only increased computation lies in the lightweight
+path-level PRM. A detailed analysis of the computational cost of
+the path-level PRM is provided in Section 4.6.
+In contrast, brute-force scaling of 𝐾yields only marginal metric
+improvements while significantly increasing the computational
+load of self-attention and cross-attention in the decoder. Therefore,
+
+PROMISE: Process Reward Models Unlock Test-Time Scaling Laws in Generative Recommendations
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Test-time Scaling
+Brute-force Beam Scaling
+Baseline Reference
+1000 2000 3000 4000 5000 6000
+Expanded Beam Size (K + )
+23.0%
+25.7%
+28.4%
+31.1%
+33.8%
+36.5%
+HRecall@3@1000 (%)
+22.96%
+30.58%
+32.64% 33.58% 34.61%
+36.37%
+25.14%
+25.97%
+1000 2000 3000 4000 5000 6000
+Expanded Beam Size (K + )
+37.0%
+39.6%
+42.2%
+44.8%
+47.4%
+50.0%
+HRecall@2@1000 (%)
+37.18%
+43.75% 44.30%
+47.11% 48.11%
+49.88%
+39.11%
+40.40%
+1000 2000 3000 4000 5000 6000
+Expanded Beam Size (K + )
+92.2%
+92.7%
+93.2%
+93.7%
+94.2%
+94.7%
+HRecall@1@1000 (%)
+92.38%
+93.17%
+93.66%
+94.31% 94.42% 94.50%
+92.38%
+92.38%
+Figure 4: Test-time scaling laws can be validated by expanding 𝐾+ in Promise. The red annotations indicate results of brute-force
+increasing the global beam size 𝐾, which significantly increases decoder computation. In contrast, our lightweight path-level
+PRM enables significant metric improvements through test-time scaling without adding decoder computation.
+the path-level PRM in Promise successfully validates the test-time
+scaling laws.
+4.6
+Analysis of Inference Efficiency (RQ6)
+Parameter Scaling
+Test-time Scaling
+2.5e11 3.0e11 3.5e11 4.0e11 4.5e11
+FLOPs
+21.5%
+24.1%
+26.7%
+29.3%
+31.9%
+34.5%
+HRecall@3@1000 (%)
+22.96%
+34.37%
+26.67%
+Figure 5: Comparison of test-time scaling with parameter
+scaling.
+4.6.1
+Test-time Scaling vs. Parameter Scaling. Parameter scaling
+(increasing model size) is commonly used to scale recommendation
+models [40, 46, 48]. We argue that test-time scaling offers greater
+inference efficiency. It can match the performance of parameter
+scaling with lower inference FLOPs.
+Figure 5 presents a comparison between test-time scaling and
+parameter scaling on our industrial dataset for generative recom-
+menders. Both methods start from an identical base architecture
+with 𝐾= 1000. Test-time scaling involves keeping the model pa-
+rameters fixed while introducing the PRM and gradually increasing
+𝐾+ to improve performance. Parameter scaling fixes the beam size
+but increases model size. The horizontal axis shows the inference
+FLOPs, while the vertical axis shows HRecall@3@1000.
+Our findings indicate that test-time scaling is more efficient. It
+achieves better performance at equal FLOPs, or reaches the same
+performance with fewer FLOPs. This demonstrates the superior
+efficiency of test-time scaling over enlarging model parameters.
+4.7
+Hyper-Parameter Analysis (RQ7)
+b = 3
+b = 2
+128
+256
+1024
+User Sequence Length
+32.5%
+36.0%
+39.5%
+43.0%
+46.5%
+50.0%
+HRecall@b@1000 (%)
+32.68%
+33.58%
+34.29%
+44.40%
+47.11%
+48.92%
+0.4×
+1×
+2.5×
+5×
+Parameter Size
+31.5%
+35.5%
+39.5%
+43.5%
+47.5%
+51.5%
+HRecall@b@1000 (%)
+31.68% 33.58%
+38.07% 39.01%
+45.53% 47.11%
+50.10% 50.91%
+Figure 6: Impact of the model parameter size and the length
+of user sequence.
+4.7.1
+Model Parameter Size. We study the impact of model scale
+by analyzing the difference in HRecall@𝑏@1000 (𝑏∈{2, 3}) across
+various parameter sizes on the industrial dataset. As illustrated in
+Fig. 6, model performance improves consistently with increased
+parameter size. This demonstrates that the proposed method scales
+effectively with model capacity, suggesting the advantage of our
+PRM mechanism in generative recommenders.
+4.7.2
+User Sequence Length. In the industrial dataset, we inves-
+tigate the impact of the length of user sequences, shown in Fig.
+6. Model performance improves steadily as the sequence length
+increases. This can be attributed to the fact that the encoder repre-
+sentations are utilized by both the downstream generative task and
+the reward task. Richer information from the encoder effectively
+enhances recommendation performance.
+5
+System Deployment
+We deployed the version with 𝐾+ = 4000 online. To keep it light-
+weight, we use only one PRM block. All queries are processed in
+parallel during cross-attention to maximize GPU utilization. We
+reduce the number of attention heads in the PRM to one-quarter of
+that in the main generation module. During inference, the decoder
+generates a larger candidate set (𝐾+ = 4000) compared to the origi-
+nal target size (𝐾= 1000), which increases the computational load
+for Top-K operations on the GPU. We mitigate this by introducing
+Radix Top-K optimization [16], which significantly speeds up top-k
+selection, resulting in lower latency for this step even with the
+expanded candidate set. In summary, with the aforementioned opti-
+mizations, the total parameter size increases by only 15% compared
+to the version without PRM, while the inference latency increases
+by only 10%.
+6
+Related Work
+6.1
+Generative Recommendation
+Generative recommendation models perform autoregressive gen-
+eration on user sequences to predict the next items a user will
+interact with. Research in this domain can be broadly categorized
+into three main areas: model architecture, item tokenization, and
+reward mechanism. Regarding model architecture, TIGER [26] inno-
+vatively adopts a T5-based encoder-decoder framework for sequen-
+tial recommendation; HSTU [40] further validates the scalability of
+decoder-only architectures; OneRec [46] proposes an end-to-end
+architecture to replace traditional cascaded recommenders; OneRec
+V2 [48], introduces a lazy decoder structure to improve compu-
+tational efficiency. For item tokenization, common methods for
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Guo et al.
+generating Semantic IDs include RQ-VAE [14], Residual K-means
+[22], PQ [11], and FSQ [25]. Furthermore, several works introduce
+reward mechanisms to align with specific preferences: S-DPO [5]
+enhances alignment with personalized ranking by improving the
+selection of preference data; OneLoc [38] enables the estimation of
+an item’s potential GMV; Rec-R1 [18] directly optimizes the model
+using feedback from a fixed, black-box recommender system.
+However, the exposure bias problem in NTP optimization is
+neglected in existing works. To address this, we are the first to
+propose a process reward mechanism for generative recommenda-
+tion. It serves not only as a novel reward strategy but also as a new
+test-time scaling paradigm, yielding promising results.
+6.2
+Process Reward Model
+In LLMs, test-time scaling based on process reward modeling has
+been shown to significantly enhance performance on mathematical
+reasoning or multi-step decision-making tasks. Lightman et al. [17]
+successfully demonstrates that during inference, a per-step reward
+from a Process Reward Model (PRM) is more effective than the
+sparser reward from an Outcome Reward Model (ORM). Math-
+Shepherd [36] significantly improves performance by re-ranking
+the solution steps generated by LLMs for mathematical problems.
+Setlur et al. [27] propose Process Advantage Verifiers (PAVs) to
+quantify the quality of individual steps in multi-step reasoning.
+Zhang et al. [42] innovatively introduces an entropy-regularized
+process reward model. Snell et al. [30] confirms the feasibility of
+test-time scaling for LLMs, showing that a smaller language model,
+with additional inference-time computation, can surpass a model
+with 14 times more parameters on specific tasks. ThinkPRM [13]
+further optimize the PRM supervision paradigm. However, in the
+context of recommendation tasks, applying test-time scaling to
+improve the performance of generative recommendation has not
+yet been explored.
+7
+Conclusion
+In this work, we addressed the critical challenge of Semantic Drift
+in generative recommendation by introducing Promise, a frame-
+work powered by Process Reward Models. By providing dense, step-
+by-step feedback during the hierarchical generation of Semantic
+IDs, Promise effectively mitigates error accumulation and expo-
+sure bias. Our core innovation—the Path-level PRM coupled with
+PRM-guided Beam Search—not only enhances recommendation
+precision but also unlocks powerful Test-Time Scaling Laws. This
+allows for smaller models to outperform larger ones at a fraction
+of the serving cost.
+Experimental results across public benchmarks and real-world
+industrial environments confirm its effectiveness. Online A/B test
+results prove their practical value in industrial scenarios. We believe
+that the paradigm of test-time scaling through process supervision
+offers a promising and efficient direction for the next generation of
+industrial-scale recommender systems.
+References
+[1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Floren-
+cia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal
+Anadkat, et al. 2023. Gpt-4 technical report. arXiv preprint arXiv:2303.08774
+(2023).
+[2] Samy Bengio, Oriol Vinyals, Navdeep Jaitly, and Noam Shazeer. 2015. Scheduled
+Sampling for Sequence Prediction with Recurrent Neural Networks. In NeurIPS.
+[3] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong Xiao,
+Bowen Xue, Xuxin Zhang, Ying Yang, et al. 2025. Onesearch: A preliminary
+exploration of the unified end-to-end generative framework for e-commerce
+search. arXiv preprint arXiv:2509.03236 (2025).
+[4] Mark Chen. 2021. Evaluating large language models trained on code. arXiv
+preprint arXiv:2107.03374 (2021).
+[5] Yuxin Chen, Junfei Tan, An Zhang, Zhengyi Yang, Leheng Sheng, Enzhi Zhang,
+Xiang Wang, and Tat-Seng Chua. 2024. On softmax direct preference optimization
+for recommendation. Advances in Neural Information Processing Systems 37 (2024),
+27463–27489.
+[6] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[7] Nouha Dziri, Ximing Lu, Melanie Sclar, Xiang Lorraine Li, Liwei Jiang, Bill Yuchen
+Lin, Sean Welleck, Peter West, Chandra Bhagavatula, Ronan Le Bras, et al. 2023.
+Faith and fate: Limits of transformers on compositionality. Advances in Neural
+Information Processing Systems 36 (2023), 70293–70332.
+[8] Chengcheng Guo, Junda She, Kuo Cai, Shiyao Wang, Qigen Hu, Qiang Luo, Guorui
+Zhou, and Kun Gai. 2025. MISS: Multi-Modal Tree Indexing and Searching with
+Lifelong Sequential Behavior for Retrieval Recommendation. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+5683–5690.
+[9] Yupeng Hou, Jianmo Ni, Zhankui He, Noveen Sachdeva, Wang-Cheng Kang, Ed H
+Chi, Julian McAuley, and Derek Zhiyuan Cheng. [n. d.]. ActionPiece: Contextually
+Tokenizing Action Sequences for Generative Recommendation. In Forty-second
+International Conference on Machine Learning.
+[10] Dietmar Jannach and Malte Ludewig. 2017. When recurrent neural networks
+meet the neighborhood for session-based recommendation. In Proceedings of the
+eleventh ACM conference on recommender systems. 306–310.
+[11] Herve Jegou, Matthijs Douze, and Cordelia Schmid. 2010. Product quantization
+for nearest neighbor search. IEEE transactions on pattern analysis and machine
+intelligence 33, 1 (2010), 117–128.
+[12] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[13] Muhammad Khalifa, Rishabh Agarwal, Lajanugen Logeswaran, Jaekyeom Kim,
+Hao Peng, Moontae Lee, Honglak Lee, and Lu Wang. 2025. Process Reward
+Models That Think. arXiv:2504.16828 [cs.LG] https://arxiv.org/abs/2504.16828
+[14] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive image generation using residual quantization. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition. 11523–11532.
+[15] Xiaopeng Li, Bo Chen, Junda She, Shiteng Cao, You Wang, Qinlin Jia, Haiying He,
+Zheli Zhou, Zhao Liu, Ji Liu, Zhiyang Zhang, Yu Zhou, Guoping Tang, Yiqing Yang,
+Chengcheng Guo, Si Dong, Kuo Cai, Pengyue Jia, Maolin Wang, Wanyu Wang,
+Shiyao Wang, Xinchen Luo, Qigen Hu, Qiang Luo, Xiao Lv, Chaoyi Ma, Ruiming
+Tang, Kun Gai, Guorui Zhou, and Xiangyu Zhao. 2025. A Survey of Generative
+Recommendation from a Tri-Decoupled Perspective: Tokenization, Architecture,
+and Optimization. Preprints (December 2025). doi:10.20944/preprints202512.0203.
+v1
+[16] Yifei Li, Bole Zhou, Jiejing Zhang, Xuechao Wei, Yinghan Li, and Yingda Chen.
+2025. RadiK: Scalable and Optimized GPU-Parallel Radix Top-K Selection. CoRR
+(2025).
+[17] Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker,
+Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. 2023.
+Let’s verify step by step. In The Twelfth International Conference on Learning
+Representations.
+[18] Jiacheng Lin, Tian Wang, and Kun Qian. 2025. Rec-r1: Bridging generative large
+language models and user-centric recommendation systems via reinforcement
+learning. arXiv preprint arXiv:2503.24289 (2025).
+[19] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Cheng-
+gang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. 2024. Deepseek-v3
+technical report. arXiv preprint arXiv:2412.19437 (2024).
+[20] Chi Liu, Jiangxia Cao, Rui Huang, Kuo Cai, Weifeng Ding, Qiang Luo, Kun Gai,
+and Guorui Zhou. 2024. CRM: Retrieval Model with Controllable Condition.
+arXiv preprint arXiv:2412.13844 (2024).
+[21] Chi Liu, Jiangxia Cao, Rui Huang, Kai Zheng, Qiang Luo, Kun Gai, and Guorui
+Zhou. 2024. KuaiFormer: Transformer-Based Retrieval at Kuaishou. arXiv preprint
+arXiv:2411.10057 (2024).
+[22] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, et al. 2025. Qarm: Quantitative
+alignment multi-modal recommendation at kuaishou. In Proceedings of the 34th
+ACM International Conference on Information and Knowledge Management. 5915–
+5922.
+[23] Chen Ma, Peng Kang, and Xue Liu. 2019. Hierarchical gating networks for
+sequential recommendation. In Proceedings of the 25th ACM SIGKDD international
+
+PROMISE: Process Reward Models Unlock Test-Time Scaling Laws in Generative Recommendations
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+conference on knowledge discovery & data mining. 825–833.
+[24] Julian McAuley, Christopher Targett, Qinfeng Shi, and Anton Van Den Hengel.
+2015. Image-based recommendations on styles and substitutes. In Proceedings
+of the 38th international ACM SIGIR conference on research and development in
+information retrieval. 43–52.
+[25] Fabian Mentzer, David Minnen, Eirikur Agustsson, and Michael Tschannen. 2023.
+Finite scalar quantization: Vq-vae made simple. arXiv preprint arXiv:2309.15505
+(2023).
+[26] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[27] Amrith Setlur, Chirag Nagpal, Adam Fisch, Xinyang Geng, Jacob Eisenstein,
+Rishabh Agarwal, Alekh Agarwal, Jonathan Berant, and Aviral Kumar. 2024.
+Rewarding Progress: Scaling Automated Process Verifiers for LLM Reasoning.
+arXiv:2410.08146 [cs.LG] https://arxiv.org/abs/2410.08146
+[28] Teng Shi, Chenglei Shen, Weijie Yu, Shen Nie, Chongxuan Li, Xiao Zhang, Ming
+He, Yan Han, and Jun Xu. 2025. LLaDA-Rec: Discrete Diffusion for Parallel Seman-
+tic ID Generation in Generative Recommendation. arXiv preprint arXiv:2511.06254
+(2025).
+[29] Anima Singh, Trung Vu, Nikhil Mehta, Raghunandan Keshavan, Maheswaran
+Sathiamoorthy, Yilin Zheng, Lichan Hong, Lukasz Heldt, Li Wei, Devansh Tandon,
+et al. 2024. Better generalization with semantic ids: A case study in ranking for
+recommendations. In Proceedings of the 18th ACM Conference on Recommender
+Systems. 1039–1044.
+[30] Charlie Snell, Jaehoon Lee, Kelvin Xu, and Aviral Kumar. 2024. Scaling LLM Test-
+Time Compute Optimally can be More Effective than Scaling Model Parameters.
+arXiv:2408.03314 [cs.LG] https://arxiv.org/abs/2408.03314
+[31] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential recommendation with bidirectional encoder rep-
+resentations from transformer. In Proceedings of the 28th ACM international
+conference on information and knowledge management. 1441–1450.
+[32] Yijia Sun, Shanshan Huang, Linxiao Che, Haitao Lu, Qiang Luo, Kun Gai, and
+Guorui Zhou. 2025. MPFormer: Adaptive Framework for Industrial Multi-Task
+Personalized Sequential Retriever. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management. 2832–2841.
+[33] Yijia Sun, Shanshan Huang, Zhiyuan Guan, Qiang Luo, Ruiming Tang, Kun Gai,
+and Guorui Zhou. 2025. GRank: Towards Target-Aware and Streamlined Indus-
+trial Retrieval with a Generate-Rank Framework. arXiv preprint arXiv:2510.15299
+(2025).
+[34] Jiaxi Tang and Ke Wang. 2018. Personalized top-n sequential recommenda-
+tion via convolutional sequence embedding. In Proceedings of the eleventh ACM
+international conference on web search and data mining. 565–573.
+[35] Jonathan Uesato, Nate Kushman, Ramana Kumar, Francis Song, Noah Siegel,
+Lisa Wang, Antonia Creswell, Geoffrey Irving, and Irina Higgins. 2022. Solving
+math word problems with process-and outcome-based feedback. arXiv preprint
+arXiv:2211.14275 (2022).
+[36] Peiyi Wang, Lei Li, Zhihong Shao, Runxin Xu, Damai Dai, Yifei Li, Deli Chen, Yu
+Wu, and Zhifang Sui. 2024. Math-shepherd: Verify and reinforce llms step-by-step
+without human annotations. In Proceedings of the 62nd Annual Meeting of the
+Association for Computational Linguistics (Volume 1: Long Papers). 9426–9439.
+[37] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi,
+Quoc V Le, Denny Zhou, et al. 2022. Chain-of-thought prompting elicits reasoning
+in large language models. Advances in neural information processing systems 35
+(2022), 24824–24837.
+[38] Zhipeng Wei, Kuo Cai, Junda She, Jie Chen, Minghao Chen, Yang Zeng, Qiang Luo,
+Wencong Zeng, Ruiming Tang, Kun Gai, et al. 2025. Oneloc: Geo-aware generative
+recommender systems for local life service. arXiv preprint arXiv:2508.14646 (2025).
+[39] Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, Tom Griffiths, Yuan Cao, and
+Karthik Narasimhan. 2023. Tree of thoughts: Deliberate problem solving with
+large language models. Advances in neural information processing systems 36
+(2023), 11809–11822.
+[40] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Jiayuan He, et al. 2024. Actions speak louder than
+words: trillion-parameter sequential transducers for generative recommendations.
+In Proceedings of the 41st International Conference on Machine Learning. 58484–
+58509.
+[41] Dan Zhang, Sining Zhoubian, Ziniu Hu, Yisong Yue, Yuxiao Dong, and Jie Tang.
+2024. Rest-mcts*: Llm self-training via process reward guided tree search. Ad-
+vances in Neural Information Processing Systems 37 (2024), 64735–64772.
+[42] Hanning Zhang, Pengcheng Wang, Shizhe Diao, Yong Lin, Rui Pan, Hanze Dong,
+Dylan Zhang, Pavlo Molchanov, and Tong Zhang. 2025. Entropy-Regularized
+Process Reward Model. arXiv:2412.11006 [cs.LG] https://arxiv.org/abs/2412.11006
+[43] Zhenru Zhang, Chujie Zheng, Yangzhen Wu, Beichen Zhang, Runji Lin, Bowen Yu,
+Dayiheng Liu, Jingren Zhou, and Junyang Lin. 2025. The Lessons of Developing
+Process Reward Models in Mathematical Reasoning. arXiv:2501.07301 [cs.CL]
+https://arxiv.org/abs/2501.07301
+[44] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting large language models by integrating
+collaborative semantics for recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). IEEE, 1435–1448.
+[45] Kai Zheng, Haijun Zhao, Rui Huang, Beichuan Zhang, Na Mou, Yanan Niu, Yang
+Song, Hongning Wang, and Kun Gai. 2024. Full stage learning to rank: A unified
+framework for multi-stage systems. In Proceedings of the ACM Web Conference
+2024. 3621–3631.
+[46] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv preprint arXiv:2506.13695 (2025).
+[47] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo,
+Qianqian Wang, Qigen Hu, Rui Huang, Shiyao Wang, Weifeng Ding, Wuchao Li,
+Xinchen Luo, Xingmei Wang, Zexuan Cheng, Zixing Zhang, Bin Zhang, Boxuan
+Wang, Chaoyi Ma, Chengru Song, Chenhui Wang, Di Wang, Dongxue Meng, Fan
+Yang, Fangyu Zhang, Feng Jiang, Fuxing Zhang, Gang Wang, Guowang Zhang,
+Han Li, Hengrui Hu, Hezheng Lin, Hongtao Cheng, Hongyang Cao, Huanjie
+Wang, Jiaming Huang, Jiapeng Chen, Jiaqiang Liu, Jinghui Jia, Kun Gai, Lantao
+Hu, Liang Zeng, Liao Yu, Qiang Wang, Qidong Zhou, Shengzhe Wang, Shihui He,
+Shuang Yang, Shujie Yang, Sui Huang, Tao Wu, Tiantian He, Tingting Gao, Wei
+Yuan, Xiao Liang, Xiaoxiao Xu, Xugang Liu, Yan Wang, Yi Wang, Yiwu Liu, Yue
+Song, Yufei Zhang, Yunfan Wu, Yunfeng Zhao, and Zhanyu Liu. 2025. OneRec
+Technical Report. arXiv:2506.13695 [cs.IR] https://arxiv.org/abs/2506.13695
+[48] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, et al. 2025. Onerec-v2 technical
+report. arXiv preprint arXiv:2508.20900 (2025).
+[49] Kun Zhou, Hui Wang, Wayne Xin Zhao, Yutao Zhu, Sirui Wang, Fuzheng Zhang,
+Zhongyuan Wang, and Ji-Rong Wen. 2020. S3-rec: Self-supervised learning for se-
+quential recommendation with mutual information maximization. In Proceedings
+of the 29th ACM international conference on information & knowledge management.
+1893–1902.
+Received 8 January 2026; revised 8 January 2026; accepted 8 January 2026

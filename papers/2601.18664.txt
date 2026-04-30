@@ -1,0 +1,1423 @@
+S2GR: Stepwise Semantic-Guided Reasoning in Latent Space for
+Generative Recommendation
+Zihao Guo∗
+Kuaishou Technology
+Beijing, China
+guozihao05@kuaishou.com
+Jian Wang∗
+Kuaishou Technology
+Beijing, China
+wangjian29@kuaishou.com
+Ruxin Zhou
+Kuaishou Technology
+Beijing, China
+zhouruxin@kuaishou.com
+Youhua Liu
+Kuaishou Technology
+Beijing, China
+liuyouhua@kuaishou.com
+Jiawei Guo
+Kuaishou Technology
+Beijing, China
+guojiawei03@kuaishou.com
+Jun Zhao
+Kuaishou Technology
+Beijing, China
+zhaojun11@kuaishou.com
+Xiaoxiao Xu
+Kuaishou Technology
+Beijing, China
+xuxiaoxiao05@kuaishou.com
+Yongqi Liu
+Kuaishou Technology
+Beijing, China
+liuyongqi@kuaishou.com
+Kaiqiao Zhan
+Kuaishou Technology
+Beijing, China
+zhankaiqiao@kuaishou.com
+Abstract
+Generative Recommendation (GR) has emerged as a transforma-
+tive paradigm with its end-to-end generation advantages. How-
+ever, existing GR methods primarily focus on direct Semantic ID
+(SID) generation from interaction sequences, failing to activate
+deeper reasoning capabilities analogous to those in large language
+models and thus limiting performance potential. We identify two
+critical limitations in current reasoning-enhanced GR approaches:
+(1) Strict sequential separation between reasoning and generation
+steps creates imbalanced computational focus across hierarchical
+SID codes, degrading quality for SID codes; (2) Generated reason-
+ing vectors lack interpretable semantics, while reasoning paths
+suffer from unverifiable supervision. In this paper, we propose
+stepwise semantic-guided reasoning in latent space (S2GR), a novel
+reasoning enhanced GR framework. First, we establish a robust
+semantic foundation via codebook optimization, integrating item
+co-occurrence relationship to capture behavioral patterns, and load
+balancing and uniformity objectives that maximize codebook uti-
+lization while reinforcing coarse-to-fine semantic hierarchies. Our
+core innovation introduces the stepwise reasoning mechanism in-
+serting thinking tokens before each SID generation step, where each
+token explicitly represents coarse-grained semantics supervised via
+contrastive learning against ground-truth codebook cluster distribu-
+tions ensuring physically grounded reasoning paths and balanced
+computational focus across all SID codes. Extensive experiments
+demonstrate the superiority of S2GR, and online A/B test confirms
+efficacy on large-scale industrial short video platform.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Generative Recommendation, Latent Reasoning
+ACM Reference Format:
+Zihao Guo∗, Jian Wang∗, Ruxin Zhou, Youhua Liu, Jiawei Guo, Jun Zhao,
+Xiaoxiao Xu, Yongqi Liu, and Kaiqiao Zhan. 2018. S2GR: Stepwise Semantic-
+Guided Reasoning in Latent Space for Generative Recommendation. In
+Proceedings of Make sure to enter the correct conference title from your rights
+confirmation email (Conference acronym ’XX). ACM, New York, NY, USA,
+12 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+INTRODUCTION
+Recommendation systems, due to the ability to predict user pref-
+erences and behaviors by analyzing historical interactions, are es-
+sential for enhancing user experiences across platforms such as e-
+commerce, video streaming, and news portals. Recently, generative
+recommendation (GR) has emerged as a transformative paradigm,
+which replaces traditional large item ID space with a set of semantic
+tokens for item representation. By leveraging the content repre-
+sentation capability of semantic tokens and intent understanding
+capacity of generative models, GR enables end-to-end generation
+of items consistent with users’ latent preferences directly from a
+semantic ID (SID) space, which overcomes limitations like objective
+misalignment in traditional multi-stage cascaded pipeline. Despite
+significant advancements in recent work, most existing methods
+primarily concentrate on generating SIDs directly from user in-
+teraction sequences. This constrained computational depth fails
+to effectively activate the generative models’ reasoning potential,
+which have demonstrated significant effectiveness in large language
+models (LLMs).
+Recent efforts have explored latent reasoning paradigms in rec-
+ommendation systems. ReaRec [31], LARES [21], LCR-SER [29],
+*Equal contribution.
+arXiv:2601.18664v2  [cs.IR]  1 Feb 2026
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Zihao Guo∗, Jian Wang∗, Ruxin Zhou, Youhua Liu, Jiawei Guo, Jun Zhao, Xiaoxiao Xu, Yongqi Liu, and Kaiqiao Zhan
+Encoder
+…
+Encoder
+User Representation
+…
+…
+.
+K V
+Decoder
+Encoder
+…
+…
+.
+K V
+Decoder
+Semantic ID
+？
+？
+？
+Figure 1: The illustrations of latent reasoning paradigms. The left and middle subfigures show the processes in sequential
+and generative recommendation, where multiple latent representations are autoregressively generated and refined before
+generating the final user representation or SID. The right subfigure presents our proposed stepwise reasoning paradigm for
+generative recommendation, wherein coarse-grained semantic categories are thinked before each SID code generation, serving
+as an transitional step toward the next SID code.
+OnePiece [8] have investigated implicit reasoning in sequential rec-
+ommendation through autoregressive generation of multi-step la-
+tent status to refine user representations. For GR paradigm, STREAM-
+Rec [39] directly fills reasoning chain with similar item represen-
+tations, while GPR [38] synthesizes latent reasoning status from
+intent embeddings refined via diffusion. These methods collectively
+exhibit two potential limitations: (1) They strictly position the rea-
+soning steps before any final output, forming a unidirectional chain
+from thinking block to generation block. However, the multi-code
+representation for SIDs constitutes multi-step generation, termi-
+nating the reasoning process before SID generation results in im-
+balanced computational distribution, failing to guarantee quality
+across all SID codes. Meanwhile, the potential semantic drift in
+early SID codes may pose a risk of cross-step error accumulation
+during autoregressive generation. (2) The generated reasoning sta-
+tus lack interpretable physical meaning, while the reasoning paths
+themselves suffer from the absence of explainable supervision sig-
+nals. This dual deficiency fundamentally undermines the verifiable
+validity of reasoning path. Consequently, despite notable architec-
+tural innovations, the core challenge of eliciting reliably reasoning
+capabilities within GR remains unresolved.
+To address these challenges, we conduct analysis from the per-
+spective of inherent characteristics in GR. The items’ SIDs derive
+from residual quantization, naturally possessing hierarchical se-
+mantics from coarse to fine granularity. The sequential generation
+of SID codes in GR inherently mirrors progressive recommendation
+decisions: initial high-level category selection (e.g., "electronics"),
+followed by progressive subclass refinement (e.g., "mobile phone"),
+culminating in specific item identification (e.g., "iPhone 17"). To
+adapt to this structural correspondence, as shown in Figure 1, we
+introduce thinking tokens interleaved with SID code generation
+to activate stepwise reasoning. Since SID generation inherently
+progresses through granularity levels, inspired by [3, 6, 15, 27, 37],
+we regard each thinking token before the SID codes as a transitional
+thinking module that reasonings relevant coarse-grained semantic
+clusters for the subsequent SID code generation step (e.g., represent-
+ing several categories which are semantically close to "electronics"
+before first-code generation). Crucially, these thinking tokens ac-
+quire tangible physical meaning by design, they directly correspond
+to coarse-level semantic distributions. This enables stepwise super-
+vision during training, where we constrain thinking tokens using
+ground-truth coarse SID semantics to ensure reasoning path reli-
+ability. Consequently, each SID code is generated after validated
+semantic thinking, significantly improving the final output quality
+and computational focus across all code positions.
+Driven by above insights, we propose stepwise semantic-guided
+reasoning (S2GR) in latent space to enhance GR. First of all, to ensure
+robust codebook quality that reinforces the coarse-to-fine semantic
+hierarchy, we align item semantic and user behaviours throught
+item co-occurrence graphs builded by historical user interactions,
+then optimize codebook distribution and utilization during quanti-
+zation through load balancing and uniformity objectives. Crucially,
+the core of S2GR lies in its stepwise latent reasoning mechanism
+with hierarchical semantic. We interleave thinking tokens before
+each SID code generation step, which are supervised via contrastive
+learning grounded in the coarse-grained clustering semantics of
+the codebook at the corresponding layer, thereby explicitly rep-
+resenting the categorical semantics relevant to subsequent SID
+prediction. Additionally, a additional lightweight decoder trained
+with in-batch negative sampling generates holistic user interest
+representations that provide auxiliary supervision for the initial
+thinking token, incorporating comprehensive item consideration
+at the generation onset, thereby mitigating semantic shifts in early
+codes. Our contributions are summarized as follows:
+• We propose the stepwise latent reasoning that aligns with SID’s
+hierarchical semantics and incorporates physically interpretable
+supervision to ensure reliable reasoning paths in GR.
+• We enhance reasoning capability through comprehensive code-
+book optimization integrating collaborative signals, distribution
+uniformity, and load balancing.
+• We validate our approach on public dataset and large-scale in-
+dustrial dataset, demonstrating significant superiority over state-
+of-the-art baselines and achieving significant business gains in
+online A/B test on large-scale industrial short video platform.
+2
+RELATED WORKS
+2.1
+Generative Recommendation
+Generative Recommendation (GR) represents a novel paradigm
+that departs from conventional multi-stage retrieval pipelines. By
+generating recommendations end-to-end within the semantic ID
+(SID) space, GR eliminates the need for intermediate retrieval stages
+and addresses objective misalignment through a holistic optimiza-
+tion of the final recommendation goals. TIGER [28] pioneered this
+paradigm by compressing item representations from the vast orig-
+inal item ID space into a semantic space composed of ordered
+codewords through residual quantization, where item sequences
+
+S2GR: Stepwise Semantic-Guided Reasoning in Latent Space for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+represented by SIDs are then fed into generative models for train-
+ing. Building upon this foundation, OneRec [9, 44, 45] significantly
+enhanced the usability of GR via comprehensive improvements in
+model architecture and reinforcement learning. COBRA [34] further
+addressed information loss caused by the separation of SID quan-
+tization and sequence modeling stages by integrating traditional
+dense vector retrieval. GPR [38] introduced targeted modeling for
+the more complex heterogeneity inherent in advertising recom-
+mendation scenarios, employing innovations like unified semantic
+representation, a dual-decoder architecture, and multi-stage joint
+training to balance efficiency and business alignment. However,
+most existing methods predominantly focus on direct SID genera-
+tion without activating deeper reasoning capabilities akin to those
+in large language models (LLMs), which creates a bottleneck in the
+performance improvement of GR models.
+2.2
+Reasoning in Recommender System
+With the advancement of LLMs, leveraging chain-of-thought (CoT)
+reasoning, which involves generating a sequence of tokens repre-
+senting the thought process before producing the final answer, has
+opened promising pathways to enhance model reasoning capabil-
+ities [36, 40]. Inspired by similar concepts, how to endow recom-
+mendation systems with powerful reasoning abilities has garnered
+widespread attention [18, 25, 43].
+Existing explorations fall into two lines: explicit reasoning and
+implicit reasoning. The explicit reasoning aims to reutilize the in-
+herent reasoning capabilities of LLM by feeding candidate items
+as textual descriptions [1, 2, 5, 41] or ID tokens [11, 22] as input.
+This allows the model to perceive information based on its general
+world knowledge, while further post-training enables it to cap-
+ture patterns specific to recommendation tasks [19, 22]. However,
+despite the encouraging results achieved by this line of research,
+the massive scale of model parameters makes it challenging to
+meet the stringent low-latency constraints required for online serv-
+ing systems under limited computational resources. In contrast,
+implicit reasoning [4, 10, 16] does not forcibly map intermediate
+representations into text tokens, it completes the thinking process
+through internal model iterations with fewer steps, significantly
+reducing the computational load during inference. ReaRec [31],
+LARES [21], LCR-SER [29] and OnePiece [8] first explored latent
+reasoning in traditional sequential recommendation by autoregres-
+sively generating multiple latent status before producing the final
+user representation, promoting user modeling through progressive
+refinement of these latent status. For similar explorations in gener-
+ative paradigm, STREAM-Rec [39] directly fills the reasoning path
+with the similar items, while GPR [38] generates latent status from
+intent embeddings and refines them via diffusion. However, these
+methods exhibit two fundamental limitations. First, the rigid se-
+quential separation of reasoning and generation creates imbalanced
+computational focus across hierarchical SID codes, degrading the
+quality of SID codes, leading to a mismatch with the hierarchical
+granularity of SIDs. Second, the latent reasoning status lacks physi-
+cal semantics while their optimization suffers from absent reliable
+supervision, collectively undermining verifiable reasoning validity.
+This dual deficiency motivates our stepwise reasoning approach
+with hierarchical semantic supervision.
+3
+PRELIMINARY
+Generative Recommendation. Given a user’s historical inter-
+action sequence 𝐻= {item1, item2, . . . , item𝑛} where each item
+possesses multimodal representations. we train a tokenizer leverag-
+ing item-level multimodal features to map each item to an ordered
+token sequence of length 𝑚, denoted as (s1, s2, . . . , s𝑚), termed the
+Semantic ID (SID). The historical sequence is thereby converted
+into ˆ𝐻= {(s1, . . . , s𝑚), (s𝑚+1, . . . , s2𝑚), . . . , (s(𝑛−1)𝑚+1, . . . , s𝑛𝑚)},
+which forms a sequence of length 𝑛× 𝑚. This sequence serves as
+input to a Transformer-based sequence generation model, which
+autoregressively predicts the subsequent 𝑚tokens, corresponding
+to the SID of the next item the user is most likely to interact with.
+Formally, the predictive distribution of the next item
+ˆ
+item𝑛+1 is
+defined as:
+𝑃
+
+ˆ
+item𝑛+1 | 𝐻
+
+= 𝑃
+
+s𝐿+1, s𝐿+2, . . . , s𝐿+𝑚| ˆ𝐻
+
+=
+𝑚
+Ö
+𝑘=1
+𝑃(s𝐿+𝑘| s1, s2, . . . , s𝐿+𝑘−1) ,
+(1)
+where s𝐿+1, . . . , s𝐿+𝑚denote the generated tokens forming the SID
+of
+ˆ
+item𝑛+1.
+Problem Formulation. In this work, we focus on enhancing the
+reasoning capabilities of generative recommendation. The prevail-
+ing paradigm of directly predicting the next SID code is constrained
+by limited computational depth, failing to fully exploit the poten-
+tial of test-time scaling. We propose that before autoregressively
+generating the next SID code, the model should first generate step-
+wise thinking tokens 𝑡, which serve as preconditions to guide the
+generation of subsequent SID codes:
+𝑃
+
+ˆ
+item𝑛+1 | 𝐻
+
+=
+𝑚
+Ö
+𝑘=1
+𝑃(t𝐿+𝑘| s1, t1, . . . , s𝐿+𝑘−1)
+· 𝑃(s𝐿+𝑘| s1, t1, . . . , s𝐿+𝑘−1, t𝐿+𝑘) ,
+(2)
+Crucially, the design of reasoning mechanism compatible with the
+generative SID paradigm and their corresponding optimization
+objectives remains an open question.
+4
+METHODOLOGY
+4.1
+Overview
+To activate deeper reasoning capabilities in generative recommen-
+dation (GR), we propose stepwise semantic-guided reasoning in
+latent space (S2GR). First, high quality semantic mapping founda-
+tion from coarse to fine-grained levels are ensured by leveraging
+both the item co-occurrence graph and codebook distribution opti-
+mization with load balance activation strategies. Next, our stepwise
+thinking mechanism introduces interpretable thinking tokens be-
+fore each semantic ID (SID) generation step. This process is guided
+by coarse-grained codebook semantic supervision, which guaran-
+tees a reliable reasoning path and maintains stepwise semantic
+consistency.
+4.2
+Collaborative and Balanced RQ-VAE
+SIDs generated through residual quantization form the founda-
+tion of GR, where pioneering methods like RQ-VAE [28] and RQ-
+KMeans [23] map high-dimensional item embeddings into discrete
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Zihao Guo∗, Jian Wang∗, Ruxin Zhou, Youhua Liu, Jiawei Guo, Jun Zhao, Xiaoxiao Xu, Yongqi Liu, and Kaiqiao Zhan
+Encoder
+CodeBook 1
+CodeBook 2
+CodeBook 3
+-
+=
+-
+=
+-
+=
+<a_2>
+<b_1>
+<c_3>
++
++
+=
+Decoder
+Load Balance
+Load Balance
+Load Balance
+…
+Push
+Push
+Push
+Push
+…
+Push
+Push
+…
+SemanSc-Behavior Alignment
+Item Co-occurrence RelaSonships
+Figure 2: Framework of Collaborative and Balanced RQ-VAE. We first construct an item co-occurrence graph based on users’
+historical interactions, where the color intensity indicates the frequency of co-occurrence. The original item representations
+are then enriched with co-occurrence information via neighborhood aggregation. During residual quantization training, we
+introduce a within-codebook distribution uniformity constraint to prevent codebook representation collapse. Additionally,
+when activating codewords, we dynamically adjust the selection probability of each codeword based on historical activation
+records to achieve balanced codebook usage.
+code sequences with hierarchical semantic via coarse-to-fine code-
+books. However, these approaches exhibit certain limitations. They
+exclusively rely on item multimodal embeddings, disregarding valu-
+able behavioral signals from user interaction patterns, which creates
+semantic misalignment between generated SIDs and downstream
+recommendation objectives. Moreover, performing quantization
+training without additional constraints can cause codebook degra-
+dation. Inadequate distribution uniformity may trigger semantic
+collapse in frequently used codewords, while load imbalance leaves
+other codewords under-activated. These issues ultimately lead to
+reduced codebook utilization rate (CUR) and independent coding
+rate (ICR). These deficiencies collectively undermine the precision
+of hierarchical semantic representation in SIDs. To address these
+challenges, we propose Collaborative and Balanced RQ-VAE (CoBa
+RQ-VAE), which incorporates collaborative signals derived from
+item co-occurrence graphs to enhance behavioral semantics. At the
+same time, it improves codebook utilization by applying uniformity
+constraints and adaptive load-balancing mechanisms.
+4.2.1
+Semantic-Behavior Alignment. Most existing behavior align-
+ment approaches typically pretrain collaborative filtering models
+to guide residual quantization [17, 26, 34, 35], which introduces sig-
+nificant computational costs. To eliminate this resource-intensive
+process while maintaining effective semantic-behavior alignment,
+we propose a lightweight graph-based approach that directly incor-
+porates collaborative signals from raw interaction data.
+We first construct an item co-occurrence graph G = (V, E), U
+denotes users’s interaction records and Ico-occur(𝑖, 𝑗) = 1 if item 𝑖
+and 𝑗co-occur within a specified time or size window in user’s inter-
+action history. The edge weights 𝑤𝑖𝑗= Í
+𝑢∈U Ico-occur(𝑖, 𝑗) reflect
+historical co-occurrence frequencies, capturing implicit behavioral
+relationships. This graph structure encodes essential collaborative
+patterns without requiring additional model training. We incorpo-
+rate behavioral information through iterative propagation:
+𝐻(𝑘) = (1 −𝛼) b
+𝐴𝐻(𝑘−1) + 𝛼𝑋,
+(3)
+b
+𝐴= 𝐷−1/2𝐴𝐷−1/2,
+(4)
+where the adjacency matrix 𝐴encodes edge weights (𝐴𝑖𝑗= 𝑤𝑖𝑗),
+while the degree matrix 𝐷= diag(𝑑1, . . . ,𝑑𝑁) contains node de-
+grees 𝑑𝑖= Í
+𝑗𝑤𝑖𝑗, preserving original semantic information while
+integrating collaborative contexts.
+The final aligned embeddings fuse multi-hop neighborhood rep-
+resentations via exponentially weighted combination:
+𝐻align =
+𝐾
+∑︁
+𝑘=0
+𝛽𝑘𝐻(𝑘)
+where
+𝛽𝑘=
+𝛼(1 −𝛼)𝑘
+Í𝐾
+𝑖=0 𝛼(1 −𝛼)𝑖,
+(5)
+which intrinsically harmonize semantic content and behavioral
+patterns. This design eliminates training overhead, operates effi-
+ciently through sparse matrix computations, and provides high
+quality input for subsequent quantization by jointly preserving
+item semantics and behavior relationships.
+4.2.2
+Codebook Uniform and Load Balance. Given the behavior
+aligned item representation 𝑥∈𝐻align, we first follow the basic
+paradigm of RQ-VAE [28], the encoder 𝐸first transforms input into
+a latent representation 𝑧= 𝐸(𝑥). The residual is initialized as 𝑟0 = 𝑧,
+and at each quantization layer 𝑙∈{1, . . . , 𝐿}:
+𝑐𝑙= arg min{𝑑𝑘}𝐾
+𝑘=1
+where
+𝑑𝑘= ∥𝑟𝑙−1 −𝑒𝑘
+𝑙∥2
+2,
+(6)
+𝑟𝑙= 𝑟𝑙−1 −𝑒𝑐𝑙
+𝑙,
+(7)
+where {𝑒𝑘
+𝑙}𝐾
+𝑘=1 denotes the codebook at layer 𝑙. The quantized rep-
+resentation ˆ𝑧= Í𝐷
+𝑙=1 𝑒𝑐𝑙
+𝑙is reconstructed via decoder 𝐺as ˆ𝑥= 𝐺(ˆ𝑧).
+The reconstruction and quantization losses can be represented as:
+Lrecon = ∥𝑥−ˆ𝑥∥2
+2,
+(8)
+Lquant =
+𝐿
+∑︁
+𝑙=1
+
+∥𝑟𝑙−1 −sg(𝑒𝑐𝑙
+𝑙)∥2
+2 + ∥𝑒𝑐𝑙
+𝑙−sg(𝑟𝑙−1)∥2
+2
+
+,
+(9)
+where sg(·) denotes stop-gradient operation.
+To prevent codebook representation collapse, where some code-
+words become overly similar and lose semantic discriminability, we
+introduce a pairwise distance-based distribution uniform loss. For
+
+S2GR: Stepwise Semantic-Guided Reasoning in Latent Space for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+…
+Cluster 21 of CodeBook 3
+…
+…
+Transformer Encoder Block
+x N
+…
+.
+x M
+K V
+<BOS>
+𝒕𝟏
+𝒕𝟏
+<a_10>
+<a_10>
+𝒕𝟐
+<b_54>
+𝒕𝟐
+<b_54>
+𝒕𝟑
+<c_95>
+𝒕𝟑
+Transformer Decoder Block
+<b_54>
+Meteoric
+<b_94>
+Hydrologic
+<b_78>
+Geomorphic
+<b_47>
+Architectural
+<b_25>
+Gardenesque
+<b_66>
+Rural
+Cluster 5 of CodeBook 2
+Cluster 6 of CodeBook 2
+<a_10>
+Nature
+<a_52>
+Animal
+<a_19>
+Plant
+<a_17>
+Sport
+<a_21>
+Game
+<a_5>
+Movie
+…
+Cluster 17 of CodeBook 1
+Cluster 18 of CodeBook 1
+<c_85>
+Desert
+<c_4>
+Salt Marsh
+<c_93>
+Gobi
+<c_31>
+Volcanic
+<c_95>
+Snow Mountain
+<c_42>
+Canyon
+…
+Cluster 22 of CodeBook 3
+…
+<a_10><b_54>
+<a_10>
+Push
+Pull
+Push
+Pull
+Push
+Pull
+BOS Token
+Thinking Token
+SID Code
+Thinking Posi3on
+…
+K V
+x M/2
+Transformer Decoder Block
+<BOS>
+𝒗𝒈
+Pull
+Stop Gradient
+Target SID
+In-batch Negative
+Sampling Training
+User Historical Interactions
+Figure 3: Framework of Stepwise Semantic-Guided Reasoning. We interleave stepwise thinking tokens within the semantic ID
+generation process, which represent coarse-grained category semantics, guiding the subsequent SID code to be drawn from
+the semantic cluster associated with that thinking token. Each thinking token is supervised by the coarse-grained semantics
+obtained via codebook clustering, while the initial thinking token is additionally regularized to integrate the holistic item
+semantics, ensuring the reliability of the reasoning path.
+codebook embeddings in layer 𝑙:
+D𝑖𝑗= ∥𝑒𝑖
+𝑙−𝑒𝑗
+𝑙∥2
+2,
+(10)
+P = {(𝑖, 𝑗) | D𝑖𝑗≤𝛿,𝑖≠𝑗},
+(11)
+Luniform = log ©­
+«
+1 +
+∑︁
+(𝑖,𝑗)∈P
+exp(−𝜇· D𝑖𝑗)ª®
+¬
+,
+(12)
+where 𝛿is a distance threshold, and 𝜇controls penalty intensity.
+This formulation specifically targets clusters of similar vectors
+within the codebook, applying exponential penalties to encourage
+dispersion while ignoring distant pairs.
+Meanwhile, to address skewed utilization where some codewords
+are frequently activated while others remain inactive, inspired by
+load balance mechanism in Mixture-of-Experts (MoE) models [7, 20,
+33], we dynamically adjusts selection probabilities in Eq. (6) based
+on historical activation frequency:
+𝑓𝑘= clip
+𝑢mean −𝑢𝑘
+𝑢mean + 𝜖, −𝛿max,𝛿max
+
+,
+(13)
+ˆ𝑑𝑘= 𝑑𝑘⊙(1 −𝑓𝑘),
+(14)
+where 𝑢𝑘tracks the activation count for codeword 𝑘, 𝑢mean repre-
+sents the average activation count, 𝛿max limits adjustment strength,
+and 𝜖prevents division by zero.
+4.3
+Stepwise Semantic-Guided Reasoning
+To address the problem of uneven computational focus and the lack
+of verifiable supervision in existing reasoning-enhanced GR meth-
+ods, we propose a stepwise reasoning mechanism that naturally
+aligns with the hierarchical granularity of SID. Previous approaches
+suffer from the weakness in that the reasoning process ends before
+the complete multi-step generation of SID, which leads to unbal-
+anced computational focus across different hierarchical SID code
+positions. Meanwhile, the absence of supervision grounded in in-
+terpretable semantics makes it difficult to ensure reliable reasoning
+paths. Our core insight is that semantic IDs are inherently corre-
+sponds to hierarchical semantics, and the generation process can
+be viewed as a multi-step decision-making process from coarse
+to fine granularity. Consequently, the stepwise reasoning is more
+compatible, where reasoning step should be interleaved with each
+generation step, and each reasoning step explicitly models the se-
+mantics corresponding to its level in the hierarchy and receives
+supervision tailored to that level. This design ensures balanced
+computation across all steps and provides interpretable guidance
+throughout the reasoning process.
+4.3.1
+Stepwise Reasoning Paradigm. Given encoder outputs Henc ∈
+R𝑛×𝑑and initial [BOS] token embedding e0 ∈R𝑑, the model oper-
+ates recursively over 𝑙∈{1, . . . , 𝐿}. At each level 𝑙, The decoder
+autoregressively generates thinking token t𝑙and SID code token s𝑙:
+˜h𝑙−1 = (e0, t1, s1, . . . , t𝑙−1, s𝑙−1),
+(15)
+t𝑙= Decoder𝜃( ˜h𝑙−1, Henc) + p𝑙,
+(16)
+s𝑙= Decoder𝜃(( ˜h𝑙−1, t𝑙), Henc),
+(17)
+where p𝑙∈R𝑑denotes hierarchy-specific position embedding,
+explicitly differentiate thinking positions from SID code generation
+positions. This granularity-aligned reasoning structure resolves the
+problem of unfocused computational focus in reasoning. Through
+subsequent coarse-grained semantic alignment supervision, the
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Zihao Guo∗, Jian Wang∗, Ruxin Zhou, Youhua Liu, Jiawei Guo, Jun Zhao, Xiaoxiao Xu, Yongqi Liu, and Kaiqiao Zhan
+thinking token t𝑙transitions from the latent embedding without
+explicit supervision into the semantic anchor that represents coarse-
+grained categories, thereby establishing foundational grounds for
+the generation of s𝑙.
+4.3.2
+Semantic-Guided Alignment Supervision. To enable smoother
+transitions between SID generation steps, we align the thinking
+tokens with the coarse-grained semantics associated with the next
+step SID code, which primary alignment transforms the latent
+embeddings into semantic anchors, thereby guiding the subse-
+quent fine-grained SID code generation. We propose coarse-grained
+semantic-guided alignment loss as the principal supervision signal
+of thinking tokens. Specifically, for thinking token t𝑙, we first ex-
+tract embeddings for codebook in level 𝑙, then perform K-means
+clustering to obtain centroid vectors C𝑙∈R𝐾×𝑑representing coarse-
+grained semantic categories. Each next target SID code s𝑖
+𝑙is mapped
+to its cluster centroid cs𝑖
+𝑙:
+L(𝑙)
+Align = −1
+𝐵
+𝐵
+∑︁
+𝑖=1
+log
+exp(Sim(t𝑖
+𝑙, cs𝑖
+𝑙)/𝜏)
+Í𝐾
+𝑘=1 exp(Sim(t𝑖
+𝑙, c𝑘)/𝜏)
+,
+(18)
+where Sim(·) denotes measurement of cosine similarity, 𝜏denotes
+temperature coefficient, and 𝐵is batch size. The loss explicitly max-
+imizes alignment between thinking tokens and their corresponding
+coarse-grained category centroids, ensuring that each thinking to-
+ken serves as a semantic bridge before the next SID code generation.
+By enforcing this coarse-grained alignment, the reasoning process
+incorporates an intentional intermediate stage in which the model
+first constructs a high-level semantic representation. This represen-
+tation directly corresponds to the cluster in which the ground truth
+SID code resides, thereby providing a semantically consistent tran-
+sition from broader conceptual reasoning to precise fine-grained
+code prediction.
+Despite the coarse-grained semantic alignment provided by
+LAlign, the initial thinking token remains critical as the founda-
+tion of the entire reasoning chain. To enhance its robustness, we
+embed a holistic item-level perspective into the initial thinking
+token, ensuring stable semantic grounding at the reasoning origin
+and preventing semantic shifts in the early codes. Specifically, to in-
+tegrate global item semantic grounding in the initial thinking token
+t1, we introduce a lightweight decoder that generates a one-step
+embedding v𝑔:
+v𝑔= Decoder𝜓(e0, Henc).
+(19)
+The target embedding ¯v is obtained by averaging all hierarchical
+SID code embeddings associated with the target item, encapsulat-
+ing its holistic item-level semantics. We employ in-batch negative
+sampling InfoNCE to align v𝑔with ¯v:
+LInfoNCE = −1
+𝐵
+𝐵
+∑︁
+𝑖=1
+log
+exp(Sim(v𝑖
+𝑔, ¯v𝑖)/𝜏)
+Í𝐵
+𝑗=1 exp(Sim(v𝑖𝑔, ¯v𝑗)/𝜏)
+.
+(20)
+To directly inject the global semantics into the reasoning origin,
+we introduce a cosine similarity regularizer between t1 and v𝑔:
+LReg = 1 −1
+𝐵
+𝐵
+∑︁
+𝑖=1
+Sim(t1, sg(v𝑔)),
+(21)
+Table 1: The statistics of experimental datasets.
+Dataset
+Amazon Beauty
+Industrial Dataset
+#User
+22363
+37500
+#Item
+12101
+1086872
+#Inter
+198502
+3778562
+#Avg.Inter. / User
+8.88
+100.76
+#Avg.Inter. / Item
+16.40
+3.48
+Sparisty
+99.92%
+99.99%
+where sg(·) denotes stop-gradient operations. This ensures t1 inher-
+its stable, item-level global semantic, mitigating initial reasoning
+drift and improving downstream consistency.
+The overall supervision objective as follows:
+L = LRec + LThink,
+(22)
+LRec = −
+𝐿
+∑︁
+𝑙=1
+log 𝑦(𝑙)
+s𝑙,
+(23)
+LThink =
+𝐿
+∑︁
+𝑙=1
+L(𝑙)
+Align + LInfoNCE + 𝜆LReg,
+(24)
+where LRec denotes the supervision objective of SID tokens, 𝑦(𝑙)
+s𝑙
+denotes the logits corresponding to SID code s𝑙, LThink denotes the
+supervision objective of thinking tokens, 𝜆is hyperparameter for
+trading-off.
+5
+EXPERIMENTS
+5.1
+Experimental Setup
+5.1.1
+Datasets and Evaluation Metrics. To evaluate the proposed S2GR,
+we conduct comprehensive experiments on datasets of various
+scales, as shown in Table 1, including both a public dataset and
+an industrial dataset. For the public dataset, we use the "Beauty"
+subset of the Amazon Product Reviews [12], which contains prod-
+uct reviews collected from May 1996 to September 2014. For the
+industrial dataset, we collect real interaction logs (i.e., long-play
+video records) from sampled active users over a consecutive 2 days
+period from a large-scale online short video platform. For the eval-
+uation metrics, we adopted top-K HitRate (donated as HR@K) and
+Normalized Discounted Cumulative Gain (donated as NDCG@K) to
+assess the performance in terms of recall and ranking, respectively.
+The detailed calculation methods can be found in the Appendix A.
+5.1.2
+Baselines. We selected a set of competitive baselines, includ-
+ing traditional sequential recommendation methods and emerging
+generative recommendation (GR) methods:
+• Caser [32]: Caser models interaction sequences using convolu-
+tional neural networks to capture both point-level and union-
+level patterns via horizontal and vertical convolutional filters.
+• GRU4Rec [13]: GRU4Rec adopts gated recurrent units to model
+interaction sequences.
+• SASRec [14]: SASRec leverages a unidirectional Transformer
+encoder with self-attention mechanisms to model interaction
+1To ensure the reliability of the evaluation results, we filtered out user interaction
+sequences with a length of less than 10 during testing.
+
+S2GR: Stepwise Semantic-Guided Reasoning in Latent Space for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 2: Overall performance on public dataset and industrial-scale dataset. The best performance is highlighted in bold while
+the second best performance is underlined.
+Method
+Amazon Beauty1
+Industrial Dataset
+HR@5
+HR@10
+NDCG@5
+NDCG@10
+HR@10
+HR@100
+NDCG@10 NDCG@100
+Caser
+0.0314
+0.0514
+0.0186
+0.0251
+0.0038
+0.0178
+0.0020
+0.0046
+GRU4Rec
+0.0384
+0.0634
+0.0233
+0.0314
+0.0056
+0.0251
+0.0027
+0.0065
+SASRec
+0.0434
+0.0688
+0.0259
+0.0340
+0.0088
+0.0378
+0.0046
+0.0102
+BERT4Rec
+0.0394
+0.0627
+0.0255
+0.0329
+0.0067
+0.0280
+0.0032
+0.0072
+ReaRec
+0.0460
+0.0723
+0.0284
+0.0368
+0.0102
+0.0354
+0.0059
+0.0105
+TIGER
+0.0443
+0.0728
+0.0299
+0.0390
+0.0139
+0.0560
+0.0072
+0.0154
+S2GR
+0.0495
+0.0785
+0.0340
+0.0424
+0.0196
+0.0634
+0.0111
+0.0195
+Improv.
+↑7.61%
+↑7.83%
+↑13.71%
+↑8.72%
+↑41.01%
+↑13.21%
+↑54.17%
+↑26.62%
+S2GR (w/o CoBa RQ-VAE) 0.0479
+0.0764
+0.0326
+0.0414
+0.0155
+0.0576
+0.0081
+0.0161
+S2GR (w/o Reason)
+0.0471
+0.0736
+0.0321
+0.0406
+0.0167
+0.0579
+0.0093
+0.0172
+S2GR (w/o LThink)
+0.0481
+0.0740
+0.0320
+0.0402
+0.0178
+0.0589
+0.0100
+0.0180
+Table 3: Performance comparison of different SID tokeniza-
+tion methods.
+Method
+Amazon Beauty
+Industrial Dataset
+CUR
+ICR
+CUR
+ICR
+RQ-Kmeans
+0.062%
+86.65%
+4.11%
+63.56%
+RQ-VAE
+0.069%
+95.86%
+4.61%
+71.23%
+CoBa RQ-VAE
+0.072%
+99.30%
+4.95%
+76.25%
+sequences, focusing on left-context information to predict the
+next item efficiently.
+• BERT4Rec [30]: BERT4Rec utilizes a deep bidirectional Trans-
+former encoder trained with the masked item prediction to cap-
+ture contextual information from both left and right directions
+within interaction sequences.
+• ReaRec [31]: ReaRec is a reasoning-enhanced sequential recom-
+mendation model that progressively refines user representations
+through multi-step hidden states.
+• TIGER [28]: TIGER is a generative retrieval framework that rep-
+resents items via semantic IDs (SIDs) generated by residual quan-
+tization and uses a Transformer-based sequence-to-sequence
+model to autoregressively predict the next item’s SID.
+5.1.3
+Implementation Details. For SIDs, we adopt a three-level
+structure, with each level having a codebook size of 256. For Amazon
+Beauty, we encode item titles and descriptions using the Qwen3-
+Embedding-4B [42] model to obtain item embeddings, while for the
+industrial dataset, we generate embeddings from sampled video
+frames using a proprietary multimodal large model. Our model is
+based on the T5 [24] architecture, comprising 4 encoder layers and 4
+decoder layers, consistent with the configuration used in the TIGER
+baseline. In the codebook optimization stage of our approach, the
+user historical sequences used to construct the item co-occurrence
+graph precede those employed for training and evaluation, in order
+to prevent information leakage.
+5.2
+Performance Comparison
+Table 2 summarizes the main results of our approach compared to
+state-of-the-art baselines. We observe three key findings:
+• Traditional sequential recommendation methods achieve compet-
+itive performance relative to generative methods on small-scale
+dataset, but exhibit significant degradation on large-scale indus-
+trial dataset. This occurs because traditional item ID-based learn-
+ing struggles to generalize in massive item spaces due to sparse
+interactions and limited representation capacity, while gener-
+ative methods leverage compressed SIDs to efficiently capture
+hierarchical semantic patterns.
+• Our method consistently outperforms all baselines, with aver-
+age improvements of 9.47% and 33.75% on public and industrial
+datasets respectively. This superiority stems from the stepwise
+reasoning mechanism with reliable supervision which ensures
+the balanced computational focus while providing effective guid-
+ance and smooth transitions for SID code generation. Meanwhile,
+the integration of collaborative information with a balanced op-
+timized codebook further enhances overall performance.
+• Performance gains are more pronounced on large-scale dataset
+compared to small-scale dataset. The longer interaction sequences
+in industrial dataset better activate the reasoning capability, al-
+lowing hierarchical thinking tokens to leverage coarse-grained
+semantic context for more accurate fine-grained predictions.
+5.3
+Ablation Study
+We analyze three variants to validate their contributions:
+• S2GR (w/o CoBa RQ-VAE): We replace CoBa RQ-VAE with vanilla
+RQ-VAE as the SID tokenization method, discarding collaborative
+information, distribution uniform loss, and load balance.
+• S2GR (w/o Reason): We eliminate the stepwise thinking tokens
+and associated supervision mechanisms, thereby generating SID
+without the enhancement of latent reasoning.
+• S2GR (w/o LThink): We retain the stepwise thinking tokens but
+remove the associated supervision mechanisms.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Zihao Guo∗, Jian Wang∗, Ruxin Zhou, Youhua Liu, Jiawei Guo, Jun Zhao, Xiaoxiao Xu, Yongqi Liu, and Kaiqiao Zhan
+Table 4: The results of the online A/B test. Confidence intervals (CI) are calculated with 0.05 significance level.
+Total App Usage Time
+App Usage Time per User
+Total Video View
+Improv.
+CI
+Improv.
+CI
+Improv.
+CI
++0.092%
+[+0.03%, +0.16%]
++0.088%
+[+0.03%, +0.15%]
++0.091%
+[+0.01%, +0.17%]
+0.0180
+0.0190
+0.0200
+HR@10
+HR@10
+8 16
+32
+64
+128
+256
+0.0600
+0.0620
+0.0640
+HR@100
+HR@100
+Figure 4: The performance variation across different cluster
+number of coarse-grained semantic guidance.
+Overall, significant performance degradation occurs across all
+variants, confirming each component’s necessity. Specifically, (1)
+For S2GR (w/o CoBa RQ-VAE), as shown in Table 3, our optimized
+codebook achieves significant improvement in codebook utiliza-
+tion rate (CUR) and independent coding rate (ICR). Removing this
+component weakens the hierarchical semantic foundation, causing
+semantic conflicts in codewords, which leads to misaligned rea-
+soning paths during SID generation. (2) For S2GR (w/o Reason),
+removing the stepwise reasoning tokens disables the stepwise se-
+mantic alignment process, causing the model to degrade into direct
+SID prediction without coarse-grained thinking process, which re-
+duces the overall quality of the generated SIDs. (3) For S2GR (w/o
+LThink), removing the supervision mechanism for the thinking to-
+kens causes them to degenerate into latent states without explicit
+meaning. While simply extending the thinking process to increase
+computational depth can be beneficial for enhancing reasoning per-
+formance, in the absence of supervision, the guidance provided by
+the thinking tokens for SID generation is weaker, and the resulting
+reasoning process may not be entirely reliable.
+5.4
+Online Testing
+To verify the effectiveness of S2GR in a real industrial environment,
+we deployed it on a large-scale short video platform for an online
+A/B test. MethodName was used as the experimental group model,
+while TIGER [28] served as the control group model, with each
+group assigned 5.25% of users, and the experiment lasted for 7
+days, to ensure the reliability of the statistical results. As shown in
+Table 4, S2GR significantly increased users’ app usage duration as
+well as video viewing frequency, demonstrating the effectiveness
+of our method in large-scale real-world scenarios.
+5.5
+Further Analysis
+5.5.1
+Analysis of hyperparameter sensitivity. To investigate the
+sensitivity of hyperparameters, we examine the primary hyper-
+parameter in our method, namely the number of clusters used to
+generate step-wise semantic guidance from the codebook. As shown
+in Figure 4, the performance initially improves as the number of
+<20
+[20,40]
+>40
+0.0050
+0.0100
+0.0150
+0.0200
+0.0250
+HR@10
++40.4%
++19.7%
++50.0%
+TIGER
+Ours
+Figure 5: The performance comparison under different user
+interaction sequence lengths on industrial dataset.
+2x
+4x
+6x
+8x
+0.0100
+0.0150
+0.0200
+0.0250
+HR@10
+TIGER
+Ours
+Figure 6: The performance comparison under different model
+parameters on industrial dataset.
+clusters increases, which can be attributed to the coarse-grained se-
+mantic guidance for the thinking tokens becoming relatively more
+fine-grained. However, as the number continues to grow, the per-
+formance starts to decline, which is because overly fine-grained
+semantic guidance leads the thinking tokens to "overthink", thereby
+failing to function as a transitional stage and to provide effective
+guidance for the generation of subsequent sid codes.
+5.5.2
+Analysis of user interaction sequences of different lengths. We
+evaluate the impact of S2GR across different user interaction se-
+quence lengths on industrial dataset, as shown in Figure 5. We
+observe that the S2GR achieves higher relative improvements when
+applied to short and long interaction sequences, whereas the gains
+are more modest for sequences of moderate length. For short se-
+quences, the limited amount of contextual information often leads
+to lower performance without reasoning process, and the incorpo-
+ration of reasoning enables the model to infer latent user interests,
+yielding noticeable gains. For long sequences, the abundance of
+interaction data introduces complexity and potential noise, and
+reasoning helps to distill salient patterns from this rich but intricate
+information, further revealing user preferences. In contrast, for
+moderate-length sequences, the available context is already suffi-
+cient for vanilla method to perform effectively, so the additional
+benefit from reasoning is comparatively smaller.
+
+S2GR: Stepwise Semantic-Guided Reasoning in Latent Space for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+5.5.3
+Analysis of different model size. To investigate the effect of
+model size, we uniformly adjusted the number of encoder and de-
+coder layers for both TIGER and our method. As shown in Figure 6,
+the experimental results demonstrate that, as increasing model
+size, both methods demonstrate performance improvement. Never-
+theless, our method consistently maintains substantial and stable
+advantages over the baseline across all scales, indicating that the
+observed benefits are not confined to specific configurations but
+remain consistent as the model capacity grows.
+6
+CONCLUSION
+In this paper, we propose S2GR, a novel generative recommendation
+(GR) framework that addresses limitations in reasoning-enhanced
+GR through stepwise latent reasoning with hierarchical semantic
+supervision. Our method first establishes semantically robust foun-
+dations by integrating item co-occurrence relationships, load bal-
+ancing, and uniformity objectives, ensuring coarse-to-fine semantic
+granularity. The core innovation inserts interpretable thinking to-
+kens before each Semantic ID (SID) generation step supervised via
+contrastive alignment with ground-truth codebook clusters. This
+guarantees balanced computational focus across hierarchical SID
+codes, and reliable reasoning path. Extensive experiments demon-
+strate substantial improvements over state-of-the-art baselines on
+public dataset and industrial dataset. Online A/B tests on a large-
+scale short-video platform further confirm significant gains in user
+engagement metrics validating real-world efficacy.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Zihao Guo∗, Jian Wang∗, Ruxin Zhou, Youhua Liu, Jiawei Guo, Jun Zhao, Xiaoxiao Xu, Yongqi Liu, and Kaiqiao Zhan
+References
+[1] Keqin Bao, Jizhi Zhang, Wenjie Wang, Yang Zhang, Zhengyi Yang, Yanchen
+Luo, Chong Chen, Fuli Feng, and Qi Tian. 2025. A bi-step grounding paradigm
+for large language models in recommendation systems. ACM Transactions on
+Recommender Systems 3, 4 (2025), 1–27.
+[2] Keqin Bao, Jizhi Zhang, Yang Zhang, Wenjie Wang, Fuli Feng, and Xiangnan
+He. 2023. Tallrec: An effective and efficient tuning framework to align large
+language model with recommendation. In Proceedings of the 17th ACM conference
+on recommender systems. 1007–1014.
+[3] Mahtab Bigverdi, Zelun Luo, Cheng-Yu Hsieh, Ethan Shen, Dongping Chen,
+Linda G Shapiro, and Ranjay Krishna. 2025. Perception tokens enhance visual
+reasoning in multimodal language models. In Proceedings of the Computer Vision
+and Pattern Recognition Conference. 3836–3845.
+[4] Xinghao Chen, Anhao Zhao, Heming Xia, Xuan Lu, Hanlin Wang, Yanjun Chen,
+Wei Zhang, Jian Wang, Wenjie Li, and Xiaoyu Shen. 2025. Reasoning Beyond
+Language: A Comprehensive Survey on Latent Chain-of-Thought Reasoning.
+arXiv preprint arXiv:2505.16782 (2025).
+[5] Yuxin Chen, Junfei Tan, An Zhang, Zhengyi Yang, Leheng Sheng, Enzhi Zhang,
+Xiang Wang, and Tat-Seng Chua. 2024. On softmax direct preference optimization
+for recommendation. Advances in Neural Information Processing Systems 37 (2024),
+27463–27489.
+[6] Zhangquan Chen, Manyuan Zhang, Xinlei Yu, Xufang Luo, Mingze Sun, Zihao
+Pan, Yan Feng, Peng Pei, Xunliang Cai, and Ruqi Huang. 2025. Think with 3d:
+Geometric imagination grounded spatial reasoning from limited views. arXiv
+preprint arXiv:2510.18632 (2025).
+[7] Damai Dai, Chengqi Deng, Chenggang Zhao, RX Xu, Huazuo Gao, Deli Chen,
+Jiashi Li, Wangding Zeng, Xingkai Yu, Yu Wu, et al. 2024. Deepseekmoe: Towards
+ultimate expert specialization in mixture-of-experts language models. arXiv
+preprint arXiv:2401.06066 (2024).
+[8] Sunhao Dai, Jiakai Tang, Jiahua Wu, Kun Wang, Yuxuan Zhu, Bingjun Chen,
+Bangyang Hong, Yu Zhao, Cong Fu, Kangle Wu, et al. 2025. OnePiece: Bringing
+Context Engineering and Reasoning to Industrial Cascade Ranking System. arXiv
+preprint arXiv:2509.18091 (2025).
+[9] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[10] Shibo Hao, Sainbayar Sukhbaatar, DiJia Su, Xian Li, Zhiting Hu, Jason Weston, and
+Yuandong Tian. 2024. Training large language models to reason in a continuous
+latent space. arXiv preprint arXiv:2412.06769 (2024).
+[11] Ruining He, Lukasz Heldt, Lichan Hong, Raghunandan Keshavan, Shifan Mao,
+Nikhil Mehta, Zhengyang Su, Alicia Tsai, Yueqi Wang, Shao-Chuan Wang, et al.
+2025. Plum: Adapting pre-trained language models for industrial-scale generative
+recommendations. arXiv preprint arXiv:2510.07784 (2025).
+[12] Ruining He and Julian McAuley. 2016. Ups and downs: Modeling the visual
+evolution of fashion trends with one-class collaborative filtering. In proceedings
+of the 25th international conference on world wide web. 507–517.
+[13] Balázs Hidasi, Alexandros Karatzoglou, Linas Baltrunas, and Domonkos Tikk.
+2015. Session-based recommendations with recurrent neural networks. arXiv
+preprint arXiv:1511.06939 (2015).
+[14] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[15] Bangzheng Li, Ximeng Sun, Jiang Liu, Ze Wang, Jialian Wu, Xiaodong Yu, Hao
+Chen, Emad Barsoum, Muhao Chen, and Zicheng Liu. 2025. Latent visual rea-
+soning. arXiv preprint arXiv:2509.24251 (2025).
+[16] Jindong Li, Yali Fu, Li Fan, Jiahong Liu, Yao Shu, Chengwei Qin, Menglin Yang,
+Irwin King, and Rex Ying. 2025. Implicit reasoning in large language models: A
+comprehensive survey. arXiv preprint arXiv:2509.02350 (2025).
+[17] Kaiyuan Li, Rui Xiang, Yong Bai, Yongxiang Tang, Yanhua Cheng, Xialong Liu,
+Peng Jiang, and Kun Gai. 2025. Bbqrec: Behavior-bind quantization for multi-
+modal sequential recommendation. arXiv preprint arXiv:2504.06636 (2025).
+[18] Xiaopeng Li, Bo Chen, Junda She, Shiteng Cao, You Wang, Qinlin Jia, Haiying He,
+Zheli Zhou, Zhao Liu, Ji Liu, et al. 2025. A Survey of Generative Recommendation
+from a Tri-Decoupled Perspective: Tokenization, Architecture, and Optimization.
+(2025).
+[19] Jiacheng Lin, Tian Wang, and Kun Qian. 2025. Rec-r1: Bridging generative large
+language models and user-centric recommendation systems via reinforcement
+learning. arXiv preprint arXiv:2503.24289 (2025).
+[20] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Cheng-
+gang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. 2024. Deepseek-v3
+technical report. arXiv preprint arXiv:2412.19437 (2024).
+[21] Enze Liu, Bowen Zheng, Xiaolei Wang, Wayne Xin Zhao, Jinpeng Wang, Sheng
+Chen, and Ji-Rong Wen. 2025. LARES: Latent Reasoning for Sequential Recom-
+mendation. arXiv preprint arXiv:2505.16865 (2025).
+[22] Zhanyu Liu, Shiyao Wang, Xingmei Wang, Rongzhou Zhang, Jiaxin Deng,
+Honghui Bao, Jinghao Zhang, Wuchao Li, Pengfei Zheng, Xiangyu Wu, et al.
+2025. Onerec-think: In-text reasoning for generative recommendation. arXiv
+preprint arXiv:2510.11639 (2025).
+[23] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, et al. 2025. Qarm: Quantitative
+alignment multi-modal recommendation at kuaishou. In Proceedings of the 34th
+ACM International Conference on Information and Knowledge Management. 5915–
+5922.
+[24] Jianmo Ni, Gustavo Hernandez Abrego, Noah Constant, Ji Ma, Keith Hall, Daniel
+Cer, and Yinfei Yang. 2022. Sentence-t5: Scalable sentence encoders from pre-
+trained text-to-text models. In Findings of the association for computational lin-
+guistics: ACL 2022. 1864–1874.
+[25] Qiyao Peng, Hongtao Liu, Hua Huang, Qing Yang, and Minglai Shao. 2025.
+A survey on llm-powered agents for recommender systems. arXiv preprint
+arXiv:2502.10050 (2025).
+[26] Gustavo Penha, Edoardo D’Amico, Marco De Nadai, Enrico Palumbo, Alexandre
+Tamborrino, Ali Vardasbi, Max Lefarov, Shawn Lin, Timothy Heath, Francesco
+Fabbri, et al. 2025. Semantic ids for joint generative search and recommendation.
+In Proceedings of the Nineteenth ACM Conference on Recommender Systems. 1296–
+1301.
+[27] Yiming Qin, Bomin Wei, Jiaxin Ge, Konstantinos Kallidromitis, Stephanie Fu,
+Trevor Darrell, and XuDong Wang. 2025. Chain-of-Visual-Thought: Teaching
+VLMs to See and Think Better with Continuous Visual Tokens. arXiv preprint
+arXiv:2511.19418 (2025).
+[28] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[29] Teng Shi, Weicong Qin, Weijie Yu, Xiao Zhang, Ming He, Jianping Fan, and Jun
+Xu. 2025. Bridging Search and Recommendation through Latent Cross Reasoning.
+arXiv preprint arXiv:2508.04152 (2025).
+[30] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential recommendation with bidirectional encoder rep-
+resentations from transformer. In Proceedings of the 28th ACM international
+conference on information and knowledge management. 1441–1450.
+[31] Jiakai Tang, Sunhao Dai, Teng Shi, Jun Xu, Xu Chen, Wen Chen, Jian Wu, and
+Yuning Jiang. 2025. Think before recommend: Unleashing the latent reasoning
+power for sequential recommendation. arXiv preprint arXiv:2503.22675 (2025).
+[32] Jiaxi Tang and Ke Wang. 2018. Personalized top-n sequential recommenda-
+tion via convolutional sequence embedding. In Proceedings of the eleventh ACM
+international conference on web search and data mining. 565–573.
+[33] Lean Wang, Huazuo Gao, Chenggang Zhao, Xu Sun, and Damai Dai. 2024.
+Auxiliary-loss-free load balancing strategy for mixture-of-experts. arXiv preprint
+arXiv:2408.15664 (2024).
+[34] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, et al. 2025. Sparse meets dense: Unified generative
+recommendations with cascaded sparse-dense representations. arXiv preprint
+arXiv:2503.02453 (2025).
+[35] Wencai Ye, Mingjie Sun, Shaoyun Shi, Peng Wang, Wenjin Wu, and Peng Jiang.
+2025. DAS: Dual-Aligned Semantic IDs Empowered Industrial Recommender
+System. In Proceedings of the 34th ACM International Conference on Information
+and Knowledge Management. 6217–6224.
+[36] Guibin Zhang, Hejia Geng, Xiaohang Yu, Zhenfei Yin, Zaibin Zhang, Zelin Tan,
+Heng Zhou, Zhongzhi Li, Xiangyuan Xue, Yijiang Li, et al. 2025. The landscape of
+agentic reinforcement learning for llms: A survey. arXiv preprint arXiv:2509.02547
+(2025).
+[37] Huanyu Zhang, Wenshan Wu, Chengzu Li, Ning Shang, Yan Xia, Yangyu Huang,
+Yifan Zhang, Li Dong, Zhang Zhang, Liang Wang, et al. 2025. Latent sketchpad:
+Sketching visual thoughts to elicit multimodal reasoning in mllms. arXiv preprint
+arXiv:2510.24514 (2025).
+[38] Jun Zhang, Yi Li, Yue Liu, Changping Wang, Yuan Wang, Yuling Xiong, Xun Liu,
+Haiyang Wu, Qian Li, Enming Zhang, et al. 2025. GPR: Towards a Generative
+Pre-trained One-Model Paradigm for Large-Scale Advertising Recommendation.
+arXiv preprint arXiv:2511.10138 (2025).
+[39] Junjie Zhang, Beichen Zhang, Wenqi Sun, Hongyu Lu, Wayne Xin Zhao, Yu Chen,
+and Ji-Rong Wen. 2025. Slow Thinking for Sequential Recommendation. arXiv
+preprint arXiv:2504.09627 (2025).
+[40] Kaiyan Zhang, Yuxin Zuo, Bingxiang He, Youbang Sun, Runze Liu, Che Jiang,
+Yuchen Fan, Kai Tian, Guoli Jia, Pengfei Li, et al. 2025. A survey of reinforcement
+learning for large reasoning models. arXiv preprint arXiv:2509.08827 (2025).
+[41] Wenlin Zhang, Chuhan Wu, Xiangyang Li, Yuhao Wang, Kuicai Dong, Yichao
+Wang, Xinyi Dai, Xiangyu Zhao, Huifeng Guo, and Ruiming Tang. 2025.
+Llmtreerec: Unleashing the power of large language models for cold-start recom-
+mendations. In Proceedings of the 31st International Conference on Computational
+Linguistics. 886–896.
+[42] Yanzhao Zhang, Mingxin Li, Dingkun Long, Xin Zhang, Huan Lin, Baosong Yang,
+Pengjun Xie, An Yang, Dayiheng Liu, Junyang Lin, Fei Huang, and Jingren Zhou.
+2025. Qwen3 Embedding: Advancing Text Embedding and Reranking Through
+Foundation Models. arXiv preprint arXiv:2506.05176 (2025).
+
+S2GR: Stepwise Semantic-Guided Reasoning in Latent Space for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+[43] Yu Zhang, Shutong Qiao, Jiaqi Zhang, Tzu-Heng Lin, Chen Gao, and Yong Li.
+2025. A survey of large language model empowered agents for recommenda-
+tion and search: Towards next-generation information retrieval. arXiv preprint
+arXiv:2503.05659 (2025).
+[44] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv preprint arXiv:2506.13695 (2025).
+[45] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, et al. 2025. Onerec-v2 technical
+report. arXiv preprint arXiv:2508.20900 (2025).
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY Zihao Guo∗, Jian Wang∗, Ruxin Zhou, Youhua Liu, Jiawei Guo, Jun Zhao, Xiaoxiao Xu, Yongqi Liu, and Kaiqiao Zhan
+A
+Evaluation Metrics
+We used two common evaluation metrics: HitRate@K (HR@K) and
+Normalized Discounted Cumulative Gain@K (NDCG@K), which
+measure retrieval and ranking performance, respectively.
+HR@K indicates the proportion of ground-truth item appears
+within the top-𝐾predictions:
+HR@K = 1
+𝑁
+𝑁
+∑︁
+𝑖=1
+I (rank𝑖(𝑔𝑖) ≤𝐾) ,
+(A.1)
+where 𝑁is the number of test samples, 𝑔𝑖is the ground-truth item
+for sample 𝑖, rank𝑖(𝑔𝑖) is its predicted position, and I(·) equals 1 if
+the condition is true and 0 otherwise.
+NDCG@K considers the rank position of the ground truth item:
+DCG@K =
+𝐾
+∑︁
+𝑝=1
+rel𝑝
+log2(𝑝+ 1) ,
+NDCG@K = DCG@K
+IDCG@K,
+(A.2)
+where rel𝑝is the relevance (1 if the item at position 𝑝is the ground
+truth, else 0), and IDCG@K is the DCG@K for an ideal ranking.
+B
+Supplementary Experiments
+B.0.1
+Analysis of training and inference efficiency. We compare the
+training and inference times of same parameter-scale models on
+industrial dataseton with 2×A100 GPUs. As shown in Table B.1,
+compared with TIGER, our method requires moderately longer
+training time under the same number of epochs, owing to the
+expansion of thinking steps and the incorporation of additional
+supervision. For inference, the increase in latency is relatively small.
+In our implementation, each decoding beam produces the thinking
+token and its subsequent SID code in a single continuous step,
+without separately expanding the beam for the thinking token,
+thereby avoiding multiple computational cost.
+Table B.1: Comparison of training and inference efficiency.
+Method
+Training
+Inference
+TIGER
+~45h
+~0.88h
+S2GR
+~59h
+~0.90h

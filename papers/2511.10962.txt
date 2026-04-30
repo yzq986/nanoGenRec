@@ -1,0 +1,1227 @@
+LEMUR: Large scale End-to-end MUltimodal Recommendation
+Xintian Han∗
+hanxintian@bytedance.com
+ByteDance
+Hangzhou, China
+Honggang Chen∗
+chenhonggang@bytedance.com
+ByteDance
+Beijing, China
+Quan Lin∗
+jiangchen.111@bytedance.com
+ByteDance
+Beijing, China
+Jingyue Gao∗
+gaojingyue@bytedance.com
+ByteDance
+Beijing, China
+Xiangyuan Ren∗
+xiangyuanren@bytedance.com
+ByteDance
+Beijing, China
+Lifei Zhu
+zhulifei@bytedance.com
+ByteDance
+Hangzhou, China
+Zhisheng Ye
+yezhisheng@pku.edu.cn
+ByteDance
+Beijing, China
+Shikang Wu
+wushikang@bytedance.com
+ByteDance
+Beijing, China
+Xionghang Xie
+xiexionghang@bytedance.com
+ByteDance
+Beijing, China
+Xiaochu Gan
+ganxiaochu@bytedance.com
+ByteDance
+Beijing, China
+Bingzheng Wei
+bingzhengwei@hotmail.com
+ByteDance
+Beijing, China
+Peng Xu
+xupeng@bytedance.com
+ByteDance
+San Jose, USA
+Zhe Wang
+zhewang.tim@gmail.com
+ByteDance
+Beijing, China
+Yuchao Zheng†
+zhengyuchao.yc@bytedance.com
+ByteDance
+Hangzhou, China
+Jingjian Lin
+linjingjian000@gmail.com
+ByteDance
+Beijing, China
+Di Wu
+di.wu@bytedance.com
+ByteDance
+Beijing, China
+Junfeng Ge
+cheng.l@bytedance.com
+ByteDance
+Beijing, China
+Abstract
+Traditional ID-based recommender systems often struggle with
+cold-start and generalization challenges. Multimodal recommenda-
+tion systems, which leverage textual and visual data, offer a promis-
+ing solution to mitigate these issues. However, existing industrial
+approaches typically adopt a two-stage training paradigm: first
+pretraining a multimodal model, then applying its frozen represen-
+tations to train the recommendation model. This decoupled frame-
+work suffers from misalignment between multimodal learning and
+recommendation objectives, as well as an inability to adapt dynami-
+cally to new data. To address these limitations, we propose LEMUR,
+∗These authors contributed equally to this research.
+†Corresponding Author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+the first large-scale multimodal recommender system trained end-
+to-end from raw data. By jointly optimizing both the multimodal
+and recommendation components, LEMUR ensures tighter align-
+ment with downstream objectives while enabling real-time param-
+eter updates. Constructing multimodal sequential representations
+from user history often entails prohibitively high computational
+costs. To alleviate this bottleneck, we propose a novel memory bank
+mechanism that incrementally accumulates historical multimodal
+representations throughout the training process. After one month
+of deployment in Douyin Search, LEMUR has led to a 0.843% reduc-
+tion in query change rate decay and a 0.81% improvement in QAUC.
+Additionally, LEMUR has shown significant gains across key offline
+metrics for Douyin Advertisement. Our results validate the supe-
+riority of end-to-end multimodal recommendation in real-world
+industrial scenarios.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Multimodal Recommender Models, End-to-End Training, Multi-
+modal Sequential Modeling
+arXiv:2511.10962v2  [cs.IR]  17 Nov 2025
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Han et al.
+ACM Reference Format:
+Xintian Han, Honggang Chen, Quan Lin, Jingyue Gao, Xiangyuan Ren, Lifei
+Zhu, Zhisheng Ye, Shikang Wu, Xionghang Xie, Xiaochu Gan, Bingzheng
+Wei, Peng Xu, Zhe Wang, Yuchao Zheng, Jingjian Lin, Di Wu, and Junfeng
+Ge. 2018. LEMUR: Large scale End-to-end MUltimodal Recommendation. In
+Proceedings of Make sure to enter the correct conference title from your rights
+confirmation email (Conference acronym ’XX). ACM, New York, NY, USA,
+10 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+In recent years, advancements in hardware—from T4 to A30, and
+then to A100/H100—coupled with engineering innovations such
+as Flash Attention [8, 9, 52], Zero Optimization [49], and Ten-
+sor/Pipeline Parallelism (TP/PP) [53], have substantially enhanced
+the computational capacity of recommendation systems. This progress
+has enabled the development of more sophisticated network archi-
+tectures and larger parameter scales, significantly improving the ex-
+pressive power of models and leading to gains in key performance
+metrics. Major research and application directions now include
+scaling up dense neural networks in both parameters and computa-
+tions [14, 42, 63, 66, 67, 77, 78], modeling long-range user behavior
+sequences [3, 25, 29, 34, 41, 54, 59, 60, 68], exploring generative rec-
+ommendation paradigms [1, 2, 10, 17, 24, 27, 36, 37, 46, 58, 62, 65, 70–
+74], and advancing multimodal integration [4, 6, 11, 15, 16, 33, 35,
+40, 50, 61, 69, 76].
+Traditional recommendation models primarily rely on ID-based
+features, such as user IDs, item IDs, and contextual IDs [7, 51, 57, 75].
+However, such features inherently suffer from cold-start [23, 44]
+and generalization issues [5]. When a new user joins the system, the
+absence of historical interactions makes it impossible to generate
+meaningful recommendations based on ID features alone. Further-
+more, since user behavior data is often sparse, models trained solely
+on ID features tend to exhibit high variance and poor generalization
+performance.
+To address these challenges, multimodal information offers a
+powerful solution [11, 33, 40]. By integrating raw text, visual, and
+other contextual signals, multimodal approaches provide rich and
+meaningful representations that are not dependent on historical
+user-item interactions. This is particularly valuable in short-video
+platforms like Douyin, where content understanding is crucial.
+Multimodal representations help mitigate the cold-start problem by
+leveraging content-based features from the very beginning, without
+waiting for interaction data to accumulate. Moreover, they enhance
+generalization by capturing semantic information that may not be
+directly learnable from limited user behavior records.
+The current mainstream approach in multimodal recommenda-
+tion primarily follows a two-stage framework [44, 64, 75]. In this
+setup, an upstream model is first trained on multimodal data to
+learn multimodal representations (e.g., CLIP [48], BLIP [31]), gen-
+erating an embedding for each item. These embeddings are then
+provided as a standalone service to downstream recommendation
+models. However, a significant gap exists between this two-stage
+multimodal pre-training and downstream recommendation systems.
+This misalignment manifests in several ways. First, there is a lack of
+alignment between content embeddings (derived from multimodal
+pre-training) and ID embeddings, resulting in content embeddings
+that are not guided by user behavior information. Second, recom-
+mendation models prioritize the learning of ID embeddings, caus-
+ing most of the informative signals to be stored in ID embeddings
+and leaving content embeddings underfitted. Third, the update
+frequencies of multimodal pre-training models and downstream
+search/recommendation models are inconsistent—while recommen-
+dation models are updated in real time, multimodal models often
+remain fixed after pre-training convergence, leading to a gradual
+decline in relevance. Finally, when multimodal embeddings are ap-
+plied to long sequences and transmitted as an online service, severe
+transmission bottlenecks arise.
+In this work, we introduce LEMUR, the first Large-scale, fully
+End-to-end MUltimodal Recommendation system. Unlike previous
+approaches such as TIGER [50] and EM3 [11], which operate un-
+der a two-stage training framework and make trade-offs, LEMUR
+achieves a truly integrated one-stage pipeline that jointly learns
+multimodal representations and ranking objectives. It stands as
+the first feasible solution of its kind to be successfully deployed
+on a large-scale industrial platform. With the memory bank, each
+training task retains its multimodal sequential representations on a
+dedicated parameter server, eliminating the need for data transmis-
+sion from the online service and thereby resolving transmission
+bottlenecks.
+We posit that as baseline models increase in complexity, the
+relative resource overhead associated with the end-to-end joint
+training of recommendation and multimodal models will progres-
+sively diminish, making such integrated architectures increasingly
+practical. LEMUR has been deployed on Douyin Search for more
+than one month and has achieved significant offline performance
+improvements in multiple other scenarios.
+Our main contributions are:
+• We propose the first end-to-end multimodal recommenda-
+tion system, LEMUR, which has been deployed on the Douyin
+short video platform.
+• We introduce a novel memory bank mechanism to build
+multimodal sequential representations that saves a huge
+amount of computations.
+• We employ a novel session-masked contrastive loss to align
+the representation of the query and document.
+• We develop sampling techniques to further improve training
+efficiency.
+2
+Related Work
+We describe related work in four parts: large recommendation mod-
+els, multimodal models, multimodal recommendation, and memory
+mechanisms.
+2.1
+Large Recommendation Models
+Recent advances in hardware capabilities and engineering innova-
+tions have ushered recommendation systems into the era of large
+models. Researchers are expanding the scale of deep neural net-
+works by increasing parameter counts and computational complex-
+ity through techniques such as ensemble methods and hierarchical
+stacking of diverse architectures [66, 67, 78]. Zhu et al. introduced
+a novel architecture named Rankmixer, scaling the total param-
+eters up to one billion [77]. In parallel, another line of research
+
+LEMUR: Large scale End-to-end MUltimodal Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Figure 1: The Overall Framework of LEMUR.
+focuses on extending the length of user behavior sequences to bet-
+ter model long-range dependencies [3, 25, 29, 34, 41, 54, 59, 60, 68].
+Inspired by the success of next-token prediction in large language
+models, recent studies have begun to explore next-item prediction
+in recommendation systems, giving rise to the field of generative
+recommendation [1, 2, 10, 17, 24, 27, 36, 37, 46, 58, 62, 65, 70–74].
+Furthermore, multimodal modeling has emerged as a promising
+direction for scaling up recommendation systems since multimodal
+encoders typically involve substantial computational overhead. This
+work integrates the training of such encoders with ranking models,
+effectively doubling the overall computational load of the recom-
+mendation system.
+2.2
+Multimodal Models
+The development of base multimodal models paves the way for mul-
+timodal recommendation systems. For text, power transformer [55]
+based architectures have achieved a series of SOTA results, includ-
+ing Deberta [21, 22], BERT [12], GPT [47] and many others. For
+vision, convolutional neural networks [20, 28, 30] and vision trans-
+formers [13, 18] are the most popular architectures. Many efforts
+have been made to merge vision and language modalities, including
+ViLT [26], ViLBert [39], CLIP [48], ALBEF [32] and BLIP [31]. In
+this work, we follow CLIP and introduce the contrastive loss to
+align the representation of the query and document.
+2.3
+Multimodal Recommendation
+Multimodal recommendation has received considerable attention
+in recent research [4, 6, 11, 15, 16, 33, 35, 40, 44, 50, 61, 69, 76].
+Many existing approaches adopt a two-stage pipeline, where the
+multimodal encoder is pre-trained offline and its frozen features
+are subsequently fed into the recommendation model [4, 15, 35, 44,
+61, 69, 76].
+To reduce computational overhead, some studies opt to train only
+a subset of the multimodal encoder parameters. For instance, Deng
+et al. [11] fine-tune a q-former module while keeping the vision
+and language encoders fixed. Similarly, Ge et al. [16] update only
+the top layers of the encoder, leaving the remaining layers frozen.
+Another line of work converts multimodal content into discrete
+token IDs through quantization or tokenization techniques [33,
+40, 50]. However, such discrete representations may suffer from
+information loss relative to the original images or texts. In contrast,
+our approach trains the multimodal encoder end-to-end alongside
+the ranking model.
+Deng et al. also introduced a Content-ID Contrastive (CIC) learn-
+ing loss to align frozen multimodal representations with ID em-
+beddings, aiming to produce more task-aware multimodal features
+and more generalized ID embeddings [11]. Nevertheless, our ex-
+periments indicate that when the multimodal encoder is updated
+jointly with the ranking model, the CIC loss does not yield addi-
+tional performance gains.
+Chen et al. [6] explored training a CNN jointly with the ranking
+model on a real-world dataset. To reduce computational cost, they
+grouped samples sharing the same image within the same batch.
+However, this strategy has not been widely deployed and is in-
+compatible with online training pipelines. Moreover, their method
+does not adequately address multimodal sequence modeling. In this
+work, we propose a novel cross-worker deduplication technique
+and an efficient sampling strategy to accelerate training, enabling
+full deployment in Douyin Search. We further introduce a mem-
+ory bank mechanism to effectively construct multimodal sequence
+representations.
+2.4
+Memory Mechanisms
+Many researchers leverage memory mechanisms to store and re-
+trieve information for subsequent use. For instance, He et al. [19]
+introduce a memory bank to store past key representations, which
+are later sampled to facilitate momentum contrastive learning. Simi-
+larly, Key-Value Memory Networks [43] employ a memory structure
+to retain key-value pairs as a knowledge base, thereby improving
+machine comprehension of documents. Lample et al. further en-
+hance this approach by decomposing keys and values for greater
+efficiency. More recently, Lu et al. [38] incorporate memory network
+mechanisms to advance recommendation systems.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Han et al.
+3
+Methods
+The overall architecture of LEMUR is illustrated in fig. 1. Firstly,
+LEMUR encodes multimodal information using a bidirectional trans-
+former. In contrast to previous works that rely on frozen representa-
+tions, our transformer is jointly trained with the ranking model. To
+learn a better multimodal representation, we introduce a noval con-
+trastive learning framework SQDC (Session masked Query to Docu-
+ment Contrastive). In each batch, the query and document represen-
+tations use real-click signals to filter positive samples for contrastive
+learning. Furthermore, we employ a memory bank mechanism to
+store multimodal representations and construct a multimodal se-
+quential representation, thereby reducing computational costs. The
+multimodal representations together with other features are sent
+to RankMixer [77] to produce the final logit. We provide a detailed
+description of the overall framework below.
+3.1
+Problem Formulation
+Our goal is to predict the click-through rate (CTR) in Douyin Search
+based on features from the query, the user, and the video (also
+referred to as the document (doc)). In this context, CTR is defined
+as the probability that a user watches a recommended video for
+more than five seconds after submitting a query. The model is
+optimized using the binary cross-entropy loss. Denote 𝑥as the
+input and 𝑦as the label from the dataset D. The estimated CTR is
+ˆ𝑦= 𝑓𝜃(𝑥). The binary cross-entropy loss is defined as
+ℓCTR = −1
+|D|
+∑︁
+(𝑥,𝑦)∈D
+[𝑦log ˆ𝑦+ (1 −𝑦) log(1 −ˆ𝑦)]
+(1)
+Although additional engagement signals such as likes and com-
+ments, are also considered in practice, these are not the primary
+focus of this work and are omitted for clarity.
+3.2
+Raw Features Modeling
+For document i, we employ a pair of bidirectional transformers [55]
+to encode the query raw features 𝑞𝑖
+raw and document raw features
+𝑑𝑖
+raw separately.
+𝑞𝑖= Transformer(𝑞𝑖
+raw)
+(2)
+𝑑𝑖= Transformer(𝑑𝑖
+raw)
+(3)
+A distinct cls token is inserted at the start of both the query and
+the document sequences. Within the document input, sep tokens
+are placed between each feature to demarcate their boundaries.
+In addition to standard position embeddings, we incorporate type
+embeddings to distinguish among different feature categories. The
+final representations for query and document are derived from
+the output corresponding to its cls token. These query and doc-
+ument representations are then concatenated with other features
+and passed through RankMixer to generate the output logit.
+3.3
+SQDC
+To align the representation of the query and the doc, we use an
+extra in-batch session-masked query-document contrastive (SQDC)
+loss.
+In a batch of size 𝐾, denote 𝑞𝑖as the embedding of the 𝑖-th query
+and 𝑑𝑖as the embedding of the 𝑖-th doc. For a positive sample 𝑖,
+the contrastive loss aims to bring 𝑞𝑖closer to 𝑑𝑖than any other
+𝑑𝑗, ∀𝑗≠𝑖. We use a cosine similarity score to measure the distance
+between the query and the doc embedding. The cosine similarity is
+defined as
+sim(𝑞,𝑑) =
+𝑞𝑇𝑑
+∥𝑞∥∥𝑑∥
+(4)
+And the contrastive loss is defined as follows:
+ℓcontrastive =
+∑︁
+𝑖,label𝑖=1
+−log
+exp (sim(𝑞𝑖,𝑑𝑖) ∗𝑇)
+Í𝐾
+𝑗=0 exp  sim(𝑞𝑖,𝑑𝑗) ∗𝑇
+(5)
+where 𝑇is a temperature hyperparameter.
+In the same batch, several samples may come from the same
+session, belonging to the same query. Therefore, when calculating
+the contrastive loss, we introduce session-level sample masks to
+mask samples from the same query. Denote the mask as 𝐴𝑖𝑗and
+QID as the query identifier. The SQDC loss is defined as
+ℓSQDC =
+∑︁
+𝑖,label𝑖=1
+−log
+exp (sim(𝑞𝑖,𝑑𝑖) ∗𝑇)
+Í𝐾
+𝑗=0 𝐴𝑖𝑗∗exp  sim(𝑞𝑖,𝑑𝑗) ∗𝑇
+(6)
+𝐴𝑖𝑗=
+(
+0
+if 𝑖≠𝑗and QID𝑖= QID𝑗
+1
+else
+(7)
+We illustrate SQDC in the right panel of fig. 1. The yellow colored
+masks are the session-level masks, i.e., 𝑞1,𝑞2 belong to the same
+query and 𝑞3,𝑞4,𝑞5 belong to the same query. The session-level
+mask stabilizes the training, as the user behaviors from the same
+query are highly correlated.
+3.4
+Memory Bank
+In addition to generating multimodal representations for the target
+document, we aim to construct multimodal sequential representa-
+tions for the user’s historical documents. However, jointly training
+these sequential representations with the recommendation model
+is computationally prohibitive. For instance, with a batch size of
+2048, the base model consumes 1.6 TFLOPs, while the document
+transformer requires 2.3 TFLOPs. If we consider a sequence length
+of 1024 or more, the computational cost would increase a thousand-
+fold.
+To mitigate this expense, we employ a memory bank strategy (see
+the memory bank module in fig. 1). During each training batch, we
+first store the target document’s representation in the memory bank.
+Then, for any document in the user’s history sequence, we retrieve
+its corresponding multimodal representation from the memory
+bank using the document ID. This approach allows us to efficiently
+form the sequential representation of historical documents. Since
+we only consider user history within a one-month window and
+our training dataset spans over two months, the memory bank is
+sufficient to cover all document representations encountered in the
+sequence.
+3.5
+Multimodal Sequential Modeling
+We employ a modified version of LONGER [3], a Decoder module,
+and a similarity module to model the multimodal sequence derived
+from the memory bank.
+In the first layer, the Decoder first transforms other features into
+a Decoder query token 𝑄1 and applies a cross-attention mecha-
+nism. Let the multimodal sequential representations be denoted
+as 𝑑1,𝑑2, . . . ,𝑑𝑁. These representations serve as keys and values in
+
+LEMUR: Large scale End-to-end MUltimodal Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+query
+global token
+input seq
+cross attention 
+FFN
+output
+key
+value
+N x
+Figure 2: The Structure of Decoder
+the cross-attention operation. The output of the cross-attention is
+then passed through a feed-forward network (FFN) to generate the
+query token for the next layer. The overall process is summarized
+below and illustrated in fig. 2:
+𝑄𝑖+1 = FFN (Cross Attention(𝑄𝑖,𝑑1,𝑑2, . . . ,𝑑𝑁)) ,
+(8)
+Cross Attention(𝑞𝑖,𝑑1,𝑑2, . . . ,𝑑𝑁) =
+𝑁
+∑︁
+𝑗=1
+𝑎(𝑄𝑖,𝑑𝑗)𝑑𝑗,
+(9)
+𝑎(𝑄𝑖,𝑑𝑗) =
+exp(𝑄𝑇
+𝑖𝑑𝑗)
+Í𝑁
+𝑗=1 exp(𝑄𝑇
+𝑖𝑑𝑗)
+.
+(10)
+The Decoder applies only the FFN to the cross-attention output,
+which significantly reduces computational overhead. This Decoder
+architecture is also used as the sequence modeling component in
+the baseline model.
+Additionally, a similarity module computes cosine similarities
+between the target document and each document in the history. To
+stabilize training, we also maintain a ranked version of the resulting
+similarity vector.
+The outputs from the Decoder and the similarity module are
+combined with other features and serve as input to the RankMixer
+model. We have multiple sequences in the model. The longest one
+has 1000 items.
+3.6
+Efficiency Optimization
+Although we used the memory bank to save a large part of the
+computational burden, we still have more FLOPS in the Transformer
+than the ranking model itself. To further speed up training and
+serving, we apply flash attention [9] and mixed-precision training.
+Additionally, we randomly select a subset of training samples
+to execute the forward and backward passes of the transformer.
+For the remaining samples, we reuse the embeddings stored in the
+memory bank instead of performing the forward pass. To balance
+computational cost and performance, we run both forward and
+backward processes on 20% of the samples. During inference, em-
+beddings are directly retrieved from the memory bank without
+activating the transformer.
+Furthermore, a single batch often contains multiple duplicate
+documents. Since the representations of identical documents can
+be shared within the batch, we apply a deduplication technique to
+retain only one unique copy of each document per batch across all
+the workers before processing with the Transformer. This approach
+significantly reduces computational overhead. See section A for
+details.
+4
+Experiments
+4.1
+Experiment Settings
+4.1.1
+Datasets. To evaluate the performance of our method, we
+conduct offline experiments using data sourced from Douyin’s
+search recommendation system. The dataset is derived from a sub-
+set of online user interaction logs spanning 70 consecutive days
+and comprises 3 billion samples. Training batches are organized
+around multiple identical queries, where each query and the corre-
+sponding retrieved documents appear consecutively in the training
+samples. Each sample incorporates user features, query features,
+document features, cross-features, and user search history features,
+encompassing billions of user IDs and hundreds of millions of docu-
+ment IDs. Beyond traditional features, we also integrate raw textual
+information from both queries and documents. The document text
+includes Optical Character Recognition (OCR) results, Automatic
+Speech Recognition (ASR) transcripts of the video content, video
+titles, and OCR text extracted from video cover images. An internal
+tokenizer is employed to convert raw text into tokens. A summary
+of the text inputs is provided in table 1.
+Table 1: Summary of the text input
+source
+feature
+max length
+avg length
+query
+query
+10
+4
+doc
+title
+31
+22
+OCR
+124
+81
+ASR
+12
+2
+cover image OCR
+12
+6
+4.1.2
+Baselines. We conducted experiments on two state-of-the-
+art production models in our system:
+• RankMixer [77]: A high MFU recommendation model with
+token mixing and per-token FFN strategies to capture het-
+erogeneous feature interactions efficiently.
+• LONGER [3]: A long-sequence optimized transformer struc-
+ture for GPU-efficient recommenders.
+4.1.3
+Evaluation Metrics. For offline evaluation, we employ AUC
+(Area Under the Curve) and QAUC (Query-level AUC). QAUC cal-
+culates the AUC for samples within each query and then averages
+the results across all queries. We also report the number of dense
+parameters and training FLOPs, with the latter computed using a
+batch size of 2048.
+For online evaluation, we use the query change rate, which
+measures the probability of users manually refining a search query
+into a more specific one—for example, changing from “tank” to
+“tank 300”. It is calculated as follows:
+query change rate =
+number of distinct UID-query pairs with query reformulation
+total number of distinct UID-query pairs
+.
+(11)
+This metric serves as an indicator of a negative search experience
+for users.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Han et al.
+4.1.4
+Implementation Details. For the convenience of our experi-
+ment, the recommendation model is loaded with checkpoint, and
+the multimodal model is cold started. All baselines utilize the same
+batch size, and optimizer settings. The batch size is set to 2048. The
+dimension of query and document is set to 128 in the memory bank.
+Since QID is not repeated, the query Transformer layer is set to 2
+for serving efficiency. The document Transformer layer is set to 4
+for better performance.
+4.2
+Offline Evaluation
+We present a comparison of LEMUR with our online baseline
+model, RankMixer+LONGER. To further demonstrate the effec-
+tiveness of LEMUR, we also include the improvements achieved by
+RankMixer and LONGER individually over an older baseline, DLRM-
+MLP [45]. The results are summarized in table 2. Our proposed
+method LEMUR-SQDC achieves a QAUC improvement of 0.47%,
+while LEMUR-SQDC-MB improves QAUC by 0.81%. In comparison,
+RankMixer alone yields a 0.59% gain in QAUC, and LONGER alone
+contributes a 0.45% improvement. It is worth noting that in our
+industrial setting, an improvement of just 0.1% is considered sig-
+nificant enough to impact online A/B test performance. Therefore,
+LEMUR delivers a substantial improvement in QAUC.
+Table 2: Model performance compare with online baselines
+model
+AUC↑
+QAUC↑
+DLRM-MLP
+0.74071
+0.63760
++RankMixer
++0.49%
++0.59%
++LONGER
++0.89%
++1.04%
++LEMUR-SQDC
++1.22%
++1.51%
++LEMUR-SQDC-MB
++1.44%
++1.85%
+Improvement
+0.55%
+0.81%
+4.3
+Online A/B Test
+In a recent 14-day A/B test conducted on Douyin Search, LEMUR
+demonstrated a query change rate of 0.843%, outperforming the
+baseline model. The results were statistically significant according
+to a T-test. Following this successful experiment, LEMUR has been
+fully deployed on Douyin Search and has been operating effectively
+for over one month.
+4.4
+Comparison with the Two-Stage Method
+We compared LEMUR with a two-stage approach that involves pre-
+training the transformer with the same SQDC loss and text features
+on a one-month data sample from Douyin Search, and then using
+the frozen representations. In the downstream recommendation
+task, the multimodal representations generated by the pretrained
+transformer were utilized in the same manner as in LEMUR. As
+shown in table 3, LEMUR outperforms the two-stage method by
+0.69% in QAUC.
+Table 3: Comparison with the Two-Stage Method
+method
+QAUC
+ΔQAUC
+baseline
+0.64393
+–
+Two-Stage
+0.64470
+0.12%
+LEMUR
+0.64914
+0.81%
+4.5
+Staleness and Coverage
+The current memory bank mechanism faces two primary challenges:
+staleness and coverage. Staleness arises from the discrepancy be-
+tween the cached representations in the memory bank and the
+outputs of the current model, as the model parameters are updated
+during training while the stored representations are not refreshed
+in real time. We measure staleness using the similarity between
+the current model’s output and its cached version—treating higher
+similarity as an indicator of lower staleness. As shown in the left
+panel of fig. 3, this similarity increases steadily during training and
+eventually stabilizes around a high value of 0.95, indicating that
+staleness does not pose a significant issue for LEMUR.
+Coverage, on the other hand, refers to the percentage of sequence
+items stored in the memory bank relative to the total number of
+items in the sequence. High coverage is essential for effective se-
+quence modeling. The right panel of fig. 3 illustrates that the short
+sequence achieves high coverage early in training, while the long
+sequence requires more time to reach a comparable level. In both
+cases, coverage exceeds 90%. Additionally, we visualize the cover-
+age rate for the currently stored document in the memory bank,
+which remains above 98%—confirming that embeddings retrieved
+from the memory bank are suitable for serving.
+0
+20
+40
+60
+80
+100
+120
+140
+160
+training times(hours)
+0.89
+0.9
+0.91
+0.92
+0.93
+0.94
+0.95
+0.96
+similarity 
+similarity
+0
+20
+40
+60
+80
+100
+120
+140
+160
+training times(hours)
+0.4
+0.5
+0.6
+0.7
+0.8
+0.9
+1
+coverage
+current document
+short sequence
+long sequence
+Figure 3: Staleness and coverage in memory bank.
+Table 4: Performance & efficiency comparison of different
+sample training strategies
+method
+params
+FLOPs
+QAUC
+baseline
+92M
+1673G
+–
+LEMUR, no-sampling
+139M
+4303G
++0.81%
+LEMUR, p=100,q=20
+139M
+3232G
++0.78%
+LEMUR, p=20,q=20
+139M
+2439G
++0.76%
+LEMUR, p=10,q=10
+139M
+2262G
++0.75%
+
+LEMUR: Large scale End-to-end MUltimodal Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 5: Ablation Studies on LEMUR
+method
+setting
+QAUC
+ΔQAUC
+LEMUR
+final online version
++0.81%
+–
+Transformer
+w/ stop gradient in RankMixer
++0.50%
+-0.31%
+MemoryBank
+w/o short multimodal sequence
++0.77%
+-0.09%
+w/o long multimodal sequence
++0.56%
+-0.25%
+w/o cosine similarity
++0.69%
+-0.12%
+Loss
+w/o SQDC Loss
++0.64%
+-0.17%
+w/o session-level mask
++0.71%
+-0.10%
+w/ CIC Loss
++0.79%
+-0.02%
+Table 6: Different temperatures and negative samples strategies of SQDC.
+configuration
+QAUC
+ΔQAUC
+SQDC (different temperature)
+temperature=1
+0.64831
++0.68%
+temperature=5
+0.64857
++0.72%
+temperature=50
+0.64914
++0.81%
+temperature=100
+0.64869
++0.74%
+SQDC (different negative samples strategy)
+in-batch positive samples
+0.64914
++0.81%
+in-batch samples
+0.64908
++0.80%
+4.6
+Ablation Studies
+We systematically ablated the QAUC gains from different compo-
+nents.
+4.6.1
+The Effect of Joint Training. In RankMixer, we apply gradient
+stopping to the representations learned from the Transformer. As
+shown in table 5, this results in a 0.31% decrease in QAUC, indicating
+that the relevant features and signals from recommendation models
+can effectively guide the training of multimodal models and enhance
+CTR prediction.
+4.6.2
+The Usage of Memory Bank. As shown in table 5, the use of
+multimodal long sequences and short sequences leads to QAUC
+improvements of 0.09% and 0.25%, respectively, underscoring the
+potential of integrating ultralong multimodal sequences into recom-
+mendation systems. Additionally, adopting cosine similarity helps
+the model better capture content similarity between the current
+document and historical documents, which contributes to a further
+0.12% gain in QAUC.
+4.6.3
+Different Sampling Strategies. We evaluate various training
+strategies while taking computational cost into account, as shown
+in table 4. The FLOPs of the unoptimized LEMUR model are more
+than doubled, making such a sharp rise in training cost impractical.
+To mitigate this, we only perform forward and backward passes
+on a subset of the training data. Let 𝑝denote the percentage of
+samples used in the forward pass and 𝑞the percentage used in the
+backward pass.
+Initially, we conducted forward propagation on all samples in
+each batch while performing backward propagation on only 20% of
+them (𝑝= 100, 𝑞= 20 ). This led to a slight drop in QAUC of 0.03%,
+suggesting that even after training stabilizes, backward propagation
+remains important in LEMUR.
+We then attempted both forward and backward propagation on
+20% of the samples in each batch, retrieving the remaining 80%
+from the Memory Bank (𝑝= 20,𝑞= 20). This resulted in a QAUC
+decrease of 0.05%, indicating that data staleness also affects model
+performance.
+Finally, we further reduced the sample rate to 10% for both for-
+ward and backward passes, which led to an additional 0.01% decline
+in QAUC. Given that the 20% sampling strategy already meets the
+ROI requirement and offers better coverage of multimodal long
+sequences, we adopted it for final deployment.
+4.6.4
+Analysis of SQDC. We begin by ablating the use of the SQDC
+loss and session-level masking. As shown in table 5, the SQDC loss
+contributes a 0.17% improvement in QAUC, with the session-level
+mask accounting for 0.10% of that gain.
+We further examine the effect of the temperature hyperparame-
+ter. Consistent with findings in multimodal pre-trained models [19,
+56], a higher temperature sharpens the distinction between similar-
+ity scores, allowing the model to focus more effectively on positive
+pairs—such as matched query-document pairs—and thereby improv-
+ing the aggregation of semantically similar samples. After testing a
+range of values, we identified 50 as the optimal temperature, which
+yields a 0.81% increase in AUC. Both excessively high and low
+temperatures are observed to degrade performance.
+In addition, we explore negative sampling strategies for con-
+trastive learning. As presented in table 6, using either all other
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Han et al.
+in-batch samples or all other positive samples as negatives leads to
+only a marginal difference in QAUC.
+4.6.5
+CIC Loss. We also explore the use of the CIC loss [11]. As
+shown in table 5, introducing the CIC loss leads to a slight per-
+formance degradation under LEMUR’s joint training framework.
+This suggests that explicit alignment with ID embeddings may offer
+limited benefits when multimodal embeddings are co-optimized
+with the ranking model.
+4.7
+Performances in Other Scenarios
+LEMUR has also achieved favorable offline and online gains in other
+scenarios. Specifically, on the Douyin Ads Platform, we obtain 0.1%
+offline AUC gain. In the TikTok Search scenario, the online A/B test
+gain approximately achieves a 0.843% reduction in query change
+rate.
+5
+Discussion
+In this work, we introduced LEMUR, the first fully end-to-end mul-
+timodal recommendation system successfully deployed at a large
+industrial scale. By integrating the learning of multimodal represen-
+tations and ranking objectives into a single, joint training pipeline,
+LEMUR overcomes the limitations and trade-offs inherent in pre-
+vious two-stage frameworks. Our key innovations—including a
+novel memory bank mechanism for efficient sequential modeling,
+a session-masked contrastive loss for query-document alignment,
+and advanced deduplication and sampling techniques—collectively
+enable this end-to-end paradigm with high training efficiency. The
+successful deployment of LEMUR on Douyin Search for over one
+month, along with significant offline gains in other scenarios, val-
+idates its effectiveness and practical viability. We believe that as
+model complexity continues to grow, the integrated architecture
+exemplified by LEMUR represents a promising and increasingly
+practical direction for the future of multimodal recommendation.
+Despite the demonstrated success of LEMUR, we acknowledge
+certain limitations in our current design, which open avenues for
+future research. A primary point of discussion revolves around
+the memory bank mechanism. While it is instrumental in saving
+computational costs for building sequential recommendations, it in-
+troduces an inherent issue of staleness. The representations stored
+in the memory bank are not updated in real-time as the model
+parameters evolve during training, leading to a potential discrep-
+ancy between the cached representations and the current model’s
+output. This staleness could hinder the optimization process and
+the quality of the learned sequential patterns. Furthermore, the
+coverage and update strategy of the memory bank may not fully
+capture the long-tail distribution of items in a large-scale system,
+potentially biasing the model towards popular items. Addressing
+these challenges related to staleness and coverage will be a critical
+focus of our future work, potentially through exploring dynamic
+update schedules or more sophisticated caching architectures.
+Acknowledgments
+We thank Gangqin Zhuang, Kaiyuan Ma, Zunyao Xue, Tianyi Liu,
+Minghui Yang, Hao Jiang, Tianlong Fan, and Wenda Liu for their
+help on efficiency optimization.
+
+LEMUR: Large scale End-to-end MUltimodal Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+References
+[1] Anirudhan Badrinath, Prabhat Agarwal, Laksh Bhasin, Jaewon Yang, Jiajing
+Xu, and Charles Rosenberg. 2025. PinRec: Outcome-Conditioned, Multi-Token
+Generative Retrieval for Industry-Scale Recommendation Systems. arXiv preprint
+arXiv:2504.10507 (2025).
+[2] Fedor Borisyuk, Lars Hertel, Ganesh Parameswaran, Gaurav Srivastava, Sudar-
+shan Srinivasa Ramanujam, Borja Ocejo, Peng Du, Andrei Akterskii, Neil Daftary,
+Shao Tang, et al. 2025. From Features to Transformers: Redefining Ranking for
+Scalable Impact. arXiv preprint arXiv:2502.03417 (2025).
+[3] Zheng Chai, Qin Ren, Xijun Xiao, Huizhi Yang, Bo Han, Sijun Zhang, Di Chen,
+Hui Lu, Wenlin Zhao, Lele Yu, et al. 2025. LONGER: Scaling Up Long Sequence
+Modeling in Industrial Recommenders. arXiv preprint arXiv:2505.04421 (2025).
+[4] Gaode Chen, Ruina Sun, Yuezihan Jiang, Jiangxia Cao, Qi Zhang, Jingjian Lin,
+Han Li, Kun Gai, and Xinghua Zhang. 2024. A Multi-modal Modeling Framework
+for Cold-start Short-video Recommendation. In Proceedings of the 18th ACM
+Conference on Recommender Systems. 391–400.
+[5] Jin Chen, Tiezheng Ge, Gangwei Jiang, Zhiqiang Zhang, Defu Lian, and Kai
+Zheng. 2021. Efficient optimal selection for composited advertising creatives
+with tree structure. In Proceedings of the AAAI Conference on Artificial Intelligence,
+Vol. 35. 3967–3975.
+[6] Junxuan Chen, Baigui Sun, Hao Li, Hongtao Lu, and Xian-Sheng Hua. 2016. Deep
+ctr prediction in display advertising. In Proceedings of the 24th ACM international
+conference on Multimedia. 811–820.
+[7] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra,
+Hrishi Aradhye, Glen Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, et al.
+2016. Wide & deep learning for recommender systems. In Proceedings of the 1st
+workshop on deep learning for recommender systems. 7–10.
+[8] Tri Dao. 2023. Flashattention-2: Faster attention with better parallelism and work
+partitioning. arXiv preprint arXiv:2307.08691 (2023).
+[9] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. Flashat-
+tention: Fast and memory-efficient exact attention with io-awareness. Advances
+in neural information processing systems 35 (2022), 16344–16359.
+[10] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[11] Xiuqi Deng, Lu Xu, Xiyao Li, Jinkai Yu, Erpeng Xue, Zhongyuan Wang, Di
+Zhang, Zhaojie Liu, Guorui Zhou, Yang Song, et al. 2024. End-to-end training of
+Multimodal Model and ranking Model. arXiv preprint arXiv:2404.06078 (2024).
+[12] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. Bert:
+Pre-training of deep bidirectional transformers for language understanding. In
+Proceedings of the 2019 conference of the North American chapter of the association
+for computational linguistics: human language technologies, volume 1 (long and
+short papers). 4171–4186.
+[13] Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xi-
+aohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg
+Heigold, Sylvain Gelly, et al. 2020. An image is worth 16x16 words: Transformers
+for image recognition at scale. arXiv preprint arXiv:2010.11929 (2020).
+[14] Yan Fang, Jingtao Zhan, Qingyao Ai, Jiaxin Mao, Weihang Su, Jia Chen, and Yiqun
+Liu. 2024. Scaling laws for dense retrieval. In Proceedings of the 47th International
+ACM SIGIR Conference on Research and Development in Information Retrieval.
+1339–1349.
+[15] Yongrui Fu, Jian Liu, Tao Li, Zonggang Wu, Shouke Qin, and Hanmeng Liu.
+2025. Multimodal Fusion And Sparse Attention-based Alignment Model for Long
+Sequential Recommendation. arXiv preprint arXiv:2508.09664 (2025).
+[16] Tiezheng Ge, Liqin Zhao, Guorui Zhou, Keyu Chen, Shuying Liu, Huimin Yi,
+Zelin Hu, Bochao Liu, Peng Sun, Haoyu Liu, et al. 2018. Image matters: Visually
+modeling user behaviors using advanced model server. In Proceedings of the
+27th ACM International Conference on Information and Knowledge Management.
+2087–2095.
+[17] Wei Guo, Hao Wang, Luankang Zhang, Jin Yao Chin, Zhongzhou Liu, Kai Cheng,
+Qiushi Pan, Yi Quan Lee, Wanqi Xue, Tingjia Shen, et al. 2024. Scaling new fron-
+tiers: Insights into large recommendation models. arXiv preprint arXiv:2412.00714
+(2024).
+[18] Kaiming He, Xinlei Chen, Saining Xie, Yanghao Li, Piotr Dollár, and Ross Girshick.
+2022. Masked autoencoders are scalable vision learners. In Proceedings of the
+IEEE/CVF conference on computer vision and pattern recognition. 16000–16009.
+[19] Kaiming He, Haoqi Fan, Yuxin Wu, Saining Xie, and Ross Girshick. 2020. Mo-
+mentum contrast for unsupervised visual representation learning. In Proceedings
+of the IEEE/CVF conference on computer vision and pattern recognition. 9729–9738.
+[20] Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. 2016. Deep residual
+learning for image recognition. In Proceedings of the IEEE conference on computer
+vision and pattern recognition. 770–778.
+[21] Pengcheng He, Jianfeng Gao, and Weizhu Chen. 2021. Debertav3: Improving
+deberta using electra-style pre-training with gradient-disentangled embedding
+sharing. arXiv preprint arXiv:2111.09543 (2021).
+[22] Pengcheng He, Xiaodong Liu, Jianfeng Gao, and Weizhu Chen. 2020.
+De-
+berta: Decoding-enhanced bert with disentangled attention.
+arXiv preprint
+arXiv:2006.03654 (2020).
+[23] Ruining He and Julian McAuley. 2016. VBPR: visual bayesian personalized
+ranking from implicit feedback. In Proceedings of the AAAI conference on artificial
+intelligence, Vol. 30.
+[24] Lei Huang, Hao Guo, Linzhi Peng, Long Zhang, Xiaoteng Wang, Daoyuan Wang,
+Shichao Wang, Jinpeng Wang, Lei Wang, and Sheng Chen. 2025. SessionRec:
+Next Session Prediction Paradigm For Generative Sequential Recommendation.
+arXiv preprint arXiv:2502.10157 (2025).
+[25] Kirill Khrylchenko, Artem Matveev, Sergei Makeev, and Vladimir Baikalov. 2025.
+Scaling recommender transformers to one billion parameters. arXiv preprint
+arXiv:2507.15994 (2025).
+[26] Wonjae Kim, Bokyung Son, and Ildoo Kim. 2021. Vilt: Vision-and-language trans-
+former without convolution or region supervision. In International conference on
+machine learning. PMLR, 5583–5594.
+[27] Lingwei Kong, Lu Wang, Changping Peng, Zhangang Lin, Ching Law, and Jing-
+ping Shao. 2025. Generative Click-through Rate Prediction with Applications to
+Search Advertising. arXiv preprint arXiv:2507.11246 (2025).
+[28] Alex Krizhevsky, Ilya Sutskever, and Geoffrey E Hinton. 2012. Imagenet classifi-
+cation with deep convolutional neural networks. Advances in neural information
+processing systems 25 (2012).
+[29] Weijiang Lai, Beihong Jin, Jiongyan Zhang, Yiyuan Zheng, Jian Dong, Jia Cheng,
+Jun Lei, and Xingxing Wang. 2025. Exploring Scaling Laws of CTR Model for
+Online Performance Improvement. arXiv preprint arXiv:2508.15326 (2025).
+[30] Yann LeCun, Bernhard Boser, John S Denker, Donnie Henderson, Richard E
+Howard, Wayne Hubbard, and Lawrence D Jackel. 1989. Backpropagation applied
+to handwritten zip code recognition. Neural computation 1, 4 (1989), 541–551.
+[31] Junnan Li, Dongxu Li, Caiming Xiong, and Steven Hoi. 2022. Blip: Bootstrapping
+language-image pre-training for unified vision-language understanding and
+generation. In International conference on machine learning. PMLR, 12888–12900.
+[32] Junnan Li, Ramprasaath Selvaraju, Akhilesh Gotmare, Shafiq Joty, Caiming Xiong,
+and Steven Chu Hong Hoi. 2021. Align before fuse: Vision and language repre-
+sentation learning with momentum distillation. Advances in neural information
+processing systems 34 (2021), 9694–9705.
+[33] Kaiyuan Li, Rui Xiang, Yong Bai, Yongxiang Tang, Yanhua Cheng, Xialong Liu,
+Peng Jiang, and Kun Gai. 2025. Bbqrec: Behavior-bind quantization for multi-
+modal sequential recommendation. arXiv preprint arXiv:2504.06636 (2025).
+[34] Chi Liu, Jiangxia Cao, Rui Huang, Kai Zheng, Qiang Luo, Kun Gai, and Guorui
+Zhou. 2024. KuaiFormer: Transformer-Based Retrieval at Kuaishou. arXiv preprint
+arXiv:2411.10057 (2024).
+[35] Hu Liu, Jing Lu, Hao Yang, Xiwei Zhao, Sulong Xu, Hao Peng, Zehua Zhang,
+Wenjie Niu, Xiaokun Zhu, Yongjun Bao, et al. 2020. Category-Specific CNN for
+Visual-aware CTR Prediction at JD. com. In Proceedings of the 26th ACM SIGKDD
+international conference on knowledge discovery & data mining. 2686–2696.
+[36] Han Liu, Yinwei Wei, Xuemeng Song, Weili Guan, Yuan-Fang Li, and Liqiang
+Nie. 2024. Mmgrec: Multimodal generative recommendation with transformer
+model. arXiv preprint arXiv:2404.16555 (2024).
+[37] Zihan Liu, Yupeng Hou, and Julian McAuley. 2024. Multi-behavior generative
+recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management. 1575–1585.
+[38] Hui Lu, Zheng Chai, Yuchao Zheng, Zhe Chen, Deping Xie, Peng Xu, Xun Zhou,
+and Di Wu. 2025. Large Memory Network for Recommendation. In Companion
+Proceedings of the ACM on Web Conference 2025. 1162–1166.
+[39] Jiasen Lu, Dhruv Batra, Devi Parikh, and Stefan Lee. 2019. Vilbert: Pretrain-
+ing task-agnostic visiolinguistic representations for vision-and-language tasks.
+Advances in neural information processing systems 32 (2019).
+[40] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, et al. 2024. Qarm: Quantitative align-
+ment multi-modal recommendation at kuaishou. arXiv preprint arXiv:2411.11739
+(2024).
+[41] Wenhan Lyu, Devashish Tyagi, Yihang Yang, Ziwei Li, Ajay Somani, Karthikeyan
+Shanmugasundaram, Nikola Andrejevic, Ferdi Adeputra, Curtis Zeng, Arun K
+Singh, et al. 2025. DV365: Extremely Long User History Modeling at Instagram.
+In Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining V. 2. 4717–4727.
+[42] Siddarth Malreddy, Matthew Lawhon, Usha Amrutha Nookala, Aditya Mantha,
+and Dhruvil Deven Badani. 2024. Improving feature interactions at Pinterest
+under industry constraints. arXiv preprint arXiv:2412.01985 (2024).
+[43] Alexander Miller, Adam Fisch, Jesse Dodge, Amir-Hossein Karimi, Antoine Bor-
+des, and Jason Weston. 2016. Key-value memory networks for directly reading
+documents. arXiv preprint arXiv:1606.03126 (2016).
+[44] Kaixiang Mo, Bo Liu, Lei Xiao, Yong Li, and Jie Jiang. 2015. Image Feature
+Learning for Cold Start Problem in Display Advertising.. In IJCAI. 3728–3734.
+[45] Maxim Naumov, Dheevatsa Mudigere, Hao-Jun Michael Shi, Jianyu Huang,
+Narayanan Sundaraman, Jongsoo Park, Xiaodong Wang, Udit Gupta, Carole-
+Jean Wu, Alisson G Azzolini, et al. 2019. Deep learning recommendation model
+for personalization and recommendation systems. arXiv preprint arXiv:1906.00091
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Han et al.
+(2019).
+[46] Junyan Qiu, Ze Wang, Fan Zhang, Zuowu Zheng, Jile Zhu, Jiangke Fan, Teng
+Zhang, Haitao Wang, and Xingxing Wang. 2025. One Model to Rank Them
+All: Unifying Online Advertising with End-to-End Learning. arXiv preprint
+arXiv:2505.19755 (2025).
+[47] Alec Radford. 2018.
+Improving language understanding with unsupervised
+learning. OpenAI Res (2018).
+[48] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh,
+Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark,
+et al. 2021. Learning transferable visual models from natural language supervision.
+In International conference on machine learning. PmLR, 8748–8763.
+[49] Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. 2020. Zero:
+Memory optimizations toward training trillion parameter models. In SC20: Inter-
+national Conference for High Performance Computing, Networking, Storage and
+Analysis. IEEE, 1–16.
+[50] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[51] Steffen Rendle. 2010. Factorization machines. In 2010 IEEE International conference
+on data mining. IEEE, 995–1000.
+[52] Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, and
+Tri Dao. 2024. Flashattention-3: Fast and accurate attention with asynchrony
+and low-precision. Advances in Neural Information Processing Systems 37 (2024),
+68658–68685.
+[53] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper,
+and Bryan Catanzaro. 2019. Megatron-lm: Training multi-billion parameter
+language models using model parallelism. arXiv preprint arXiv:1909.08053 (2019).
+[54] Xin Song, Xiaochen Li, Jinxin Hu, Hong Wen, Zulong Chen, Yu Zhang, Xiaoyi
+Zeng, and Zhang Jing. 2025. Efficient Long Sequential Low-rank Adaptive Atten-
+tion for Click-through rate Prediction. arXiv e-prints (2025), arXiv–2503.
+[55] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. Advances in neural information processing systems 30 (2017).
+[56] Feng Wang and Huaping Liu. 2021. Understanding the behaviour of contrastive
+loss. In Proceedings of the IEEE/CVF conference on computer vision and pattern
+recognition. 2495–2504.
+[57] Ruoxi Wang, Rakesh Shivanna, Derek Cheng, Sagar Jain, Dong Lin, Lichan Hong,
+and Ed Chi. 2021. Dcn v2: Improved deep & cross network and practical lessons
+for web-scale learning to rank systems. In Proceedings of the web conference 2021.
+1785–1797.
+[58] Longtao Xiao, Haozhao Wang, Cheng Wang, Linfei Ji, Yifan Wang, Jieming Zhu,
+Zhenhua Dong, Rui Zhang, and Ruixuan Li. 2025. Progressive Collaborative and
+Semantic Knowledge Fusion for Generative Recommendation. arXiv preprint
+arXiv:2502.06269 (2025).
+[59] Songpei Xu, Shijia Wang, Da Guo, Xianwen Guo, Qiang Xiao, Fangjian Li, and
+Chuanjiang Luo. 2025. An Efficient Large Recommendation Model: Towards a
+Resource-Optimal Scaling Law. arXiv preprint arXiv:2502.09888 (2025).
+[60] Xiang Xu, Hao Wang, Wei Guo, Luankang Zhang, Wanshan Yang, Runlong Yu,
+Yong Liu, Defu Lian, and Enhong Chen. 2025. Multi-granularity interest retrieval
+and refinement network for long-term user behavior modeling in ctr prediction.
+In Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining V. 1. 2745–2755.
+[61] Bencheng Yan, Si Chen, Shichang Jia, Jianyu Liu, Yueran Liu, Chenghan Fu,
+Wanxian Guan, Hui Zhao, Xiang Zhang, Kai Zhang, et al. 2025. MIM: Multi-
+modal Content Interest Modeling Paradigm for User Behavior Modeling. arXiv
+preprint arXiv:2502.00321 (2025).
+[62] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, et al. 2025. Sparse meets dense: Unified generative
+recommendations with cascaded sparse-dense representations. arXiv preprint
+arXiv:2503.02453 (2025).
+[63] Yufei Ye, Wei Guo, Jin Yao Chin, Hao Wang, Hong Zhu, Xi Lin, Yuyang Ye, Yong
+Liu, Ruiming Tang, Defu Lian, et al. 2025. FuXi-𝛼: Scaling Recommendation
+Model with Feature Interaction Enhanced Transformer. In Companion Proceedings
+of the ACM on Web Conference 2025. 557–566.
+[64] Zheng Yuan, Fajie Yuan, Yu Song, Youhua Li, Junchen Fu, Fei Yang, Yunzhu
+Pan, and Yongxin Ni. 2023. Where to go next for recommender systems? id-
+vs. modality-based recommender models revisited. In Proceedings of the 46th
+International ACM SIGIR Conference on Research and Development in Information
+Retrieval. 2639–2649.
+[65] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, et al. 2024. Actions speak louder than words:
+Trillion-parameter sequential transducers for generative recommendations. arXiv
+preprint arXiv:2402.17152 (2024).
+[66] Buyun Zhang, Liang Luo, Yuxin Chen, Jade Nie, Xi Liu, Daifeng Guo, Yanli Zhao,
+Shen Li, Yuchen Hao, Yantao Yao, et al. 2024. Wukong: Towards a scaling law for
+large-scale recommendation. arXiv preprint arXiv:2403.02545 (2024).
+[67] Buyun Zhang, Liang Luo, Xi Liu, Jay Li, Zeliang Chen, Weilin Zhang, Xiaohan
+Wei, Yuchen Hao, Michael Tsang, Wenjun Wang, et al. 2022. DHEN: A deep
+and hierarchical ensemble network for large-scale click-through rate prediction.
+arXiv preprint arXiv:2203.11014 (2022).
+[68] Gaowei Zhang, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, and Ji-
+Rong Wen. 2024. Scaling law of large sequential recommendation models. In
+Proceedings of the 18th ACM Conference on Recommender Systems. 444–453.
+[69] Jinghao Zhang, Yanqiao Zhu, Qiang Liu, Shu Wu, Shuhui Wang, and Liang Wang.
+2021. Mining latent structures for multimedia recommendation. In Proceedings
+of the 29th ACM international conference on multimedia. 3872–3880.
+[70] Bowen Zheng, Enze Liu, Zhongfu Chen, Zhongrui Ma, Yue Wang, Wayne Xin
+Zhao, and Ji-Rong Wen. 2025. Pre-training Generative Recommender with Multi-
+Identifier Item Tokenization. arXiv preprint arXiv:2504.04400 (2025).
+[71] Zuowu Zheng, Ze Wang, Fan Yang, Jiangke Fan, Teng Zhang, and Xingxing Wang.
+2025. Beyond Cascaded Architectures: An End-to-end Generative Framework
+for Industrial Advertising. arXiv e-prints (2025), arXiv–2505.
+[72] Zuowu Zheng, Ze Wang, Fan Yang, Jiangke Fan, Teng Zhang, Yongkang Wang,
+and Xingxing Wang. 2025. EGA-V2: An End-to-end Generative Framework for
+Industrial Advertising. arXiv preprint arXiv:2505.17549 (2025).
+[73] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv preprint arXiv:2506.13695 (2025).
+[74] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, et al. 2025. OneRec-V2 Technical
+Report. arXiv preprint arXiv:2508.20900 (2025).
+[75] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD international conference
+on knowledge discovery & data mining. 1059–1068.
+[76] Xin Zhou, Hongyu Zhou, Yong Liu, Zhiwei Zeng, Chunyan Miao, Pengwei Wang,
+Yuan You, and Feijun Jiang. 2023. Bootstrap latent representations for multi-
+modal recommendation. In Proceedings of the ACM web conference 2023. 845–854.
+[77] Jie Zhu, Zhifang Fan, Xiaoxie Zhu, Yuchen Jiang, Hangyu Wang, Xintian Han,
+Haoran Ding, Xinmin Wang, Wenlin Zhao, Zhen Gong, et al. 2025. RankMixer:
+Scaling Up Ranking Models in Industrial Recommenders.
+arXiv preprint
+arXiv:2507.15551 (2025).
+[78] Jinfeng Zhuang, Yinrui Li, Runze Su, Ke Xu, Zhixuan Shao, Kungang Li, Ling
+Leng, Han Sun, Meng Qi, Yixiong Meng, et al. 2025. On the Practice of Deep
+Hierarchical Ensemble Network for Ad Conversion Rate Prediction. In Companion
+Proceedings of the ACM on Web Conference 2025. 671–680.
+A
+Deduplication
+We reuse the computation of document embeddings. Within a single
+training step, embeddings computed on one rank are made avail-
+able to all other ranks for immediate local reuse. This is achieved
+using the all_gather collective communication primitive, which
+disseminates the newly computed document embeddings across all
+distributed workers.
+Furthermore, we developed a custom Dedup Join operator, im-
+plemented as an efficient CUDA kernel to maximize throughput.
+This operator scans the user history sequences within the current
+batch, identifies all occurrences of the recently calculated document
+IDs, and replaces their stale historical embeddings with the freshly
+computed counterparts. This ensures that all representations of an
+item within a single batch are consistent and up-to-date.

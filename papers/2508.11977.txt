@@ -1,0 +1,1367 @@
+TBGRecall: A Generative Retrieval Model for E-commerce
+Recommendation Scenarios
+Zida Liang∗†
+Shanghai Jiaotong University
+Shanghai, China
+greek-guardian@sjtu.edu.cn
+Changfa Wu∗
+Alibaba Inc.
+Beijing, China
+wuchangfa.wcf@alibaba-inc.com
+Dunxian Huang
+Alibaba Inc.
+Hangzhou, Zhejiang, China
+dunxian.hdx@alibaba-inc.com
+Weiqiang Sun
+Shanghai Jiaotong University
+Shanghai, China
+sunwq@sjtu.edu.cn
+Ziyang Wang
+Alibaba Inc.
+Hangzhou, Zhejiang, China
+shanyi.wzy@alibaba-inc.com
+Yuliang Yan
+Alibaba Inc.
+Hangzhou, Zhejiang, China
+yuliang.yyl@alibaba-inc.com
+Jian Wu
+Alibaba Inc.
+Beijing, China
+joshuawu.wujian@alibaba-inc.com
+Yuning Jiang
+Alibaba Inc.
+Beijing, China
+mengzhu.jyn@alibaba-inc.com
+Bo Zheng
+Alibaba Inc.
+Beijing, China
+bozheng@alibaba-inc.com
+Ke Chen
+Alibaba Inc.
+Hangzhou, Zhejiang, China
+ck325090@alibaba-inc.com
+Silu Zhou
+Alibaba Inc.
+Hangzhou, Zhejiang, China
+silu.zsl@alibaba-inc.com
+Yu Zhang
+Alibaba Inc.
+Hangzhou, Zhejiang, China
+zy429782@alibaba-inc.com
+Abstract
+Recommendation systems are essential tools in modern e-commerce,
+facilitating personalized user experiences by suggesting relevant
+products. Recent advancements in generative models have demon-
+strated potential in enhancing recommendation systems; however,
+these models often exhibit limitations in optimizing retrieval tasks,
+primarily due to their reliance on autoregressive generation mecha-
+nisms. Conventional approaches introduce sequential dependencies
+that impede efficient retrieval, as they are inherently unsuitable
+for generating multiple items without positional constraints within
+a single request session. To address these limitations, we propose
+TBGRecall, a framework integrating Next Session Prediction (NSP),
+designed to enhance generative retrieval models for e-commerce
+applications. Our framework reformulation involves partitioning
+input samples into multi-session sequences, where each sequence
+comprises a session token followed by a set of item tokens, and then
+further incorporate multiple optimizations tailored to the generative
+task in retrieval scenarios. In terms of training methodology, our
+pipeline integrates limited historical data pre-training with stochas-
+tic partial incremental training, significantly improving training
+efficiency and emphasizing the superiority of data recency over
+sheer data volume. Our extensive experiments, conducted on public
+benchmarks alongside a large-scale industrial dataset from TaoBao,
+show TBGRecall outperforms the state-of-the-art recommendation
+methods, and exhibits a clear scaling law trend. Ultimately, NSP rep-
+resents a significant advancement in the effectiveness of generative
+recommendation systems for e-commerce applications.
+∗Both authors contributed equally to this research.
+†Work done during internship at Alibaba.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Recommendation System, Retrieval stage, Next Session Prediction
+1
+Introduction
+Recommendation systems [7, 11, 13] are critical to e-commerce [19]
+and social platforms [6]. The retrieval stage [9], the pipeline’s foun-
+dational step, generates a large candidate item set (e.g., thousands)
+for subsequent ranking modules, including rough ranking and hy-
+brid ranking. Notably, this process resembles a generative task,
+making it amenable to modern generative modeling paradigms.
+Generative neural models, which excel in NLP [2, 25] and CV [17,
+20], have recently gained traction in recommendation systems. A
+prominent direction involves leveraging large language models
+(LLMs): some works use LLMs for feature enhancement in retrieval
+tasks [15, 30], while others explore direct LLM-based item genera-
+tion [5]. However, challenges like semantic alignment limit their
+efficacy. Alternative approaches adapt LLM paradigms for recom-
+mendations, such as Tiger’s[21] RQ-VAE-based semantic ID frame-
+work, later extended in [27, 33]. Other studies propose sparse ID
+generation via models like HSTU [29] and E4SRec [16]. And some
+other research like sessionrec [10] uses new methods for generative
+recommend.
+Despite recent progress, existing generative models lack task-
+specific optimization for retrieval pipelines. In retrieval, systems
+return unordered candidate sets per session—a recommendation
+request with no intra-session item dependencies. Conventional
+token-wise autoregressive models, which enforce sequential item
+arXiv:2508.11977v2  [cs.IR]  23 Nov 2025
+
+Zida Liang et al.
+dependencies, violate retrieval requirements: user interactions oc-
+cur after item exposure, creating causality only across sessions.
+Thus, items within a session should not influence each other but
+inform future sessions.
+To address this, we propose Taobao Generative Recall (TBGRe-
+call), a session-wise autoregressive model where item generation is
+independent. Its core innovation is Next Session Prediction (NSP),
+a generation paradigm optimized for retrieval. By reengineering
+sample structure and loss functions, NSP outperforms classical Next
+Token Prediction (NTP). Built on HSTU [29], our framework par-
+titions user sequences into multi-session segments, each starting
+with a session token followed by item tokens. During training, con-
+trastive loss between context tokens and positive/negative item
+samples replaces regressive loss. At inference, the session token
+guides Approximate Nearest Neighbor (ANN) search for retrieval.
+This design resolves autoregressive dependency conflicts and aligns
+with retrieval infrastructure.
+Further optimizations enhance NSP: multi-session prediction
+(MSP) and token-specific network (TSN) improve performance,
+while stochastic partial incremental training reduces computational
+costs for large-scale models. Our framework exhibits scaling law
+trends and surpasses baselines. NSP represents a pivotal advance-
+ment in generative retrieval, bridging the gap between autoregres-
+sive modeling and practical recommendation pipelines.
+• We introduced Next Session Prediction for non-autoregressive
+generation, along with a set of optimizations such as MSP,
+outperforming Next Token Prediction in recommendation
+retrieval tasks.
+• We proposed stochastic partial incremental training, which
+significantly improves training efficiency without compro-
+mising model performance, highlighting the superiority of
+data recency over sheer data volume.
+• TBGRecall outperforms SOTA methods in offline experi-
+ments. We have implemented it with nearline on Taobao’s
+HomePage "Guess You Like" Scenarios, resulting in a sig-
+nificant online transaction amount increase of 2.16%.
+2
+Related Work
+2.1
+Traditional Retrieval Methods
+In recommendation systems, the retrieval phase serves as a critical
+first step to filter vast item corpora into a relevant subset for users,
+based on historical interactions and behavioral patterns. Tradi-
+tional approaches include content-based filtering—which leverages
+item attributes (e.g., keywords, categories) to recommend similar
+items—and collaborative filtering, which exploits user-item interac-
+tion data to identify preferences through community behavior [22].
+Notably, item-based collaborative filtering [22] and matrix factor-
+ization (MF) [14] demonstrate superior performance by modeling
+latent relationships and integrating implicit feedback, temporal
+dynamics, and confidence signals. Large-scale applications further
+advance these ideas: the Swing algorithm [26] constructs prod-
+uct graphs to capture item substitutability and complementarity
+in e-commerce environments like Taobao. Recent breakthroughs,
+however, are driven by deep learning-based embedding models,
+particularly two-tower architectures deployed at YouTube [3, 28],
+which enhance candidate generation through unbiased representa-
+tion learning from streaming data while addressing sampling biases.
+These advancements highlight the transformative impact of deep
+learning on scalability and precision in large-scale recommendation
+systems.
+2.2
+Generative Models for Recommendation
+Recent advances in LLMs enable semantic feature augmentation
+and generative modeling for recommendation systems. Google pro-
+poses a training-free framework integrating LLM embeddings via
+two-stage retrieval-ranking[15]. Meta’s EmbSum[30] uses a pre-
+trained encoder-decoder with poly-attention to generate UPE/CPE,
+refined by LLM-supervised summarization. Bytedance’s HLLM[1]
+decouples content/behavior analysis via Item/User LLMs, improv-
+ing sequential modeling accuracy.
+In sequential recommendation, generative models—particularly
+sequence-to-sequence architectures—have emerged as a transfor-
+mative paradigm by framing next-item prediction as autoregres-
+sive generation. Early Transformer-based approaches like SASRec
+demonstrated the efficacy of self-attention in modeling masked
+user sequences. Building on this, google[21] introduces a content-
+quantized framework encoding item semantics into discrete semantic-
+ID tuples, with a decoder generating these tokens to enhance cold-
+start robustness and diversity control. Tencent[33] bridges language
+and collaborative signals via vector quantization and alignment
+tuning, better integrating recommendation-specific features into
+LLMs. Kuaishou[5] further unifies retrieval and ranking within a
+single model through sparse MoE, session-wise generation, and
+DPO-based alignment. Recent works extend these ideas: Meta[29]
+treats recommendation as sequential transduction, enabling effi-
+cient scaling in high-cardinality environments[31], while others[16]
+combines sequential pretraining with LLM instruction tuning by
+embedding item IDs into prompts, enabling both accurate retrieval
+and interpretable recommendations.
+3
+Methodology
+3.1
+Problem Formulation
+Taobao is one of the leading e-commerce platforms in the industry,
+providing consumers and merchants with a secure and convenient
+channel for buying and selling goods. The majority of Taobao’s
+business traffic comes from the mobile Taobao app, which includes
+various scenarios such as homepage product feed (Guess You Like,
+abbreviated as GUL), inshop (IS), and search (SE), among others.
+The model proposed in this paper, named TBGRecall , focuses
+primarily on item retrieval in the "Guess You Like" (GUL) scenario
+within product recommendation systems. Our core contribution
+lies in the introduction of a novel method called Next Session
+Prediction to obtain a session-level embedding that represents
+the user’s current intent. Based on this embedding, we perform
+Approximate Nearest Neighbor (ANN) search to retrieve candidate
+items.
+h′
+𝑐(𝐾+1) = MTBGRecall(Q)
+(1)
+In Equation (1), (𝐾+ 1) denotes the (𝐾+ 1)-th session of a
+certain user behaviors, and h′
+𝑐(𝐾+1) represents the output at the
+
+TBGRecall: A Generative Retrieval Model for E-commerce Recommendation Scenarios
+Token Sequence
+TS1
+SE
+NaN
+NaN
+NaN
+TS1
+NaN
+SD11
+Click
+id11
+TS1
+NaN
+SD12
+Click
+id12
+TS1
+NaN
+SD13
+Expo
+id13
+TS2
+GUL
+NaN
+NaN
+NaN
+TS2
+NaN
+SD21
+Expo
+id21
+ctx1
+item11
+ctx2
+item12
+item13
+item21
+TS2
+NaN
+SD22
+Expo
+id22
+item22
+TS4
+GUL
+NaN
+NaN
+NaN
+ctx4
+TS3
+GUL
+NaN
+NaN
+NaN
+TS3
+NaN
+SD31
+Expo
+id31
+ctx3
+item31
+TS3
+NaN
+SD32
+Expo
+id32
+item32
+TS3
+NaN
+SD33
+Click
+id33
+item33
+Recalled
+item set
+Sorted by Time
+ANN
+Given
+Context
+ctx1
+item11
+ctx2
+item12
+item13
+item21
+item22
+ctx3
+item31
+item32
+item33
+HSTU × N
+Loss
+Item Pool
+Loss
+Loss
+Session 1
+Session 2
+Session 3
+ctx4
+Train
+Infer
+Item ID
+Action
+SideInfo
+Context
+TimeStamp
+Token Composition
+Negative Sampling
+Figure 1: TBGRecall structure. The figure illustrates the overall architecture of the model, the construction of the sequence, the
+composition of the tokens, and the computation of the loss. Since the two types of tokens correspond to different inputs, some
+inputs will be defined as NaN, and they also have a corresponding embedding.
+corresponding position of the context token. In TBGRecall, given
+user interaction sequence Q, h′
+𝑐(𝐾+1) serves as the final user latent
+vector transmitted to the ANN.
+3.2
+Sample Construction
+In the homepage recommendation setting, each time a user opens
+the homepage or scrolls down the feed, a recommendation request
+is triggered on the client side, which is referred to each as a session.
+Upon receiving a session request, the backend recommendation
+system returns a curated set of items to be displayed to the user.
+The user can then interact with these items, generating user actions.
+Other scenarios follow the same request-response pattern.
+In our task, samples are organized at the user level, with each
+row representing their most recent 𝐾session-based interactions ag-
+gregated chronologically for intent modeling. For each user, recent
+sessions are aggregated chronologically into a unified behavioral
+sequence Q, forming the foundation for modeling intent and pur-
+chase dynamics. Content from other verticals such as advertising
+and livestreaming is excluded, which results in varying numbers of
+items per session. For each item in a session, we also record asso-
+ciated side information—such as first- and second-level category
+IDs, seller ID, price, and the time of recommendation—as part of
+the behavior sequence. User behaviors, including clicks, are also
+recorded in the sequence. As illustrated in Figure 1, we segment
+the nearest behavior sequence of user into multiple sessions, where
+𝐾is the number of sessions and each session starts with a context
+token 𝑐(𝑘) followed by 𝑁𝑘item tokens, where 𝑐(𝑘) represents the
+session scenario, and 𝑖(𝑘)
+𝑚
+denotes the 𝑚-th item in session 𝑘. The
+model input sequence Q is:
+Q =
+h
+𝑐(1),𝑖(1)
+1 ,𝑖(1)
+2 ,𝑖(1)
+3 ,𝑐(2), . . . ,𝑐(𝐾),𝑖(𝐾)
+1
+,𝑖(𝐾)
+2
+,𝑐(𝐾+1)i
+,
+(2)
+where 𝑐(𝐾+1) is the context token of the newly arrived session.
+Each element in the sequence Q corresponds to a token in the model,
+which is obtained by computing the embeddings of its associated
+information and summing them together. Specifically, each token’s
+hidden vector h is composed of four components:
+h = eid + eact + eside + ectx,
+(3)
+where eid is the item ID embedding, eact is the action embedding
+representing the type of user interaction (click or exposure), eside is
+the side information embedding capturing auxiliary item attributes
+(e.g., category, price, seller), and ectx is the embedding of scenarios.
+3.3
+Next Session Prediction Framework
+Most existing generative retrieval methods adopt an autoregres-
+sive generation paradigm, which assumes a sequential dependency
+among items within a session. However, in real-world recommen-
+dation systems, item order is often semantically meaningless: all
+items are delivered to the user simultaneously with no inherent
+causality or temporal relationship among them. This discrepancy
+leads to unnecessary dependencies among items in autoregressive
+generation, which may harm both modeling accuracy and inference
+efficiency. To address this issue, we propose a session-wise au-
+toregressive approach via NSP. This method eliminates the need
+for iterative item generation during inference, thereby reducing
+online computation overhead while also breaking the undesired
+order dependency among items. Moreover, it aligns naturally with
+the existing infrastructure of item retrieval systems.
+Session Mask. Causal mask is used in decoder-only architecture
+to restrict attention computation. However, in NSP (Next Session
+Prediction), we do not want items within the same session to inter-
+act with each other. Therefore, we introduce a Session Mask based
+on the causal mask. Besides, instead of using sequential indices for
+
+Zida Liang et al.
+1
+0
+0
+0
+0
+0
+0
+0
+0
+0
+1
+1
+0
+0
+0
+0
+0
+0
+0
+0
+1
+0
+1
+0
+0
+0
+0
+0
+0
+0
+1
+0
+0
+1
+0
+0
+0
+0
+0
+0
+1
+0
+0
+0
+1
+0
+0
+0
+0
+0
+1
+1
+1
+1
+1
+1
+0
+0
+0
+0
+1
+1
+1
+1
+1
+1
+1
+0
+0
+0
+1
+1
+1
+1
+1
+1
+0
+1
+0
+0
+1
+1
+1
+1
+1
+1
+0
+0
+1
+0
+1
+1
+1
+1
+1
+1
+0
+0
+0
+1
+ctx
+ctx
+item
+item
+item
+item
+item
+item
+item
+item
+ctx
+ctx
+item
+item
+item
+item
+item
+item
+item
+item
+Figure 2: Session Mask. This mask is built upon the causal
+mask and further renders the interactions between items
+within the same session invisible.
+positional encoding, TBGRecall utilizes session indices as seesion-
+wise rope (sw-rope), where all tokens within the same session share
+a common positional encoding, to model user session-wise relative
+positional dependencies.
+TSN. To address the semantic and distributional discrepancies
+between context and item tokens, we introduce a Token-Specific
+Network (TSN), which applies dedicated linear transformation
+layers at both the embedding and initial Transformer stages. This
+architecture eliminates performance degradation caused by shared
+projections while maintaining inference efficiency—no additional
+computational overhead is incurred, as TSN merely substitutes a
+unified projection with two token-type-specific counterparts.
+MSP and MoE. Given TBGRecall’s alignment with mainstream
+generative models, we integrate two established LLM techniques—Multi-
+Token Prediction (MTP) and Mixture-of-Experts (MoE)—to enhance
+performance. We implement Multi-Session Prediction (MSP)
+along the session dimension for context tokens, mirroring the MTP
+paradigm [4, 8]. This introduces extended training signals, enabling
+explicit modeling of long-range user behavior dependencies and
+transitional relationships across distant contextual scenarios. For
+the feed-forward module, we adopt DeepSeekMoE with auxiliary-
+loss-free load balancing, which harnesses specialized expert net-
+works to acquire richer, task-specific knowledge at comparable
+inference FLOPS, thereby improving overall model efficacy.
+3.4
+Overall Loss
+Our overall loss function consists of two components: a contrastive
+loss L𝑁𝐶𝐸for autoregressive training, and a cascade loss that em-
+phasizes high-value samples, which includes both L𝑐𝑙𝑖𝑐𝑘and L𝑝𝑎𝑦.
+Our proposed loss function is fundamentally derived from Noise
+Contrastive Estimation (NCE), with tailored modifications designed
+to better suit the characteristics of recommendation tasks and to en-
+hance the effectiveness of contrastive learning in high-cardinality
+item spaces. In addition, due to the highly imbalanced distribution
+of session counts across different scenarios, directly optimizing a
+unified loss without scenario distinction may lead to performance
+degradation. To address this issue, we propose Multi-Scene Normal-
+ization, where losses are computed independently for each scenario.
+These per-scenario losses are then normalized and aggregated to
+ensure balanced optimization across all scenarios. Based on the
+above, the formulation can be summarized as follows:
+L𝑁𝑆𝑃=
+∑︁
+𝑠∈S
+1
+𝑁𝑠
+
+L(𝑠)
+𝑁𝐶𝐸+ L(𝑠)
+𝑐𝑙𝑖𝑐𝑘+ L(𝑠)
+𝑝𝑎𝑦
+
+(4)
+Here, S denotes the set of all sessions, and 𝑁𝑠is the number of
+sessions under a particular scenario.
+The contrastive loss for a given session 𝑠is defined as:
+L(𝑠)
+𝑁𝐶𝐸=
+1
+|I (𝑠) |
+∑︁
+𝑖∈I(𝑠)
+−log ©­
+«
+𝑝(𝑠)
+𝑖
+𝑝(𝑠)
+𝑖
++ Í
+𝑗∈N(𝑠) 𝑝(𝑠)
+𝑗
+ª®
+¬
+(5)
+I (𝑠) represents the set of items recommended to the user within
+session 𝑠, serving as positive samples, while N (𝑠) denotes a set of
+negative samples randomly drawn from the item pool. The term
+𝑝(𝑠) corresponds to the softmax-normalized inner product between
+the context token and the sample tokens. The goal of L𝑁𝐶𝐸is to
+bring the context token closer to the positive sample tokens while
+pushing it away from the negative ones.
+To better capture user engagement and transaction value, we
+incorporate two additional cascade loss terms:
+L(𝑠)
+𝑐𝑙𝑖𝑐𝑘=
+1
+|C(𝑠) |
+∑︁
+𝑖∈C(𝑠)
+−log ©­
+«
+𝑝(𝑠)
+𝑖
+𝑝(𝑠)
+𝑖
++ Í
+𝑗∈(I(𝑠) \C(𝑠) ) 𝑝(𝑠)
+𝑗
+ª®
+¬
+(6)
+L(𝑠)
+𝑝𝑎𝑦=
+1
+|P (𝑠) |
+∑︁
+𝑖∈P (𝑠)
+−log ©­
+«
+𝑝(𝑠)
+𝑖
+𝑝(𝑠)
+𝑖
++ Í
+𝑗∈(C(𝑠) \P (𝑠) ) 𝑝(𝑠)
+𝑗
+ª®
+¬
+(7)
+Here, C(𝑠) and P (𝑠) denote the sets of clicked and purchased
+items within session 𝑠, respectively. The losses L𝑐𝑙𝑖𝑐𝑘and L𝑝𝑎𝑦are
+designed to assign greater importance to samples associated with
+user clicks, encouraging the model to focus more on high-value
+interactions.
+3.5
+Partial Incremental Training
+For TBGRecall, due to the massive number of model parameters
+and the scale of user data, training on the newly added data from a
+single day can take up to five days. This results in a deployment
+delay, which causes a significant degradation in performance—an
+outcome that is unacceptable in practice.
+To address this issue, we propose Partial Incremental Train(PIT)
+as demonstrated in Figure 3. Specifically, all users are randomly
+partitioned into 10 buckets. During each incremental training phase,
+only the data from the most recent ten days in one bucket is used
+for training. Since only one-tenth of the full dataset is processed in
+each iteration, the training with a limited number of GPUs can be
+completed in less than a day, ensuring that the updated model is
+deployed within the next day. Moreover, because every user’s data
+from each day is eventually covered across the iterations, there is
+no loss or underutilization of data. Given the sufficiently large data
+volume in each bucket, the data distribution within any given bucket
+remains representative of the overall distribution. Consequently,
+the proposed method achieves performance comparable to the ideal
+scenario.
+
+TBGRecall: A Generative Retrieval Model for E-commerce Recommendation Scenarios
+ Untrained
+Train on All Users (5-day training)
+Trained on A User Bucket (1-day training)
+Normal Train
+Incremental Train
+Partial
+Incremental Train
+Train on All Users (1-day training with massive GPUs)
+Bucket 1
+......
+Bucket 2
+Bucket 3
+Bucket 4
+Bucket 9
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+Data Date
+ Trained on Date N
+ A Traning Run
+Bucket 10
+11
+12
+13
+Figure 3: Partial Incremental Training. In the figure, each
+date generates new user behavior data. All historical data are
+trained on the dates marked with a checkmark. Since PIT
+continuously iterates over each bucket, no data is ultimately
+lost. At each deployment, there is always one bucket contain-
+ing the most recent data that has been trained.
+3.6
+Inference
+During the inference phase, based on the current context and times-
+tamp provided in the recommendation request from the client side,
+a new context token 𝑐(𝐾+1) is appended to the end of the user
+sequence, after which the model generates the output token cor-
+responding to the final position. This context token is then used
+to perform ANN search over the item pool to retrieve the top can-
+didate items. Since the context token is trained with supervision
+from both in-session items and negative samples drawn from the
+item pool, it learns to capture the underlying semantics of potential
+retrieval items. Given the context embedding ℎ𝑐(𝐾+1) , the retrieval
+score for item 𝑖is:
+Score(𝑐(𝐾+1),𝑖) = ⟨h′
+𝑐(𝐾+1), e𝑖⟩= ⟨h′
+𝑐(𝐾+1), e𝑖,id + e𝑖,side⟩
+(8)
+candidate items are retrieved via:
+R = arg max
+𝑖∈I Score(𝑐(𝐾+1),𝑖).
+(9)
+where I denotes the high-quality item pool.
+4
+Engineering Level Details
+4.1
+Training Framework
+T
+Distrubuted Samples Storage
+Negtive Sampling
+Server 1
+Negtive Sampling
+Server 2
+Node 1
+Node 2
+Async Dataloader &
+Feature Engineering
+Async Dataloader &
+Feature Engineering
+Async Dataloader &
+Feature Engineering
+Async Dataloader &
+Feature Engineering
+ Rank0
+ Rank1
+Rank2
+Rank3
+DMP 
+(Sharded Embedding)
+PyTorch FSDP
+(Dense)
+Feature Extraction
+HSTU * N
+Loss Function
+Feature Extraction
+HSTU * N
+Loss Function
+HSTU * N
+Loss Function
+Feature Extraction
+Loss Function
+Feature Extraction
+HSTU * N
+partition/stitch
+train samples
+nagetive samples
+Figure 4: Distributed Training Framework.
+A high-performance training framework in Figure 5 is built for
+our generative recommendation models in large-scale e-commerce
+systems. It addresses two challenges: (1) training models with 10B-
+scale sparse and billion-scale dense parameters on trillion-scale
+token corpora, and (2) enabling weighted random negative sampling
+over billion-scale product inventories for retrieval optimization.
+Built on TorchRec, our framework combines distributed systems
+and advanced training for production efficiency.
+• Distributed Negative Sampling Shards billion-scale prod-
+uct catalogs across nodes, enabling low-latency distributed
+sampling.
+• Asynchronous Data Loading A CPU-based DataLoader
+uses prefetching/pipeline parallelism to hide I/O latency
+and maintain >90% GPU utilization. It offloads data prepa-
+ration tasks (e.g., feature engineering, negative sampling)
+to async CPU workers, leveraging CPU parallelism for non-
+GPU tasks in large-scale training.
+• Sharded Embedding TorchRec’s DMP partitions sparse
+embeddings row-wise across GPUs, reducing memory via
+AllToAll communication.
+• FSDP Partitions dense model parameters/optimizer states
+across devices for linear memory scaling, to support model
+training with larger parameter quantities.
+• End-to-End Platform Capabilities Supports daily re-
+training with fault-tolerant checkpointing, MLTracker met-
+rics monitoring, TorchScript exporting, and consistency
+checks.
+4.2
+Online Serving System
+Asyn Request
+Realtime Request
+User Behavior
+Sequence Storage
+User Behavior
+Process
+ANN
+Torch Model
+Infer
+Update
+Item Embedding
+Index
+Results Storage
+write recall results
+Recall Engine
+Read
+Read
+Figure 5: Online Serving System.
+To mitigate online inference compute/latency constraints, we
+develop a nearline retrieval framework that decouples user repre-
+sentation generation from request handling, as shown in Figure 5.
+Real-time Taobao user interactions (e.g., exposures, clicks) trigger
+two async services: (1) behavior sequence updates and (2) genera-
+tive model inference. The latter constructs input token sequences
+from the latest user behavior data, executes PyTorch-based infer-
+ence through the generative model to generate a user interest vector,
+and subsequently performs top-k item retrieval via an ANN search
+on a pre-built offline item embedding index. Results are cached as
+<userid, topkItemList> key-value pairs.
+Online requests directly fetch precomputed recommendations
+from the cache, eliminating the need for real-time computation.
+This design reduces latency and shifts resource-intensive retrieval
+tasks to the nearline pipeline. Periodic interest vector updates bal-
+ance freshness and computational efficiency, ensuring scalable, low-
+latency deployment.
+
+Zida Liang et al.
+5
+Experiment
+5.1
+Setup
+5.1.1
+Dataset. We conduct experiments on two large-scale datasets:
+1) RecFlow [18], which contains rich contextual information from
+the Kuaishou. 2) TaoBao dataset, a real-world, industrial-scale
+dataset derived from traffic logs of TaoBao. Table 1 summarizes the
+main statistics for these two datasets.
+Table 1: The statistic of datasets.
+Dataset
+#Interaction
+#User
+#Item
+RecFlow
+30,255,736
+30,968
+3,242,884
+TaoBao Dataset
+1.2 trillion
+0.5 billion
+0.5 billion
+5.1.2
+Metrics. Hit Rate@K (HR@K) is adopted to evaluate the
+effectiveness of our proposed method. It is formally defined as:
+HR@𝐾= |𝑅(𝐾)
+𝑢
+∩𝐺𝑢|
+|𝐺𝑢|
+,
+(10)
+where 𝑅(𝐾)
+𝑢
+denotes the set of retrieved items (|𝑅(𝐾)
+𝑢
+| = 𝐾) and 𝐺𝑢
+denotes the set of ground truths.
+5.1.3
+Baselines. To validate the superior performance of our model,
+we selected multiple generative recommendation baseline models.
+The models we selected are all non-LLM architectures that, like
+TBGRecall, utilize sparse IDs. HSTU, SASRec [12], and BERT4Rec
+[24] are sequential modeling-based recommendation models, while
+YouTubeDNN [3] and FDSA [32] represent traditional recommenda-
+tion approaches. The ONLINE model adopts Taobao’s production-
+level dual-tower baseline for recommendation retrieval. The ON-
+LINE (DT) denotes that the model is updated through daily training
+over multiple years, ensuring sustained adaptation to long-term
+trends and dynamic user preferences.
+5.1.4
+Implementation details. Our model is trained using the Adam
+optimizer for dense parameters and Adagrad for sparse parameters,
+with an initial learning rate of 1 × 10−3. The TBGRecall framework
+is deployed and optimized on the PPU 810E platform, an inter-
+nal GPU architecture developed by Alibaba with a computational
+performance level approximately 60% that of the NVIDIA A100.
+During training, we fix the HSTU parameters under a lightweight
+parameter configuration (Block = 4, Length = 5120, Dim = 512). For
+models involving the Mixture-of-Experts (MoE) architecture, we
+adopt the MoE design, which consists of 24 routed expert networks
+and 1 shared expert. In each forward pass, 2 experts are activated
+via a top-K selection mechanism. In addition, unless otherwise spec-
+ified, all mentioned methods are trained from scratch with carefully
+optimized hyperparameters.
+5.2
+Results
+We commpare our proposed TBGRecall with multiple generative
+recommendation baseline models on the RecFlow (RF) and TaoBao
+(TB) datasets, as illustrated in Table 4.
+On the RecFlow dataset, TBGRecall demonstrates superior per-
+formance across all HR@K metrics compared to state-of-the-art
+baselines (Table 4). Notably, the gains are most significant in top-
+ranked results (HR@20–HR@500), achieving stronger improve-
+ments in high-priority item retrieval. The superior performance
+stems from the session-wise sequence construction and hierarchical
+contrastive objectives, which prioritizes high-value interactions in
+retrieval.
+On Taobao’s industrial-scale dataset, TBGRecall substantially
+outperforms all baselines across HR@K metrics, as shown in Table 4.
+Notably, TBGRecall achieves superior HR performance compared to
+both the Online baseline trained from scratch and the production-
+grade daily-trained variant Online (DT).
+Table 2: Comparison of Different Model Variants.
+Model
+HR@20
+HR@500
+HR@1000
+HR@4000
+TBGRecall
+1.53%
+11.81%
+16.62%
+29.45%
+w/o TSN
+1.51%
+11.67%
+16.42%
+28.88%
+w/o MSP
+1.35%
+10.59%
+15.08%
+27.28%
+w/o MoE
+1.46%
+11.41%
+16.08%
+28.47%
+w/o sw-RoPE
+1.32%
+10.67%
+15.20%
+27.36%
+5.3
+Ablation Study
+We conducted comprehensive ablation experiments on key compo-
+nents including TSN, MSP, MoE[4], and RoPE[23] to assess their
+individual contributions to model performance. Results confirm
+that each module independently enhances retrieval accuracy, with
+the full framework achieving the highest overall effectiveness. MSP
+contributes the most significant performance improvement, primar-
+ily because it increases the amount of information encoded within a
+single session, enabling the model to better understand the contex-
+tual semantics and avoid falling into local decision-making patterns
+during training. Both session-wise RoPE (Rotary Position Embed-
+ding) and MoE (Mixture of Experts) are widely adopted techniques
+in current state-of-the-art large language models. By incorporating
+them into our architecture, we achieve considerable gains in model
+performance. Additionally, the TSN (Token-Specific Network) mod-
+ule enables context tokens and item tokens to align more effectively
+and efficiently, further enhancing the overall performance of the
+model. These findings validate the architectural soundness and prac-
+tical value of the proposed components in advancing generative
+retrieval systems for e-commerce recommendation.
+5.4
+Partial Incremental Training
+Table 3: Partial Incremental Training. Incre: Daily Incremen-
+tal Training, SL: Stochastic Length in HSTU, PIT: Partial
+Incremental Training (Ours)
+Duration
+GPUs
+Latest Data Used
+HR@4000
+Normal
+5d
+128
+N
+23.76%
+Incre
+16h
+1280
+Y
+29.76%
+SL
+48h
+128
+N
+26.50%
+PIT
+11h
+128
+Y
+29.45%
+Table 3 presents the experimental results under different train-
+ing strategies, where Train Duration denotes the time required to
+train one day’s worth of user data, and Latest Data Used indicates
+whether the most recent day’s data was included in the training
+before model deployment. Due to a deployment delay of ten days,
+normal training does not yield superior performance. In contrast,
+
+TBGRecall: A Generative Retrieval Model for E-commerce Recommendation Scenarios
+Table 4: General Performance on two datasets.
+MODEL
+RecFlow
+TaoBao
+HR
+@20
+@100
+@500
+@1000
+@2000
+@4000
+@20
+@100
+@500
+@1000
+@2000
+@4000
+YoutubeDNN
+0.01%
+0.08%
+0.43%
+1.02%
+2.37%
+3.28%
+0.47%
+1.29%
+3.28%
+4.75%
+6.68%
+9.22%
+SASRec
+0.04%
+0.19%
+1.00%
+1.96%
+3.66%
+6.53%
+0.50%
+1.65%
+4.47%
+6.40%
+8.79%
+11.70%
+Bert4Rec
+0.06%
+0.24%
+1.01%
+1.87%
+3.43%
+6.09%
+0.11%
+0.44%
+1.53%
+2.50%
+3.90%
+5.96%
+FDSA
+0.02%
+0.13%
+0.54%
+1.41%
+3.90%
+4.32%
+0.52%
+1.47%
+3.70%
+5.30%
+7.44%
+10.14%
+HSTU
+0.06%
+0.30%
+1.21%
+2.19%
+4.06%
+7.38%
+0.54%
+1.78%
+4.88%
+7.01%
+9.75%
+13.11%
+Online
+-
+-
+-
+-
+-
+-
+1.03%
+3.53%
+9.37%
+13.36%
+18.08%
+23.57%
+Online(DT)
+-
+-
+-
+-
+-
+-
+1.26%
+4.28%
+11.03%
+15.44%
+20.62%
+26.45%
+TBGRecall
+0.26%
+0.83%
+2.45%
+3.85%
+5.61%
+8.20%
+1.53%
+4.65%
+11.81%
+16.62%
+22.57%
+29.45%
+when using a large number of GPUs to perform daily incremental
+training, there is a significant improvement in model performance.
+Using Stochastic Length in HSTU, with 𝛼= 1.6, can reduce training
+time by 70% but fails to promptly utilize the latest data, and causes
+9% performance drop. However, our partial incremental training
+approach still maintains competitive performance while utilizing
+only one-tenth of the GPU resources. This strongly demonstrates
+that our partial incremental training method is highly suitable for
+training large-scale generative models.
+5.5
+Scaling Law
+We systematically evaluated the relationship between model capac-
+ity, computational resources, and retrieval performance. In Figure 6,
+we scale up the model size by gradually increasing the hidden
+layer dimensions (128, 256, 512, and 1024, respectively). The two
+rightmost data points correspond to models utilizing sparse MoE
+(Mixture of Experts), with the latter one employing 24 hstu blocks.
+As the number of parameters increases, the computational FLOPS
+also grow exponentially. By taking the logarithm of the horizontal
+axis, we observe a linear relationship between the logarithm of
+model parameters and model performance. Experimental results
+demonstrate that model accuracy exhibits a scaling law with re-
+spect to both parameter count and training computation, indicating
+consistent performance gains as model scale increases. Notably, the
+proposed framework maintains efficient scaling behavior even at
+large-scale industrial settings, confirming the feasibility and effec-
+tiveness of deploying highly parameterized generative models in
+real-world recommendation systems.
+5.6
+Online A/B Test
+Table 5: Online A/B Testing Results.
+PVR
+Transaction Count
+Transaction Amount
+23.94%
++0.60%
++2.16%
+We conduct online A/B testing on the "Guess You Like" section
+of Taobao’s homepage, which generates hundreds of millions of
+daily exposures. A new retrieval strategy based on the TBGRecall
+paradigm is added to the retrieval stage. Experiments run for 7 days
+on 5% randomized user traffic.
+As shown in Table 5, our strategy captures 23.94% of total ex-
+posures among all deployed retrieval methods. This highlights its
+1M
+10M
+100M
+1B
+10B
+Model Parameters Scale
+0.26
+0.28
+0.30
+0.32
+0.34
+HR@4000
+0.96 TFLOPs
+2.02 TFLOPs
+    4.50 TFLOPs
+10.97 TFLOPs
+26.77 TFLOPs
+157.58 TFLOPs
+TBGRecall
+Figure 6: Scaling Law.
+competitiveness in a production environment with multiple con-
+current strategies. Notably, statistically significant improvements
+are observed: +0.60% in transaction count and +2.16% in transac-
+tion amount. These gains validate the method’s effectiveness in
+large-scale industrial deployment. It balances high traffic alloca-
+tion with stable business impact, making it suitable for real-world
+recommendation systems requiring scalability and performance.
+6
+Conclusion
+This work introduces a paradigm innovation for generative recom-
+mendation systems through Next Session Prediction (NSP), resolv-
+ing inherent limitations of autoregressive generation in retrieval
+scenarios. The proposed TBGRecall model redefines sequence mod-
+eling via session-wise autoregression, eliminating intra-session se-
+quential dependencies while capturing cross-session behavioral pat-
+terns through context token optimization. The framework achieves
+improved predictive accuracy and computational efficiency, with
+superior performance demonstrated over baselines in large-scale
+e-commerce settings. The establishment of scaling laws in sparse
+ID-based architectures and validation of data recency principles
+further provide actionable insights for industrial deployment. By
+bridging generative modeling with practical retrieval infrastruc-
+ture, this work advances the feasibility of session-aware sequential
+recommendation models, offering both robust industrial solutions
+and directions for future research.
+
+Zida Liang et al.
+References
+[1] Junyi Chen, Lu Chi, Bingyue Peng, and Zehuan Yuan. 2024. HLLM: Enhancing
+Sequential Recommendations via Hierarchical Large Language Models for Item
+and User Modeling. arXiv:2409.12740 [cs.IR] https://arxiv.org/abs/2409.12740
+[2] Yukang Chen, Shengju Qian, Haotian Tang, Xin Lai, Zhijian Liu, Song Han, and Ji-
+aya Jia. [n. d.]. LongLoRA: Efficient Fine-tuning of Long-Context Large Language
+Models. In The Twelfth International Conference on Learning Representations.
+[3] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep Neural Networks
+for YouTube Recommendations. In Proceedings of the 10th ACM Conference on
+Recommender Systems (Boston, Massachusetts, USA) (RecSys ’16). Association
+for Computing Machinery, New York, NY, USA, 191–198. doi:10.1145/2959100.
+2959190
+[4] DeepSeek-AI. 2024. DeepSeek-V3 Technical Report. arXiv:2412.19437 [cs.CL]
+https://arxiv.org/abs/2412.19437
+[5] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. OneRec: Unifying Retrieve and Rank with Genera-
+tive Recommender and Iterative Preference Alignment. arXiv:2502.18965 [cs.IR]
+https://arxiv.org/abs/2502.18965
+[6] Wenqi Fan, Yao Ma, Qing Li, Yuan He, Eric Zhao, Jiliang Tang, and Dawei Yin.
+2019. Graph neural networks for social recommendation. In The world wide web
+conference. 417–426.
+[7] Chen Gao, Yu Zheng, Nian Li, Yinfeng Li, Yingrong Qin, Jinghua Piao, Yuhan
+Quan, Jianxin Chang, Depeng Jin, Xiangnan He, et al. 2023. A survey of graph
+neural networks for recommender systems: Challenges, methods, and directions.
+ACM Transactions on Recommender Systems 1, 1 (2023), 1–51.
+[8] Fabian Gloeckle, Badr Youbi Idrissi, Baptiste Rozière, David Lopez-Paz, and
+Gabriel Synnaeve. 2024. Better & Faster Large Language Models via Multi-token
+Prediction. arXiv:2404.19737 [cs.CL] https://arxiv.org/abs/2404.19737
+[9] Junjie Huang, Jizheng Chen, Jianghao Lin, Jiarui Qin, Ziming Feng, Weinan
+Zhang, and Yong Yu. 2024. A Comprehensive Survey on Retrieval Methods in
+Recommender Systems. arXiv preprint arXiv:2407.21022 (2024).
+[10] Lei Huang, Hao Guo, Linzhi Peng, Long Zhang, Xiaoteng Wang, Daoyuan Wang,
+Shichao Wang, Jinpeng Wang, Lei Wang, and Sheng Chen. 2025. SessionRec:
+Next Session Prediction Paradigm For Generative Sequential Recommendation.
+arXiv preprint arXiv:2502.10157 (2025).
+[11] Folasade Olubusola Isinkaye, Yetunde O Folajimi, and Bolande Adefowoke
+Ojokoh. 2015. Recommendation systems: Principles, methods and evaluation.
+Egyptian informatics journal 16, 3 (2015), 261–273.
+[12] Wang-Cheng Kang and Julian McAuley. 2018. Self-Attentive Sequential Recom-
+mendation. arXiv:1808.09781 [cs.IR] https://arxiv.org/abs/1808.09781
+[13] Hyeyoung Ko, Suyeon Lee, Yoonseo Park, and Anna Choi. 2022. A survey of
+recommendation systems: recommendation models, techniques, and application
+fields. Electronics 11, 1 (2022), 141.
+[14] Yehuda Koren, Robert Bell, and Chris Volinsky. 2009. Matrix Factorization
+Techniques for Recommender Systems. Computer 42, 8 (2009), 30–37. doi:10.
+1109/MC.2009.263
+[15] Dong-Ho Lee, Adam Kraft, Long Jin, Nikhil Mehta, Taibai Xu, Lichan Hong,
+Ed H. Chi, and Xinyang Yi. 2025. STAR: A Simple Training-free Approach
+for Recommendations using Large Language Models. arXiv:2410.16458 [cs.IR]
+https://arxiv.org/abs/2410.16458
+[16] Xinhang Li, Chong Chen, Xiangyu Zhao, Yong Zhang, and Chunxiao Xing. 2023.
+E4SRec: An Elegant Effective Efficient Extensible Solution of Large Language
+Models for Sequential Recommendation. arXiv:2312.02443 [cs.IR] https://arxiv.
+org/abs/2312.02443
+[17] Zijing Liang, Yanjie Xu, Yifan Hong, Penghui Shang, Qi Wang, Qiang Fu, and Ke
+Liu. 2024. A Survey of Multimodel Large Language Models. In Proceedings of
+the 3rd International Conference on Computer, Artificial Intelligence and Control
+Engineering. 405–409.
+[18] Qi Liu, Kai Zheng, Rui Huang, Wuchao Li, Kuo Cai, Yuan Chai, Yanan Niu, Yiqun
+Hui, Bing Han, Na Mou, Hongning Wang, Wentian Bao, Yunen Yu, Guorui Zhou,
+Han Li, Yang Song, Defu Lian, and Kun Gai. 2024. RecFlow: An Industrial Full
+Flow Recommendation Dataset. arXiv:2410.20868 [cs.IR] https://arxiv.org/abs/
+2410.20868
+[19] Andreas Pfadler, Huan Zhao, Jizhe Wang, Lifeng Wang, Pipei Huang, and Dik Lun
+Lee. 2020. Billion-scale recommendation with heterogeneous side information
+at taobao. In 2020 IEEE 36th International Conference on Data Engineering (ICDE).
+IEEE, 1667–1676.
+[20] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sand-
+hini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al.
+2021. Learning transferable visual models from natural language supervision. In
+International conference on machine learning. PmLR, 8748–8763.
+[21] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[22] Badrul Sarwar, George Karypis, Joseph Konstan, and John Riedl. 2001. Item-
+based collaborative filtering recommendation algorithms. In Proceedings of the
+10th International Conference on World Wide Web (Hong Kong, Hong Kong)
+(WWW ’01). Association for Computing Machinery, New York, NY, USA, 285–295.
+doi:10.1145/371920.372071
+[23] Jianlin Su, Murtadha Ahmed, Yu Lu, Shengfeng Pan, Wen Bo, and Yunfeng
+Liu. 2024. RoFormer: Enhanced transformer with Rotary Position Embedding.
+Neurocomputing 568 (2024), 127063. doi:10.1016/j.neucom.2023.127063
+[24] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng
+Jiang. 2019. BERT4Rec: Sequential Recommendation with Bidirectional En-
+coder Representations from Transformer.
+arXiv:1904.06690 [cs.IR]
+https:
+//arxiv.org/abs/1904.06690
+[25] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne
+Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal
+Azhar, et al. 2023. Llama: Open and efficient foundation language models. arXiv
+preprint arXiv:2302.13971 (2023).
+[26] Xiaoyong Yang, Yadong Zhu, Yi Zhang, Xiaobo Wang, and Quan Yuan. 2020.
+Large Scale Product Graph Construction for Recommendation in E-commerce.
+arXiv:2010.05525 [cs.IR] https://arxiv.org/abs/2010.05525
+[27] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, and Lin Liu. 2025. Sparse Meets Dense: Unified
+Generative Recommendations with Cascaded Sparse-Dense Representations.
+arXiv:2503.02453 [cs.IR] https://arxiv.org/abs/2503.02453
+[28] Xinyang Yi, Ji Yang, Lichan Hong, Derek Zhiyuan Cheng, Lukasz Heldt, Aditee
+Kumthekar, Zhe Zhao, Li Wei, and Ed Chi. 2019. Sampling-bias-corrected neural
+modeling for large corpus item recommendations. In Proceedings of the 13th
+ACM Conference on Recommender Systems (Copenhagen, Denmark) (RecSys ’19).
+Association for Computing Machinery, New York, NY, USA, 269–277. doi:10.
+1145/3298689.3346996
+[29] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, Yinghai Lu, and Yu Shi. 2024. Actions Speak
+Louder than Words: Trillion-Parameter Sequential Transducers for Generative
+Recommendations. arXiv:2402.17152 [cs.LG] https://arxiv.org/abs/2402.17152
+[30] Chiyu Zhang, Yifei Sun, Minghao Wu, Jun Chen, Jie Lei, Muhammad Abdul-
+Mageed, Rong Jin, Angli Liu, Ji Zhu, Sem Park, Ning Yao, and Bo Long. 2024.
+EmbSum: Leveraging the Summarization Capabilities of Large Language Models
+for Content-Based Recommendations. arXiv:2405.11441 [cs.IR] https://arxiv.
+org/abs/2405.11441
+[31] Gaowei Zhang, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, and Ji-
+Rong Wen. 2023. Scaling Law of Large Sequential Recommendation Models.
+arXiv:2311.11351 [cs.IR] https://arxiv.org/abs/2311.11351
+[32] Tingting Zhang, Pengpeng Zhao, Yanchi Liu, Victor S. Sheng, Jiajie Xu, De-
+qing Wang, Guanfeng Liu, and Xiaofang Zhou. 2019. Feature-level deeper self-
+attention network for sequential recommendation. In Proceedings of the 28th
+International Joint Conference on Artificial Intelligence (Macao, China) (IJCAI’19).
+AAAI Press, 4320–4326.
+[33] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting Large Language Models by Integrating
+Collaborative Semantics for Recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). 1435–1448. doi:10.1109/ICDE60146.2024.
+00118

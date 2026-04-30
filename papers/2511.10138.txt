@@ -1,0 +1,1683 @@
+GPR: Towards a Generative Pre-trained One-Model Paradigm for
+Large-Scale Advertising Recommendation
+Jun Zhang 1∗+, Yi Li 1∗, Yue Liu 1∗, Changping Wang 1∗, Yuan Wang 1∗, Yuling Xiong 1∗, Xun Liu 1∗, Haiyang
+Wu 1∗, Qian Li 1∗, Enming Zhang 1, Jiawei Sun 1, Xin Xu 1, Zishuai Zhang 1, Ruoran Liu 1, Suyuan Huang 1,
+Zhaoxin Zhang 1, Zhengkai Guo 1, Shuojin Yang 2, Meng-Hao Guo 2, Huan Yu 1, Jie Jiang 1, Shi-Min Hu 2
+1 Tencent Inc., China; 2 Tsinghua University, China
+Abstract
+As an intelligent infrastructure connecting users with commercial
+content, advertising recommendation systems play a central role
+in information flow and value creation within the digital economy.
+However, existing multi-stage advertising recommendation systems
+suffer from objective misalignment and error propagation, making
+it difficult to achieve global optimality, while unified generative
+recommendation models still struggle to meet the demands of prac-
+tical industrial applications. To address these issues, we propose
+GPR (Generative Pre-trained Recommender) — the first one-model
+framework that redefines advertising recommendation as an end-to-
+end generative task, replacing the traditional cascading paradigm
+with a unified generative approach. To realize GPR, we introduce
+three key innovations spanning unified representation, network
+architecture, and training strategy. First, we design a unified input
+schema and tokenization method tailored to advertising scenarios,
+mapping both ads and organic content into a shared multi-level
+semantic ID space, thereby enhancing semantic alignment and mod-
+eling consistency across heterogeneous data. Second, we develop
+the Heterogeneous Hierarchical Decoder (HHD), a dual-decoder
+architecture that decouples user intent modeling from ad genera-
+tion, achieving a balance between training efficiency and inference
+flexibility while maintaining strong modeling capacity. Finally, we
+propose a multi-stage joint training strategy that integrates Multi-
+Token Prediction (MTP), Value-Aware Fine-Tuning and the Hierar-
+chy Enhanced Policy Optimization (HEPO) algorithm, forming a
+complete generative recommendation pipeline that unifies interest
+modeling, value alignment, and policy optimization. GPR has been
+fully deployed in the Tencent Weixin Channels advertising sys-
+tem, delivering significant improvements in key business metrics
+including Gross Merchandise Volume (GMV) and CTCVR, clearly
+demonstrating that GPR maintains strong competitiveness against
+a highly optimized and mature cascading system.
+CCS Concepts
+• Information systems →Recommender systems.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference’17, Washington, DC, USA
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+(a) Cascading methods
+(b) Generative methods 
+(e.g. HSTU)
+(c) GPR (Ours)
+HSTU for retrieval 
+Retrieval
+Pre-rank
+Rank
+HSTU for ranking
+GPR
+Top K Items & Values
+Thousands of items 
+Thousands of values 
+Top K for rank
+Understanding 
+Thinking
+Refining
+Generation
+Figure 1: Comparison between previous methods and ours.
+Keywords
+Recommender Systems, Generative Modeling, Advertising
+1
+Introduction
+Online advertising recommendation is a vital component of the digi-
+tal economy, with its core task being to precisely match the right ads
+to the right users based on their historical behaviors. Such systems
+must operate under strict real-time, low-latency requirements, serv-
+ing hundreds of millions of users and tens of millions of dynamic
+ads. Consequently, the timeliness and stability of system perfor-
+mance directly determine the functioning of a multi-billion-dollar
+ecosystem. Achieving a dynamic balance among user experience,
+advertiser return on investment (ROI), and platform revenue has
+become a key challenge in this field.
+Traditional advertising recommendation systems typically adopt
+a multi-stage cascading pipeline of “retrieval–pre-ranking–ranking”
+[6, 12, 27, 36, 42, 43], as shown in Fig. 1(a). However, such pipelines
+suffer from inconsistent optimization objectives across stages: the
+retrieval stage emphasizes coverage optimization, while the final
+ranking stage focuses on business outcome prediction. This mis-
+alignment prevents the system from achieving global optimality.
+Moreover, the limited representational capacity of early retrieval
+models often leads to the premature elimination of potentially high-
+quality candidates, restricting subsequent ranking models from
+fully exploiting deep feature interactions and resulting in an infor-
+mation bottleneck. In addition, the cascading architecture relies on
+highly complex engineering implementations, requiring substan-
+tial resources to maintain cross-stage consistency, which in turn
+hinders rapid algorithmic iteration and system scalability.
+*These authors contributed equally to this work
++Corresponding author
+arXiv:2511.10138v3  [cs.IR]  12 Feb 2026
+
+Conference’17, July 2017, Washington, DC, USA
+Zhang et al.
+U-Token
+User attributes
+O-Token
+Organic content
+Device
+Position
+E-Token
+Ad environment
+I-Token
+Item content
+Hierarchical Token-wise 
+Evaluator 
+(a) Overview of GPR
+<a_32>,<b,21>,<c_1>
+Tokenizer
+Unified Represent
+U
+O
+E
+I
+U
+O
+E
+I
+U
+O
+E
+Complex Advertisement Scenarios 
+Heterogeneous
+Platform
+Image
+Text
+Video
+Heterogeneous 
+Content
+Advertisement
+Short Video
+Article
+Heterogeneous 
+format
+Life-long
+data
+2015
+2025
+2018
+2021
+2023
+Next Item
+(Semantic ID)
+Progressive Token-wise Decoder
+Heterogeneous Sequence-wise Decoder
+Value1
+Q
+K
+V
+U
+Hybrid Attn.
+(b) The Architecture of HSD Layer
+U
+O
+E
+I
+Hybrid attention mask
+Token-Aware Norm & Add
+I-FFN
+Token-Aware FFN
+(d) Value-Guided Trie-Based Beam Search
+Valid Path
+Excluded Path
+Valid Node
+Excluded Node
+…
+Value5
+(Item Value)
+Intent Embeddings …
+K,V
+U
+O
+E
+Next Intent 
+Embeddings
+I
+…
+Refining Module
+Thinking 
+Tokens
+Refining
+Token
+<a_86>
+Excluded
+<b_11>
+<b_46>
+<b_28>
+<c_16>
+<c_54>
+<c_3>
+<c_99>
+Value 0.2
+Value 0.7
+*Generated by HTE
+*Filtered by user profile 
+U-FFN
+O-FFN
+E-FFN
+Thinking
+Tokens
+…
+Reverse process for denoising
+(c) Architecture of Refining Module
+p(𝒙𝒕"𝟏|𝒙𝒕, 𝑪, 𝒕)
+𝒙𝒕"𝟏$
+𝒙𝒕
+condition
+𝒙𝒕"𝟏$
+Sum 
+Pooling
+Generation
+𝒙𝒕
+𝒙𝒕"𝟏$
+𝒙𝟎$
+Refining
+Token
+Trans.
+Noise 
+Generator
+Step
+Random / Real 
+distribution
+U
+O
+E
+I
+Value2 Value3 Value4
+User Profile
+Gender: xx
+Age: xx
+…
+Excluded
+<a_21>
+…
+…
+<a_93> …
+Excluded
+Figure 2: Overall Architecture of GPR.
+In recent years, with the rapid advancement of large language
+models (LLMs) [1, 9, 28], particularly their breakthroughs in gen-
+erative capabilities [25, 35], the research paradigm of recommen-
+dation systems has been continuously evolving. HSTU [35] intro-
+duced generative modeling into the traditional cascading archi-
+tecture, as shown in Fig. 1(b), further driving the transition from
+the multi-stage pipeline to a unified generative recommendation
+framework [10, 40]. Such models can directly generate optimal rec-
+ommendations based on a holistic understanding of user interests
+and semantic context, thereby ensuring the consistency of opti-
+mization objectives. However, due to the inherent complexity of
+advertising recommendation tasks, existing generative models still
+face multiple challenges in real-world industrial applications:
+1) Extreme Heterogeneity in Data and Behavior: Ads are
+typically interleaved with organic content such as short videos,
+social feeds, and news articles, resulting in heterogeneity at both
+the sequence and item levels, as well as diverse user behaviors. The
+system must simultaneously process interactions with both ads and
+non-ad content (e.g., clicks, conversions, views, and reads), leading
+to highly noisy and complex data distributions. This extreme het-
+erogeneity greatly increases the difficulty of user interest modeling
+and semantic alignment, placing stringent demands on the model’s
+unified representation and multimodal modeling capabilities.
+2) Efficiency–Flexibility Trade-off: In industrial-scale adver-
+tising recommendation, the model must not only support efficient
+training for large-scale data updates but also provide flexible de-
+coding capabilities to process ultra-long user behavior sequences
+in real time and match ads under multiple constraints (e.g., target-
+ing, bidding, budget). Decoder-only architectures [35] enable effi-
+cient user-level training but suffer from limited decoding flexibility,
+whereas encoder–decoder architectures [40] allow flexible infer-
+ence but incur prohibitively high training costs due to pointwise
+loss objectives, making them unsuitable for real-time advertising
+systems. Balancing efficient training with flexible inference thus
+remains a key challenge.
+3) Revenue and Multi-stakeholder Value Optimization:
+Advertising recommendation systems must maximize the overall
+ecosystem value among multiple stakeholders — balancing user
+experience, advertiser return on investment (ROI), and platform
+revenue. Existing pre-training methods primarily rely on optimiz-
+ing simplified, single objectives (e.g., maximizing predicted Click-
+Through Rate or Conversion Rate) in isolation. Such siloed optimiza-
+tion leads to inherent objective misalignment and local optimality,
+thus failing to achieve the desired globally optimized business value.
+To address the aforementioned challenges, we propose GPR
+(Generative Pre-trained Recommender). Through systematic
+innovations in unified tokenization, decoder architecture and train-
+ing strategy, GPR effectively unifies heterogeneous data, achieving
+a balance between system efficiency and decoding flexibility, while
+precisely capturing business value and optimizing global multi-
+stakeholder objectives. To the best of our knowledge, GPR is the
+first end-to-end generative advertising recommendation framework
+successfully deployed in a large-scale real-world advertising sys-
+tem, as shown in Fig. 1(c). The main contributions of this work are
+summarized as follows:
+• We propose a unified input schema and tokenization method,
+which represent the entire user journey through four types of to-
+kens, and introduce a novel RQ-Kmeans+ quantization model to
+map both content and ads into a shared semantic space, enabling
+efficient modeling of heterogeneous and ultra-long sequential data.
+• We propose a dual-decoder–based generative architecture,
+called Heterogeneous Hierarchical Decoder (HHD), which hier-
+archically models user understanding and recommended items
+generation for finer interest representation and more accurate rec-
+ommendations. During decoding, HHD integrates trie constraints,
+value guidance, and efficient multi-stage pruning, greatly improving
+generation accuracy and reliability.
+• We propose a multi-stage joint training strategy that inte-
+grates Multi-Token Prediction (MTP), Value-Aware Fine-Tuning
+(VAFT) and the Hierarchy Enhanced Policy Optimization (HEPO)
+
+GPR: Towards a Generative Pre-trained One-Model Paradigm for Large-Scale Advertising Recommendation
+Conference’17, July 2017, Washington, DC, USA
+algorithm, thereby constructing a comprehensive generative recom-
+mendation training pipeline that seamlessly unifies interest model-
+ing, value alignment, and policy optimization.
+• We have fully deployed GPR in the Tencent Weixin Channels
+advertising system. Results from large-scale online A/B testing
+show that it delivers a significant improvements in key business
+metrics including Gross Merchandise Volume (GMV) and CTCVR,
+clearly demonstrating that GPR maintains strong competitiveness
+against a highly optimized and mature cascading system.
+2
+Generative Pre-trained Recommender
+This section introduces GPR — a unified framework capable of
+generating both recommended items and auction value within a
+single generative model. To address the noisy, highly heteroge-
+neous, and ultra-long sequential nature of user behavior data, we
+first propose a novel Input Schema that represents users’ long-term
+behaviors as a unified and continuous sequence of tokens. Building
+upon this representation, we design a new quantizer, RQ-Kmeans+,
+which significantly improves codebook utilization efficiency and
+effectively resolves the common issue of codebook collapse, while
+maintaining flexibility in the latent space. Then we construct a dual-
+decoder-based generative framework, termed the Heterogeneous
+Hierarchical Decoder (HHD), which enables deep understanding
+of complex user behavior patterns and accurate prediction of both
+target items and their corresponding business values. Finally, we
+design a Trie-based beam search algorithm with value guidance to
+improve inference efficiency and performance. The overall archi-
+tecture is illustrated in Fig. 2.
+2.1
+Input Schema and Processing
+GPR model is required to process noisy, heterogeneous and ultra-
+long user information, as the real-world advertising platforms typ-
+ically encompass a variety of diverse scenarios, such as Weixin
+Channels, Moments, and Official Accounts. In addition, users’ be-
+havioral sequences in these platforms can span over extensive
+periods and accumulate to an exceptionally long history, further
+increasing the complexity of information the model must process
+and understand. Therefore, we propose a unified input schema for
+GPR to represent the whole journey of users, which consists of User
+Token (U-Token), Organic Token (O-Token), Environment Token
+(E-Token) and Item Token (I-Token). Specifically, the U-Token repre-
+sents users’ attributes and preferences. The O-Token encapsulates
+users’ organic content, such as short videos and articles. Addition-
+ally, the E-Token encodes the immediate context surrounding an
+advertisement request, while the I-Token represents an ad item
+where the user has interacted.
+Furthermore, as demonstrated by previous GR models [25, 40],
+quantizing item embeddings into semantic IDs can extract crucial
+information in items, while also generate discrete representation
+of items, better aligning with generative model paradigms. There-
+fore, we convert all contents in O-Token and items in I-Token into
+discrete semantic IDs. RQ-VAE [17] and RQ-Kmeans [21] are two
+popular methods. However, both of them suffer from issues such
+as "codebook collapse" and "insufficient robustness of the latent
+space", leading to low utilization of the semantic space and limited
+representational capacity. To address these issues, we propose a
+Encoder
+Multi-modal 
+Semantic 
+Emb.
+0 1 2 3 4
+cluster centroids 1
+𝒙
+𝒓𝟏= 𝒙−𝒄𝟏
+Residual 
+connection
+cluster centroids 2
+𝒓𝟐= 𝒙−𝒄𝟐
+Residual 
+connection
+cluster centroids 3
+Init.
+0 1 2 3 4
+Init.
+Init.
+0
+=
+Residual 
+connection
+-
+0 1 2 3 4
+2
+=
+Residual 
+connection
+-
+0
+2
+4
++
++
+Quantization
+𝒙
+=
+&𝒙
+Semantic ID: <a_0>, <b_2>, <c_4>
+Decoder
+Vanilla RQ-VAE
+Init Codebook by RQ-Kmeans
+Multiple Codebooks 
+Figure 3: Overall Architecture of RQ-Kmeans+.
+new quantization model named RQ-Kmeans+, which consists of
+an encoder, residual codebooks and a decoder.
+We attribute codebook collapse primarily to random initializa-
+tion, where some vectors are rarely activated during training and
+eventually become “dead vectors”, resulting in inefficient codebook
+utilization. To address this, as shown in Fig. 3, RQ-Kmeans+ first
+employs RQ-Kmeans to generate a high-quality codebook, which is
+then used as initialization weights. The codebook is subsequently
+updated using the same loss function as RQ-VAE, enabling adapta-
+tion to the current learnable latent space. Furthermore, we introduce
+a residual connection on the encoder side to ensure that the output
+distribution remains close to the input distribution in the early
+stages of training, thereby accelerating convergence and stabiliz-
+ing latent-space alignment. Ultimately, RQ-Kmeans+ significantly
+improves codebook utilization while maintaining flexibility in the
+latent space, effectively resolving the collapse problem.
+2.2
+Heterogeneous Hierarchical Decoder
+We propose a decoder-only generative architecture, named Het-
+erogeneous Hierarchical Decoder (HHD), which consists of
+a Heterogeneous Sequence-wise Decoder (HSD) Module, a Pro-
+gressive Token-wise Decoder (PTD) Module and a Hierarchical
+Token-wise Evaluator (HTE) Module, as shown in Fig. 2 (a). This
+hierarchical structure decouples the understanding of user behav-
+iors from next item prediction, thereby enabling a finer-grained
+understanding of user preferences and consequently more accu-
+rate next-item prediction. Specifically, the HSD Module utilizes a
+Hybrid Attention mechanism, alongside Token-Aware Normaliza-
+tion and Feed-Forward Networks (FFN), to thoroughly grasp user
+behaviors and generate high-quality intent embeddings. Addition-
+ally, Mixture-of-Recursions (MoR) strategy is employed to reduce
+memory consumption and enhance the model’s reasoning depth.
+Guided by the derived intent embeddings, PTD Module predicts
+next item following a "Thinking-Refining-Generation" paradigm to
+facilitate more accurate prediction results by thinking tokens and
+refining token. During the generation process, the HTE module
+outputs estimated values for each semantic code and the final item,
+facilitating pruning and auction.
+Heterogeneous Sequence-wise Decoder (HSD). The HSD mod-
+ule is a primary decoder, which stacks HSTU blocks [35] and takes
+the unified token sequence as input to understand users’ actions
+and generate intent embeddings. Building upon the foundational
+HSTU block, we introduce several critical enhancements to form
+
+Conference’17, July 2017, Washington, DC, USA
+Zhang et al.
+the block utilized in the HSD, including the Hybrid Attention mech-
+anism, Token-Aware Normalization, and an improved Feed Forward
+Network (FFN), as shown in Fig. 2 (b).
+Unlike standard attention mechanisms, the HSD Attention mech-
+anism incorporates an extra embedding, 𝑈, which adaptively mod-
+ulate the attention weights, 𝑊. This modulation enables the HSD
+to focus more effectively on relevant user behaviors while actively
+attenuating less informative interactions [35]. Moreover, given that
+the U-Token, O-Token, and E-Token in our input schema collectively
+function as a prompt for item prediction, applying a vanilla causal
+mask within this prompt region becomes unnecessarily restric-
+tive. To address this limitation, we propose the Hybrid Attention
+mask, 𝑀ℎ𝑦𝑏𝑟𝑖𝑑. Within the prefix block, tokens visible with each
+other freely using bi-directional attention. This design enables the
+model to fully exploit the contextual interplay among the prompt
+tokens, thereby constructing a more comprehensive context prior
+to making a prediction. The Hybrid Attention can be expressed as:
+HybridAttn(·) = 𝑆𝑜𝑓𝑡𝑚𝑎𝑥
+𝑄𝐾⊤
+√
+𝑑
++ 𝑀hybrid
+
+𝑉⊙𝑈
+(1)
+𝑀hybrid
+𝑖𝑗
+=
+(
+0,
+if 𝑖< 𝑗or 𝑋𝑖,𝑋𝑗∈{U/O/E-Token}
+−∞,
+if 𝑗> 𝑖
+(2)
+In addition, considering that different types of tokens possess
+distinct characteristics, the HSD module assigns independent nor-
+malization layers and feed-forward networks (FFNs) to each to-
+ken type, projecting them into their own semantic subspaces to
+fully capture the semantic diversity of heterogeneous sequences.
+Meanwhile, we introduce the Mixture-of-Recursions (MoR) mecha-
+nism [3], which increases the model’s depth and reasoning capacity
+without adding extra parameters. To further enhance reasoning abil-
+ity, the model incorporates external knowledge from a fine-tuned
+Large Language Model (LLM), where the LLM generates a textual
+“thought process” about users’ potential interests, which is then
+tokenized and integrated into the intent embeddings to strengthen
+semantic understanding and reasoning capability.
+Progressive Token-wise Decoder (PTD). Given intent embed-
+dings generated by the HSD, the PTD Module acts as the secondary
+decoder and adapts a traditional Transformer decoder architecture
+to generate the target item. Although intent embeddings encapsu-
+late comprehensive representations of user behaviors, they may
+contain redundant information, which can adversely affect the ac-
+curacy of item prediction. To address this, the PTD Module adopts
+a novel "Thinking-Refining-Generation" paradigm for predicting the
+next item’s semantic ID. Specifically, the PTD Module utilizes a
+cross-attention mechanism in which the intent embeddings serve
+as both the keys and values. Based on these intent embeddings,
+we firstly compel the PTD Module to generate 𝐾thinking tokens,
+which are designed to distill essential information and filter out
+irrelevant components from the intent embedding.
+Moreover, inspired by recent research on reasoning in LLM [22,
+31], we extend PTD by integrating a refining module to further
+strengthen its cognitive abilities and generative capacities. As shown
+in Fig. 2 (c), the refining module is designed upon the diffusion para-
+digm [26], which consists of a noise generator and a reverse process
+modeled as a Markov chain. In the reverse process, the noise is
+iteratively removed by a conditional denoising module with a trans-
+former architecture. Prefix thinking tokens are aggregated using
+Sum_Pooling and serve as the condition for the denoising mod-
+ule. Consequently, the refining module refines the initial reasoning
+results, which are subsequently passed to downstream modules.
+Finally, leveraging both the thinking tokens and the refining
+token, the PTD generates a sequence of semantic codes to repre-
+sent the next item. In the inference, we further utilize the Trie-
+Constrained Value-Guided Beam Search to efficiently decode the
+accurate results. We will introduce details in Sec. 2.3.
+Hierarchical Token-wise Evaluator (HTE). Unlike traditional
+content recommendation systems, online advertising systems must
+jointly optimize user engagement and platform revenue. This re-
+quires predicting multiple business metrics for each candidate ad-
+vertisement, including click-through rate (CTR), conversion rate
+(CVR), and effective cost per mille (eCPM). To enable end-to-end
+optimization, these multi-faceted predictions must be aggregated
+into a single scalar objective that balances user experience and
+business goals. We refer to this aggregated metric as final_value,
+which serves as the main optimization target throughout our sys-
+tem. The detailed formulation of final_value and its components
+are provided in Eq. 5 in the reinforcement learning section. To
+facilitate a truly end-to-end ad generation solution, we build an
+integrated value estimation module (HTE) upon the hierarchical
+GPR model that combines generation with value estimation. This
+module facilitates the generation of candidate ads, followed by the
+estimation of final_value. This integrated, end-to-end approach
+offers significant advantages over traditional multi-stage systems: it
+enhances the consistency at the representation and objective levels,
+thereby mitigating conflicts between retrieval and ranking stages.
+Additionally, this approach improves the overall computational ef-
+ficiency of the advertising system, as shown below. Beyond its role
+in value prediction during inference, HTE subsequently serves as
+the critic model in reinforcement learning post-training, enabling
+value-based advantage estimation for policy optimization.
+2.3
+Value-Guided Trie-Based Beam Search
+The predicted semantic codes for target item by PTD may be invalid
+or suboptimal in advertising scenarios, such as those that map to
+items that do not actually exist, items whose geo-targeting con-
+straints exclude the current user, items whose budget has run out,
+or items with low value. Although traditional beam search with
+post-filtering and post-ranking can remove the invalid results and
+rank the others by value, it incurs prohibitive computational costs
+and latency. Therefore, we propose Value-Guided Trie-based Beam
+Search, which integrates trie constraints generated by user profiles
+and value estimations directly into the decoding step to evaluate the
+prefixes early. Specifically, given predicted values for each semantic
+code by HTE, we dynamically adjusts the beam width, with larger
+values corresponding to a wider beam for next semantic code, to
+improve the potential revenue. Then, we prune the search space
+via a Trie Tree generated by current user profiles. This Trie Tree is
+constructed by applying user targeting strategies in advertisement
+system to filter candidates according to attributes such as age and
+gender, and therefore only contains candidates that are consistent
+
+GPR: Towards a Generative Pre-trained One-Model Paradigm for Large-Scale Advertising Recommendation
+Conference’17, July 2017, Washington, DC, USA
+with the user’s attributes, thereby enabling early user-level targeted
+filtering.
+3
+Multi-Stage Training
+The GPR model is trained with a three-stage regimen designed for
+advertising recommendation under sparse signals, multi-business
+objectives, and a dynamic item space. First, pretraining uses multi-
+token prediction (MTP) to capture global, multi-interest user pat-
+terns. Next, an alignment stage introduces a value-aware MTP loss,
+reweighting updates toward higher-value items to align optimiza-
+tion with business priorities. Finally, reinforcement learning with
+HEPO in simulation enables exploration beyond logged exposures
+and surfaces under-served, high-value candidates under distribu-
+tion shift. An overview of the full pipeline is shown in Fig. 4.
+3.1
+Pre-training with Multi-Token Prediction
+The pretraining stage injects advertising–scenario knowledge into
+GPR under sparse interaction signals (unlike dense organic traffic)
+and targets global, multi-interest user modeling. Users often pursue
+several intent threads in parallel; the objective here is to represent
+these threads jointly and coherently. A large-scale industrial corpus
+from Tencent’s advertising platform is used, spanning one year
+and hundreds of millions of anonymized users and comprising
+both ad interactions (impressions, clicks, conversions) and organic
+engagements. For each user, a chronological sequence is constructed
+with the unified four-token schema (U/O/E/I-Token as in Sec. 2.1).
+Items (ads) are encoded as 𝐿coarse-to-fine semantic codes ob-
+tained via residual vector quantization, which provides a hierar-
+chical, compact representation of item semantics. As a baseline,
+next-token prediction (NTP) conditions on the user history and
+context to predict the subsequent code. While effective for single-
+path dynamics, NTP implicitly assumes a dominant interest trajec-
+tory and tends to average over parallel interests, limiting coverage
+in advertising scenarios. To capture multiple concurrent interests,
+as shown in Fig. 4 (a), we employ MTP [8] by extending decoder
+with 𝑁parallel heads (default 𝑁= 4). Each head independently
+predicts a complete 𝐿-level code path for one interest dimension,
+using the same backbone states but separate projection layers. This
+design enables concurrent modeling without mutual interference
+and preserves level-wise legality via masked decoding on each head.
+The pretraining objective aggregates per-head, per-level like-
+lihoods with simplex-constrained head weights 𝜔𝑗(Í
+𝑗𝜔𝑗= 1),
+adaptively tuned to prioritize high-quality interest threads:
+𝐿MTP = −
+𝑁
+∑︁
+𝑗=1
+𝑇∑︁
+𝑡=1
+𝐿
+∑︁
+ℓ=1
+𝜔𝐻
+𝑗· log 𝑃𝑗
+ 𝐼𝑗,𝑡,ℓ| 𝑆,𝐶, 𝐼𝑗,𝑡,1:ℓ−1
+ ,
+(3)
+where 𝐼𝑗,𝑡,ℓdenotes the ℓ-th semantic code emitted by head 𝑗
+at position 𝑡; 𝑃𝑗(·) is the masked conditional probability on the
+legal set for that level; 𝑆and 𝐶denote sequence history and con-
+textual features. We initialize 𝜔𝑗=1/𝑁and allow subsequent stages
+to adjust the effective emphasis across heads via downstream su-
+pervision. This objective yields a backbone that encodes broad,
+disentangled interest structure and provides a stable foundation for
+subsequent business alignment and reinforcement learning.
+3.2
+Value-Aware Fine-Tuning (VAFT)
+This stage bridges multi-interest pretraining and monetization goals
+by injecting action value and eCPM awareness into the MTP frame-
+work, so the model prioritizes high-value ads while preserving
+relevance. Although effective for multi-interest capture, vanilla
+MTP is misaligned with advertising objectives: (i) it assigns equal
+loss weight to ads with very different economic value, allowing
+low-eCPM long-tail items to dominate gradients; and (ii) it treats
+action types (impression, click, conversion) uniformly, ignoring
+their hierarchical business value (conversion > click > impression).
+We introduce a per-head, per-position weight 𝜔𝑉
+𝑗,𝑡that encodes
+business value by combining the action type and the ad’s eCPM, as
+shown in Fig. 4 (b). The weight differentiates actions according to
+their value hierarchy (conversion > click > impression) and scales
+with a normalized eCPM to avoid magnitude distortion and spurious
+gradients. This term complements the head-level importance 𝜔𝐻
+𝑗
+from pretraining, which prioritizes high-quality interest threads.
+The value-aligned MTP loss multiplies the head importance and
+the action/eCPM weight:
+𝐿eCPM-MTP = −
+𝑁
+∑︁
+𝑗=1
+𝑇∑︁
+𝑡=1
+𝐿
+∑︁
+ℓ=1
+ 𝜔𝐻
+𝑗𝜔𝑉
+𝑗,𝑡
+ log 𝑃𝑗
+ 𝐼𝑗,𝑡,ℓ| 𝑆,𝐶, 𝐼𝑗,𝑡,1:ℓ−1
+,
+(4)
+where the composite weight 𝜔𝐻
+𝑗𝜔𝑉
+𝑗,𝑡integrates head-level interest
+quality with position-level business value, biasing updates toward
+high-eCPM actions while preserving multi-interest coverage. Other
+symbols follow the same definition in Eq. 3. In practice, 𝜔𝑉
+𝑗,𝑡uses cal-
+ibrated or normalized eCPM with monotonic transforms, optional
+clipping to mitigate outliers, and fixed action-type coefficients to
+enforce the value hierarchy. This yields stable gradients, avoids
+overweighting rare spikes, and improves alignment with revenue
+objectives. Denominators are set to align 𝜔𝑉
+𝑗,𝑡with advertising busi-
+ness value (conversion > click > impression), as follows:
+Impression (𝑖= 1): Denominator = 1 →𝜔𝑉
+𝑗,𝑡∝eCPM (basic
+revenue contribution);
+Click (𝑖= 2): Denominator = pCTR →𝜔𝑉
+𝑗,𝑡∝eCPM
+pCTR (reward ads
+with high click quality);
+Conversion (𝑖= 3): Denominator = pCTR × pCVR →𝜔𝑉
+𝑗,𝑡∝
+eCPM
+pCTR×pCVR (prioritize ads driving actual conversions).
+3.3
+Post-training with HEPO
+Supervised pretraining establishes a strong foundation by learning
+from historical exposure and engagement logs, but likelihood-only
+training faces an inherent limitation: logged data provides limited
+action coverage. The model observes only sequences generated by
+the historical policy, leaving many plausible high-value alternatives
+unexplored. Without counterfactual evaluation, the policy remains
+constrained to imitate past decisions rather than discovering supe-
+rior strategies. Reinforcement learning addresses this limitation by
+constructing a high-fidelity simulation environment that enables
+counterfactual evaluation of policy-generated sequences, expand-
+ing action support beyond the historical distribution and allowing
+the model to explore new candidate ads before deployment.
+In the setting of generative recommendation, the state 𝑠includes
+the user’s interaction history, contextual signals such as device,
+
+Conference’17, July 2017, Washington, DC, USA
+Zhang et al.
+Head1
+U
+O
+E
+Head2
+HeadN
+I1
+I2
+I3
+I1
+I2
+I3
+…
+…
+…
+GPR
+U
+O
+E
+…
+GPR
+MTP
+Action
+…
+I1
+…
+I2
+…
+I3
+…
+Impression
+Click
+Conversion
+eCPM
+eCPM=1
+eCPM=2
+eCPM=4
+𝑳𝑴𝑻𝑷
+Loss for I1
+𝑳𝒆𝑪𝑷𝑴−𝑴𝑻𝑷
+Loss for I2
+Loss for I3
+(eCPM Value-Aware)
+Weighted 
+by eCPM
+GPR
+GPR in Simulation
+U
+O
+E
+I
+…
+Loss
+Hierarchical 
+Semantic ID
+…
+Level-L
+Level-2
+Level-1
+…
+Hierarchical 
+Process 
+Reward
+Reward
+Model
+𝑟𝐿
+…
+Reward
+𝑟𝐿−1
+𝑟2
+𝑟1
+(a) Pre-training with Multi-Token Prediction
+(b) Value-Aware Fine-Tuning
+(c) Reinforcement Learning with HEPO
+GPR
+GPR in Production
+GAE
+Sync
+Z-norm
+HTE
+v1 v2
+vL
+…
+Figure 4: Training Pipeline of GPR.
+time, and scene, the multi-level codes already emitted, and the level-
+specific legal masks. The action𝑎is a hierarchical decision produced
+by a 𝐿-level decoder (coarse→fine): at each level, the policy selects
+one quantized code from that level’s legal candidate set, and the final
+level resolves to the concrete ad to expose. The reward is assigned
+to the final decoding step that determines exposure, with optional
+light shaping (small fractions of the same signal) applied to earlier
+levels to preserve coarse-level intent. The episode corresponds to
+a single request or session and in the single-exposure case ends
+immediately after the final-level decision.
+The GPR model consists of a Heterogeneous Sequence-wise
+Decoder (HSD) that produces intent embeddings ℎ= HSD𝜃(𝑠)
+from user context 𝑠. The Progressive Token-wise Decoder (PTD)
+performs hierarchical decoding to generate action probabilities
+𝜋𝜃(𝑧ℓ) over semantic tokens 𝑧ℓat each level ℓwhere 𝜃comprises
+the parameters of both HSD and PTD. The Hierarchical Tower
+for eCPM estimation (HTE) serves as the value function 𝑉𝜙in
+RL training, computing expected returns 𝑣ℓ= 𝑉𝜙(𝑠,𝑧1:ℓ−1), where
+𝑧1:ℓ−1 = {𝑧1, . . . ,𝑧ℓ−1} denotes the tokens selected at earlier levels.
+The value function operates on stopgrad(ℎ), ensuring that value
+gradients do not update the backbone and maintaining training
+stability.
+Reward Generation with simulation environment. Rein-
+forcement learning requires reward signals for every candidate
+sequence the policy generates, but evaluating all candidates with
+the production ranking model in real-time is computationally pro-
+hibitive and would introduce unacceptable serving latency. Instead,
+we construct a high-fidelity simulation environment that repli-
+cates the production serving system for offline reward evaluation.
+The simulation environment is built upon production snapshots
+captured with small lag, preserving the complete infrastructure
+including retrieval indices, feature processing pipelines, and busi-
+ness constraint rules. It integrates two model types with different
+update frequencies: the pCTR/pCVR ranking models are directly
+copied from production to ensure reward fidelity, while the GPR
+policy models are periodically pushed from the training pipeline to
+evaluate evolving policies.
+For each user request context 𝑠, the simulator performs beam
+search with the deployed GPR model to generate 𝐾candidate ad-
+vertisements (typically 𝐾= 40), where each candidate is obtained
+through hierarchical decoding across 𝐿levels of semantic IDs. Each
+candidate is evaluated by the ranking models to obtain its predicted
+reward:
+𝑅= final_value(𝑠, {𝑧ℓ}𝐿
+ℓ=1)
+= eCPM(𝑠, {𝑧ℓ}𝐿
+ℓ=1) + 1
+𝑁
+𝑁
+∑︁
+𝑖=1
+𝛼𝑖target𝑖(𝑠, {𝑧ℓ}𝐿
+ℓ=1),
+(5)
+where {𝑧ℓ}𝐿
+ℓ=1 denotes the token sequence that uniquely identifies
+this candidate, eCPM is the predicted effective cost per mille, target𝑖
+are auxiliary objectives such as pCTR and pCVR with weights 𝛼𝑖.
+The simulation environment records the generation probabilities
+𝜋𝜃old (𝑧ℓ) at each decoding level, which serve as behavior policy
+probabilities for off-policy correction.
+Hierarchical Process Rewards. When rewards are assigned
+only at the final exposure level, intermediate hierarchical decisions
+receive no direct feedback signal. This creates a credit assignment
+problem: coarse-level choices must rely solely on bootstrapped
+value estimates to assess their contribution to the terminal outcome,
+resulting in weak and high-variance learning signals at upper levels.
+Consider a user interested in smartphones who rejects a recom-
+mendation for "Mobile Phones →Brand A →Item X." Without
+intermediate rewards, the negative terminal signal affects all lev-
+els uniformly, incorrectly reducing the probability of the "Mobile
+Phones" category despite the user’s genuine interest—the error lies
+at the brand level, not the category level. To address this, we pro-
+pose HEPO (Hierarchical Enhanced Policy Optimization), which
+constructs process rewards that leverage user-specific preference
+patterns to provide direct supervision signals at each hierarchical
+level.
+For each level ℓ, we derive a per-token popularity score 𝑃ℓ(𝑡) ∈
+[0, 1] from the user’s successful historical interactions, representing
+how frequently token 𝑡appears in recommendations that led to
+positive outcomes. For the chosen token 𝑧ℓat level ℓ, we compute a
+preference signal by comparing its popularity against the average
+popularity of all legal candidates Sℓ:
+Δℓ= 𝑃ℓ(𝑧ℓ) −
+1
+|Sℓ|
+∑︁
+𝑡∈Sℓ
+𝑃ℓ(𝑡).
+(6)
+The baseline subtraction ensures zero-mean signals when all candi-
+dates have equal popularity, preventing systematic bias. The step
+reward at each level is then:
+
+GPR: Towards a Generative Pre-trained One-Model Paradigm for Large-Scale Advertising Recommendation
+Conference’17, July 2017, Washington, DC, USA
+𝑟ℓ=
+(
+𝛼ℓmax(0, Δℓ),
+ℓ< 𝐿,
+𝑅,
+ℓ= 𝐿,
+(7)
+where 𝑅is the reward obtained from the simulator as defined in
+Eq. 5, 𝛼ℓare small scaling factors that ensure process rewards guide
+learning without overwhelming the terminal reward.
+Advantage and loss. At intermediate levels, process rewards
+must be connected to long-term business outcomes through a
+learned value function that enables proper credit assignment across
+the hierarchy. At the final exposure level, terminal rewards exhibit
+high variance across requests, making critic-based value estimation
+unstable. Since the exposure decision directly determines the dis-
+played advertisement and requires stable optimization, we instead
+use within-request z-score normalization. For each request, the
+simulation environment generates 𝐾candidates and their relative
+advantage is assessed by normalizing rewards within this set.
+For coarse levels ℓ< 𝐿, we compute advantages via Generalized
+Advantage Estimation (GAE) using the process rewards from Eq. 7.
+The cumulative return 𝐺ℓ= Í𝐿−ℓ
+𝑘=0 𝛾𝑘𝑟ℓ+𝑘and temporal difference
+errors 𝛿ℓ= 𝑟ℓ+𝛾𝑉𝜙(𝑠,𝑧1:ℓ)−𝑉𝜙(𝑠,𝑧1:ℓ−1) are computed, where𝑉𝜙(·)
+is the value function and 𝛾is the discount factor. For the final level,
+z-score normalization is applied over the over the 𝐾candidates.
+The advantage at each level is:
+𝐴ℓ=
+
+
+Í𝐿−ℓ−1
+𝑙=0
+(𝛾𝜆)𝑙𝛿ℓ+𝑙,
+ℓ< 𝐿,
+𝑅−𝜇𝐾
+𝜎𝐾+𝜖,
+ℓ= 𝐿,
+(8)
+where 𝜆controls the bias-variance tradeoff for GAE, 𝑅is the termi-
+nal reward from Eq. 5, and 𝜇𝐾and 𝜎𝐾are the mean and standard
+deviation computed over candidates.
+The policy model with parameters 𝜃is updated by minimizing:
+L𝜃= E
+"
+𝐿
+∑︁
+ℓ=1
+𝑐ℓmin
+
+𝜌ℓ𝐴ℓ, clip(𝜌ℓ, 1 −𝜖, 1 + 𝜖)𝐴ℓ
+#
+,
+(9)
+where 𝜌ℓ= 𝜋𝜃(𝑧ℓ)/𝜋𝜃old (𝑧ℓ) is the importance ratio and 𝜋𝜃𝑜𝑙𝑑is the
+behavior policy used for sampling in simulation. The value function
+is trained with mean squared error across all levels:
+L𝜙= E
+" 𝐿
+∑︁
+ℓ=1
+(𝑉𝜙(𝑠,𝑧1:ℓ−1) −𝐺ℓ)2
+#
+.
+(10)
+Anticipatory Request Rehearsal (ARR). The advertising ecosys-
+tem is highly dynamic: user interests evolve and premium creative
+inventory changes daily. A model trained solely on historical data
+risks being reactive rather than proactive. To enable anticipatory
+adaptation, we introduce Anticipatory Request Rehearsal (ARR),
+which generates synthetic training samples that approximate users’
+future request states.
+Rather than using stale historical contexts, ARR constructs syn-
+thetic requests based on each user’s current state to better approxi-
+mate their next actual interaction. The sampling frequency adapts
+to user activity patterns: for high-activity users with frequent re-
+quests, synthetic samples are generated every 2 hours during peak
+periods and every 4 hours during off-peak periods; for low-activity
+users, the intervals are adjusted proportionally to their request
+rates. Each synthetic request is constructed from the user’s cur-
+rent state as follows. The Organic token is reconstructed using the
+user’s most recently viewed organic content, including short videos
+and articles, to reflect evolving interests. The User token is directly
+reused from the previous request for high-activity users, as their
+profile features remain stable over short horizons. The Environ-
+ment token, which includes predicted ad position, placement type,
+and privacy settings, is queried in real-time to capture the latest
+system state. These synthetic samples are processed identically to
+observed samples in the simulation environment: the deployed GPR
+model generates candidates, the ranking model evaluates them, and
+advantages are computed following standard procedures.
+4
+Experiments
+We validate GPR through a four-step progression. First, we assess
+the proposed RQ-KMeans+ tokenizer on real and organic ads, show-
+ing it learns compact, semantically coherent codes that support
+a unified representation space. Second, we study if the proposed
+HHD architecture outperform strong baselines (HSTU, OneRec)
+for modeling long-horizon, long-sequence heterogeneous user be-
+haviors. Third, we examine whether the value-aligned training
+strategies (eCPM-aware MTP and the proposed HEPO) outperform
+NTP and DPO baselines on monetization-oriented objectives. Fi-
+nally, we benchmark the end-to-end GPR system in large-scale
+online A/B tests against a mature cascading pipeline, confirming
+practical economic gains and robust generalization in production.
+4.1
+Multimodal Tokenization Performance
+Experiment setting. A large-scale corpus from Tencent’s advertis-
+ing platform is curated, covering ads and organic media (short
+videos, social feeds, news). The corpus comprises heterogeneous
+multimodal signals—textual metadata (titles, tags, descriptions) and
+visual content (thumbnails and sampled frames) —aligned at the
+item and session level. Near-duplicate samples are filtered to re-
+duce redundancy and category distributions are balanced to limit
+sampling bias. The corpus is partitioned into 80% training and 20%
+test. RQ-KMeans+ is compared against two established tokeniz-
+ers: RQ-VAE [17] (standard discrete tokenizer prone to dead codes)
+and RQ-KMeans [21] (K-means initialization without VAE-style
+refinement). We introduce three metrics to assess code quality.
+Specifically, Collision Rate measures the fraction of items mapped
+to an identical code and lower values are better. Code Usage Rate at
+level 1 (CURL1) measures the proportion of active codes and higher
+values are better. Path Average Similarity (PAS) measures the mean
+embedding similarity among items that share a code and higher
+PAS indicate more coherent collisions.
+Results and Analysis. Tab. 1 shows that RQ-KMeans+ achieves
+the best overall code quality. It yields the lowest collision rate
+(20.60%), a relative reduction of 11.2% vs. RQ-VAE (23.21%) and
+3.7% vs. RQ-Kmeans (21.40%). Code usage at level-1 remains near
+saturation (99.36%, close to the 100% of RQ-Kmeans and +7.2 points
+over RQ-VAE), indicating that the reduction in collisions is not
+obtained by leaving codes idle. Importantly, PAS reaches 0.992 (vs.
+0.985/0.986), implying that the remaining collisions group items
+with higher semantic coherence. These results indicate that items
+grouped under the same semantic ID by RQ-Kmeans+ are more
+
+Conference’17, July 2017, Washington, DC, USA
+Zhang et al.
+Table 1: Performance of Different Tokenizers
+Model
+Collision (%)↓
+CUR𝐿1 (%)↑
+PAS↑
+RQ-VAE
+23.21
+92.13
+0.985
+RQ-Kmeans
+21.40
+100
+0.986
+RQ-KMeans+ (Ours)
+20.60
+99.36
+0.992
+Table 2: HHD Architecture Study
+Model
+HitR@100 (%)
+Δ vs. HSTU
+Baselines
+HSTU (Decoder-only)
+18.98
+–
+OneRec (Encoder-Decoder)
+19.85
++4.6%
+HSD
++ Hybrid Attention
+20.56
++8.3%
++ Token-Aware FFN
+21.98
++15.8%
++ Token-Aware Layer Norm
+20.76
++9.4%
++ Mixture of Recursions
+20.09
++5.9%
++ External Knowledge
+20.13
++6.1%
+PTD
++ Thinking
+21.75
++14.6%
++ Refining
+19.61
++3.3%
+HTE
++ HTE
+19.91
++4.9%
+Training
++ Multi-Token Prediction
+22.38
++17.9%
+GPR (Full)
++ All (HSD+PTD+HTE)
+27.32
++43.9%
+likely to belong to the same category and exhibit higher similarity,
+thus leading to more reasonable code collisions.
+4.2
+User Behavior Modeling Performance
+Experiment setting. We use a large-scale Tencent advertising dataset
+(user interactions with ads and organic content). Training uses
+one year of anonymized user interactions and validation uses the
+next calendar day. Histories are serialized in strict time order with
+the unified four-token schema (U/O/E/I). The same tokenizer (RQ-
+KMeans+) and feature pipelines are shared by all models. Baselines
+are HSTU [35] (decoder-only) and OneRec [41] (encoder–decoder).
+The task is to predict the next interacted item, and each model
+is required to emit top 100 results from the full catalog snapshot,
+which contains millions of items. HitRate@100 is defined by this
+retrieval protocol: a hit is recorded if the ground-truth ad appears
+among the top-100 candidates. This metric avoids overly strict
+code equality and evaluates whether the generated semantic code
+localizes the correct item in embedding space.
+Results and Analysis. Tab. 2 reports the headline results. Full
+GPR with HHD attains 27.32% HitR@100, a relative gain of +43.9%
+over HSTU and +37.6% over OneRec. OneRec itself exceeds HSTU
+because it ingests non-purely sequential inputs and aggregates
+richer feature views, which supplies stronger conditioning than a
+strictly autoregressive decoder. The trade-off is weaker universality
+at inference time, since dependence on pre-structured fields and
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+1.2
+1.4
+1.6
+Training Step
+×105
+0.4
+0.6
+0.8
+1.0
+1.2
+1.4
+1.6
+Loss
+0.02B
+0.1B
+0.2B
+0.5B
+1B
+2B
+Figure 5: Comparison of loss curves for six different GPR
+parameter sizes.
+candidate schemas reduces flexibility compared with a decoder that
+can condition on any serialized history.
+Ablations attribute the improvements to three components. HSD
+strengthens user–intent encoding on long, heterogeneous histories.
+Hybrid Attention relaxes the causal mask on the non-generative
+prefix and adds +8.3%. Token-Aware FFN/LN reduces cross-type
+interference and yields relative gains of +15.8% and +9.4%. Mixture
+of Recursions increases effective depth with shared parameters
+and contributes +5.9%. Injecting “thought-process” tokens from the
+LLM further enriches the intent representation for a +6.1% gain.
+PTD improves generation quality and diversity. Implicit thinking
+enforces multi-step latent refinement and delivers +14.6%. Refining
+can bring 3.3% improvement. HTE improves HitR@100 to 19.91%,
+showing that explicit value prediction sharpens candidate ordering
+and better prepares the generative system for downstream auction.
+Multi-Token Prediction captures parallel interests within a single
+pass and provides the largest gain at +17.9%, supporting the multi-
+threaded-interest hypothesis.
+Scaling. We investigate the scaling properties of GPR across six
+dense parameter sizes: 0.02B, 0.1B, 0.2B, 0.5B, 1B, and 2B. Notably,
+unlike typical large language models, GPR’s total size is dominated
+by sparse parameters, which total approximately 80B. Fig. 5 presents
+the evolution of the training loss for these six model variants. The
+results conclusively demonstrate a robust scaling law: models with
+greater parameter counts consistently achieve lower loss values as
+training progresses. This empirical observation validates the sub-
+stantial potential for performance enhancement gained by scaling
+up the model size.
+4.3
+Business Alignment Performance
+Experiment setting. This study evaluates whether the joint training
+strategy—MTP pretraining, eCPM-aware fine-tuning, and HEPO—
+improves monetization alignment. The dataset follows Section 4.2:
+one year for training and the subsequent day for validation. In
+addition to sequence signals, labels include eCPM and action types
+(impression, click, conversion) to reflect value hierarchy. Meth-
+ods compared are: MTP, a baseline multi-token prediction model
+trained with uniform head/position weights under likelihood only;
+
+GPR: Towards a Generative Pre-trained One-Model Paradigm for Large-Scale Advertising Recommendation
+Conference’17, July 2017, Washington, DC, USA
+Table 3: Training & Alignment Study
+Model
+nDCG
+OPR
+Avg
+Max
+final_value
+final_value
+Pretraining & Fine-tuning
+MTP (base)
+0.3868
+0.5292
+0.2412
+0.6201
++ VAFT
+0.3925
+0.5348
+–
+–
+Post-training
++ DPO
+0.4383
+0.5463
+0.2442
+0.6659
++ HEPO
+0.4413
+0.5509
+0.2630
+0.7619
+MTP+VAFT, a business-aligned variant that reweights the MTP
+loss at each position using a value-aware factor; MTP+DPO [24],
+a preference-based fine-tuning that learns from pairwise order-
+ings constructed under predicted rewards; and MTP+HEPO. We
+evaluate with nDCG (normalized Discounted Cumulative Gain),
+which measures ranked-list quality with higher weight on the top,
+and OPR (Ordered Pair Ratio), which measures the fraction of item
+pairs ordered correctly. Both metrics are computed under the eCPM-
+oriented ranking.
+We also report the average and maximum final_value com-
+puted from the simulation environment as defined in 5 on a fixed
+calendar day. For each request, the simulator generates 𝐾candi-
+dates. We collect all final_value scores across all candidates and
+all requests, and apply min-max normalization to this complete
+set, as final_value can be both positive and negative. For confi-
+dentiality, we report only the normalized values rather than the
+original scale. We then compute the mean final_value (averaged
+over the 𝐾candidates) and max final_value (maximum over the
+𝐾candidates) for each request using the normalized values, and
+aggregate these statistics across all evaluation requests. Note that
+simulated final_value improvements do not directly translate to
+online revenue gains.
+Results and analysis. The results of business alignment perfor-
+mance are shown in Tab. 3. Relative to MTP, MTP+VAFT raises
+nDCG from 0.3868 to 0.3925 and OPR from 0.5292 to 0.5348 by
+reweighting the loss with action type and normalized eCPM, which
+shifts learning toward high-value impressions while retaining rele-
+vance. Reinforcement learning evaluates policy-generated sequences
+in simulation, aligning supervision with sequence-level rewards and
+enabling safe counterfactual exploration. DPO optimizes pairwise
+preferences that favor higher-value items under matched context,
+sharpening local orderings and improving nDCG to 0.4383, with nor-
+malized average final_value increasing from 0.2412 to 0.2442 and
+max final_value from 0.6201 to 0.6659. HEPO further surpasses
+DPO, achieving nDCG 0.4413, OPR 0.5509, average final_value
+0.2630, and max final_value 0.7619.
+4.4
+Online Performance
+Experiment setting. We evaluate and deploy GPR on Weixin Chan-
+nels, a production advertising platform with hundreds of millions
+of active users and tens of millions of dynamic ads. The comparison
+baseline is a mature multi-stage cascade with multiple retrieval
+methods and customized strategies. Primary online metrics include
+GMV, Costs, and CTCVR, with GMV as the primary KPI because it
+directly reflects business return. We conduct five sequential online
+Table 4: Online A/B Test Results
+Version
+GMV
+GMV-Normal
+Costs
+Launches with incremental changes.
+v0.1: HSD+NTP+DPO
++2.11%
++2.42%
++3.29%
+v0.2: +HEPO w/o ARR
++0.70%
++0.67%
++0.36%
+v0.3: +MTP+Thinking
++0.63%
++0.94%
++0.21%
+v0.4: +PTD
++0.71%
++1.04%
++0.12%
+v0.5: +HEPO w/ ARR
++0.58%
++0.81%
++0.23%
+Table 5: Stratified Analysis of Online A/B Test Results
+GMV
+CTR
+CVR
+CTCVR
+v0.1
++2.11%
++1.69%
++1.15%
++3.16%
+User Group
+UG1
++3.56%
++2.51%
++0.82%
++3.72%
+UG2
++3.84%
++2.06%
++1.30%
++3.80%
+UG3
++0.92%
++2.18%
++1.91%
++4.63%
+UG4
++0.45%
++1.08%
++1.53%
++2.87%
+UG5
++3.68%
++0.05%
++0.32%
++0.50%
+Ad Group
+new
++2.97%
++2.25%
++1.41%
++4.02%
+non-new
++1.65%
++1.42%
++1.12%
++2.78%
+A/B evaluations of the GPR stack. Each iteration undergoes rigorous
+validation and produces stable, statistically significant incremental
+improvements over the preceding version on the primary KPIs.
+• v0.1: HSD + NTP + DPO (initial GPR deployment).
+• v0.2: HEPO w/o ARR (Anticipatory Request Rehearsal).
+• v0.3: Add MTP (multi-token prediction) and Thinking.
+• v0.4: Introduce PTD (progressive token-wise decoder).
+• v0.5: HEPO w/ ARR (Anticipatory Request Rehearsal).
+Results and Analysis. Tab. 4 summarizes the online effects across
+five evaluations. The first full-scale launch (HSD+NTP+DPO) es-
+tablishes the baseline lift with +2.11% GMV and +3.29% Costs. The
+second major rollout replaces DPO with HEPO (without anticipa-
+tory request rehearsal), delivering an additional +0.70% GMV and
++0.36% Costs. Subsequent large-scale experiments confirm steady,
+incremental gains: introducing MTP+Thinking contributes +0.63%
+GMV, adding PTD contributes +0.58% GMV, and applying HEPO
+with an anticipatory request rehearsal contributes +0.58% GMV.
+Across all rounds, both GMV and GMV-Normal (ads optimized
+for clicks or conversions, which accounts for the majority of to-
+tal GMV) increase consistently, indicating stronger monetization
+under unchanged latency and stability constraints.
+The stratified analysis based on first launch (v0.1) in Tab. 5 shows
+consistent gains across users and ad segments. UG1 and UG2 are
+low-activity users and show strong gains, for example UG1 reaches
+GMV +3.56%, CTR +2.51%, CVR +0.82%, and CTCVR +3.72%. Mid-
+activity groups UG3 and UG4 also improve across engagement and
+efficiency, with UG3 showing the largest CTCVR lift at +4.63%.
+UG5 denotes high-activity users and exhibits smaller CTR and CVR
+changes yet still delivers GMV +3.68%, indicating better allocation
+toward higher-value ads even for heavy users. For inventory, newly
+launched ads (≤3 days) outperform established ads (>3 days ) with
+GMV +2.97% vs. +1.65% and CTCVR +4.02% vs. +2.78%. This pattern
+indicates stronger cold-start handling while preserving gains for
+mature inventory.
+
+Conference’17, July 2017, Washington, DC, USA
+Zhang et al.
+5
+Related Work
+This section reviews prior work across four core areas relevant to
+GPR: LLMs as generative rankers, generative recommendation mod-
+els, end-to-end recommendation frameworks, and the application
+of Reinforcement Learning (RL).
+LLMs as Generative Rankers. In the last two years, researchers
+have begun exploring the application of LLMs in recommender
+systems, primarily leveraging their ability to generate the next item
+recommendation [30]. In these efforts, user behavior sequences are
+typically transformed into text sequences, and the LLMs are tasked
+with generating the next item based on this textual input [11, 18, 19,
+37, 39, 44]. However, a core limitation of this approach is the fixed
+vocabulary of LLMs, which hinders their ability to adapt effectively
+to the dynamically changing and large-scale item sets characteristic
+of modern advertising recommendation scenarios.
+Generative Recommendation Models. Recently, driven by
+the success of LLMs, there has been a significant shift towards gener-
+ative recommendation [2, 5, 13, 15, 20, 23, 25, 29, 33, 35]. TIGER [25]
+is a generative recommendation model that leverages semantic ids,
+using a sequence-to-sequence framework to generate such seman-
+tic ids for recommendations. HLLM [5] leverages the pre-trained
+capabilities of LLMs and models item representations and user in-
+terests respectively via a two-layer architecture. HSTU [35] adopts
+a decoder-only architecture to process ultra-long user histories and
+generate item recommendations. These work have demonstrated
+the potential of generative models to unify different recommen-
+dation tasks and handle long user sequences. MTGR [10] adopts
+the HSTU architecture while retaining the original deep learning
+recommendation model (DLRM) features. COBRA [34] integrates
+sparse semantic IDs and dense vectors through a cascading process.
+GPR builds on this generative trend but introduces a novel HHD
+architecture. Unlike previous approaches which entangle user rep-
+resentation with item generation, GPR decouples these two tasks
+via a hierarchical structure and propose a novel "understanding-
+thinking-refining-generation" paradigm.
+End-to-End Recommendation Frameworks. Recent studies
+have attempted to construct more unified, end-to-end recommen-
+dation systems, such as OneRec[40]. OneRec unifies retrieve-and-
+rank via a encoder-decoder architecture and a preference alignment
+algorithm (e.g., DPO) in a video recommendation system. By con-
+trast, GPR is the first end-to-end generative solution successfully
+deployed in large-scale advertising system, which faces unique
+challenges including behavior heterogeneity and sparsity, multi-
+objective optimization, precise value prediction, etc.
+RL in Recommender Systems. In traditional recommender
+systems, reinforcement learning (RL) is used to optimize slate/page
+decisions and long-horizon value, rather than just next-item accu-
+racy. Seq2Slate [4] formulates re-ranking as autoregressive slate
+generation and trains via policy gradients, enabling the model to
+assign credit to the entire slate (instead of treating items indepen-
+dently) and capture cross-position effects that pointwise losses
+miss. SlateQ [14] shows that, under mild user-choice assumptions,
+the long-term value of a slate can be decomposed into itemwise
+terms—making TD/Q-learning tractable for page-wise optimization
+and enabling production-scale experiments. At an extremely large
+scale, YouTube’s system introduces Top-K off-policy correction to
+learn the recommendation policy from logged implicit feedback,
+while incorporating a learned model of the behavior policy to ad-
+just data biases. Ad-mixed feeds further highlight the need for RL,
+as the system must jointly balance platform revenue, advertiser
+ROI, and user experience at the slate level: DEAR [38] addresses ad
+insertion as a joint decision (whether to insert an ad, which ad to
+show, and where to place it) using a DQN that optimizes long-run
+value under the delayed/mixed rewards typical of advertising. To
+reduce online risk, teams often start with offline RL; a common
+choice is Conservative Q-Learning (CQL) [16], which penalizes
+out-of-distribution actions to prevent the learned value function
+from overestimating unseen choices before online fine-tuning.
+RL for Generative Recommendation. In generative recom-
+mendation, RL is used to align sequence-producing policies with
+user and business preferences. GeMS [7] learns a variational la-
+tent space for slates, enabling an RL agent (e.g., SAC) to act in this
+continuous space before decoding full lists—sidestepping combina-
+torial action spaces while still optimizing sequence-level rewards.
+When hand-crafted rewards are brittle, PrefRec [32] first learns a
+reward model from human/trajectory preferences, then optimizes
+policies against this model to improve long-term engagement. Di-
+rect Preference Optimization (DPO)-style objectives [24] adapt this
+idea to sequence models (e.g., Softmax-DPO; DPO4Rec), turning
+pairwise preferences into stable training losses that can replace or
+complement RL during post-training (e.g., for aligning generative
+policies with user preferences). Recent industrial systems combine
+these elements end-to-end: OneRec-V1 [40] unifies retrieve-and-
+rank with a generator and iterative preference alignment (via DPO),
+reporting a +1.6% online watch-time lift; OneRec-V2 [41] shifts
+to a lazy decoder-only stack and adds RL on real user feedback
+(with duration-aware reward shaping and adaptive ratio clipping)
+to optimize long-term engagement.
+6
+Conclusion
+In this paper, we present GPR (Generative Pre-trained Recom-
+mender) — the first one-model framework that formulates advertis-
+ing recommendation as an end-to-end generative task, replacing the
+conventional multi-stage cascaded pipeline with a unified genera-
+tive paradigm. Unlike traditional systems that suffer from objective
+inconsistency and error accumulation across stages, GPR achieves
+global optimization and long-term value alignment within a single
+holistic model. Our framework introduces systematic innovations
+in three key aspects: unified representation, architectural design,
+and training strategy. These advancements effectively address long-
+standing challenges in industrial recommender systems, including
+heterogeneous data modeling, training–inference efficiency trade-
+offs, and insufficient long-term reward optimization.
+Extensive large-scale experiments and real-world online A/B
+testing demonstrate the superiority of GPR, achieving a signifi-
+cant improvements in GMV and CTCVR. Its fully generative and
+unified design further propels advertising recommendation sys-
+tems from stage-wise optimization toward end-to-end intelligent
+decision-making, enabling the system to understand user intent in
+a more unified and adaptive manner, optimize long-term value, and
+continuously drive the intelligent evolution of the digital economy
+ecosystem.
+
+GPR: Towards a Generative Pre-trained One-Model Paradigm for Large-Scale Advertising Recommendation
+Conference’17, July 2017, Washington, DC, USA
+Acknowledgments
+We’d like to express our sincere gratitude to the following individu-
+als (alphabetical order) for their invaluable contributions: Chenchen
+Yu, Dekai Sun, He Wei, Jiacheng Han, Jiafan Zhou, Jingwen Wang,
+Junbang Huo, Juntong Yan, Ke Cheng, Longfei Lu, Roger Jin, Siao
+Li, Wei Cao, Yankuan Liang, Yifei Liu, Yihang Su, Yimin Wang,
+Zhenmao Li, Zhennan Pang.
+References
+[1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Flo-
+rencia Leoni Aleman, Diogo Almeida, et al. 2023. Gpt-4 technical report. arXiv
+preprint arXiv:2303.08774 (2023).
+[2] Anirudhan Badrinath, Prabhat Agarwal, Laksh Bhasin, Jaewon Yang, Jiajing
+Xu, and Charles Rosenberg. 2025. PinRec: Outcome-Conditioned, Multi-Token
+Generative Retrieval for Industry-Scale Recommendation Systems. arXiv preprint
+arXiv:2504.10507 (2025).
+[3] Sangmin Bae, Yujin Kim, Reza Bayat, Sungnyun Kim, Jiyoun Ha, Tal Schuster,
+Adam Fisch, Hrayr Harutyunyan, Ziwei Ji, Aaron Courville, et al. 2025. Mixture-
+of-recursions: Learning dynamic recursive depths for adaptive token-level com-
+putation. arXiv preprint arXiv:2507.10524 (2025).
+[4] Irwan Bello, Sayali Kulkarni, Sagar Jain, Craig Boutilier, Ed Chi, Elad Eban,
+Xiyang Luo, Alan Mackey, and Ofer Meshi. 2018. Seq2Slate: Re-ranking and slate
+optimization with RNNs. arXiv preprint arXiv:1810.02019 (2018).
+[5] Junyi Chen, Lu Chi, Bingyue Peng, and Zehuan Yuan. 2024. Hllm: Enhancing
+sequential recommendations via hierarchical large language models for item and
+user modeling. arXiv preprint arXiv:2409.12740 (2024).
+[6] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra,
+Hrishi Aradhye, Glen Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, et al.
+2016. Wide & deep learning for recommender systems. In Proceedings of the 1st
+workshop on deep learning for recommender systems. 7–10.
+[7] Romain Deffayet, Thibaut Thonet, Jean-Michel Renders, and Maarten De Rijke.
+2023. Generative slate recommendation with reinforcement learning. In Pro-
+ceedings of the Sixteenth ACM International Conference on Web Search and Data
+Mining. 580–588.
+[8] Fabian Gloeckle, Badr Youbi Idrissi, Baptiste Rozière, David Lopez-Paz, and
+Gabriel Synnaeve. 2024. Better & faster large language models via multi-token
+prediction. arXiv preprint arXiv:2404.19737 (2024).
+[9] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin
+Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al. 2025. Deepseek-r1:
+Incentivizing reasoning capability in llms via reinforcement learning. arXiv
+preprint arXiv:2501.12948 (2025).
+[10] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, et al. 2025. MTGR: Industrial-Scale Generative Recommendation
+Framework in Meituan. arXiv preprint arXiv:2505.18654 (2025).
+[11] Jesse Harte, Wouter Zorgdrager, Panos Louridas, Asterios Katsifodimos, Diet-
+mar Jannach, and Marios Fragkoulis. 2023. Leveraging large language models
+for sequential recommendation. In Proceedings of the 17th ACM Conference on
+Recommender Systems. 1096–1102.
+[12] Po-Sen Huang, Xiaodong He, Jianfeng Gao, Li Deng, Alex Acero, and Larry
+Heck. 2013. Learning deep structured semantic models for web search using
+clickthrough data. In Proceedings of the 22nd ACM international conference on
+Information & Knowledge Management. 2333–2338.
+[13] Yanhua Huang, Yuqi Chen, Xiong Cao, Rui Yang, Mingliang Qi, Yinghao Zhu,
+Qingchang Han, Yaowei Liu, Zhaoyu Liu, Xuefeng Yao, et al. 2025. Towards
+Large-scale Generative Ranking. arXiv preprint arXiv:2505.04180 (2025).
+[14] Eugene Ie, Vihan Jain, Jing Wang, Sanmit Narvekar, Ritesh Agarwal, Rui Wu,
+Heng-Tze Cheng, Morgane Lustman, Vince Gatto, Paul Covington, et al. 2019.
+Reinforcement learning for slate-based recommender systems: A tractable de-
+composition and practical methodology. arXiv preprint arXiv:1905.12767 (2019).
+[15] Junguang Jiang, Yanwen Huang, Bin Liu, Xiaoyu Kong, Xinhang Li, Ziru Xu, Han
+Zhu, Jian Xu, and Bo Zheng. 2025. Large Language Model as Universal Retriever
+in Industrial-Scale Recommender System. arXiv preprint arXiv:2502.03041 (2025).
+[16] Aviral Kumar, Aurick Zhou, George Tucker, and Sergey Levine. 2020. Conserva-
+tive q-learning for offline reinforcement learning. Advances in neural information
+processing systems 33 (2020), 1179–1191.
+[17] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive image generation using residual quantization. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition. 11523–11532.
+[18] Fengxin Li, Yi Li, Yue Liu, Chao Zhou, Yuan Wang, Xiaoxiang Deng, Wei Xue,
+Dapeng Liu, Lei Xiao, Haijie Gu, et al. 2024. LEADRE: Multi-Faceted Knowledge
+Enhanced LLM Empowered Display Advertisement Recommender System. arXiv
+preprint arXiv:2411.13789 (2024).
+[19] Jianghao Lin, Rong Shan, Chenxu Zhu, Kounianhua Du, Bo Chen, Shigang Quan,
+Ruiming Tang, Yong Yu, and Weinan Zhang. 2024. Rella: Retrieval-enhanced
+large language models for lifelong sequential behavior comprehension in recom-
+mendation. In Proceedings of the ACM Web Conference 2024. 3497–3508.
+[20] Chi Liu, Jiangxia Cao, Rui Huang, Kai Zheng, Qiang Luo, Kun Gai, and Guorui
+Zhou. 2024. KuaiFormer: Transformer-Based Retrieval at Kuaishou. arXiv preprint
+arXiv:2411.10057 (2024).
+[21] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, et al. 2024. Qarm: Quantitative alignment multi-modal rec-
+ommendation at kuaishou. arXiv preprint arXiv:2411.11739 (2024).
+[22] Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah
+Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, et al.
+2023. Self-refine: Iterative refinement with self-feedback. Advances in Neural
+Information Processing Systems 36 (2023), 46534–46594.
+[23] Junyan Qiu, Ze Wang, Fan Zhang, Zuowu Zheng, Jile Zhu, Jiangke Fan, Teng
+Zhang, Haitao Wang, and Xingxing Wang. 2025. One Model to Rank Them
+All: Unifying Online Advertising with End-to-End Learning. arXiv preprint
+arXiv:2505.19755 (2025).
+[24] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano
+Ermon, and Chelsea Finn. 2023. Direct preference optimization: Your language
+model is secretly a reward model. Advances in neural information processing
+systems 36 (2023), 53728–53741.
+[25] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[26] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn
+Ommer. 2022. High-resolution image synthesis with latent diffusion models. In
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition.
+10684–10695.
+[27] Xiaoyuan Su and Taghi M Khoshgoftaar. 2009. A survey of collaborative filtering
+techniques. Advances in artificial intelligence 2009, 1 (2009), 421425.
+[28] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. Advances in neural information processing systems 30 (2017).
+[29] Chunqi Wang, Bingchao Wu, Zheng Chen, Lei Shen, Bing Wang, and Xiaoyi Zeng.
+2025. Scaling transformers for discriminative recommendation via generative
+pretraining. In Proceedings of the 31st ACM SIGKDD Conference on Knowledge
+Discovery and Data Mining V. 2. 2893–2903.
+[30] Likang Wu, Zhi Zheng, Zhaopeng Qiu, Hao Wang, Hongchao Gu, Tingjia Shen,
+Chuan Qin, Chen Zhu, Hengshu Zhu, Qi Liu, et al. 2024. A survey on large
+language models for recommendation. World Wide Web 27, 5 (2024), 60.
+[31] Zhenyu Wu, Qingkai Zeng, Zhihan Zhang, Zhaoxuan Tan, Chao Shen, and
+Meng Jiang. 2024. Large language models can self-correct with key condition
+verification. arXiv preprint arXiv:2405.14092 (2024).
+[32] Wanqi Xue, Qingpeng Cai, Zhenghai Xue, Shuo Sun, Shuchang Liu, Dong Zheng,
+Peng Jiang, Kun Gai, and Bo An. 2023. Prefrec: Recommender systems with
+human preferences for reinforcing long-term user engagement. In Proceedings
+of the 29th ACM SIGKDD Conference on Knowledge Discovery and Data Mining.
+2874–2884.
+[33] Liu Yang, Fabian Paischer, Kaveh Hassani, Jiacheng Li, Shuai Shao, Zhang Gabriel
+Li, Yun He, et al. 2024. Unifying generative and dense retrieval for sequential
+recommendation. arXiv preprint arXiv:2411.18814 (2024).
+[34] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, et al. 2025. Sparse meets dense: Unified generative recommendations with
+cascaded sparse-dense representations. arXiv preprint arXiv:2503.02453 (2025).
+[35] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, et al. 2024. Actions speak louder than words:
+Trillion-parameter sequential transducers for generative recommendations. arXiv
+preprint arXiv:2402.17152 (2024).
+[36] Buyun Zhang, Liang Luo, Yuxin Chen, Jade Nie, Xi Liu, Daifeng Guo, Yanli Zhao,
+Shen Li, Yuchen Hao, Yantao Yao, et al. 2024. Wukong: Towards a scaling law for
+large-scale recommendation. arXiv preprint arXiv:2403.02545 (2024).
+[37] Jizhi Zhang, Keqin Bao, Yang Zhang, Wenjie Wang, Fuli Feng, and Xiangnan
+He. 2023. Is chatgpt fair for recommendation? evaluating fairness in large lan-
+guage model recommendation. In Proceedings of the 17th ACM Conference on
+Recommender Systems. 993–999.
+[38] Xiangyu Zhao, Changsheng Gu, Haoshenglun Zhang, Xiwang Yang, Xiaobing
+Liu, Jiliang Tang, and Hui Liu. 2021. Dear: Deep reinforcement learning for
+online advertising impression in recommender systems. In Proceedings of the
+AAAI conference on artificial intelligence, Vol. 35. 750–758.
+[39] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting large language models by integrating
+collaborative semantics for recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). IEEE, 1435–1448.
+[40] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv preprint arXiv:2506.13695 (2025).
+[41] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, et al. 2025. OneRec-V2 Technical
+
+Conference’17, July 2017, Washington, DC, USA
+Zhang et al.
+Report. arXiv preprint arXiv:2508.20900 (2025).
+[42] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD international conference
+on knowledge discovery & data mining. 1059–1068.
+[43] Jie Zhu, Zhifang Fan, Xiaoxie Zhu, Yuchen Jiang, Hangyu Wang, Xintian Han,
+Haoran Ding, et al. 2025. RankMixer: Scaling Up Ranking Models in Industrial
+Recommenders. arXiv preprint arXiv:2507.15551 (2025).
+[44] Yaochen Zhu, Liang Wu, Qi Guo, Liangjie Hong, and Jundong Li. 2024. Collab-
+orative large language model for recommender systems. In Proceedings of the
+ACM Web Conference 2024. 3162–3172.

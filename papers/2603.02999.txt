@@ -1,0 +1,1292 @@
+OneRanker: Unified Generation and Ranking with One
+Model in Industrial Advertising Recommendation
+Dekai Sun∗
+Tencent Inc.
+Beijing, China
+dekaisun@tencent.com
+Yiming Liu∗
+Tencent Inc.
+Beijing, China
+lucienymliu@tencent.com
+Jiafan Zhou∗
+Tencent Inc.
+Beijing, China
+jiafanzhou@tencent.com
+Xun Liu∗
+Tencent Inc.
+Beijing, China
+reubenliu@tencent.com
+Chenchen Yu
+Tencent Inc.
+Beijing, China
+chenchenyu@tencent.com
+Yi Li
+Tencent Inc.
+Beijing, China
+sincereli@tencent.com
+Jun Zhang†
+Tencent Inc.
+Beijing, China
+neoxzhang@tencent.com
+Huan Yu
+Tencent Inc.
+Beijing, China
+huanyu@tencent.com
+Jie Jiang
+Tencent Inc.
+Beijing, China
+zeus@tencent.com
+Abstract
+The end-to-end generative paradigm is revolutionizing ad-
+vertising recommendation systems, driving a shift from tra-
+ditional cascaded architectures towards unified modeling.
+However, practical deployment faces three core challenges:
+the misalignment between interest objectives and business
+value, the target-agnostic limitation of generative processes,
+and the disconnection between generation and ranking stages.
+Existing solutions often fall into a dilemma where single-
+stage fusion induces optimization tension, while stage de-
+coupling causes irreversible information loss. To address
+this, we propose OneRanker, achieving architectural-level
+deep integration of generation and ranking. First, we de-
+sign a value-aware multi-task decoupling architecture. By
+leveraging task token sequences and causal mask, we sepa-
+rate interest coverage and value optimization spaces within
+shared representations, effectively alleviating target conflicts.
+Second, we construct a coarse-to-fine collaborative target
+awareness mechanism, utilizing Fake Item Tokens for im-
+plicit awareness during generation and a ranking decoder
+∗Equal contribution.
+†Corresponding author.
+Permission to make digital or hard copies of all or part of this work for
+personal or classroom use is granted without fee provided that copies
+are not made or distributed for profit or commercial advantage and that
+copies bear this notice and the full citation on the first page. Copyrights
+for components of this work owned by others than the author(s) must
+be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific
+permission and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed
+to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+for explicit value alignment at the candidate level. Finally,
+we propose input-output dual-side consistency guarantees.
+Through Key/Value pass-through mechanisms and Distri-
+bution Consistency (DC) Constraint Loss, we achieve end-
+to-end collaborative optimization between generation and
+ranking. The full deployment on Tencent’s WeiXin channels
+advertising system has shown a significant improvement
+in key business metrics (GMV - Normal +1.34%), providing
+a new paradigm with industrial feasibility for generative
+advertising recommendations.
+CCS Concepts: • Information systems →Learning to
+rank; Recommender systems; Computational advertis-
+ing.
+Keywords: Recommender Systems, Generative Modeling,
+Advertising
+ACM Reference Format:
+Dekai Sun, Yiming Liu, Jiafan Zhou, Xun Liu, Chenchen Yu, Yi
+Li, Jun Zhang, Huan Yu, and Jie Jiang. 2018. OneRanker: Unified
+Generation and Ranking with One Model in Industrial Advertis-
+ing Recommendation. In Proceedings of Make sure to enter the cor-
+rect conference title from your rights confirmation email (Confer-
+ence acronym ’XX). ACM, New York, NY, USA, 11 pages. https:
+//doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Advertising and recommendation systems in large-scale in-
+ternet applications are undergoing a fundamental transfor-
+mation from traditional cascaded architectures to end-to-
+end generative paradigms. Driven by breakthroughs in large
+language models and sequence modeling techniques, this
+shift has fundamentally redefined how advertising platforms
+match users with relevant commercial content. As demon-
+strated by industrial systems such as the OneRec [1, 2] series
+arXiv:2603.02999v3  [cs.IR]  12 Mar 2026
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Sun et al.
+Generation
+Decoder
+(Generation)
+Decoder
+(Ranking)
+❄️User Rep.
+Retrieval
+Pre-rank
+Rank
+Key/Value
+(a) Cascade Architectures
+(b) Generation Ad Recommendation
+(c) OneRanker
+🔥User Rep.
+Decoder
+( tasks decoupling & target aware)
+NTP/MTP
+top k
+103
+102
+(Distribution Consistency)
+Figure 1. Comparison between existing methods and ours.
+and GPR [3], generative recommendation has emerged as
+a promising approach that formulates recommendation as
+an autoregressive generation task based on hierarchical se-
+mantic IDs, enabling direct optimization of final objectives
+while achieving high computational efficiency. However, as
+generative methods penetrate deeper into the ranking stage
+of advertising systems, three critical challenges have become
+central to the next-generation architecture design: unified
+modeling of interest objectives and business value within the
+generation process, precision degradation caused by target-
+agnostic generation, and the trade-off between consistency
+and computational efficiency.
+First, there is a fundamental conflict between multi-token
+prediction (MTP) optimized based on user behavior (clicks/
+conversions) and business value objectives (e.g., eCPM): ex-
+isting solutions face a dilemma—single-stage fusion (e.g., di-
+rectly injecting eCPM signals into MTP heads) causes in-
+terest coverage and value optimization to compromise each
+other within the shared representation space, inducing op-
+timization tension, as shown in Figure 1(b); stage decou-
+pling (generate-then-rank) prevents the generator from per-
+ceiving ranking objectives, leading to systematic filtering of
+high-value candidates at the generation stage, as shown in
+Figure 1(a). Second, the inherent target-agnostic limitation
+of generative models keeps user representations static dur-
+ing generation, unable to dynamically adapt to candidate
+item characteristics, severely constraining fine-grained user-
+item interaction capabilities. Third, the “generate-then-rank”
+architecture introduces a triple disconnection: representa-
+tion inconsistency (heterogeneous representation spaces be-
+tween generation and ranking), computational redundancy
+(repeated encoding of user representations), and error prop-
+agation (semantic drift in generation cannot be corrected
+during ranking), hindering the system from achieving global
+optimality. These challenges collectively constitute the key
+bottleneck preventing generative advertising recommenda-
+tion from transitioning from “functional” to “excellent”.
+To address these challenges, we propose OneRanker,
+whose core logic is shown in Figure 1(c). First, as shown in
+Figure 2, we introduce a value-aware multi-task decoupling
+architecture that achieves synergy rather than conflict be-
+tween interest and value modeling. Specifically, we retain
+MTP’s original multi-interest heads to maintain coverage
+breadth while introducing a dedicated value-aware head for
+business value learning. Both components share underlying
+user representations for knowledge transfer but decouple
+output spaces through independent task tokens, effectively
+alleviating optimization tension between interest and value.
+Furthermore, we incorporate task ordering priors (e.g., im-
+pression →click →conversion →value) with causal mask,
+enabling high-level value tasks to dynamically absorb knowl-
+edge from low-level interest tasks, achieving progressive
+refinement from interest modeling to value optimization.
+Secondly, to address the inherent target-agnostic limita-
+tion, we construct a coarse-to-fine collaborative target aware-
+ness mechanism. In Step 2 of Figure 2, we introduce Fake
+Item Tokens obtained by K-means clustering of the entire
+item space to enable coarse-grained implicit awareness, al-
+lowing the generation process to dynamically perceive item
+semantic distributions. Simultaneously, we design a dual-
+channel representation mechanism (task semantic channel +
+target aware channel) that naturally fuses semantic match-
+ing and target awareness through inner product operations
+during retrieval, explicitly enhancing target sensitivity in
+generation. In Step 3 of Figure 2, we introduce a ranking de-
+coder that performs fine-grained target awareness through
+comprehensive cross-attention between candidate items and
+task tokens, enabling precise business value alignment.
+Finally, to further enhance generation-ranking consis-
+tency and complete the unified framework, we propose dual-
+side consistency guarantees. On the input side, the ranking
+decoder constructs its Key/Value from both Step 1’s original
+multi-interest representations and Step 2’s refined represen-
+tations, ensuring ranking decisions fully inherit generation
+process information. On the output side, we introduce a Dis-
+tributional Consistency (DC) mechanism that propagates
+business value signals from Step 3’s ranker back to Step
+2’s generator as soft labels. Through a joint loss function
+Ltotal = 𝛼LMTP + 𝛽Lrank + 𝛾LDC, we achieve gradient-level
+collaborative optimization, enabling the generator to “antici-
+pate” ranking preferences during training and fundamentally
+preventing objective drift between stages.
+The main contributions of this work are summarized as
+follows:
+
+OneRanker: Unified Generation and Ranking with One Model
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+• We identify and alleviate the optimization tension be-
+tween user interest modeling and business value opti-
+mization in generative advertising recommendation,
+proposing a value-aware multi-task decoupling archi-
+tecture that achieves unified modeling of interest ob-
+jectives and business value.
+• We construct a coarse-to-fine collaborative target aware-
+ness mechanism: coarse-grained awareness via Fake
+Item Tokens in the generation stage, and fine-grained
+awareness via the ranking decoder for precise business
+value alignment.
+• We design dual-side consistency guarantees through
+Key/Value fusion (input side) and joint loss optimiza-
+tion with DC (output side), enabling end-to-end collab-
+orative optimization between generation and ranking.
+• We have fully deployed OneRanker on Tencent’s Weixin
+Channels advertising system. Large-scale online A/B
+tests demonstrate significant improvements on key
+business metrics (GMV-Normal +1.34%, Costs +0.72%),
+providing an industrially viable new paradigm for gen-
+erative advertising recommendation.
+2
+Related Work
+2.1
+Value-Awareness in Generative Models
+In recent years, the rise of generative models has shifted
+the recommender system paradigm from embedding-based
+matching to deep semantic understanding and generation.
+TIGER [4] employs RQ-VAE [5] to produce quantized seman-
+tic identifiers, alleviating representation collapse in large-
+scale item spaces. GENRET [6] co-optimizes identifier gener-
+ation with retrieval objectives, enabling semantic IDs to dy-
+namically capture complex interaction patterns. OneRec [1]
+proposes a generative recommendation model based on MoE [7]
+and effectively improves sequence accuracy through DPO [8].
+Furthermore, OneRec-Think [9] introduces Chain-of-Thought
+(CoT) reasoning [10], significantly enhancing decision-making
+logic and interpretability in complex scenarios.
+However, the unified modeling of user interest and busi-
+ness value in advertising ecosystems still faces endogenous
+challenges inherent to the generative paradigm. Unlike tradi-
+tional discriminative models [11–13] that achieve objective
+alignment through loss weighting in parallel architectures,
+autoregressive generative frameworks suffer from two deep-
+seated contradictions: first, the long-chain gradient propaga-
+tion in autoregression amplifies inter-task gradient conflicts;
+second, interest coverage and value optimization compete
+for distribution within a shared representation space. These
+limitations prompt us to transform multi-objective synergy
+from an "external intervention" into an "endogenous logic."
+2.2
+Target-Awareness Limitations in Generative
+Models
+Despite the rapid development of generative recommenda-
+tion, existing generative methods still suffer from target-
+agnostic designs. In Transformer [14]-based models [15–17],
+user history is often compressed into a single embedding,
+which lacks fine-grained interaction with candidate items.
+Consequently, the user representation remains constant dur-
+ing the generation process and cannot be dynamically ad-
+justed based on the characteristics of candidate items. In
+advertising scenarios, where user intent is highly dynamic
+and influenced by multiple factors, this target-agnostic na-
+ture fundamentally limits the precision of identifying subtle
+user intentions from noisy behavioral signals.
+To address this challenge, recent works have proposed
+several approaches: GRank [18] injects target signals into
+the generator during training; PROMISE [19] introduces a
+process reward model that computes matching scores with
+the target candidate space; and GRAM [20] ensures the de-
+coding process is controlled in real-time by target attributes.
+However, these existing methods still suffer from coarse
+granularity or computational redundancy.
+2.3
+Joint Optimization of Generation and Ranking
+Traditional "Retrieval-Ranking" cascaded architectures have
+evolved under the generative paradigm into a two-stage
+"Candidate Generation - Independent Ranking" workflow. In
+this process, the user’s historical behavior sequence serves
+as a context prefix to autoregressively generate candidate
+item tokens, which are subsequently processed by a sepa-
+rate ranking model for fine-grained scoring. However, this
+"generation-then-ranking" paradigm often employs hetero-
+geneous representation spaces, leading to semantic drift of
+user intent between stages and preventing the system from
+achieving global optimality.
+In recent years, numerous studies have sought to advance
+the fusion of generation and ranking by integrating ranking
+signals directly into the generation process [21–24]. While
+these proposed architectures imbue the generation process
+with ranking-level discriminative power, most remain at the
+"post-processing" level of soft synergy and fail to fundamen-
+tally eliminate the heterogeneity of representation spaces.
+The OneRanker framework proposed in this paper achieves
+end-to-end hard synergy between generation and ranking
+by ensuring consistency across the input and output sides of
+both models, thereby eliminating error propagation between
+stages.
+3
+Methods
+3.1
+Overall Architecture
+We propose OneRanker, an end-to-end generative advertis-
+ing recommendation framework, as illustrated in Figure 2,
+which aims to systematically address three core challenges
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Sun et al.
+II
+kmeans
+G - Decoder Block
+User behavior Token
+G - Decoder Block
+...
+H1
+H2
+Hv
+...
+Learnable Matrix
+key/value
+MTP
+I
+I
+I
+I
+I
+I
+...
+R - Decoder Block
+key/value
+...
+...
+...
+Task Token
+...
+Fake Item Token
+...
+Learnable Matrix
+Item:
+...
+Step 1: Generation
+Step 2: Multi task/target Aware
+Step 3: Ranking
+x N
+ffn1
+add&norm
+add
+ffn2
+ffnm+1
+...
+cross attention
+self attention
+norm
+add&norm
+Task 
+token
+Fake Item
+token
+concat
+...
+Head-v:
+mlp1
+mlp2
+mlpk
+...
+concat
+sum_pooling
+...
+Hm
+I
+I
+Figure 2. The overall framework of OneRanker, consists of three stages: (i) the Generation stage which utilizes a generative
+backbone network pre-trained with multiple tokens based on user behavior sequences using heterogeneous tokens; (ii) the
+Multi-Task/Target-Aware stage which decouples interest and value objectives via task tokens and enables coarse-grained
+target awareness via fake item tokens; (iii) the Ranking stage which achieves fine-grained value alignment through a unified
+decoder with input-output consistency guarantees;
+in generative advertising recommendation: (1) the objective
+misalignment between user interest modeling and business
+value optimization; (2) the inherent target awareness de-
+ficiency in the generation process; (3) the representation
+disconnection between generation and ranking stages. The
+framework consists of three logically progressive steps: Step
+1 (Generation), we adopt the same tokenization method as
+GPR [3] to convert user behavior sequences into heteroge-
+neous token streams (including user tokens, context tokens,
+content tokens, and item tokens), and perform multi-interest
+path generation based on the HSTU Decoder-only archi-
+tecture. The autoregressive Multi-Token Prediction (MTP)
+mechanism can generate multiple complete semantic ID
+paths in parallel within a single forward pass, which has
+become a standard operation in industrial generative recom-
+mendation systems. Step 2 (Multi-Task/Target-Aware),
+as the core innovation, decouples interest and value objec-
+tives through task tokens and introduces fake item tokens to
+achieve coarse-grained target awareness. Step 3 (Ranking),
+realizes business value alignment through fine-grained cross-
+attention mechanisms. The three steps are deeply coupled
+through Key/Value mechanisms, forming a collaborative op-
+timization loop characterized by “value-guided generation,
+coarse-fine collaborative perception, and dual-side consis-
+tency guarantee”.
+3.2
+Generation Enhancement:
+Multi-Task/Target-Aware Enhancement
+This stage serves as an endogenous enhancement module
+within the generation pipeline, with its core objective being
+to enhance two critical capabilities of the MTP generation
+process: (1) multi-task decoupling capability—enabling
+different interest dimensions to perform specialized mod-
+eling for differentiated objectives, and separating interest
+modeling and business value optimization at the architec-
+tural level to alleviate their inherent optimization tension; (2)
+coarse-grained target awareness capability—mitigating
+the inherent “target-agnostic” limitation of generative mod-
+els, enabling user representations to dynamically respond
+to candidate item characteristics. We achieve fine-grained
+calibration of multi-interest paths through the following
+four key designs, providing Step 3 with high-quality, target-
+aware input representations. This ensures that the final score
+alignment is built upon semantically rich and target-sensitive
+foundations, rather than “post-hoc correction” of low-quality
+generation results.
+3.2.1
+Value-Aware Multi-Task Decoupling Architec-
+ture. We achieve architectural level decoupling of interest
+modeling and business value optimization through a unified
+task token sequence, rather than mixing objectives within
+a single-head representation space. We construct a learn-
+able task token sequence T = [t𝑖1, t𝑖2, . . . , t𝑖𝑚, t𝑣], randomly
+
+OneRanker: Unified Generation and Ranking with One Model
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+initialized and optimized end-to-end during training. Specif-
+ically:
+• t𝑖1, . . . , t𝑖𝑚are interest task tokens, focusing on mod-
+eling differentiated interest dimensions and captur-
+ing multi-interest distributions through independent
+prediction heads. Each token serves an independent
+interest objective or business task or jointly forms a
+sequential task chain (e.g., impression →click →con-
+version).
+• t𝑣is the value-aware task token, dedicated to learn
+business value (Final value).
+All tokens share the underlying user representation but
+achieve task space decoupling through independent output
+heads, fundamentally alleviating the inherent tension be-
+tween interest coverage and value optimization. The out-
+put at each task token position is routed to an independent
+prediction head, enabling explicit decoupling and parallel
+learning of multiple tasks. To model task dependencies, we
+propose the synergy of task ordering priors and causal mask:
+we introduce a task ordering prior—arranging tasks accord-
+ing to business sequence and cognitive difficulty (e.g., im-
+pression →click →conversion →business value)—while
+applying causal mask to ensure that subsequent tasks can ac-
+cess representations from preceding tasks, thereby enabling
+knowledge transfer and progressive refinement across tasks.
+3.2.2
+Fake Item Token: Coarse-Grained Target Aware-
+ness. To mitigate the inherent “target-agnostic” limitation
+of generative models (i.e. the lack of interaction between
+user representations and candidate items), we introduce fake
+item tokens F = [f1, . . . , f𝑘] as the core carrier for target
+awareness. These tokens are the 𝑘cluster center vectors
+obtained by performing K-means clustering over the entire
+item space, representing core anchors in the item semantic
+space. In the input sequence, we concatenate the Fake Item
+Tokens after the Task Tokens to form a complete Query se-
+quence Q = [T; F]; meanwhile, the output of Step 1 serves
+as the Key/Value for Cross-Attention. This design enables
+the model to dynamically perceive the item semantic dis-
+tribution during the generation process, achieving coarse-
+grained implicit target awareness rather than relying solely
+on static user representations, thereby effectively alleviating
+the “target-agnostic” problem.
+3.2.3
+Heterogeneous Attention Decoder. We utilize the
+output of Step 1 as the Key/Value for the decoder, while the
+Query input comes from the constructed task tokens and
+fake item tokens Q = [T; F]. Notably, we introduce two key
+improvements over the standard Transformer Decoder:
+1. Cross-Attention Prioritization: Traditional decoders
+first perform Self-Attention followed by Cross-Attention;
+we reverse this order. This design stems from a clear
+motivation: first aggregating and summarizing the
+user’s multi-interest representations (Key/Value from
+Step 1) through Cross-Attention to obtain sufficient
+user-item interaction information, and then refining
+the aggregated Query (Task + Fake Item) through Self-
+Attention for internal consolidation and inter-task col-
+laboration. Experiments show that this order better
+aligns with the cognitive logic of “first understand-
+ing user intent, then refining task representations”,
+effectively enhancing representation quality.
+2. Heterogeneous Mask Strategy: To ensure reason-
+able information flow and prevent information leakage,
+we design a refined mask mechanism:
+• Among Task Tokens: causal mask is applied to
+ensure temporal sequence modeling and dependency
+capture within the task sequence;
+• From Task Tokens to Fake Item Tokens: each
+Task Token is allowed to access all Fake Items, en-
+abling implicit target-aware interaction;
+• From Fake Item Tokens to Task Tokens: each
+Fake Item is allowed to access all Task Tokens to
+fully capture multi-task semantics;
+• Among Fake Item Tokens: mutual invisibility is
+enforced to avoid interference between different
+cluster centers, ensuring each Fake Item indepen-
+dently performs “exploratory” matching with user
+intent.
+3.2.4
+Dual-Channel Representation Construction. The
+outputs of the heterogeneous attention decoder (Task To-
+kens and Fake Item Tokens) are fed into the MTP module
+to construct refined multi-interest representations. The core
+innovation lies in the dual-channel representation fusion
+mechanism:
+• Task Semantic Channel: Each Task Token T𝑖∈R𝑑task
+provides a semantic vector that encodes deep semantic
+representation for the task dimension.
+• Target Aware Channel: Each of the 𝑘Fake Item
+Tokens F𝑗∈R𝑑item is concatenated with the current
+Task Token T𝑖, then mapped through a dedicated MLP
+to produce a 𝑘-dimensional preference score vector
+s(𝑖)
+𝑗
+∈R𝑘representing the user’s preference for Fake
+Item Token F𝑗in the current task T𝑖. All k vectors are
+aggregated via sum pooling to form the target-aware
+representation:
+s(𝑖)
+target =
+𝑘
+∑︁
+𝑗=1
+s(𝑖)
+𝑗
+∈R𝑘
+(1)
+which explicitly models the user’s preference distribu-
+tion in the item semantic space under task 𝑖.
+The final user representation for each MTP head 𝑖is con-
+structed by concatenating both channels:
+e(𝑖)
+user = Concat
+
+e(𝑖)
+task, s(𝑖)
+target
+
+∈R𝑑task+𝑘
+(2)
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Sun et al.
+This design achieves explicit target awareness: s(𝑖)
+target serves
+as a “soft attention” over the item semantic distribution,
+providing fine-grained target-aware signals for subsequent
+retrieval.
+To achieve symmetric enhancement, the item-side rep-
+resentation similarly incorporates a target-aware channel:
+given an item embedding eitem ∈R𝑑item, we compute its co-
+sine similarities with all 𝑘cluster centers {f1, . . . , f𝑘} as 𝑐𝑖=
+cos_sim(eitem, f𝑖), and construct the symmetric enhanced
+item representation:
+eenhanced
+item
+= Concat (eitem, [𝑐1,𝑐2, . . . ,𝑐𝑘]) ∈R𝑑item+𝑘
+(3)
+During retrieval, the relevance between user and item
+representations is computed via inner product:
+score(𝑢𝑠𝑒𝑟,𝑖𝑡𝑒𝑚) = e(𝑖)
+usereenhanced
+item
+= e(𝑖)
+taskeitem +
+𝑘
+∑︁
+𝑙=1
+𝑠(𝑖)
+𝑙
+· 𝑐𝑙
+(4)
+This inner product operation naturally fuses semantic
+matching with target-aware matching, endowing the re-
+trieval process with explicit candidate item awareness and
+directly addressing the “target-agnostic” limitation of tradi-
+tional generative models.
+3.3
+Unified Ranking
+3.3.1
+Fine-Grained Target Awareness. This stage is re-
+sponsible for transforming the refined representations from
+Step 2 into the final ranking results. We design a dedicated
+ranking decoder (R-Decoder Block), whose core innovation
+lies in internalizing the ranking process as a natural exten-
+sion of the generation pipeline, rather than an external post-
+processing module. Specifically:
+Input Design: The Query of the R-Decoder consists of
+two parts: (1) a dedicated ranking task token T𝑟∈R𝑑task, serv-
+ing as a semantic anchor for ranking intent; (2) 𝑛candidate
+item tokens I = [i1, . . . , i𝑛] from the multi-path generation
+results of Step 2 MTP, representing the candidate set to be
+ranked. The Key/Value fuses the original multi-interest repre-
+sentations from Step 1 with the refined representations from
+Step 2, ensuring that ranking decisions simultaneously lever-
+age the user’s base interest distribution and the high-quality
+representations calibrated with target awareness.
+Mask Strategy: Candidate item tokens 𝐼are mutually
+invisible to each other (diagonal mask), avoiding interference
+among candidates and ensuring scoring independence for
+each candidate; All candidate item tokens 𝐼can access the
+ranking task token 𝑇𝑟;
+Architecture and Output: The R-Decoder adopts the
+same heterogeneous attention decoder structure as Step 2
+(Cross-Attention prioritized followed by Self-Attention), but
+only use a single layer to complete ranking modeling. The
+output vector at each candidate item token position is di-
+rectly mapped to a scalar score 𝑠𝑖through a lightweight MLP.
+These scores S = [s1, . . . , s𝑛] naturally reside in a unified
+semantic space and can be directly used for final ranking
+without additional normalization or calibration.
+3.3.2
+Input-Side Consistency. Input-side consistency achieves
+seamless integration of the three stages through a Key/Value
+pass-through mechanism: the ranking decoder in Step 3
+directly reuses the outputs of Step 1 and Step 2 as Key/Value,
+realizing efficient, and low-cost information flow connectiv-
+ity.
+This mechanism embodies dual semantic value:
+• Step 1 →Step 3: Transmits the user’s base interest
+distribution, providing breadth coverage guarantees
+for ranking;
+• Step 2 →Step 3: Transmits the hidden decision ratio-
+nale of the generation process (i.e., the intermediate
+representations explaining “why this batch of candi-
+dates was generated”), enabling the ranker to fully
+comprehend the generation logic and achieve fine-
+grained reuse and calibration of the candidate set.
+This design effectively alleviates the representation frag-
+mentation problem inherent in traditional “external rank-
+ing” approaches—the ranker no longer faces “black-box” gen-
+eration results, but can instead perceive the internal states
+of the generation process. Therefore, while maintaining the
+multi-benefit coverage advantage of MTP, the system has
+achieved further accuracy improvements.
+3.3.3
+Output-Side Consistency and Optimization Ob-
+jectives. Output-side consistency aligns the optimization
+objectives of generation and ranking through a triadic joint
+loss function, enabling end-to-end collaborative optimiza-
+tion. The total loss is defined as:
+Ltotal = 𝛼LMTP + 𝛽Lrank + 𝛾LDC
+(5)
+where 𝛼, 𝛽,𝛾are the balance coefficients. LMTP and Lrank,
+respectively ensure the performance of the generation and
+ranking tasks, while LDC is responsible for aligning the gen-
+eration and ranking distributions.The components are de-
+fined as follows:
+Generation Loss (LMTP): We employ a negative log-
+likelihood loss to optimize multi-interest path generation in
+Step 2. For each task head 𝑗and semantic ID level 𝑙, the loss
+is formulated as:
+LMTP = −
+𝑚
+∑︁
+𝑗=1
+𝐿
+∑︁
+𝑙=1
+log 𝑃(egt
+item|e(𝑗)
+user)
+(6)
+where the conditional probability 𝑃(·) is constructed via
+softmax over the full semantic space V at that level:
+𝑃(egt
+item|e(𝑗)
+user) =
+exp(𝑠𝑗,gt)
+Í
+𝑘∈V exp(𝑠𝑗,𝑘)
+(7)
+
+OneRanker: Unified Generation and Ranking with One Model
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Here 𝑠𝑗,𝑖= e(𝑗)
+usere(𝑖)
+item represents the dot product score of user
+embedding and item embedding, the calculation details of
+which are shown in Equation 4. egt
+item is the ground-truth
+semantic ID embedding for the next layer.
+Specifically, while interest heads optimize for click/conversion
+matching, the value-aware head employs value-weighted
+sampling strategies to optimize the generation distribution
+towards high-value items, ensuring value propensity of gen-
+erated candidates.
+Ranking Loss (Lrank): We adopt a pairwise BPR loss to
+optimize the relative ordering of candidates in Step 3:
+Lrank = −E(𝑖,𝑗)∼D
+
+I(𝑦𝑖> 𝑦𝑗) · log𝜎(𝑠𝑖−𝑠𝑗)
+
+(8)
+where (𝑖, 𝑗) denotes an item pair, 𝑦𝑖,𝑦𝑗are the real business
+value labels (eCPM) such that 𝑦𝑖> 𝑦𝑗indicates item 𝑖has
+higher business value than item 𝑗, and 𝑠𝑖is the output of the
+Step 3 ranking decoder.
+Distributional Consistency Loss (LDC): Although the
+value-aware head optimizes true value propensity, its signals
+are sparse and lack perception of the ranker’s calibrated
+scoring space. To bridge this, we treat the ranker as a
+teacher model and achieve decision boundary alignment
+by minimizing the KL divergence between generation and
+ranking preference distributions:
+J (𝜃) = E𝑖∼𝜋𝜃[𝑠𝑖] −𝜆· KL(𝜋𝜃||𝜋ref)
+(9)
+where 𝜋𝜃denotes the generator policy, 𝜋ref is the reference
+policy (original MTP model), 𝑠𝑖represents the calibrated
+scores from the ranker, and 𝜆is the KL weight. To avoid
+instability from reinforcement learning sampling, we derive
+its supervised surrogate, the Distributional Consistency Loss:
+LDC = −E𝑖∼C
+h
+𝑝target
+𝑖
+· log 𝜋𝜃(𝑖|u)
+i
+(10)
+where C is the current candidate item set,𝑝target
+𝑖
+= softmax(𝑠𝑖/𝜏)
+is the target probability distribution normalized from rank-
+ing scores, and 𝜏is the temperature parameter. Unlike the
+local pairwise optimization of Lrank, LDC constrains global
+distributional consistency at the candidate-set level, estab-
+lishing a dual-supervision mechanism of “ground-truth for
+propensity, model distribution for consistency.” This con-
+straint establishes a backward gradient pathway from rank-
+ing to generation, enabling the generator to “anticipate” the
+ranker’s decision preferences and effectively correct value
+biases.
+Through dual-side consistency guarantee, the OneRanker
+framework establishes a complete closed-loop optimization
+system: generation provides high-quality, target-aware can-
+didates for ranking, while ranking supplies value-guided
+feedback signals for generation.
+4
+Experiments
+To evaluate the performance and robustness of our proposed
+model, we conducted extensive experiments to address the
+following research questions (RQs):
+• RQ1: How does OneRanker perform in comparison with
+current strong generative recommendation baselines in
+the industry?
+• RQ2: How does the proposed key structural components
+contribute to the overall model performance?
+• RQ3: How effective are the other dedicated designs of the
+proposed architecture ?
+• RQ4: Does LDC truly improve model consistency?
+• RQ5: What is the empirical performance and real-world
+gain of OneRanker in an online industrial environment?
+4.1
+Offline Experiments (RQ1)
+4.1.1
+Dataset Descriptions. Following the experimental
+setup in GPR [3], we conduct our evaluation on a large-
+scale real-world dataset. This dataset comprises diverse user
+interactions across both advertising and organic content
+scenarios, ensuring robust representativeness and data scale.
+All historical behaviors are serialized in strict chronological
+order using a unified Heterogeneous Token Architecture
+(U/C/X/I), representing User, Content, Context, and Item
+tokens, respectively. For each target item, a specific set of
+candidates is sampled to construct training and evaluation
+instances for the business value learning task.
+4.1.2
+Baselines and Evaluation Metrics. We benchmark
+OneRanker against two strong generative recommendation
+baselines:
+• HSTU [15]: A trillion-parameter generative recommenda-
+tion architecture developed by Meta, extensively deployed
+in large-scale industrial systems.
+• GPR [3]: An end-to-end generative recommendation frame-
+work proposed by Tencent; we utilize the MTP version as
+described in the original paper.
+To comprehensively evaluate recommendation accuracy and
+ranking quality, we adopt Hit Ratio (HR@K) and Normalized
+Discounted Cumulative Gain (NDCG@K) as our primary
+evaluation metrics.
+4.1.3
+Implementation Details. The embedding dimen-
+sion for all token types is uniformly set to 128. In Step 1, the
+input U/C/X/I sequences are fixed to a maximum length of
+2048 through truncation or padding to ensure input consis-
+tency, while the core G-Decoder module is configured with 4
+Transformer layers. In Step 2, the number of interest-task to-
+kens is set to 6 to align with the multi-task prediction heads.
+The value-aware task utilizes 2 specific task tokens whose
+outputs are aggregated via a bagging strategy. 32 Fake Item
+Tokens act as clustering centers to characterize the semantic
+distribution of items. The heterogeneous attention decoder
+consists of 2 layers. In Step 3, a single ranking-task token is
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Sun et al.
+Table 1. Comparison of Experimental Results on Key Metrics
+Model/Method HR@1 HR@3 HR@5 HR@10 HR@15 NDCG@1 NDCG@3 NDCG@5 NDCG@10 NDCG@15
+HSTU
+0.1741
+0.3508
+0.4648
+0.6604
+0.7953
+0.6742
+0.6712
+0.6763
+0.7025
+0.7396
+GPR
+0.1824
+0.3703
+0.4935
+0.6957
+0.8207
+0.6823
+0.6776
+0.6818
+0.7070
+0.7445
+OneRanker
+0.2639 0.4959 0.6213
+0.7945
+0.8894
+0.8102
+0.7954
+0.7904
+0.7970
+0.8206
+used, and the R-Decoder depth is limited to 1 layer to achieve
+efficient inference and calibration.
+4.1.4
+Results. As illustrated in Table 1, we evaluate the
+performance of different architectures across various Hit Ra-
+tio (HR) metrics. Firstly, both HSTU and GPR serve as com-
+petitive baselines for capturing user interests. Notably, the
+GPR model demonstrates a consistent advantage over HSTU
+across all measured intervals and metrics. For instance, GPR
+improves the HR@1 and NDCG@1 from 0.1741 and 0.6742
+to 0.1824 and 0.6823, respectively. The proposed OneRanker
+model achieves a significant breakthrough, substantially out-
+performing both baselines by a wide margin. Specifically,
+OneRanker reaches an HR@1 of 0.2639, which represents
+a 44.7% relative improvement over the GPR model. Simi-
+lar dominant gains are observed in ranking quality metrics;
+for example, NDCG@5 increases from 0.6818 to 0.7904, and
+NDCG@15 increases from 0.7445 to 0.8206. These results ef-
+fectively validate that our architecture, with its task-specific
+enhancements and value-aware ranking, can more precisely
+align model outputs with complex recommendation objec-
+tives, yielding superior performance across the board.
+4.2
+Ablation Studies (RQ2&RQ3)
+4.2.1
+Ablation Studies on Key Structural Components
+(RQ2). To quantify the contributions of various components,
+we designed different model variants to address the afore-
+mentioned research questions. The details of each variant
+are as follows:
+• OneRanker: The final version of the model, integrating
+all proposed features.
+• OneRanker w/o DC Loss: The OneRanker model with
+LDC removed from Step 3.
+• OneRanker w/o S2 Info: The OneRanker model with all
+information from Step 2 (interest task tokens, value-aware
+tokens, and fake item tokens) removed from the Key/Value
+pairs, retaining only Step 1 information.
+• OneRanker with S3 Ranker Only: The Step 3 model
+with both the Distributional Consistency Loss and all Step
+2 information removed. Key/Value pairs consist solely of
+Step 1 information.
+• OneRanker S2: A variant that removes Step 3 entirely,
+retaining all characteristics of Step 2.
+• OneRanker S2 w/o Target: The OneRanker S2 model
+with coarse-grained target-aware (Target) removed, re-
+taining only the value-aware multi-task decoupled archi-
+tecture.
+• OneRanker S2 w/o Target & MDA: The OneRanker S2
+model with both Fake Item Token and the value-aware
+multi-task decoupled architecture (MDA) removed.
+Experimental results, as summarized in Table 2, demon-
+strate that each core module in our design contributes signif-
+icantly to the overall performance. We primarily use HR@5
+and NDCG@5 as the focal metrics for this ablation analysis
+to evaluate both hit accuracy and ranking quality.
+In Step 2 , compared to the Base (OneRanker S2) perfor-
+mance (HR@5: 0.5448, NDCG@5: 0.7440), removing the Tar-
+get information (w/o Target) causes a notable decline, with
+HR@5 dropping to 0.5203 (-4.5%) and NDCG@5 decreasing
+to 0.7285 (-2.1%), which strongly proves the necessity of the
+Fake-Item-Token mechanism, prompting the model to evolve
+from static user representations to dynamic-aware item se-
+mantic distribution representations, thereby capturing users’
+real-time intentions more accurately. Furthermore, the simul-
+taneous removal of Target information and the Multi-task
+Decoupled Architecture (w/o Target & MDA) leads to a fur-
+ther decline to 0.5066 in HR@5 and 0.7275 in NDCG@5,
+underscoring the critical role of the decoupled architecture
+in mitigating optimization tension within the shared repre-
+sentation space, effectively preventing interference between
+business value modeling and user interest modeling.
+In Step 3, using the OneRanker with S3 ranker only (HR@5:
+0.6157, NDCG@5: 0.7849) as the baseline, the model already
+demonstrates a leap-forward boost compared to S2-only
+models, proving that fine-grained target-aware mechanisms
+are fundamental to effective ranking. Building upon this,
+the introduction of S2 information injection (HR@5: 0.6161,
+NDCG@5: 0.7858) ensures that the ranker reuses the gen-
+eration logic to better calibrate its predictions within the
+"generation context". Furthermore, incorporating the Distri-
+butional Consistency 𝐿DC (HR@5: 0.6173, NDCG@5: 0.7865)
+explicitly constrains the output distribution between stages,
+mitigating target shift through consistency regularization.
+Ultimately, the OneRanker (Full) model achieves the optimal
+HR@5 of 0.6213 and NDCG@5 of 0.7904. This improvement
+stems from a collaborative effect: while S2 provides enriched
+feature injection to S3, the Distributional Consistency loss
+facilitates essential value-driven feedback from S3 back to
+
+OneRanker: Unified Generation and Ranking with One Model
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 2. Ablation Studies Results of Different Model Variants
+Model/Method
+HR@1 HR@3 HR@5 HR@10 HR@15 NDCG@1 NDCG@3 NDCG@5 NDCG@10 NDCG@15
+OneRanker (Full)
+0.2639 0.4959 0.6213 0.7945
+0.8894
+0.8102
+0.7954
+0.7904
+0.7970
+0.8206
+w/o DC Loss
+0.2629 0.4925 0.6173
+0.7905
+0.8867
+0.8059
+0.7912
+0.7865
+0.7936
+0.8180
+w/o S2 token injection 0.2610 0.4912 0.6161
+0.7897
+0.8868
+0.8047
+0.7904
+0.7858
+0.7930
+0.8172
+with S3 ranker only
+0.2601 0.4901 0.6157
+0.7880
+0.8852
+0.8037
+0.7894
+0.7849
+0.7924
+0.8168
+OneRanker S2
+0.2214 0.4257 0.5448
+0.7291
+0.8435
+0.7566
+0.7460
+0.7440
+0.7579
+0.7876
+w/o Target
+0.2080 0.4030 0.5203
+0.7066
+0.8276
+0.7375
+0.7286
+0.7285
+0.7465
+0.7786
+w/o Target & MDA
+0.2035 0.3922 0.5066
+0.6949
+0.8212
+0.7360
+0.7273
+0.7275
+0.7453
+0.7776
+S2. This closed-loop interaction between input consistency
+and output consistency allows the model to reach a higher
+ceiling of performance.
+4.2.2
+Ablation Studies on Dedicated Designs (RQ3).
+We further investigate the effectiveness of several dedicated
+architectural design choices within Step 2. Specifically, we
+implement a Cross-Attention Prioritization (CA-Pri) Mecha-
+nism, which allows each task-specific token to sufficiently
+aggregate user information prior to refining task represen-
+tations. Additionally, a Heterogeneous Mask Strategy is de-
+signed to regulate the information flow while preventing in-
+formation leakage between disparate task tokens. As shown
+in Table 3, removing either the Cross-Attention Prioritiza-
+tion (CA-Pri) Mechanism or the heterogeneous masking (H-
+Mask) strategy from the Step 2 baseline leads to a significant
+performance degradation across all metrics. These results
+underscore the necessity of our refined attention mechanism
+and mask strategy in achieving superior recommendation
+accuracy.
+Table 3. Ablation Studies on Dedicated Designs in Step 2
+Model/Method
+HR@1 HR@3 HR@5 HR@10 HR@15
+OneRanker S2 (Baseline) 0.2214 0.4257 0.5448 0.7291 0.8435
+w/o CA-Pri
+0.2117 0.4100 0.5277 0.7148 0.8337
+w/o H-Mask
+0.2149 0.4151 0.5335 0.7183 0.8368
+4.3
+Effectiveness Analysis of LDC (RQ4)
+To quantitatively evaluate the consistency between mod-
+els with and without the Distributional Consistency Loss
+LDC , we employ rank deviation boxplots and Top-K overlap
+curves across 30 candidate items, as is shown in Figure 3.
+Figure 3a characterizes the consistency by measuring the
+absolute rank differences of Step 2 and Step 3: the central
+box represents the interquartile range (IQR) defined by the
+first (Q1) and third (Q3) quartiles, while the internal hori-
+zontal line denotes the median and whiskers represent the
+minimum and maximum respectively. Figure 3b measures
+the alignment degree between the two steps when filtering
+the top 𝐾items.
+0
+5
+10
+15
+20
+25
+Rank
+0
+2
+4
+6
+8
+10
+12
+14
+Absolute Difference
+w/o LDC
+w/LDC
+(a) Absolute Rank Difference
+0
+5
+10
+15
+20
+25
+30
+K (Top-K Items)
+0.65
+0.70
+0.75
+0.80
+0.85
+0.90
+0.95
+1.00
+Overlap Ratio
+w/o LDC
+w/LDC
+(b) Top-𝐾Item Overlap Ratio
+Figure 3. Effectiveness of LDC: (a) Absolute rank difference
+of items between Step 2 and Step 3 at each rank for models
+with and without LDC; (b) Top-𝐾items overlap ratio between
+Step 2 and Step 3 with varying 𝐾for the two models.
+Experimental results demonstrate that incorporating the
+Distributional Consistency (DC) loss compresses the IQR
+(blue boxes), as evidenced by the markedly reduced box
+height compared to the baseline in Figure 3a. This contrac-
+tion reflects a high degree of decisional consistency of the
+two steps and enhanced stability. Correspondingly, the Top-
+K overlap curve in Figure 3b validates this distributional
+optimization: the optimized blue curve exhibits a higher
+starting point at 𝐾= 1 and maintains a consistent lead un-
+til 𝐾approaches the total candidate count. This confirms
+that the reduction in individual rank variance observed in
+the Figure 3a directly translates into stronger consistency
+effect, establishing a more robust multi-stage collaborative
+framework.
+4.4
+Online A/B Test (RQ5)
+We evaluated and deployed OneRanker on Weixin Chan-
+nels, a production advertising platform with hundreds of
+millions of active users and tens of millions of dynamic ads.
+The primary online metrics include GMV, GMV-Normal (ads
+optimized for clicks or conversions, constituting the major-
+ity of total GMV), and Costs, where GMV and GMV-Normal
+serve as the main Key Performance Indicators (KPIs) as they
+directly reflect business returns.
+Our online baseline is a cascaded framework of generation
++ ranking: candidates generated by the generation model are
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Sun et al.
+Table 4. Online A/B Test Results of OneRanker. Confidence intervals (CI) are calculated with 0.05 significance level. At 80%
+traffic phase, there is a phenomenon of traffic coverage.
+Traffic Phase
+GMV
+GMV (CI)
+GMV-Normal
+GMV-Normal (CI)
+Costs
+Costs (CI)
+5%
++0.4067%
+[-0.8320%, 1.6454%]
++1.3427%
+[0.1637%, 2.5216%]
++0.7190%
+[0.4632%, 0.9747%]
+20%
++0.7796%
+[0.2849%, 1.2743%]
++0.6446%
+[0.2139%, 1.0754%]
++1.1462%
+[0.9958%, 1.2965%]
+80%
++0.0843%
+[-0.4531%, 0.6217%]
++0.3500%
+[0.0188%, 0.6812%]
++0.4493%
+[0.3261%, 0.5725%]
+fed into a separately trained ranking model to serve down-
+stream applications. After rigorous A/B testing, OneRanker
+achieved stable and statistically significant improvements on
+the main KPIs compared to the previous version. The results
+are summarized in Table 4.
+Based on these results, OneRanker was fully rolled out to
+100% traffic and served as the production system for Weixin
+Channels advertising recommendation. The successful de-
+ployment validates OneRanker’s effectiveness in bridging
+the gap between generative modeling and business value
+optimization in large-scale advertising scenarios.
+5
+Conclusion
+This paper presents the OneRanker, systematically address-
+ing three core challenges in generative advertising recom-
+mendation: the misalignment between interest and value
+objectives, the target-agnostic limitation of generation pro-
+cesses, and the architectural disconnection between genera-
+tion and ranking. By leveraging value-aware multi-task de-
+coupling, coarse-to-fine collaborative target awareness, and
+input-output dual-side consistency guarantees, OneRanker
+achieves architectural-level deep integration and end-to-end
+collaborative optimization. Full-scale industrial deployment
+on Tencent’s Weixin Channels advertising system validates
+its effectiveness, yielding a +1.34% improvement in GMV-
+Normal. This work not only establishes a viable industrial
+paradigm but also completes the paradigm shift from "stage
+decoupling" to "architectural integration," accumulating fea-
+sible experience for deploying generative technologies in
+complex business scenarios.
+References
+[1] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng
+Ding, Qiang Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and
+rank with generative recommender and iterative preference alignment.
+arXiv preprint arXiv:2502.18965 (2025).
+[2] Jiacheng Li, Yongjun Zhang, Kai Zheng, , et al. 2024. OneRec-V2:
+Practical Reinforcement Learning for Generative Recommendation at
+Industrial Scale. Technical Report (2024). Available as internal/ArXiv
+technical documentation.
+[3] Jun Zhang, Yi Li, Yue Liu, Changping Wang, Yuan Wang, Yuling Xiong,
+Xun Liu, Haiyang Wu, Qian Li, Enming Zhang, et al. 2025. GPR:
+Towards a Generative Pre-trained One-Model Paradigm for Large-
+Scale Advertising Recommendation. arXiv preprint arXiv:2511.10138
+(2025).
+[4] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hu-
+likal Keshavan, Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh
+Tran, Jonah Samost, et al. 2023. Recommender systems with generative
+retrieval. Advances in Neural Information Processing Systems 36 (2023),
+10299–10315.
+[5] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin
+Han. 2022. Autoregressive image generation using residual quantiza-
+tion. In Proceedings of the IEEE/CVF conference on computer vision and
+pattern recognition. 11523–11532.
+[6] Weiwei Sun, Lingyong Yan, Zheng Chen, Shuaiqiang Wang, Haichao
+Zhu, Pengjie Ren, Zhumin Chen, Dawei Yin, Maarten Rijke, and
+Zhaochun Ren. 2023. Learning to tokenize for generative retrieval.
+Advances in Neural Information Processing Systems 36 (2023), 46345–
+46361.
+[7] Robert A Jacobs, Michael I Jordan, Steven J Nowlan, and Geoffrey E
+Hinton. 1991. Adaptive mixtures of local experts. Neural computation
+3, 1 (1991), 79–87.
+[8] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning,
+Stefano Ermon, and Chelsea Finn. 2023. Direct preference optimization:
+Your language model is secretly a reward model. Advances in neural
+information processing systems 36 (2023), 53728–53741.
+[9] Zhanyu Liu, Shiyao Wang, Xingmei Wang, Rongzhou Zhang, Jiaxin
+Deng, Honghui Bao, Jinghao Zhang, Wuchao Li, Pengfei Zheng, Xi-
+angyu Wu, et al. 2025. Onerec-think: In-text reasoning for generative
+recommendation. arXiv preprint arXiv:2510.11639 (2025).
+[10] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia,
+Ed Chi, Quoc V Le, Denny Zhou, et al. 2022. Chain-of-thought prompt-
+ing elicits reasoning in large language models. Advances in neural
+information processing systems 35 (2022), 24824–24837.
+[11] Hong Wen, Jing Zhang, Yuan Wang, Fuyu Lv, Wentian Bao, Quan
+Lin, and Keping Yang. 2020. Entire space multi-task modeling via
+post-click behavior decomposition for conversion rate prediction. In
+Proceedings of the 43rd International ACM SIGIR conference on research
+and development in Information Retrieval. 2377–2386.
+[12] Dongbo Xi, Zhen Chen, Peng Yan, Yinger Zhang, Yongchun Zhu,
+Fuzhen Zhuang, and Yu Chen. 2021. Modeling the sequential depen-
+dence among audience multi-step conversions with multi-task learning
+in targeted display advertising. In Proceedings of the 27th ACM SIGKDD
+Conference on Knowledge Discovery & Data Mining. 3745–3755.
+[13] Xiao Lin, Hongjie Chen, Changhua Pei, Fei Sun, Xuanji Xiao, Hanxiao
+Sun, Yongfeng Zhang, Wenwu Ou, and Peng Jiang. 2019. A pareto-
+efficient algorithm for multiple objective optimization in e-commerce
+recommendation. In Proceedings of the 13th ACM Conference on recom-
+mender systems. 20–28.
+[14] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion
+Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. At-
+tention is all you need. Advances in neural information processing
+systems 30 (2017).
+[15] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao,
+Leon Gao, Zhaojie Gong, Fangda Gu, Michael He, et al. 2024. Actions
+speak louder than words: Trillion-parameter sequential transducers for
+generative recommendations. arXiv preprint arXiv:2402.17152 (2024).
+[16] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential
+recommendation. In 2018 IEEE international conference on data mining
+(ICDM). IEEE, 197–206.
+
+OneRanker: Unified Generation and Ranking with One Model
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+[17] Aleksandr V Petrov and Craig Macdonald. 2023. Generative sequential
+recommendation with gptrec. arXiv preprint arXiv:2306.11114 (2023).
+[18] Yijia Sun, Shanshan Huang, Zhiyuan Guan, Qiang Luo, Ruiming Tang,
+Kun Gai, and Guorui Zhou. 2025. GRank: Towards Target-Aware and
+Streamlined Industrial Retrieval with a Generate-Rank Framework.
+arXiv preprint arXiv:2510.15299 (2025).
+[19] Chengcheng Guo, Kuo Cai, Yu Zhou, Qiang Luo, Ruiming Tang, Han
+Li, Kun Gai, and Guorui Zhou. 2026. PROMISE: Process Reward Mod-
+els Unlock Test-Time Scaling Laws in Generative Recommendations.
+arXiv preprint arXiv:2601.04674 (2026).
+[20] Sunkyung Lee, Minjin Choi, Eunseong Choi, Hye-young Kim, and
+Jongwuk Lee. 2025. GRAM: Generative Recommendation via Semantic-
+aware Multi-granular Late Fusion. arXiv preprint arXiv:2506.01673
+(2025).
+[21] Yongqi Li, Nan Yang, Liang Wang, Furu Wei, and Wenjie Li. 2024.
+Learning to rank in generative retrieval. In Proceedings of the AAAI
+Conference on Artificial Intelligence, Vol. 38. 8716–8723.
+[22] Chenxiao Fan, Chongming Gao, Wentao Shi, Yaxin Gong, Zihao Zhao,
+and Fuli Feng. 2025. Fine-grained List-wise Alignment for Generative
+Medication Recommendation. arXiv preprint arXiv:2505.20218 (2025).
+[23] Kairui Fu, Changfa Wu, Kun Yuan, Binbin Cao, Dunxian Huang, Yu-
+liang Yan, Junjun Zheng, Jianning Zhang, Silu Zhou, Jian Wu, and
+Kun Kuang. 2026. RankGR: Rank-Enhanced Generative Retrieval
+with Listwise Direct Preference Optimization in Recommendation.
+arXiv:2602.08575 [cs.IR] https://arxiv.org/abs/2602.08575
+[24] Vianne R Gao, Chen Xue, Marc Versage, Xie Zhou, Zhongruo Wang,
+Chao Li, Yeon Seonwoo, Nan Chen, Zhen Ge, Gourab Kundu, et al.
+2025. Synergen: Contextualized generative recommender for unified
+search and recommendation. arXiv preprint arXiv:2509.21777 (2025).

@@ -1,0 +1,1112 @@
+Beyond the Flat Sequence: Hierarchical and Preference-Aware
+Generative Recommendations
+Zerui Chen∗
+zrchen@ir.hit.edu.cn
+Harbin Institute of
+Technology
+Harbin, China
+Heng Chang∗
+changh.heng@gmail.com
+Huawei Technologies Co.,
+Ltd.
+Beijing, China
+Tianying Liu
+tianying_liu@outlook.com
+Huawei Technologies Co.,
+Ltd.
+Shanghai, China
+Chuantian Zhou
+alita@bupt.edu.cn
+Beijing University of Posts
+and Telecommunications
+Beijing, China
+Yi Cao
+caoyi23@huawei.com
+Huawei Technologies Co.,
+Ltd.
+Shanghai, China
+Jiandong Ding
+dingjiandong2@huawei.com
+Huawei Technologies Co.,
+Ltd.
+Shanghai, China
+Ming Liu†
+mliu@ir.hit.edu.cn
+Harbin Institute of
+Technology
+Harbin, China
+Bing Qin
+qinb@ir.hit.edu.cn
+Harbin Institute of
+Technology
+Harbin, China
+Abstract
+Generative Recommenders (GRs), exemplified by the Hierarchical
+Sequential Transduction Unit (HSTU), have emerged as a powerful
+paradigm for modeling long user interaction sequences. However,
+we observe that their "flat-sequence" assumption overlooks the
+rich, intrinsic structure of user behavior. This leads to two key
+limitations: a failure to capture the temporal hierarchy of session-
+based engagement, and computational inefficiency, as dense at-
+tention introduces significant noise that obscures true preference
+signals within semantically sparse histories, which deteriorates
+the quality of the learned representations. To this end, we propose
+a novel framework named HPGR (Hierarchical and Preference-
+aware Generative Recommender), built upon a two-stage paradigm
+that injects these crucial structural priors into the model to handle
+the drawback. Specifically, HPGR comprises two synergistic stages.
+First, a structure-aware pre-training stage employs a session-based
+Masked Item Modeling (MIM) objective to learn a hierarchically-
+informed and semantically rich item representation space. Second,
+a preference-aware fine-tuning stage leverages these powerful rep-
+resentations to implement a Preference-Guided Sparse Attention
+mechanism, which dynamically constrains computation to only
+the most relevant historical items, enhancing both efficiency and
+signal-to-noise ratio. Empirical experiments on a large-scale pro-
+prietary industrial dataset from APPGallery and an online A/B
+test verify that HPGR achieves state-of-the-art performance over
+multiple strong baselines, including HSTU and MTGR.
+CCS Concepts
+• Information systems →Recommender systems.
+∗Both authors contributed equally to this research.
+†Corresponding author.
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+WWW ’26, Dubai, United Arab Emirates
+© 2026 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2307-0/2026/04
+https://doi.org/10.1145/3774904.3792790
+Keywords
+attention mechanism, generative recommendation
+ACM Reference Format:
+Zerui Chen, Heng Chang, Tianying Liu, Chuantian Zhou, Yi Cao, Jiandong
+Ding, Ming Liu, and Bing Qin. 2026. Beyond the Flat Sequence: Hierarchical
+and Preference-Aware Generative Recommendations. In Proceedings of the
+ACM Web Conference 2026 (WWW ’26), April 13–17, 2026, Dubai, United
+Arab Emirates. ACM, New York, NY, USA, 9 pages. https://doi.org/10.1145/
+3774904.3792790
+Session Partition:
+Entertainment
+Work
+Shopping
+Travel
+Finance
+Figure 1: A comparison of attention mechanisms visualizing
+how different models interpret user history. (a) The baseline
+HSTU model, which treats history as a "flat-sequence", ex-
+hibits scattered, item-level attention that fails to capture the
+underlying structure of user intent. (b) In contrast, HPGR
+learns to understand the hierarchical, session-based nature
+of user behavior.
+1
+Introduction
+Recommendation systems form the cornerstone of modern internet
+platforms, personalizing experiences for billions of users daily.
+Recently, the field has witnessed a paradigm shift from tradi-
+tional Deep Learning Recommendation Models (DLRMs) [5, 7, 12,
+arXiv:2603.00980v1  [cs.IR]  1 Mar 2026
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Zerui Chen et al.
+26, 29, 37, 38] towards Generative Recommenders (GRs) [35]. Spear-
+heading this movement, the Hierarchical Sequential Transduction
+Unit (HSTU) [35] has achieved monumental success, scaling rec-
+ommendation models to trillions of parameters and demonstrating
+promising scaling laws akin to those of Large Language Models
+(LLMs) [1, 2, 22, 27].
+By reformulating recommendation as a sequential transduction
+task over long user histories, HSTU effectively overcomes the scal-
+ability bottlenecks of DLRMs and unifies the modeling of heteroge-
+neous features into a single, powerful architecture.
+Despite its impressive capabilities in processing long sequences,
+the success of HSTU is predicated on a fundamental yet implicit
+assumption: it models a user’s history as a flat, undifferentiated
+stream of actions. Although effective, the "flat-sequence" perspec-
+tive overlooks the rich intrinsic structure inherent in human behav-
+ior, leading to two significant challenges.
+First, it neglects hierarchical temporal structure of user engage-
+ment. User activities are not uniformly distributed but are naturally
+clustered into sessions, each representing a focused, short-term
+intent. A flat model struggles to distinguish coherent intra-session
+patterns from broader inter-session interest shifts [33].
+Second, it overlooks the sparse nature of user preference, whereby
+the next action depends on a compact, highly relevant subset of
+past interactions instead of the full historical record. Compelling
+the model to compute dense attention across thousands of historical
+items is not only computationally redundant but also introduces sig-
+nificant noise that can impair the quality of learned representations
+[4].
+To address these limitations, we propose HPGR, a new frame-
+work that injects crucial structural priors into the generative recom-
+mendation process. Our core insight is that by explicitly modeling
+the temporal hierarchy and preference of user behavior, we can
+build recommenders that are both more effective and more efficient.
+Specifically, we introduce a two-stage paradigm. In the first
+stage, called structure-aware pre-training, we introduce a Session
+Enhancement Module (SEM) and employ a session-based Masked
+Item Modeling (MIM) objective. The SEM explicitly models the
+temporal hierarchy of user behavior by processing interactions
+within and across sessions. This process compels the model to learn
+generalizable item semantics and complex behavioral dynamics,
+resulting in a powerful pre-trained embedding space.
+In the second stage termed preference-aware fine-tuning, we
+adapt the pre-trained model for the downstream prediction task. It
+is achieved through our novel Preference-Guided Sparse Attention
+(PGSA) mechanism, which aims to reconstruct the most salient
+preference context for a given candidate item. Rather than applying
+dense attention to the entire history, PGSA treats the candidate as a
+query to retrieve a small, highly relevant subset of past interactions.
+Attention is then restricted to this preference-rich subset, sharply
+reducing computation and improving accuracy by amplifying gen-
+uine preference signals while suppressing historical noise.
+Our work makes the following key contributions:
+• We propose the Session Enhancement Module (SEM), a hi-
+erarchical transformer architecture, and a corresponding
+structure-aware pre-training strategy. This combined ap-
+proach enables the model to explicitly capture both intra-
+and inter-session dynamics, overcoming the critical "flat-
+sequence" limitation of prior generative recommenders.
+• We introduce the Preference-Guided Sparse Attention (PGSA)
+mechanism for the fine-tuning stage. PGSA replaces prior
+random sampling techniques with a preference-driven spar-
+sity. This approach improves the accuracy of attention by
+focusing on the most relevant signals, while being inherently
+more computationally efficient than dense attention for long
+user sequences.
+• We conduct extensive offline experiments and an online A/B
+test on a large-scale industrial recommender system. The
+results validate that HPGR substantially outperforms state-
+of-the-art baselines and achieves a significant +1.99% eCPM
+uplift in a real-world production environment, demonstrat-
+ing its practical effectiveness and business value.
+2
+Related Work
+2.1
+Sequential and Generative Recommenders
+Traditional sequential recommenders aim to capture user dynamics
+from interaction sequences, evolving from RNN-based models like
+GRU4Rec [15] to attention-based architectures like SASRec [17]. In
+large-scale industrial systems, these approaches are often realized
+as target attention modules within a larger DLRM framework.
+Recently, a paradigm shift towards generative recommenders
+has emerged, inspired by the success of Large Language Models
+[1, 2, 22, 27]. Instead of treating sequences as just one of many fea-
+ture sources, GRs reformulate the entire recommendation task as a
+sequence-to-sequence problem over a unified stream of user actions.
+The seminal work on HSTU [35] demonstrated that this approach
+can scale to trillions of parameters and exhibits promising scaling
+laws. Follow-up works like MTGR [13] have further adapted this
+architecture to better incorporate the rich cross-features tradition-
+ally used in DLRMs. Our work builds directly upon this powerful
+GR paradigm. However, while existing GRs treat the user history as
+a "flat-sequence", we argue for the importance of incorporating ex-
+plicit structural priors, a key distinction that our HPGR framework
+addresses.
+2.2
+Modeling Structure in User Sequences
+The concept that user behavior is not monolithic but organized
+into sessions of intent is well-established in recommendation litera-
+ture, particularly in session-based recommendation [14, 30]. These
+works typically focus on predicting the next action within a short,
+ongoing session. However, in the context of modeling very long
+user histories, as championed by the GR paradigm, explicitly mod-
+eling the hierarchical structure of multiple, interconnected sessions
+is a less explored area [18, 20]. Most long-sequence models either
+treat the sequence as flat [17, 25] or use implicit mechanisms like
+positional biases [28] to distinguish recent from older items. Our
+work addresses this gap by introducing the Session Enhancement
+Module (SEM), a hierarchical transformer architecture designed to
+explicitly model both intra- and inter-session dynamics within long
+user sequences, providing a richer, structurally-aware context for
+prediction.
+
+Beyond the Flat Sequence: Hierarchical and Preference-Aware Generative Recommendations
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Preference Signal Identification
+𝒉𝟐
+𝒉𝟑
+𝒉𝟒
+𝒉𝟓
+𝒉𝟔
+𝒉𝑳
+…
+𝒄𝟏
+𝒄𝟐
+𝒄𝟑
+𝒄𝟒
+𝒄𝟓… 𝒄𝑵
+Embedding Layer
+History Sequence
+Candidate Sequence
+Session Enhancement Module
+Time Aware Position Embedding
+Attention Mask Module
+p
+Preference-Guided
+Sparse Attention
+HSTU Encoder
+Prediction Head
+pCTR
+Session Partitioner
+𝒉𝟏
+𝒉𝟐
+𝒉𝟑
+𝒉𝟒
+𝒉𝟓
+𝒉𝟔
+𝒉𝑳
+…
+𝑠𝑒𝑠𝑠𝑖𝑜𝑛ଵ
+𝑠𝑒𝑠𝑠𝑖𝑜𝑛ଶ
+𝑠𝑒𝑠𝑠𝑖𝑜𝑛௉
+𝒉𝟏
+𝒉𝟐
+Intra Session Encoder
+…
+𝑺𝟏
+𝑺𝟐
+𝑺𝟑
+𝑺𝟒
+𝑺𝟓
+𝑺𝟔
+𝑺𝑷
+Inter Session Encoder
+Stage 1. Pretrain Stage
+Stage 2. Training Stage
+𝒉𝟏
+𝑐ଵ
+𝑐ଶ
+𝑐ே
+ℎଵℎଶℎଷℎସℎହ
+ℎ௅
+…
+…
+𝒄𝟏
+𝒄𝟐
+𝒄𝑵
+𝒉𝟐𝒉𝟑𝒉𝟒
+𝒉𝟓
+𝒉𝑳
+…
+𝒉𝟒
+𝒉𝟓
+𝒉𝑳
+…
+𝒉𝟐
+…
+𝒉𝟐𝒉𝟑
+𝒉𝟑
+𝒉𝟒𝒉𝟓
+𝒉𝑳
+…
+𝒉𝟏
+𝒉𝟏
+𝒉𝟏
+…
+𝑐ଵ
+𝑐ଶ
+𝑐ே
+ℎଵℎଶℎଷℎସℎହ
+ℎ௅
+…
+…
+…
+𝒉𝟑
+𝒉𝟒
+𝒉𝟓
+𝒉𝟔
+𝒉𝑳
+…
+Masked Item Modeling
+Fusion Layer
+𝑺𝒆𝒔𝒔𝒊𝒐𝒏 𝑭𝒆𝒂𝒕𝒖𝒓𝒆
+𝒉𝟐
+𝒉𝟒
+𝒉𝑳
+…
+𝒉𝟏
+𝑴
+𝑴
+Transformer Encoder
+Prediction Head
+Masked Item
+Preference-Guided Sparse Attention
+Two Stage Training Strategy
+1
+2
+Legend
+Legend
+g
+Stage 1. Pretrain 
+Stage
+g
+Stage 2. Train 
+Stage
+Embedding Layer
+Session 
+Enhancement
+Embedding Layer
+Session 
+Enhancement
+𝒉𝟏
+: history embedding token
+𝒉𝟏
+: candidate embedding token
+𝒄𝑵
+: training
+: update with a smaller learning rate
+𝒉𝟏
+: masked token
+𝑴
+: attention score
+𝑺𝟏: session embedding token
+Gaussian Attention Mask Construction
+Session Enhancement Module
+Inherit
+Inherit
+Figure 2: The overall architecture of our proposed HPGR framework. The model operates in a two-stage training paradigm. The
+central flow illustrates the shared foundation, including the Session Enhancement Module (SEM), which provides hierarchical
+context. The architecture then branches into two distinct stages: (1) Stage 1 (Pre-training), which uses a Transformer Encoder
+and a Masked Item Modeling objective to learn structurally-aware item representations. (2) Stage 2 (Fine-tuning), which
+employs an HSTU Encoder for the downstream pCTR task, enhanced by our novel Preference-Guided Sparse Attention (PGSA)
+mechanism. The panels on the right provide detailed views of the hierarchical structure of the SEM and the operational steps
+of PGSA. The top-left panel highlights the weight inheritance strategy, where pre-trained modules are updated with a smaller
+learning rate during fine-tuning.
+2.3
+Efficient Attention for Long Sequences
+The quadratic complexity of self-attention remains a significant
+bottleneck for long-sequence modeling [28, 40]. A vast body of
+research has focused on improving attention efficiency through
+methods like low-rank approximations [31] or hardware-aware
+implementations like FlashAttention [8, 9, 24]. Another line of work
+introduces sparsity into the attention matrix [3, 6]. The original
+HSTU model, for instance, proposes a form of stochastic length
+reduction inspired by stochastic depth [16, 35].
+While effective, these methods are typically content-agnostic or
+rely on random sampling. In contrast, our PGSA offers a more prin-
+cipled, content-aware approach. It is inspired by the observation
+that for a given candidate item, only a small subset of the user’s
+history is truly relevant. By leveraging the learned representations
+to dynamically identify this preference-rich subset for each predic-
+tion, our method introduces a powerful inductive bias, creating a
+form of informed sparsity that is guided by the task itself, differing
+fundamentally from prior random or fixed sparsity patterns.
+2.4
+Pre-training for Recommendation
+The pre-train, fine-tune paradigm, popularized by models like BERT
+[10] and GPT [1], has also gained traction in the recommendation
+domain [19, 23, 34]. One prominent trend involves leveraging pre-
+trained LLMs to enhance recommendation through their rich world
+knowledge and in-context learning capabilities [11, 32]. Another
+trend focuses on pre-training user representations from their behav-
+ior sequences, which can then be transferred to various downstream
+tasks [39].
+Our work aligns with this latter trend but proposes a novel pre-
+training objective tailored to our goals. Instead of learning a generic
+user representation, our structure-aware pre-training stage utilizes
+our novel SEM to explicitly model the behavioral hierarchy. This
+architecture is then trained with a session-based masked item mod-
+eling objective [25] to simultaneously co-learn rich item semantics
+and the dynamics of the user’s hierarchical behavior. This creates
+a powerful foundation that is explicitly prepared for our down-
+stream model, which relies on both semantic understanding and
+hierarchical context.
+3
+Method
+Our proposed framework, HPGR, enhances the generative recom-
+mendation paradigm by explicitly modeling the inherent structure
+of user behavior. It comprises a two-stage training framework:
+(1) a structure-aware pre-training stage to learn general-purpose,
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Zerui Chen et al.
+hierarchically-informed item representations, and (2) a preference-
+aware fine-tuning stage to adapt the model to specific downstream
+tasks through an efficient Preference-Guided Sparse Attention
+(PGSA) mechanism, which leverages the pre-trained knowledge to
+focus on the most relevant preference signals in the user’s history.
+Figure 2 illustrates the overall architecture of our framework.
+3.1
+Stage 1: Structure-aware Pre-training
+The primary goal of the pre-training stage is twofold: first, to learn
+a high-quality item embedding space that captures rich semantic
+relatedness, and second, to train a powerful Session Enhancement
+Module (SEM) capable of understanding the hierarchical nature of
+user interests. Both components are learned in a self-supervised
+manner, independent of any specific downstream task, to form a
+robust foundation for fine-tuning.
+3.1.1
+Session Enhancement Module. To move beyond the "flat-
+sequence" assumption, we introduce a SEM that models user his-
+tory hierarchically. Given a user’s long interaction history 𝐻=
+{ℎ1,ℎ2, . . . ,ℎ𝑁}, we first partition it into a sequence of sessions
+𝑆= {𝑆1,𝑆2, . . . ,𝑆𝑀} based on temporal inactivity. The module then
+employs a two-level Transformer [28] architecture:
+• Intra-session transformers: A shared Transformer en-
+coder is applied to each session 𝑆𝑖independently, modeling
+the local, short-term dependencies among items within a
+coherent interaction context. The output representation of
+the [CLS] token is then taken as the summary vector 𝑠𝑖for
+that session.
+• Inter-session transformer: The sequence of session sum-
+mary vectors [𝑠1,𝑠2, . . . ,𝑠𝑀] is fed into a second, higher-level
+transformer encoder, which models the long-term evolution
+and transitions of user interests across different sessions.
+Formally, for each session 𝑆𝑖, the intra-session transformer pro-
+duces a summary vector 𝑠𝑖:
+𝑠𝑖= Intra-Transformer(Emb(𝑆𝑖))[CLS]
+(1)
+where Emb(𝑆𝑖) denotes the embedded item sequence of session
+𝑆𝑖, and (·)[CLS] indicates selecting the output representation of the
+[CLS] token. Subsequently, the inter-session transformer processes
+the sequence of all session vectors to yield the final global session
+context vector, 𝐹sess:
+𝐹sess = Inter-Transformer([𝑠1,𝑠2, . . . ,𝑠𝑀])GlobalPool
+(2)
+where (·)GlobalPool could be another [CLS] token’s output or a mean
+pooling operation over all session representations. The context
+vector 𝐹sess is then integrated into the item representations by
+broadcast-wise addition to the initial token embeddings of the
+entire history sequence: 𝐻enhanced_emb = 𝐻emb + 𝐹sess.
+3.1.2
+Pre-training objective. We employ a masked item modeling
+objective for pre-training [25]. For a given user, let 𝐻𝑚be the set
+of masked item indices in their session-enhanced history 𝐻enhanced.
+The pre-training objective is to minimize the negative log-likelihood
+of predicting the correct masked items, formulated as:
+LMIM = −
+∑︁
+𝑖∈𝐻𝑚
+log 𝑃(ℎ𝑖|𝐻unmasked)
+(3)
+Original Data Arrangement:
+Position Embedding Layer
+𝒉𝟏
+𝒉𝟐
+𝒉𝟑
+𝒉𝟒
+𝒉𝑳
+…
+𝒄𝟏
+𝒕𝟏
+𝒕𝟐
+𝒕𝟒
+𝒕𝟓
+𝒕𝒎
+𝒕𝟑
+𝒉𝟏
+𝒉𝟐
+𝒉𝟑
+𝒉𝟒
+𝒉𝑳
+…
+𝒄𝟏
+𝒕𝟏
+𝒕𝟐
+𝒕𝟒
+𝒕𝟓
+𝒕𝟑
+𝒕𝒎
+𝟏
+𝟐
+𝟒
+𝟓
+𝒏
+…
+𝟑
+Time-Aware Positional Encoding
+Temporally Sorted Sequence:
+Position ID:
+Figure 3: The workflow of Time-Aware Positional Encoding.
+First, the candidate item 𝑐1 is inserted into the user’s history
+sequence at its correct chronological position, forming a
+complete temporally sorted sequence. Then, a new set of
+positional IDs is assigned to this final sequence, ensuring
+that each item’s position reflects its precise temporal order
+before being passed to the embedding layer.
+where 𝑃(ℎ𝑖|𝐻unmasked) is the probability of predicting the original
+item ℎ𝑖given the unmasked context, computed via a softmax layer
+over the output of a transformer encoder. This task compels the
+model to learn deep semantic relationships between items and
+user behavior patterns, resulting in a robust and meaningful item
+embedding table. The outputs of this stage are the pre-trained item
+embeddings Epre and the weights of the SEM ΘSEM.
+3.2
+Stage 2: Preference-aware Fine-tuning
+In the PAF stage, we adapt the model for the downstream pCTR
+prediction task. The core idea of this stage is to inherit the pre-
+trained weights from Stage 1: the item embedding layer and the SEM
+are initialized with Epre and ΘSEM respectively. The architecture is
+then enhanced with the following components for fine-tuning.
+3.2.1
+Time-Aware Positional Encoding. To precisely model the tem-
+poral relationship between historical items and the candidate item
+𝐶, we replace standard positional encoding with a time-aware strat-
+egy that constructs a chronologically consistent set of indices. As
+illustrated in Figure 3, the process involves two steps: First, given
+the history sequence 𝐻= {ℎ1, . . . ,ℎ𝑁} and a candidate item 𝐶,
+we form a new, unified sequence by inserting 𝐶into its correct
+position based on its timestamp. Second, we assign a contiguous
+set of positional indices {1, 2, . . . , 𝑁+ 1} to this temporally sorted
+sequence. The specific positional index for the candidate item 𝐶is
+formally determined by:
+Index(𝐶) = 1 +
+𝑁
+∑︁
+𝑖=1
+I(𝑡𝑖< 𝑡𝑐)
+(4)
+where 𝑡𝑖is the timestamp of the historical item ℎ𝑖, and I(·) is the
+indicator function which equals 1 if the condition is true, and 0
+
+Beyond the Flat Sequence: Hierarchical and Preference-Aware Generative Recommendations
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+otherwise. This ensures all items in the final sequence have a unique
+and temporally correct positional representation.
+3.2.2
+Preference-Guided Sparse Attention. To overcome the ineffi-
+ciency of applying dense attention over long histories with thou-
+sands of items, we propose Preference-Guided Sparse Attention
+(PGSA). PGSA constructs a compact yet powerful preference con-
+text for each candidate item, and concentrates modeling capacity
+on the most salient signals of user preference. In particular, this is
+accomplished in three steps:
+(i) Preference signal identification: For a given candidate
+item 𝐶, we first identify potential preference signals within the
+user’s history. Concretely, we compute the preference alignment
+between 𝐶and every historical item ℎ𝑖through the dot product of
+their pre-trained embeddings: score𝑖= emb(𝐶) · emb(ℎ𝑖). A higher
+score indicates stronger preference alignment.
+(ii) Preference subset selection: We then select the Top-K
+historical items with the highest preference alignment scores. The
+selected items with indices {𝑝1, 𝑝2, . . . , 𝑝𝐾} form a sparse subset that
+acts as the primary anchors of user preference for the candidate,
+moving beyond mere semantic similarity.
+(iii) Gaussian attention mask construction: Rather than us-
+ing a hard binary mask, we construct a soft attention mask that
+applies a gaussian-shaped influence around each preference an-
+chor. The final mask value 𝑀𝑗for any position 𝑗in the history is
+calculated as Equation (5):
+𝑀𝑗=
+max
+𝑘∈{1,...,𝐾}
+
+exp
+
+−(𝑗−𝑝𝑘)2
+2𝜎2
+
+(5)
+where 𝜎is a hyperparameter controlling the width of the influence.
+This mask is applied element-wise to the attention score matrix
+within the HSTU encoder, which concentrates computation on re-
+gions of high preference alignment, maintaining smooth gradients
+while effectively filtering out noise from irrelevant interactions.
+The session-enhanced token embeddings, together with their
+time-aware positional embeddings and the gaussian mask, are fed
+into the main HSTU encoder. The resulting candidate representa-
+tion is then passed through a multi-layer perceptron to produce
+the predicted score.
+3.2.3
+Fine-tuning Objective. The entire HPGR model is trained
+end-to-end in this stage to predict the click-through rate. Given a
+training batch of user-candidate pairs, the objective is to minimize
+the binary cross-entropy loss, defined as:
+LpCTR = −1
+𝐵
+𝐵
+∑︁
+𝑖=1
+(𝑦𝑖log( ˆ𝑦𝑖) + (1 −𝑦𝑖) log(1 −ˆ𝑦𝑖))
+(6)
+where 𝐵is the batch size, 𝑦𝑖∈{0, 1} is the ground-truth label (click
+or no-click), and ˆ𝑦𝑖is the predicted CTR score for the 𝑖-th pair,
+produced by the final MLP and a sigmoid activation function.
+3.3
+Training Strategy
+Our two-stage approach ensures both general knowledge acqui-
+sition and task-specific adaptation. The process begins with the
+structure-aware pre-training stage, where the model is trained on
+a large corpus of unlabeled user interaction data to optimize LMIM
+(Eq. 3).
+Subsequently, in the preference-aware fine-tuning stage, we ini-
+tialize the core modules with the learned weights and train the
+entire HPGR model on the labeled downstream task by optimiz-
+ing LpCTR (Eq. 6). During this second stage, we apply a smaller
+learning rate to the inherited weights (item embeddings and SEM)
+compared to the rest of the randomly-initialized model parts. This
+differential learning rate strategy is crucial: it preserves the rich,
+general-purpose semantic space learned during pre-training while
+allowing the model to effectively adapt to the specific supervised
+signals of the downstream task.
+4
+Experiments
+4.1
+Experimental Setup
+4.1.1
+Dataset. To validate our approach in a real-world, large-scale
+industrial setting, we constructed a proprietary dataset from the
+production recommender system of the APPGallery application
+distribution platform. The full dataset captures one continuous
+month of user-interaction logs. Table 1 summarizes the statistics
+of this complete, unsampled dataset, highlighting its massive
+scale.
+To facilitate extensive experimentation, including hyperparam-
+eter tuning and ablation studies, our main experiments (reported
+in Table 2) were conducted on a representative subset. This subset
+was created by randomly sampling 2.5% of the users, along
+with their complete interaction histories. All data was rigorously
+anonymized to protect user privacy.
+To confirm that the conclusions drawn from the sampled data
+generalize to the full data distribution, we also conducted a final
+validation on the complete test set, as detailed in Section 4.3.
+Table 1: Statistics of the APPGallery Dataset.
+Metric
+Value
+Number of Users
+∼45.8 Million
+Number of Items
+∼200,000
+Interactions (Train)
+∼285 Million
+Interactions (Test)
+∼7.38 Million
+4.1.2
+Baselines. To comprehensively evaluate our proposed model,
+HPGR, we compare it against a wide range of baseline methods,
+which we categorize based on their underlying technical paradigm.
+• Discriminative Recommendation Models: This group in-
+cludes a spectrum of models that formulate recommendation
+as a scoring or classification task. It ranges from foundational
+architectures to the current state-of-the-art in high-order
+feature interaction modeling.
+– DNN [7]: A fundamental deep learning model that pro-
+cesses features with multi-layer perceptrons.
+– MoE [21]: An extension of DNN that uses a mixture-of-
+experts architecture to handle diverse user populations.
+– GRU4Rec [15]: A classic model that uses gated recur-
+rent units to capture temporal patterns in user behavior
+sequences.
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Zerui Chen et al.
+– SASRec [17]: A seminal work that first introduced self-
+attention to effectively capture long-range dependencies
+in user sequences.
+– BERT4Rec [25]: A model inspired by BERT that uses a
+deep bidirectional self-attention network for sequential
+recommendation.
+– Wukong [36]: A state-of-the-art model that establishes
+a scaling law for recommendation via a "dense scaling"
+approach, using stacked Factorization Machines to capture
+high-order feature interactions.
+• Generative Recommendation Models: This category rep-
+resents the emerging paradigm that our work builds upon.
+These models reformulate recommendation as a sequence
+generation task, showing great promise in modeling long
+user histories.
+– HSTU [35]: The pioneering work on generative recom-
+mendations and the direct foundation of our research.
+– MTGR [13]: A powerful successor in the GR paradigm,
+which further enhances the architecture for handling long
+sequences in industrial systems.
+For our proposed model, HPGR, we experiment with several
+configurations of different scales to validate its scalability, as de-
+tailed in our subsequent analyses.
+4.2
+Main Results
+To evaluate the effectiveness of our proposed framework HPGR, we
+conducted a comprehensive comparison against all baseline models
+on the APPGallery dataset. The main results for the ranking task,
+grouped by their underlying paradigm, are presented in Table 2.
+From the table, we can draw several key observations:
+(1) Performance within the Discriminative Paradigm: The
+first group of models, representing the discriminative par-
+adigm, shows a clear trend where explicitly modeling user
+sequences is beneficial. Sequential models like SASRec and
+GRU4Rec significantly outperform their non-sequential coun-
+terparts such as DNN. Notably, SASRec, with its self-attention
+mechanism, emerges as the strongest model within this en-
+tire paradigm, setting the performance ceiling for discrimi-
+native approaches on this dataset.
+(2) Superiority of the Generative Paradigm: A crucial find-
+ing is that the generative paradigm demonstrates a funda-
+mental performance advantage. Even the baseline generative
+models, HSTU and MTGR, surpass the best-performing dis-
+criminative model, SASRec. This validates that reformulating
+recommendation as a sequence generation task is a more
+powerful approach for modeling long and complex user his-
+tories in large-scale industrial settings.
+(3) HPGR Sets a New State-of-the-Art: Our proposed model,
+HPGR, not only affirms the strength of the generative ap-
+proach but also significantly pushes its boundary. The full
+HPGR model achieves the best performance overall with
+an AUC of 0.8377. This represents a substantial uplift over
+the strongest baseline, MTGR, with a +0.0124 absolute AUC
+gain and a +1.50% relative improvement. This result strongly
+demonstrates that explicitly injecting structural priors is a
+critical and highly effective enhancement to the generative
+recommendation framework.
+4.3
+Validation on the Full Dataset
+To confirm that the superior performance observed on the sampled
+subset is robust and generalizable, we conducted a validation experi-
+ment on the complete, unsampled test dataset. As shown in Figure 4,
+the relative performance ranking of the top models remains con-
+sistent. On this full dataset, HPGR achieves an impressive AUC
+of 0.89288, maintaining a significant lead of +0.01139 absolute
+AUC points over the strongest baseline, MTGR. This result provides
+strong evidence that the advantages conferred by our architectural
+innovations are fundamental and translate effectively to the com-
+plete, real-world data distribution, confirming the generalizability
+of our main findings.
+Figure 4: Performance consistency of the top models across
+the sampled and full test datasets.
+4.4
+Ablation Study
+To dissect the individual contributions of our key innovations—the
+structure-aware pre-training, the PGSA mechanism, and the SEM
+architecture—we conducted a detailed ablation study. The results
+are presented in the lower section of Table 2, starting from a base
+configuration and progressively adding components.
+• Impact of Pre-training: The HPGR (Base, Pre-training
+only) model utilizes the standard HSTU architecture but
+initializes its item embeddings from our structure-aware
+pre-training stage (using the MIM objective). It achieves an
+AUC of 0.8327. This result, which already outperforms the
+strongest baseline MTGR, powerfully validates that our pre-
+training objective alone produces a fundamentally superior
+and more generalizable item embedding space compared to
+task-specific end-to-end training.
+• Impact of PGSA: Adding the PGSA mechanism to the base
+model (+ PGSA module) improves the AUC from 0.8327 to
+0.8348. This gain demonstrates that dynamically focusing
+attention on a sparse, preference-rich subset of historical
+items is highly effective at reducing noise and amplifying
+relevant signals, especially for long sequences.
+• Impact of SEM: When we instead add only the SEM to the
+base model (+ SEM module), the AUC rises substantially to
+0.8374. This significant improvement underscores the critical
+importance of explicitly modeling the temporal hierarchy
+
+Beyond the Flat Sequence: Hierarchical and Preference-Aware Generative Recommendations
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Table 2: Performance comparison on our industrial dataset. The best result is in bold, and the second best is underlined. Impr.%
+represents the relative improvement of the best HPGR model compared to the strongest baselines (underlined).
+Category
+Model
+AUC (↑)
+Discriminative Models
+DNN (Covington et al. 2016)
+0.7923
+MoE (Ma et al. 2018)
+0.8024
+GRU4Rec (Hidasi et al. 2015)
+0.8146
+BERT4Rec (Sun et al. 2019)
+0.8145
+SASRec (Kang and McAuley 2018)
+0.8194
+Wukong (Zhang et al. 2024)
+0.8167
+Generative Models
+HSTU (Zhai et al. 2024)
+0.8220
+MTGR (Han et al. 2025)
+0.8253
+Our Model
+HPGR (Base, Pre-training only)
+0.8327
++ PGSA module
+0.8348
++ SEM module
+0.8374
+HPGR (Full)
+0.8377
+Impr.
++1.50%
+of user behavior, which is overlooked by the flat-sequence
+assumption of the base architecture.
+• Synergy of All Components: Finally, the HPGR (Full)
+model, which integrates both SEM and PGSA, yields the best
+overall result. This demonstrates the synergy of our core
+innovations, highlighting the value of both capturing the
+hierarchical structure of user behavior and focusing attention
+on relevant historical items within the generative paradigm,
+leading to state-of-the-art performance.
+4.5
+Qualitative Analysis of the Pre-trained
+Embedding Space
+To validate our structure-aware pre-training, we analyze the item
+embedding table before and after the MIM stage. Figure 5 com-
+pares Xavier initialization ("Random Init") with our pre-trained
+embeddings ("Train"). This comparison reveals three key structural
+transformations:
+• Learned magnitude shift: The L2 norm distribution (top left)
+shifts from uniform to highly skewed. Most items, likely rep-
+resenting the long-tail, collapse into a low-norm region. Con-
+versely, a subset of semantically significant items differentiates
+with higher norms, indicating the model learns to compress less
+prominent items while highlighting important ones.
+• Emergence of anisotropy: The singular value decay (top right)
+indicates a transition from an isotropic to an anisotropic structure.
+This confirms the model utilizes specific dimensions to capture
+principal axes of semantic variance rather than spanning the
+space uniformly.
+• Structured Semantic Landscape: UMAP visualizations (bot-
+tom row) show a transformation from an unstructured cloud to
+distinct substructures. The pre-trained embeddings organize into
+high-density regions, demonstrating that semantically similar
+items are successfully pulled into proximity.
+Figure 5: Comparison of embedding properties between Ran-
+dom Initialization and Pre-training. Top left: L2 norm distri-
+bution shifts to a high-density peak. Bottom row: UMAP vi-
+sualization reveals that the embeddings organize into mean-
+ingful semantic patterns, in contrast to the initial random
+cloud.
+4.6
+Hyperparameter Study
+We investigated the sensitivity of the Top-K value, 𝐾, in our PGSA
+mechanism. As shown in Figure 6, performance peaks at 𝐾= 50,
+indicating that captures sufficient context without excessive noise.
+We use 𝐾= 50 for all other experiments.
+4.7
+Scalability Analysis
+We analyzed the scaling properties of HPGR. As shown in Figure 7,
+performance consistently improves with longer user histories and
+with increased model depth and width. This demonstrates that
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Zerui Chen et al.
+AUC increases as more 
+relevant context is included
+Insufficient context from over-pruning the attention mask
+ Excessive k introduces noise and 
+ irrelevant information, degrading AUC
+Figure 6: Hyperparameter analysis of AUC with respect to
+the Top-K value.
+HPGR is a robust and scalable architecture, promising further gains
+with more data and computational resources.
+AUC increases as more 
+relevant context is included
+Insufficient context from over-pruning the attention mask
+ Excessive k introduces noise and 
+ irrelevant information, degrading AUC
+Gains from increased 
+model complexity
+AUC increases as more 
+relevant context is included
+Insufficient context from over-pruning the attention mask
+ Excessive k introduces noise and 
+ irrelevant information, degrading AUC
+Gains from increased 
+model complexity
+Figure 7: Scalability of HPGR with respect to history length
+(top) and model size (bottom).
+4.8
+Efficiency Analysis
+We also compared the computational efficiency of HPGR against
+MTGR. Figure 8 shows that while our model incurs a manageable
+increase in training and inference time, this investment yields a
+substantial gain of +0.0124 in absolute AUC. This highly favor-
+able trade-off demonstrates the practical value of our architectural
+enhancements.
+5
+Online Evaluation
+To ultimately validate the real-world impact and practical value
+of our proposed HPGR framework, we deployed our model for an
+online A/B test on the APPGallery App recommendation platform.
+The experiment was conducted over a 7-day period, where traffic
+was split evenly between our proposed HPGR model and the in-
+cumbent, a highly optimized production DLRM, which served as
+the online baseline.
+AUC increases as more 
+relevant context is included
+Insufficient context from over-pruning the attention mask
+ Excessive k introdu
+ irrelevant informatio
+Gains from increased 
+model complexity
+Figure 8: Comparison of training time, inference time, and
+AUC score between MTGR and our HPGR model.
+We focused our evaluation on the primary business indicator,
+eCPM (Effective Cost Per Mille), which directly measures plat-
+form revenue and is a critical metric for industrial recommender
+systems. The aggregated results, reported as the relative improve-
+ment over the online baseline, are summarized in Table 3.
+Table 3: Online A/B test results, with offline AUC evaluated
+on the full dataset. This comparison shows that HPGR’s of-
+fline superiority translates to a significant online eCPM up-
+lift.
+Model
+Offline AUC
+Online eCPM
+Production DLRM (Baseline)
+0.8880
+Baseline
+HPGR (ours)
+0.8929
++1.99%
+The online A/B test results robustly confirm the effectiveness
+of our model in an online production environment. As shown in
+the table, HPGR achieved a statistically significant +1.99% uplift in
+eCPM over the highly optimized baseline.
+6
+Conclusion
+In this paper, we introduce HPGR, a novel framework that addresses
+the "flat-sequence" limitation in modern Generative Recommenders.
+HPGR injects crucial structural priors via a two-stage paradigm:
+a structure-aware pre-training stage with a Session Enhancement
+Module (SEM) to learn hierarchical representations, followed by a
+preference-aware fine-tuning stage using Preference-Guided Sparse
+Attention (PGSA) to focus on relevant history. This dual approach
+enables the model to capture complex, session-based user behav-
+ior. Extensive offline experiments and an online A/B test validate
+HPGR’s effectiveness, demonstrating state-of-the-art performance
+and a significant +1.99% eCPM uplift in a production environment.
+Acknowledgments
+The research in this article is supported by the National Science
+Foundation of China (U22B2059, 62276083), Key Research and De-
+velopment Program of Heilongjiang Province (2024ZX01A05) and
+the 5G Application Innovation Joint Research Institute’s Project
+(A003).
+
+Beyond the Flat Sequence: Hierarchical and Preference-Aware Generative Recommendations
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+References
+[1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Floren-
+cia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal
+Anadkat, et al. 2023. Gpt-4 technical report. arXiv preprint arXiv:2303.08774
+(2023).
+[2] Jinze Bai, Shuai Bai, Yunfei Chu, Zeyu Cui, Kai Dang, Xiaodong Deng, Yang Fan,
+Wenbin Ge, Yu Han, Fei Huang, et al. 2023. Qwen technical report. arXiv preprint
+arXiv:2309.16609 (2023).
+[3] Iz Beltagy, Matthew E Peters, and Arman Cohan. 2020. Longformer: The long-
+document transformer. arXiv preprint arXiv:2004.05150 (2020).
+[4] Sneha Chaudhari, Varun Mithal, Gungor Polatkan, and Rohan Ramanath. 2021.
+An attentive survey of attention models. ACM Transactions on Intelligent Systems
+and Technology (TIST) 12, 5 (2021), 1–32.
+[5] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra,
+Hrishi Aradhye, Glen Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, et al.
+2016. Wide & deep learning for recommender systems. In Proceedings of the 1st
+workshop on deep learning for recommender systems. 7–10.
+[6] Rewon Child, Scott Gray, Alec Radford, and Ilya Sutskever. 2019. Generating
+long sequences with sparse transformers. arXiv preprint arXiv:1904.10509 (2019).
+[7] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep neural networks
+for youtube recommendations. In Proceedings of the 10th ACM conference on
+recommender systems. 191–198.
+[8] Tri Dao. 2023. Flashattention-2: Faster attention with better parallelism and work
+partitioning. arXiv preprint arXiv:2307.08691 (2023).
+[9] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. Flashat-
+tention: Fast and memory-efficient exact attention with io-awareness. Advances
+in neural information processing systems 35 (2022), 16344–16359.
+[10] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. Bert:
+Pre-training of deep bidirectional transformers for language understanding. In
+Proceedings of the 2019 conference of the North American chapter of the association
+for computational linguistics: human language technologies, volume 1 (long and
+short papers). 4171–4186.
+[11] Shijie Geng, Shuchang Liu, Zuohui Fu, Yingqiang Ge, and Yongfeng Zhang. 2022.
+Recommendation as language processing (rlp): A unified pretrain, personalized
+prompt & predict paradigm (p5). In Proceedings of the 16th ACM conference on
+recommender systems. 299–315.
+[12] Huifeng Guo, Ruiming Tang, Yunming Ye, Zhenguo Li, and Xiuqiang He. 2017.
+DeepFM: a factorization-machine based neural network for CTR prediction. arXiv
+preprint arXiv:1703.04247 (2017).
+[13] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, et al. 2025. MTGR: Industrial-
+Scale Generative Recommendation Framework in Meituan.
+arXiv preprint
+arXiv:2505.18654 (2025).
+[14] Balázs Hidasi and Alexandros Karatzoglou. 2018. Recurrent neural networks with
+top-k gains for session-based recommendations. In Proceedings of the 27th ACM
+international conference on information and knowledge management. 843–852.
+[15] Balázs Hidasi, Alexandros Karatzoglou, Linas Baltrunas, and Domonkos Tikk.
+2015. Session-based recommendations with recurrent neural networks. arXiv
+preprint arXiv:1511.06939 (2015).
+[16] Gao Huang, Yu Sun, Zhuang Liu, Daniel Sedra, and Kilian Q Weinberger. 2016.
+Deep networks with stochastic depth. In European conference on computer vision.
+Springer, 646–661.
+[17] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[18] Chao Li, Zhiyuan Liu, Mengmeng Wu, Yuchi Xu, Huan Zhao, Pipei Huang,
+Guoliang Kang, Qiwei Chen, Wei Li, and Dik Lun Lee. 2019. Multi-interest
+network with dynamic routing for recommendation at Tmall. In Proceedings of
+the 28th ACM international conference on information and knowledge management.
+2615–2623.
+[19] Peng Liu, Lemei Zhang, and Jon Atle Gulla. 2023. Pre-train, prompt, and recom-
+mendation: A comprehensive survey of language modeling paradigm adaptations
+in recommender systems. Transactions of the Association for Computational
+Linguistics 11 (2023), 1553–1571.
+[20] Chen Ma, Peng Kang, and Xue Liu. 2019. Hierarchical gating networks for
+sequential recommendation. In Proceedings of the 25th ACM SIGKDD international
+conference on knowledge discovery & data mining. 825–833.
+[21] Jiaqi Ma, Zhe Zhao, Xinyang Yi, Jilin Chen, Lichan Hong, and Ed H Chi. 2018.
+Modeling task relationships in multi-task learning with multi-gate mixture-of-
+experts. In Proceedings of the 24th ACM SIGKDD international conference on
+knowledge discovery & data mining. 1930–1939.
+[22] Shervin Minaee, Tomas Mikolov, Narjes Nikzad, Meysam Chenaghlu, Richard
+Socher, Xavier Amatriain, and Jianfeng Gao. 2024. Large language models: A
+survey. arXiv preprint arXiv:2402.06196 (2024).
+[23] Zhaopeng Qiu, Xian Wu, Jingyue Gao, and Wei Fan. 2021. U-BERT: Pre-training
+user representations for improved recommendation. In Proceedings of the AAAI
+Conference on Artificial Intelligence, Vol. 35. 4320–4327.
+[24] Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar, Pradeep Ramani, and
+Tri Dao. 2024. Flashattention-3: Fast and accurate attention with asynchrony
+and low-precision. Advances in Neural Information Processing Systems 37 (2024),
+68658–68685.
+[25] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential recommendation with bidirectional encoder rep-
+resentations from transformer. In Proceedings of the 28th ACM international
+conference on information and knowledge management. 1441–1450.
+[26] Hongyan Tang, Junning Liu, Ming Zhao, and Xudong Gong. 2020. Progressive
+layered extraction (ple): A novel multi-task learning (mtl) model for personalized
+recommendations. In Proceedings of the 14th ACM conference on recommender
+systems. 269–278.
+[27] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne
+Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal
+Azhar, et al. 2023. Llama: Open and efficient foundation language models. arXiv
+preprint arXiv:2302.13971 (2023).
+[28] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. Advances in neural information processing systems 30 (2017).
+[29] Ruoxi Wang, Rakesh Shivanna, Derek Cheng, Sagar Jain, Dong Lin, Lichan Hong,
+and Ed Chi. 2021. Dcn v2: Improved deep & cross network and practical lessons
+for web-scale learning to rank systems. In Proceedings of the web conference 2021.
+1785–1797.
+[30] Shoujin Wang, Longbing Cao, Yan Wang, Quan Z Sheng, Mehmet A Orgun,
+and Defu Lian. 2021. A survey on session-based recommender systems. ACM
+Computing Surveys (CSUR) 54, 7 (2021), 1–38.
+[31] Sinong Wang, Belinda Z Li, Madian Khabsa, Han Fang, and Hao Ma. 2020. Lin-
+former: Self-attention with linear complexity. arXiv preprint arXiv:2006.04768
+(2020).
+[32] Likang Wu, Zhi Zheng, Zhaopeng Qiu, Hao Wang, Hongchao Gu, Tingjia Shen,
+Chuan Qin, Chen Zhu, Hengshu Zhu, Qi Liu, et al. 2024. A survey on large
+language models for recommendation. World Wide Web 27, 5 (2024), 60.
+[33] Wooseong Yang, Chen Wang, Zihe Song, Weizhi Zhang, and Philip S Yu. 2024.
+Item Cluster-aware Prompt Learning for Session-based Recommendation. arXiv
+preprint arXiv:2410.04756 (2024).
+[34] Zheni Zeng, Chaojun Xiao, Yuan Yao, Ruobing Xie, Zhiyuan Liu, Fen Lin, Leyu Lin,
+and Maosong Sun. 2021. Knowledge transfer via pre-training for recommendation:
+A review and prospect. Frontiers in big Data 4 (2021), 602071.
+[35] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, et al. 2024. Actions speak louder than words:
+Trillion-parameter sequential transducers for generative recommendations. arXiv
+preprint arXiv:2402.17152 (2024).
+[36] Buyun Zhang, Liang Luo, Yuxin Chen, Jade Nie, Xi Liu, Daifeng Guo, Yanli Zhao,
+Shen Li, Yuchen Hao, Yantao Yao, et al. 2024. Wukong: Towards a scaling law for
+large-scale recommendation. arXiv preprint arXiv:2403.02545 (2024).
+[37] Shuai Zhang, Lina Yao, Aixin Sun, and Yi Tay. 2019. Deep learning based recom-
+mender system: A survey and new perspectives. ACM computing surveys (CSUR)
+52, 1 (2019), 1–38.
+[38] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD international conference
+on knowledge discovery & data mining. 1059–1068.
+[39] Kun Zhou, Hui Wang, Wayne Xin Zhao, Yutao Zhu, Sirui Wang, Fuzheng Zhang,
+Zhongyuan Wang, and Ji-Rong Wen. 2020. S3-rec: Self-supervised learning for se-
+quential recommendation with mutual information maximization. In Proceedings
+of the 29th ACM international conference on information & knowledge management.
+1893–1902.
+[40] Bohan Zhuang, Jing Liu, Zizheng Pan, Haoyu He, Yuetian Weng, and Chun-
+hua Shen. 2023. A survey on efficient training of transformers. arXiv preprint
+arXiv:2302.01107 (2023).

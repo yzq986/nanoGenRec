@@ -1,0 +1,1354 @@
+Semantic Trimming and Auxiliary Multi-step Prediction
+for Generative Recommendation
+Tianyu Zhan∗
+Zhejiang University
+Hangzhou, Zhejiang, China
+yuzt@zju.edu.cn
+Kairui Fu∗
+Zhejiang University
+Hangzhou, Zhejiang, China
+fukairui.fkr@zju.edu.cn
+Chengfei Lv
+Alibaba
+Hangzhou, Zhejiang, China
+chengfei.lcf@alibaba-inc.com
+Zheqi Lv†
+Zhejiang University
+Hangzhou, Zhejiang, China
+zheqilv@zju.edu.cn
+Shengyu Zhang†
+Zhejiang University
+Hangzhou, Zhejiang, China
+sy_zhang@zju.edu.cn
+Abstract
+Generative Recommendation (GR) has recently transitioned from
+atomic item-indexing to Semantic ID (SID)-based frameworks to
+capture intrinsic item relationships and enhance generalization.
+However, the adoption of high-granularity SIDs leads to two critical
+challenges: prohibitive training overhead due to sequence expan-
+sion and unstable performance reliability characterized by non-
+monotonic accuracy fluctuations. We identify that these disparate
+issues are fundamentally rooted in the Semantic Dilution Effect,
+where redundant tokens waste massive computation and dilute the
+already sparse learning signals in recommendation. To counteract
+this, we propose STAMP (Semantic Trimming and Auxiliary Multi-
+step Prediction), a framework utilizing a dual-end optimization
+strategy. We argue that effective SID learning requires simultane-
+ously addressing low input information density and sparse output
+supervision. On the input side, Semantic Adaptive Pruning (SAP)
+dynamically filters redundancy during the forward pass, converting
+noise-laden sequences into compact, information-rich representa-
+tions. On the output side, Multi-step Auxiliary Prediction (MAP)
+employs a multi-token objective to densify feedback, strengthen-
+ing long-range dependency capture and ensuring robust learning
+signals despite compressed inputs. Unifying input purification and
+signal amplification, STAMP enhances both training efficiency and
+representation capability. Experiments on public Amazon and large-
+scale industrial datasets show STAMP achieves 1.23–1.38× speedup
+and 17.2%–54.7% VRAM reduction while maintaining or improving
+performance across multiple architectures.
+CCS Concepts
+• Information systems →Recommender systems.
+∗Both authors contributed equally to this research.
+†Corresponding authors.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+Keywords
+Large Language Models; Generative Recommendation; Training
+Acceleration
+ACM Reference Format:
+Tianyu Zhan, Kairui Fu, Chengfei Lv, Zheqi Lv, and Shengyu Zhang. 2018.
+Semantic Trimming and Auxiliary Multi-step Prediction for Generative
+Recommendation. In Proceedings of Make sure to enter the correct conference
+title from your rights confirmation email (Conference acronym ’XX). ACM,
+New York, NY, USA, 12 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Generative Recommendation (GR) has emerged as a paradigm shift
+in the field of recommender systems, reformulating the task as an
+end-to-end sequence generation problem [17, 26, 34, 44]. However,
+early frameworks relying on atomic item identifiers were limited by
+the independence of unique IDs, which hinders information sharing.
+This limitation often leads to vocabulary explosion and cold-start
+problem for new items. To mitigate these issues, Semantic Identifier
+(SID)-based Generative Recommendation (SID-GR) [9, 30, 35, 58]
+decomposes each item ID into a sequence of SIDs. The shared
+SID vocabulary across different items enhances the generalization
+ability of such methods (e.g., cross-domain recommendation), which
+is why it has gained attention recently.
+Although SID-GR demonstrates a higher potential compared
+to item ID-based GR, it also exposes two critical limitations that
+hinder its practical deployment: (1) High resource consumption and
+slow training speed [9]. Expanding an item ID into multiple SIDs
+significantly increases the sequence length, leading to quadratic
+growth in memory (VRAM) consumption and training time. (2)
+Large performance fluctuations and low stability [16, 21, 31, 57].
+The relationship between the granularity of SIDs and recommenda-
+tion accuracy is non-monotonic and exhibits inconsistent patterns
+across different models and datasets. Currently, research on SID-GR
+remains in its early stages. Efforts have prioritized improving SID
+informativeness [9, 41, 43, 46, 47, 50] and generation speed [10, 58],
+while optimizations of the "GR" backbone aimed at mitigating these
+specific inefficiencies remain relatively under-explored.
+Intriguingly, our empirical analysis reveals that these two seem-
+ingly disparate issues—training inefficiency and performance insta-
+bility—are actually two symptoms of the same underlying pathol-
+ogy: the Semantic Dilution Effect. We find that user intent is typ-
+ically driven by a sparse subset of critical tokens within SIDs,
+arXiv:2604.05329v1  [cs.IR]  7 Apr 2026
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+Figure 1: The adoption of finer-grained SID representations,
+entailing longer sequences and larger vocabularies, results
+in performance degradation.
+meaning much of the sequence length consists of harmful redun-
+dancy [1, 6, 28, 51]. This redundancy not only wastes massive com-
+putation (Information Non-uniformity) but also dilutes the already
+sparse learning signal in recommendation, making it difficult for
+the model to distinguish pivotal features from noise (Supervision
+Sparsity) [2]. Unlike general language modeling, the sparse feed-
+back loop in recommendation is insufficient to discipline such high-
+granularity, high-redundancy sequences.
+Viewed through the lens of Semantic Dilution, existing optimiza-
+tion strategies from adjacent domains reveal inherent limitations. (1)
+KV caching and Efficient attention kernels [7, 13, 23, 32, 55] mitigate
+the computational burden of long-sequence decoding; however,
+these are primarily optimized for the long-horizon inference of
+complex reasoning tasks, whereas SID-GR is severely constrained
+by the massive retraining overhead required to capture volatile
+user interests. (2) Token pruning [1, 3, 6, 18, 36, 52, 54] aims to skip
+redundant inputs, but unlike NLP where non-informative particles
+(e.g., stop words) are distinct, every token in a high-granularity SID
+is a semantically dense identifier with complex inter-dependencies,
+making it difficult to distinguish "salient" tokens from noise without
+compromising representation quality [51]. Consequently, effective
+pruning mechanisms tailored for SID-GR remain unexplored.
+Guided by this unified root cause, we propose STAMP (Semantic
+Trimming and Auxiliary Multi-step Prediction), a framework de-
+signed to counteract Semantic Dilution Effect through a dual-end
+optimization strategy. We argue that effective SID learning requires
+simultaneously tackling low information density at the input and
+sparse supervision signals at the output. On the input side, we in-
+troduce Semantic Adaptive Pruning (SAP) to address Information
+Non-uniformity. SAP functions as a dynamic filter, identifying to-
+ken utility via semantic features and attention centrality to remove
+redundancy during the forward pass [13, 55]. This directly miti-
+gates computational overhead by converting noise-laden sequences
+into compact, information-rich representations. On the output side,
+we incorporate Multi-step Auxiliary Prediction (MAP) to address
+Supervision Sparsity. Beyond standard next-token prediction, MAP
+employs a multi-token objective [11] that densifies the feedback
+loop. This mechanism independently strengthens the model’s abil-
+ity to capture long-range dependencies, ensuring robust learning
+signals even with compressed inputs [11, 29]. By unifying input
+purification and signal amplification, STAMP achieves both high
+training efficiency and enhanced representation capability.
+Figure 2: Comparison between (a) the single-token identifier
+mechanism and (b) the SID-based generative recommenda-
+tion framework.
+We implemented STAMP on two representative architectures:
+Encoder-Decoder (T5) and Decoder-Only (Qwen). Extensive ex-
+periments on Amazon datasets and a large-scale industrial dataset
+(AL-GR-Tiny) demonstrate the effectiveness of our approach. Re-
+sults show that STAMP achieves a 1.23–1.38 speedup and reduces
+VRAM usage by 17.2%–54.7% while maintaining recommendation
+performance.
+The main contributions of this work are summarized as follows,
+• We identify the Semantic Dilution Effect as the shared root
+cause of inefficiency and instability in SID-GR, representing
+an early effort focused on dynamically restructuring the SID
+learning process.
+• We propose STAMP, a dual-end framework that couples in-
+put purification with signal amplification to reconcile training
+efficiency with model robustness.
+• Comprehensive experiments across multiple architectures and
+large-scale datasets validate STAMP as a viable solution for
+industrial generative recommendation.
+2
+Preliminaries
+2.1
+SID-based Generative Recommendation
+Generative Recommendation. Distinct from traditional discrim-
+inative recommendation, which treats retrieval as a "ranking" task
+by predicting interaction probabilities for candidate items, GR re-
+formulates the recommendation task as an end-to-end sequence
+generation problem. Formally, let U and I denote the set of users
+and items. Given a user 𝑢∈U with a chronological interaction
+history 𝐻𝑢= [𝑖1,𝑖2, . . . ,𝑖𝑡], the goal of GR is to learn a probabilistic
+model 𝑃𝜃that directly generates the unique identifier of the tar-
+get item 𝑖𝑡+1 in an autoregressive manner. This paradigm aligns
+recommendation with standard language modeling, leveraging the
+powerful reasoning and contextual understanding capabilities of
+Large Language Models (LLMs) to model complex user preferences.
+Semantic ID Tokenization. A fundamental challenge in GR is ef-
+fectively mapping discrete items into a token space compatible with
+language models. Traditional approaches relying on independent
+atomic IDs often suffer from vocabulary explosion and the cold-
+start problem. To overcome these limitations, SIDs have emerged
+
+Semantic Trimming and Auxiliary Multi-step Prediction for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Figure 3: Redundancy is characterized by feature-level re-
+dundancy and sequence-level semantic overlaps (left). The
+joint probability constraint imposes higher demands on the
+model’s long-range dependency capabilities (right).
+as a superior representation. We formulate the SID construction as
+a two-stage process involving semantic encoding and quantization:
+𝑠𝑖= T (𝑖) = RQ(ℎ𝑖) = [𝑐𝑖,1,𝑐𝑖,2, . . . ,𝑐𝑖,𝐿],
+(1)
+where ℎ𝑖represents the high-dimensional semantic embedding of
+item 𝑖(e.g., encoded by Flan-T5-XL), and RQ(·) denotes a hier-
+archical residual quantization function (e.g., RQ-VAE[19] or RQ-
+Kmeans[58]). This function maps the continuous embedding into a
+discrete sequence of codes of length 𝐿using a shared, compact code-
+book V. The SID design offers dual advantages: it efficiently indexes
+massive item spaces through combinatorial codes to prevent vo-
+cabulary bloat, and it ensures that semantically similar items share
+common tokens, thereby mitigating the cold-start problem [25].
+SID-based Generative Recommendation. By integrating the
+generative paradigm with the SID representation, we arrive at the
+standard SID-GR workflow. Specifically, the model constructs the
+training input by serializing the user’s history into a sequence of
+SIDs:
+𝑋= [T (𝑖1), . . . , T (𝑖𝑡)]
+Consequently, the total length of the input sequence becomes
+𝑁= 𝑡× 𝐿. The LLM backbone encodes 𝑋and is optimized to
+autoregressively predict the SID sequence of the target item 𝑌=
+T (𝑖𝑡+1) = [𝑦1,𝑦2, . . . ,𝑦𝐿]. The training objective is to minimize the
+negative log-likelihood over the SIDs of target Item:
+LNTP = −
+𝐿
+∑︁
+𝑗=1
+log 𝑃(𝑦𝑗|𝑋,𝑦<𝑗;𝜃).
+(2)
+2.2
+Finding 1: Information Non-uniformity
+Existing research has consistently demonstrated that input data
+contains significant redundancy in non-critical information [1, 6, 49,
+51, 52, 54]. Eliminating such redundancy through techniques like
+token pruning or merging not only substantially reduces computa-
+tional overhead but also enhances model performance by improving
+the input signal-to-noise ratio.
+This phenomenon exhibits a unique structural amplification
+in SID-GR. Unlike traditional recommendation that map items to
+single atomic IDs, the SID mechanism utilizes hierarchical encoding
+to decompose a single item into a sequence of multiple tokens.
+While this design enhances semantic expressiveness, it expands the
+sequence length from a single token to 𝐿tokens, thereby incurring
+substantial ineffective computation. Specifically, SID introduces a
+distinctively low density of effective information, characterized by
+two primary types of redundancy:
+(1) Feature-level Redundancy: User interaction history is of-
+ten driven by a subset of key semantic features. For instance,
+within the hierarchy Category →Brand →Attribute, a user
+purchasing sneakers may exclusively prioritize the Brand to-
+ken. Consequently, fine-grained Attribute information such
+as color or material becomes irrelevant noise relative to the
+current prediction task.
+(2) Sequence-level Redundancy: Semantic overlaps exist
+among SIDs within the same sequence (e.g., different items
+may share the identical SIDs, such as the same brand), re-
+sulting in diminishing marginal returns for information ex-
+pression.
+However, this fine-grained decomposition also offers new op-
+portunities. SID explicitly decouples the mixed features within an
+item into independent tokens. This separation provides a natural
+structural foundation that allows the model to more easily locate
+and strip away redundant features, facilitating efficient pruning.
+2.3
+Finding 2: Supervision Sparsity
+In contrast to general generative tasks, where every generated
+token serves as an immediate supervision signal, GR faces a unique
+challenge regarding supervision sparsity: valid training signals
+are derived solely from the ground-truth item at the end of the
+sequence.
+Although the SID mechanism extends the prediction target to 𝐿
+SIDs, the input sequence expands synchronously by a factor of 𝐿.
+Consequently, the relative density of supervision signals does not
+improve. This sparsity exacerbates the difficulty of learning under
+long-sequence conditions, making it challenging for the model to
+precisely attribute the final purchasing behavior to specific key
+features in the interaction history.
+Furthermore, the SID mechanism introduces joint probability
+constraints. In SID-GR, correctly predicting an item is equivalent to
+accurately predicting its 𝐿corresponding SID tokens consecutively:
+𝑃(Item) =
+𝐿
+Ö
+𝑗=1
+𝑃(𝑦𝑗| 𝑦<𝑗, Context)
+(3)
+This implies that prediction deviations in a single token result in
+error accumulation via the chain rule. Consequently, as the granular-
+ity of SID creates finer distinctions (increasing 𝐿), the dual increase
+in sequence length and prediction difficulty imposes excessive de-
+mands on the model’s ability to capture long-range dependencies,
+causing performance to degrade [2, 9, 16]. Therefore, incorporating
+additional supervision signals is essential to enhance the model’s
+capacity for long-range dependency modeling and induction.
+3
+Methodology
+3.1
+Overview
+Based on the findings above, we propose STAMP (Semantic Trim-
+ming and Auxiliary Multi-step Prediction). As illustrated in Figure
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+Figure 4: Overview of the STAMP framework. (b) STAMP accelerates training by compressing sequences via pruning while
+ensuring performance through multi-token prediction. (a) SAP computes token importance to retain high-utility information
+and remove redundancy. (c) MAP predicts multiple future items simultaneously to provide richer supervision signals.
+4, STAMP integrates two modules into the standard Transformer
+backbone to reconcile the trade-off between training efficiency and
+representation robustness. SAP acts as an adaptive information
+filter inserted at a designated layer 𝑙𝑝𝑟𝑢𝑛𝑒. It dynamically evalu-
+ates token importance through intrinsic information and extrinsic
+structural centrality, removing redundant tokens to accelerate com-
+putation in subsequent layers. Simultaneously, MAP functions as
+a semantic amplifier at the learning stage. It introduces a dense
+supervision signal by predicting future tokens, thereby enhancing
+the model’s capability to capture long-range dependencies.
+3.2
+Semantic Adaptive Pruning
+We design the SAP by capitalizing on the Transformer’s intrinsic
+self-attention mechanism. Since attention weights naturally quan-
+tify the information flow between tokens, they serve as an effective,
+computationally efficient proxy for token utility [13, 55]. This en-
+ables the SAP to dynamically identify and retain discriminative
+SIDs without incurring significant computational overhead.
+3.2.1
+Token Importance Evaluation. We formulate token utility
+through two complementary dimensions: Semantic Saliency and
+Attention Centrality. Formally, let H(𝑙) ∈R𝐵×𝑁×𝑑denote the hidden
+states at the designated pruning layer 𝑙. The importance score is
+derived via the following steps.
+First, we compute Semantic Saliency (𝑆sem) based on feature
+magnitude. In deep networks, high-magnitude features typically
+correlate with significant semantic activation [36]. Thus, we utilize
+the ℓ1-norm to measure the information density of token 𝑖:
+𝑆sem(𝑖) = Norm
+
+|h(𝑙)
+𝑖
+|1
+
+,
+(4)
+where Norm(·) represents a normalization function used to ensure
+numerical stability.
+Second, we calculate Attention Centrality (𝑆attn) to capture
+the structural importance of a token within the sequence [38]. This
+metric quantifies the total influence token 𝑖exerts on the global
+context by aggregating the attention weights it receives from all
+other tokens:
+𝑆attn(𝑖) =
+H
+∑︁
+ℎ=1
+𝑁
+∑︁
+𝑗=1
+Aℎ,𝑗,𝑖,
+(5)
+where Aℎ,𝑗,𝑖represents the attention weight assigned to token𝑖(key)
+by token 𝑗(query) in head ℎ. A higher cumulative score implies that
+token 𝑖is attended to frequently, marking it as a critical information
+hub.
+Finally, the total importance score I𝑖is derived as the product of
+these two metrics:
+I𝑖= 𝑆sem(𝑖) × 𝑆attn(𝑖).
+(6)
+A high I𝑖indicates that a token is both semantically rich (internally)
+and structurally pivotal (externally) to the sequence representation.
+3.2.2
+Architecture-Adaptive Pruning Execution. To translate
+importance scores into practical acceleration, we adopt a unified
+Order-Preserving Sequence Compression strategy. This mechanism
+explicitly reduces the sequence length for subsequent layers while
+rigorously maintaining the relative temporal order of tokens.
+
+Semantic Trimming and Auxiliary Multi-step Prediction for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Token Selection. The execution begins by identifying the set
+of indices, K, intended for retention. We introduce a retention
+ratio 𝛼∈(0, 1] to determine the total budget of preserved tokens,
+such that the cardinality of the selected set is |K| = ⌊𝛼· 𝑁⌋. For
+decoder-only architectures (e.g., Qwen), where the loss is computed
+directly from the most recent tokens, we introduce a protected
+window of size 𝑊. Tokens within this window (Wrecent ⊆K)
+are mandatorily retained regardless of their importance scores,
+ensuring uninterrupted gradient flow for target prediction. The
+remaining capacity in K is filled by the tokens with the highest
+importance scores.
+Index Re-ordering and Compression. Naively gathering se-
+lected tokens by importance would disrupt the temporal integrity
+of the user interaction sequence. Therefore, we sort the selected
+indices to restore their original relative positions:
+Ksorted = Sort(K, order = ascending).
+(7)
+Subsequently, we apply compression by gathering the hidden states
+corresponding to these sorted indices:
+𝐻(𝑙)
+compressed = Gather
+
+𝐻(𝑙), Ksorted
+
+.
+(8)
+This operation reduces the sequence length from 𝑁to 𝛼·𝑁, directly
+alleviating the computation complexity in all subsequent layers.
+3.3
+Multi-step Auxiliary Prediction
+To combat the dilution of supervision signals and recover semantic
+details potentially omitted by pruning, we introduce the MAP mod-
+ule. Functioning as a semantic amplifier via Multi-Token Prediction
+(MTP) [11], MAP encourages the model to look beyond immediate
+dependencies. Given the concise nature of SIDs (typically 3 tokens),
+we extend the supervision horizon by adding just one auxiliary
+head.
+3.3.1
+Dense Supervision Formulation. Formally, we incorpo-
+rate an auxiliary objective to forecast the subsequent token 𝑦𝑡+2 in
+parallel with the standard target 𝑦𝑡+1. Let h𝑡∈R𝑑denote the latent
+representation produced by the backbone at step 𝑡. To enable this
+lookahead, we fuse h𝑡with the ground truth embedding of the next
+token, 𝐸(𝑦𝑡+1), to construct a foresight representation h𝑚𝑡𝑝
+𝑡
+:
+h𝑚𝑡𝑝
+𝑡
+= MLP (Concat(h𝑡, 𝐸(𝑦𝑡+1))) .
+(9)
+This operation constructs a foresight representation h𝑚𝑡𝑝
+𝑡
+, which
+simulates the hidden state at step 𝑡+ 1. By explicitly modeling
+this state transition, the module forces the backbone to encode
+predictive features that are not only sufficient for the current step
+but also transferable to future contexts.
+3.3.2
+Shared Projection Strategy. To map the foresight rep-
+resentation h𝑚𝑡𝑝
+𝑡
+into the target vocabulary space V, we enforce
+a weight-sharing constraint. Instead of initializing a separate predic-
+tion head, we utilize the exact same unembedding matrix (LM_Head)
+as the primary backbone:
+𝑃(𝑦𝑡+2 | h𝑡,𝑦𝑡+1) = Softmax(LM_Head(h𝑚𝑡𝑝
+𝑡
+)).
+(10)
+This reuse aligns the auxiliary representations with the primary se-
+mantic space, ensuring consistent optimization without introducing
+additional overhead.
+3.4
+Optimization Objective
+The STAMP framework undergoes end-to-end optimization. The
+primary objective is to minimize the negative log-likelihood for the
+target SID sequence 𝑌= [𝑦1,𝑦2, . . . ,𝑦𝐿] in Equation 2. Consistent
+with this generative paradigm, the MAP module operates as an
+auxiliary objective. It minimizes the negative log-likelihood of the
+subsequent SID token, 𝑦𝑗+1, conditioned on the foresight context
+at step 𝑗. Since the prediction of 𝑦𝑗+1 requires the ground truth 𝑦𝑗
+as input, the summation runs up to 𝐿−1:
+LMAP = −
+𝐿−1
+∑︁
+𝑗=1
+log 𝑃(𝑦𝑗+1 | h𝑗,𝑦𝑗).
+(11)
+Consequently, the overall training objective is formulated as a
+weighted sum of the primary and auxiliary losses:
+Ltotal = LNTP + 𝜆· LMAP,
+(12)
+where 𝜆serves as a hyperparameter to balance the influence of
+the dense supervision signal. Crucially, as an auxiliary training
+objective, the MAP module is discarded during inference, ensuring
+the deployment model incurs zero latency overhead.
+4
+Experiments
+To comprehensively evaluate the versatility and robustness of
+STAMP across different architectures and data scales, we con-
+duct extensive experiments using a dual-track evaluation setting.
+Specifically, we utilize the GRID [16] framework to implement
+the Encoder-Decoder (T5) architecture on three public Amazon
+datasets. Complementarily, to assess the framework’s capability in
+a large-scale industrial scenario, we employ the FORGE [9] frame-
+work to instantiate the Decoder-Only (Qwen) architecture on the
+industrial dataset AL-GR-Tiny. Through this diverse setup, we aim
+to answer the following research questions:
+• RQ1: How does STAMP perform in performance and efficiency
+on different architectures of SID-based generative recommen-
+dation?
+• RQ2: What roles do STAMP’s two modules, SAP and MAP,
+play in its performance?
+• RQ3: How do the design configurations of SAP (i.e., pruning
+strategy, pruning layer, and retention ratio) affect the model
+performance?
+• RQ4: What mechanism enables STAMP to safely prune the
+majority of tokens?
+4.1
+Experimental Settings
+4.1.1
+Datasets. We employ four datasets divided into two distinct
+categories. The detailed statistics are summarized in Table 1.
+Table 1: Statistics of the datasets.
+Dataset
+#Users
+#Items
+#Interactions
+Sports
+35.6K
+18.4K
+296.3K
+Beauty
+22.4K
+12.1K
+198.5K
+Toys
+19.4K
+11.9K
+167.6K
+AL-GR
+131M
+251M
+14B
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+Table 2: Overall performance on GRID (T5) over Beauty, Sports and Toys. We report the training time and VRAM usage on a
+single NVIDIA A100 GPU. ↑indicates higher is better, and ↓indicates lower is better.
+Backbone
+Dataset
+Method
+Performance Metrics
+Efficiency Metrics
+Recall@5
+Recall@10
+NDCG@5
+NDCG@10
+Time ↓
+Speedup ↑
+VRAM ↓
+Reduction ↑
+GRID (T5)
+Beauty
+Base
+0.0426 ± 0.0013
+0.0645 ± 0.0019
+0.0282 ± 0.0014
+0.0353 ± 0.0013
+212s
+–
+22234MiB
+–
+STAMP (L=2)
+0.0444 ± 0.0012
+0.0655 ± 0.0015
+0.0295 ± 0.0011
+0.0363 ± 0.0012
+170s
+1.25×
+13862MiB
+37.7%
+STAMP (L=1)
+0.0441 ± 0.0010
+0.0657 ± 0.0022
+0.0293 ± 0.0006
+0.0363 ± 0.0009
+154s
+1.38×
+10378MiB
+53.3%
+Sports
+Base
+0.0234 ± 0.0004
+0.0354 ± 0.0004
+0.0154 ± 0.0002
+0.0193 ± 0.0001
+205s
+–
+29370MiB
+–
+STAMP (L=2)
+0.0228 ± 0.0015
+0.0352 ± 0.0015
+0.0153 ± 0.0008
+0.0193 ± 0.0008
+166s
+1.23×
+18318MiB
+37.6%
+STAMP (L=1)
+0.0232 ± 0.0009
+0.0354 ± 0.0019
+0.0153 ± 0.0009
+0.0192 ± 0.0012
+151s
+1.36×
+13302MiB
+54.7%
+Toys
+Base
+0.0345 ± 0.0010
+0.0499 ± 0.0008
+0.0238 ± 0.0009
+0.0287 ± 0.0006
+216s
+–
+22268MiB
+–
+STAMP (L=2)
+0.0356 ± 0.0009
+0.0503 ± 0.0010
+0.0246 ± 0.0006
+0.0293 ± 0.0007
+174s
+1.24×
+14256MiB
+36.0%
+STAMP (L=1)
+0.0344 ± 0.0012
+0.0509 ± 0.0015
+0.0235 ± 0.0009
+0.0286 ± 0.0013
+159s
+1.36×
+10658MiB
+52.1%
+Table 3: Overall performance on FORGE (Qwen2.5-Instruct-0.5B) over AL-GR-Tiny. We report the training time and VRAM
+usage on two NVIDIA A100 GPUs. ↑indicates higher is better, and ↓indicates lower is better.
+Backbone
+Dataset
+Method
+Performance Metrics
+Efficiency Metrics
+Hit@20
+Hit@100
+Hit@500
+Hit@1000
+Time ↓
+Speedup ↑
+VRAM ↓
+Reduction ↑
+FORGE
+(Qwen)
+AL-GR-Tiny
+Base
+0.0209
+0.0508
+0.1155
+0.1400
+1139s
+–
+2*64232MiB
+–
+STAMP (L=6)
+0.0207
+0.0506
+0.1149
+0.1405
+851s
+1.34×
+2*53196MiB
+17.2%
+• Amazon1: We utilize three widely adopted subsets of the Ama-
+zon review dataset: Beauty, Toys, and Sports. These datasets
+capture extensive user interactions within specific e-commerce
+categories. Consistent with established protocols, we apply a
+5-core filter to retain only users and items with at least five
+interactions, thereby ensuring data quality. We adopt a leave-
+one-out evaluation strategy: for each user sequence, the final
+interaction is reserved for testing, the penultimate for valida-
+tion, and the remaining interactions serve as the training set.
+• AL-GR-Tiny2: To evaluate scalability within a massive indus-
+trial context, we employ AL-GR-Tiny, a subset derived from the
+AL-GR benchmark. Originating from Taobao, one of the largest
+e-commerce platforms in China, this dataset distinguishes itself
+as the first industrial-scale benchmark specifically designed for
+forming SIDs in GR. Unlike prior datasets limited to interac-
+tions or single modalities, it integrates rich multimodal features
+(i.e., text and images) across over 250 million items to facili-
+tate comprehensive SID construction. To ensure reproducibility
+and standardize the experimental setting, we directly use the
+pre-processed open-source data provided by the benchmark.
+Specifically, we adopt the Stage 1 (S1) split, which encompasses
+four days of continuous user behaviors for training, along with
+a corresponding test set sampled from the subsequent day.
+4.1.2
+Backbone Framework. We validate its effectiveness using
+distinct frameworks that cover the dominant generative paradigms.
+We leverage GRID to implement the Encoder-Decoder (T5) archi-
+tecture, which relies on dense cross-attention to model user pref-
+erences in standard academic settings. To complement this, we
+1https://jmcauley.ucsd.edu/data/amazon/
+2https://huggingface.co/datasets/AL-GR/AL-GR-Tiny
+employ FORGE to instantiate the Decoder-Only (Qwen) architec-
+ture, representing the causal modeling paradigm typical of large-
+scale industrial applications. This dual-framework setup ensures
+our evaluation is robust across different architectural designs and
+deployment scales.
+4.1.3
+Evaluation Metrics. Consistent with prior research in rec-
+ommendation systems and LLM acceleration [14], we adopt the
+following metrics to evaluate our method:
+• Recommendation Effectiveness: For the GRID framework,
+we report Recall@K and NDCG@K (𝐾∈{5, 10}) to assess re-
+trieval proportion and ranking quality. Conversely, the FORGE
+framework relies on HitRate@K (𝐾∈{20, 100, 500, 1000}),
+measuring the percentage of cases where the ground-truth
+item appears in the top-K candidates.
+• Training Efficiency: We evaluate system performance via
+Training Speedup, defined as the time against the baseline
+over 1,600 steps, and VRAM Reduction, which quantifies the
+percentage decrease in peak GPU memory usage.
+4.1.4
+Implementation Details. We align our implementation
+with the standard configurations of the respective frameworks.
+For the GRID framework, we leverage Flan-T5-XL for semantic
+encoding and utilize RK-Means for tokenization, configured with
+three codebooks by default. The generative backbone is instantiated
+as a lightweight T5 Encoder-Decoder architecture, comprising 8
+Transformer layers (4 encoder and 4 decoder) with a hidden di-
+mension of 128, 6 attention heads, and an MLP dimension of 1,024.
+Regarding the framework-specific modules, we set the retention
+ratio in SAP to 𝛼= 1/3 and the fusion coefficient in MAP to 𝜆= 0.3.
+We optimize the model using Adam with a learning rate of 1 × 10−3
+and weight decay of 1 × 10−4, applying a dropout rate of 0.15. All
+experiments are conducted on a single NVIDIA A100-PCIE-40GB
+
+Semantic Trimming and Auxiliary Multi-step Prediction for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+GPU with a batch size of 32 and a sequence length of 120, utilizing
+early stopping with a patience of 10 intervals (validated every 1,600
+steps). Given the observed sensitivity of GRID to random initializa-
+tion, we report results averaged over five specific random seeds:
+{1, 42, 999, 1024, 2025}, to ensure statistical robustness.
+For the FORGE framework, we directly employ the pre-processed
+AL-GR-Tiny dataset. The backbone is instantiated using the Qwen2.5-
+0.5B-Instruct architecture. We configure the input processing with
+a maximum sequence length of 1,280 tokens, allocating 1,024 tokens
+for the source and 256 tokens for the target generation. Regarding
+the framework-specific modules, we set the retention ratio in SAP
+to 𝛼= 0.6 and the fusion coefficient in MAP to 𝜆= 0.3. The model
+is fine-tuned using bfloat16 precision to enhance training efficiency
+on two NVIDIA A100-SXM4-80GB GPUs. We utilize the AdamW
+optimizer (𝛽1 = 0.9, 𝛽2 = 0.999,𝜖= 1e-8) with a per-device batch
+size of 80. The training is conducted for a single epoch, totaling
+100000 steps.
+4.2
+Overall Performance (RQ1)
+We conduct a dual-track evaluation covering two distinct generative
+paradigms: 1) the GRID framework, utilizing an Encoder-Decoder
+backbone (T5) on three standard Amazon datasets; and 2) the
+FORGE framework, utilizing a Decoder-Only backbone (Qwen2.5-
+Instruct-0.5B) on the industrial-scale AL-GR-Tiny dataset. In the
+following analysis, the notation 𝐿= 𝑛denotes that the SAP module
+is applied after the 𝑛-th Transformer layer. A detailed analysis of
+the pruning layer selection (𝐿) is presented in Section 4.3.3.
+4.2.1
+Performance on GRID (T5). Table 2 presents the perfor-
+mance comparison between the base model and STAMP (instanti-
+ated with different pruning layers 𝐿∈{1, 2}). From these results,
+we derive the following observations regarding efficiency and ef-
+fectiveness:
+• STAMP achieves a substantial reduction in computational over-
+head by physically pruning redundant tokens early in the for-
+ward pass. Specifically, the aggressive STAMP (𝐿= 1) configu-
+ration yields a training speedup ranging from 1.36× to 1.38×
+across all datasets. Furthermore, it reduces peak VRAM usage
+by over 50%. Even with the more conservative strategy (𝐿= 2),
+we observe a consistent speedup of 1.25× and VRAM savings
+of ∼37%. These efficiencies are critical for resource-constrained
+environments, enabling the deployment of larger batch sizes or
+deeper models.
+• Regarding recommendation quality, STAMP preserves baseline
+accuracy and, in certain scenarios, exceeds it. Notably, STAMP
+(𝐿= 2) consistently outperforms the Base model on the Beauty
+and Toys datasets. This finding suggests that STAMP acts as
+an effective denoising filter, enabling the model to focus on
+core user preferences. Moreover, the richer supervision signals
+provided by the framework enhance both training stability and
+effectiveness.
+4.2.2
+Performance on FORGE (Qwen). To validate the scalabil-
+ity of STAMP on decoder-only models and industrial datasets, we
+instantiate the framework on the Qwen2.5-0.5B architecture using
+the AL-GR-Tiny dataset. The results, summarized in Table 3, reveal
+distinct performance dynamics compared to the T5 experiments,
+attributable to the characteristics of the model architecture and the
+industrial data distribution.
+• STAMP (𝐿= 6) achieves a training speedup of 1.34× while
+reducing VRAM usage by 17.2%. The relatively lower memory
+reduction compared to T5 is attributed to the architectural
+depth of Qwen2.5-Instruct-0.5B (24 Transformer layers), which
+results in a sustantial proportion of static VRAM being occupied
+by model parameters rather than data-dependent activations.
+Nevertheless, the absolute memory savings remain significant
+for industrial-scale training. A detailed efficiency analysis is
+provided in Section 4.3.3.
+• Benefiting from the integration of multimodal features and col-
+laborative relations [9], the SIDs in AL-GR-Tiny exhibit high
+semantic density and contain minimal redundant information.
+Consequently, relying solely on SAP typically leads to per-
+formance degradation, as observed in Section 4.3.1. However,
+with the incorporation of MAP, STAMP achieves recommen-
+dation performance nearly identical to the Base model, despite
+the aggressive compression of long industrial sequences. This
+demonstrates that STAMP is model-agnostic, capable of effec-
+tively compressing massive sequences without compromising
+the generative quality.
+4.3
+In-depth Analysis
+Figure 5: Ablation study of T5 on Amazon datasets and Qwen
+on AL-GR-Tiny.
+Figure 6: Base vs. SAP (𝐿= 2) of T5 on Beauty and Toys.
+4.3.1
+Ablation Study (RQ2). To evaluate the individual contribu-
+tions of each component within STAMP, we conducted an ablation
+study by isolating the SAP and MAP modules. Figure 5 presents
+the performance results for T5 (across three Amazon datasets) and
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+Table 4: Efficiency Analysis.
+Backbone
+Dataset
+Method
+Time (s) Speedup VRAM (MiB)
+Red.
+T5
+Beauty
+Base
+212
+-
+22234
+-
+MAP
+216
+0.98×
+22238
+∼0%
+SAP (L=2)
+165
+1.28×
+13858
+37.7%
+STAMP (L=2)
+170
+1.25×
+13862
+37.7%
+SAP (L=1)
+146
+1.45×
+10374
+53.3%
+STAMP (L=1)
+154
+1.38×
+10378
+53.3%
+Sports
+Base
+205
+-
+29370
+-
+MAP
+208
+0.99×
+29374
+∼0%
+SAP (L=2)
+160
+1.28×
+18314
+37.6%
+STAMP (L=2)
+166
+1.23×
+18318
+37.6%
+SAP (L=1)
+145
+1.41×
+13298
+54.7%
+STAMP (L=1)
+151
+1.36×
+13302
+54.7%
+Toys
+Base
+216
+-
+22268
+-
+MAP
+219
+0.99×
+22272
+∼0%
+SAP (L=2)
+169
+1.28×
+14252
+36.0%
+STAMP (L=2)
+174
+1.24×
+14256
+36.0%
+SAP (L=1)
+153
+1.41×
+10654
+52.2%
+STAMP (L=1)
+159
+1.36×
+10658
+52.1%
+Qwen
+AL-GR-Tiny
+Base
+1139
+-
+2*64232
+-
+MAP
+1152
+0.99×
+2*65786
+-2.42%
+SAP (L=6)
+838
+1.36×
+2*51632
+19.6%
+STAMP (L=6)
+851
+1.34×
+2*53196
+17.2%
+Qwen (on AL-GR-Tiny), while Table 4 reports the associated effi-
+ciency metrics. Several consistent observations emerge across both
+architectures:
+• The standalone MAP module consistently outperforms the
+Base model. This indicates that MAP serves not merely as a
+compensatory mechanism for the potential information loss
+induced by SAP, but rather as an independent enhancement
+that strengthens the model by introducing auxiliary super-
+vision signals alongside the primary objective. It enhances
+the optimization of shared representations, justifying the
+marginal increase in computational cost.
+• The SAP module substantially reduces training latency and
+VRAM consumption by pruning redundant tokens. Although
+this reduction typically involves a minor trade-off in per-
+formance, we observe a notable exception with T5 on the
+Beauty and Toys datasets, where pruning at the second en-
+coder layer actually yields performance gains, as illustrated
+in Figure 6. This suggests that in datasets characterized by
+noise [33], once information has been aggregated in the ini-
+tial layers, the removal of low-utility tokens functions as
+a denoising mechanism, thereby facilitating more effective
+feature extraction from the remaining sequence.
+• STAMP effectively leverages the synergy between these
+modules. It simultaneously achieves the high efficiency of
+SAP and the robustness of MAP. By significantly lowering
+training time and resource overhead while maintaining rec-
+ommendation performance, STAMP provides a valuable ref-
+erence solution for industrial scenarios where daily model
+retraining necessitates high training efficiency.
+4.3.2
+Impact of Pruning Strategies (RQ3). To evaluate the effective-
+ness of our token selection method, we compare SAP with two
+types of baselines within the GRID framework: (1) aggregation
+methods (Max and Average Pooling), and (2) a magnitude-based
+Figure 7: Comparison of Different Pruning Strategies (T5 on
+Beauty). (Left) Validation curves during the training phase.
+(Right) Performance on the test set.
+Figure 8: Performance of SAP with diffirent Pruning Layer
+and Retention Ratio 𝛼(Qwen on AL-GR-Tiny).
+method using the ℓ2 norm or attention based method based only on
+token’s attention centrality. Figure 7 shows the validation curves
+during training (left) and the final results on the test set (right).The
+results reveal two key insights. First, aggregation methods perform
+much worse. As shown by the lower curves during training, simply
+mixing token features destroys specific semantic details, making it
+difficult for the model to capture precise user preferences. Second,
+although the ℓ2-norm method works well by keeping tokens with
+large values, it has a limitation. It only considers the internal value
+of a token, ignoring its importance in context. As a result, this
+method might remove tokens that have small values but are highly
+attended to by others, which limits the model’s potential perfor-
+mance. Similarly, the attention method focuses solely on tokens
+that output the most information to the context, while neglecting
+those semantic aggregators that become increasingly critical by
+gradually accumulating information from other tokens. SAP con-
+sistently outperforms these two baselines, especially in the later
+stages of training. This superiority demonstrates that accurately
+quantifying token importance requires the consideration of both
+semantic saliency and attention centrality.
+4.3.3
+Hyperparameter Sensitivity: Pruning Layer and Retention Ra-
+tio (RQ3). To investigate the trade-off between training efficiency
+and recommendation accuracy, we use the Qwen2.5-0.5B-Instruct
+architecture with SAP to analyze the sensitivity of the pruning
+layer (𝐿) and retention ratio (𝛼). Generally, aggressive pruning
+
+Semantic Trimming and Auxiliary Multi-step Prediction for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Figure 9: Efficiency of SAP (L=6) with diffirent Retneion Ratio
+𝛼(Qwen on AL-GR-Tiny).
+Figure 10: The attention distributions on different layers of
+three examples (T5 on Beauty).
+strategies (earlier layers or lower retention ratios) offer larger gains
+in training speed and VRAM reduction, but they come with a risk
+of performance loss. As shown in Figure 9, the model shows good
+tolerance for moderate compression, suggesting that many tokens
+are redundant for the recommendation task. However, performance
+drops sharply once compression goes beyond a critical limit, indi-
+cating that excessive pruning removes key semantic information
+needed for user profiling. Furthermore, we find that the optimal
+pruning depth is closely related to the retention ratio. While the
+choice of pruning layer has little impact in conservative settings,
+applying pruning at deeper layers is much more effective under
+aggressive compression. Consistent with prior work in inference
+acceleration [51], this suggests that shallow layers are crucial for
+encoding basic features and sensitive to information loss, while
+deeper layers are more robust to token removal as they have already
+gathered sufficient context.
+4.3.4
+Why is Pruning Safe? (RQ4). To uncover the reason why we
+can compress tokens significantly without performance loss, we
+visualize the attention heatmaps of the T5 encoder (Layers 1 to 4)
+for three randomly sampled sequences from the Beauty test set, as
+shown in Figure 10. Consistent with the information aggregation
+phenomenon observed in LLMs [12, 49], the attention patterns re-
+veal a clear hierarchical information flow characterized by two key
+observations. 1) a large portion of item tokens show consistently
+low attention scores throughout the entire encoding process. These
+tokens likely represent noisy interactions or redundant information
+overlapped by other dominant tokens. Since they rarely participate
+in the information exchange required for user profiling, they act
+as "dead weight" and can be safely pruned to save computational
+resources. 2) A distinct subset of tokens shows a dynamic pattern
+where they receive high attention weights in early layers but fade
+rapidly in deeper layers. This suggests that early layers use these to-
+kens as essential scaffolding to build basic features, which are later
+absorbed by specific key tokens. Crucially, this explains why prun-
+ing should not be performed too early in shallow layers: removing
+these tokens too early disrupts the initial information aggregation,
+whereas pruning them later, once their semantic value has been
+fully digested, is both safe and efficient.
+5
+Related Work
+Generative Retrieval. Generative recommendation has recently
+emerged as a transformative paradigm [17, 26, 34, 44]. Prior to
+this paradigm shift, researchers primarily utilized LLMs as aux-
+iliary components to enhance conventional discriminative mod-
+els [4, 37, 40]. In contrast, the generative retrieval framework serial-
+izes item interaction sequences into discrete tokens. This approach
+allows the model to directly predict target items in an autoregres-
+sive manner [9, 16, 51]. Building on this foundation, subsequent
+studies have focused on refining the learning process by develop-
+ing optimized training frameworks [22, 30] to handle large-scale
+data. Furthermore, advanced strategies such as reinforcement learn-
+ing [42, 56] have been integrated to better align generated outputs
+with complex user preferences.
+Semantic Identifier. The efficacy of generative recommendation
+relies heavily on the tokenization strategy. The Semantic ID (SID)
+paradigm, pioneered by TIGER [35], represents items as sequences
+of hierarchical codewords. This structure enables knowledge trans-
+fer among semantically similar entities. Early SID methods primar-
+ily derived codes from content modalities. However, subsequent
+research argued that content alone is insufficient for capturing user
+preferences. Consequently, a growing body of work [20, 30, 45]
+has shifted towards incorporating collaborative signals. Regarding
+encoding efficiency [25], approaches like OneRec [58] and RPG [15]
+have streamlined the quantization pipeline using Residual Quan-
+tized K-means (RQ-Kmeans) and Optimized Product Quantization
+(OPQ) [10] to effectively reduce the codebook size. More recently,
+GRID [16] introduced a unified and open-source framework specif-
+ically designed for SID-GR. FORGE [9] addressed the challenges of
+industrial deployment by introducing a large-scale benchmark and
+proposing advanced optimization strategies to ensure SID robust-
+ness in real-world scenarios.
+Acceleration of LLMRec. Extensive efforts have been made to ad-
+dress the efficiency challenges of generative recommendation from
+different perspectives. Regarding model complexity, techniques
+like quantization [8, 24] and knowledge distillation [5, 39] effec-
+tively reduce the memory usage. However, these approaches usually
+impose additional post-training phases and often incur a loss in
+model performance. To target latency reduction, researchers have
+explored speculative sampling [27, 48] and efficient attention mech-
+anisms [7, 23, 32, 53]. More recently, token pruning has been inves-
+tigated as a promising direction to skip redundant computation in
+NLP and CV [1, 6, 51, 52, 54]. Despite their potential, speculative
+sampling and existing token pruning methods remain primarily
+inference-centric.
+6
+Conclusion
+In this work, we identified the Semantic Dilution Effect as the shared
+root cause of inefficiency and instability in SID-based Generative
+Recommendation, characterized by Information Non-uniformity at
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+the input and Supervision Sparsity at the output. To address this,
+we proposed STAMP, a dual-end framework designed to reconcile
+training efficiency with model robustness. Central to our approach
+is the Semantic Adaptive Pruning (SAP) module, which dynami-
+cally filters redundant tokens to substantially reduce computational
+overhead and memory consumption. Furthermore, we integrated
+a Multi-step Auxiliary Prediction (MAP) module. Rather than sim-
+ply acting as a remedy for pruning, MAP serves as an indepen-
+dent enhancement that densifies supervision signals. This enables
+the model to capture long-range dependencies and learn robust
+user representations. Extensive experiments across diverse datasets
+and backbone architectures (Encoder-Decoder and Decoder-Only)
+demonstrate that STAMP achieves an optimal balance between
+efficiency and performance. The results confirm that STAMP de-
+livers significant training acceleration and memory savings while
+maintaining, and in some cases surpassing, the recommendation
+accuracy of full-sequence baselines.
+
+Semantic Trimming and Auxiliary Multi-step Prediction for Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+References
+[1] Saeed Ranjbar Alvar, Gursimran Singh, Mohammad Akbari, and Yong Zhang.
+2025. Divprune: Diversity-based visual token pruning for large multimodal
+models. In Proceedings of the Computer Vision and Pattern Recognition Conference.
+9392–9401.
+[2] Gregor Bachmann and Vaishnavh Nagarajan. 2024. The pitfalls of next-token
+prediction. arXiv preprint arXiv:2403.06963 (2024).
+[3] Daniel Bolya, Cheng-Yang Fu, Xiaoliang Dai, Peizhao Zhang, Christoph Feichten-
+hofer, and Judy Hoffman. 2022. Token merging: Your vit but faster. arXiv preprint
+arXiv:2210.09461 (2022).
+[4] Lei Chen, Chen Gao, Xiaoyi Du, Hengliang Luo, Depeng Jin, Yong Li, and Meng
+Wang. 2025. Enhancing ID-based recommendation with large language models.
+ACM Transactions on Information Systems 43, 5 (2025), 1–30.
+[5] Yu Cui, Feng Liu, Pengbo Wang, Bohao Wang, Heng Tang, Yi Wan, Jun Wang, and
+Jiawei Chen. 2024. Distillation matters: empowering sequential recommenders
+to match the performance of large language models. In Proceedings of the 18th
+ACM Conference on Recommender Systems. 507–517.
+[6] Shuangrui Ding, Peisen Zhao, Xiaopeng Zhang, Rui Qian, Hongkai Xiong, and
+Qi Tian. 2023. Prune spatio-temporal tokens by semantic-aware temporal accu-
+mulation. In Proceedings of the IEEE/CVF International Conference on Computer
+Vision. 16945–16956.
+[7] Xinyan Fan, Zheng Liu, Jianxun Lian, Wayne Xin Zhao, Xing Xie, and Ji-Rong
+Wen. 2021. Lighter and better: low-rank decomposed self-attention networks for
+next-item recommendation. In Proceedings of the 44th international ACM SIGIR
+conference on research and development in information retrieval. 1733–1737.
+[8] Elias Frantar, Saleh Ashkboos, Torsten Hoefler, and Dan Alistarh. 2022. Gptq:
+Accurate post-training quantization for generative pre-trained transformers.
+arXiv preprint arXiv:2210.17323 (2022).
+[9] Kairui Fu, Tao Zhang, Shuwen Xiao, Ziyang Wang, Xinming Zhang, Chenchi
+Zhang, Yuliang Yan, Junjun Zheng, Yu Li, Zhihong Chen, Jian Wu, Xiangheng
+Kong, Shengyu Zhang, Kun Kuang, Yuning Jiang, and Bo Zheng. 2025. FORGE:
+Forming Semantic Identifiers for Generative Retrieval in Industrial Datasets.
+arXiv:2509.20904 [cs.IR] https://arxiv.org/abs/2509.20904
+[10] Tiezheng Ge, Kaiming He, Qifa Ke, and Jian Sun. 2013. Optimized product
+quantization. IEEE transactions on pattern analysis and machine intelligence 36, 4
+(2013), 744–755.
+[11] Fabian Gloeckle, Badr Youbi Idrissi, Baptiste Rozière, David Lopez-Paz, and
+Gabriel Synnaeve. 2024. Better & faster large language models via multi-token
+prediction. In Proceedings of the 41st International Conference on Machine Learning.
+15706–15734.
+[12] Xiangming Gu, Tianyu Pang, Chao Du, Qian Liu, Fengzhuo Zhang, Cunxiao Du,
+Ye Wang, and Min Lin. 2024. When attention sink emerges in language models:
+An empirical view. arXiv preprint arXiv:2410.10781 (2024).
+[13] Zhiyu Guo, Hidetaka Kamigaito, and Taro Watanabe. 2024. Attention Score is not
+All You Need for Token Importance Indicator in KV Cache Reduction: Value Also
+Matters. In Proceedings of the 2024 Conference on Empirical Methods in Natural
+Language Processing. 21158–21166.
+[14] Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn
+Song, and Jacob Steinhardt. 2020. Measuring massive multitask language under-
+standing. arXiv preprint arXiv:2009.03300 (2020).
+[15] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating long
+semantic ids in parallel for recommendation. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V. 2. 956–966.
+[16] Clark Mingxuan Ju, Liam Collins, Leonardo Neves, Bhuvesh Kumar, Louis Yufeng
+Wang, Tong Zhao, and Neil Shah. 2025. Generative Recommendation with Seman-
+tic IDs: A Practitioner’s Handbook. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management (CIKM).
+[17] Sein Kim, Hongseok Kang, Seungyoon Choi, Donghyun Kim, Minchul Yang, and
+Chanyoung Park. 2024. Large language models meet collaborative filtering: An
+efficient all-round llm-based recommender system. In Proceedings of the 30th
+ACM SIGKDD Conference on Knowledge Discovery and Data Mining. 1395–1406.
+[18] Sehoon Kim, Sheng Shen, David Thorsley, Amir Gholami, Woosuk Kwon, Joseph
+Hassoun, and Kurt Keutzer. 2022. Learned token pruning for transformers. In
+Proceedings of the 28th ACM SIGKDD conference on knowledge discovery and data
+mining. 784–794.
+[19] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive image generation using residual quantization. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition. 11523–11532.
+[20] Kaiyuan Li, Rui Xiang, Yong Bai, Yongxiang Tang, Yanhua Cheng, Xialong Liu,
+Peng Jiang, and Kun Gai. 2025. Bbqrec: Behavior-bind quantization for multi-
+modal sequential recommendation. arXiv preprint arXiv:2504.06636 (2025).
+[21] Xiaopeng Li, Bo Chen, Junda She, Shiteng Cao, You Wang, Qinlin Jia, Haiying He,
+Zheli Zhou, Zhao Liu, Ji Liu, Zhiyang Zhang, Yu Zhou, Guoping Tang, Yiqing Yang,
+Chengcheng Guo, Si Dong, Kuo Cai, Pengyue Jia, Maolin Wang, Wanyu Wang,
+Shiyao Wang, Xinchen Luo, Qigen Hu, Qiang Luo, Xiao Lv, Chaoyi Ma, Ruiming
+Tang, Kun Gai, Guorui Zhou, and Xiangyu Zhao. 2025. A Survey of Generative
+Recommendation from a Tri-Decoupled Perspective: Tokenization, Architecture,
+and Optimization. Preprints (December 2025). doi:10.20944/preprints202512.0203.
+v1
+[22] Zida Liang, Changfa Wu, Dunxian Huang, Weiqiang Sun, Ziyang Wang, Yuliang
+Yan, Jian Wu, Yuning Jiang, Bo Zheng, Ke Chen, et al. 2025. Tbgrecall: A generative
+retrieval model for e-commerce recommendation scenarios. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+5863–5870.
+[23] Jianghao Lin, Xinyi Dai, Rong Shan, Bo Chen, Ruiming Tang, Yong Yu, and
+Weinan Zhang. 2025. Large language models make sample-efficient recommender
+systems. Frontiers of Computer Science 19, 4 (2025), 194328.
+[24] Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen
+Wang, Guangxuan Xiao, Xingyu Dang, Chuang Gan, and Song Han. 2024. Awq:
+Activation-aware weight quantization for on-device llm compression and accel-
+eration. Proceedings of machine learning and systems 6 (2024), 87–100.
+[25] Xinyu Lin, Haihan Shi, Wenjie Wang, Fuli Feng, Qifan Wang, See-Kiong Ng, and
+Tat-Seng Chua. 2025. Order-agnostic identifier for large language model-based
+generative recommendation. In Proceedings of the 48th international ACM SIGIR
+conference on research and development in information retrieval. 1923–1933.
+[26] Xinyu Lin, Wenjie Wang, Yongqi Li, Fuli Feng, See-Kiong Ng, and Tat-Seng Chua.
+2024. Bridging items and language: A transition paradigm for large language
+model-based recommendation. In Proceedings of the 30th ACM SIGKDD Conference
+on Knowledge Discovery and Data Mining. 1816–1826.
+[27] Xinyu Lin, Chaoqun Yang, Wenjie Wang, Yongqi Li, Cunxiao Du, Fuli Feng,
+See-Kiong Ng, and Tat-Seng Chua. 2024. Efficient inference for large language
+model-based generative recommendation. arXiv preprint arXiv:2410.05165 (2024).
+[28] Zhenghao Lin, Zhibin Gou, Yeyun Gong, Xiao Liu, Ruochen Xu, Chen Lin, Yujiu
+Yang, Jian Jiao, Nan Duan, Weizhu Chen, et al. 2024. Not all tokens are what
+you need for pretraining. Advances in Neural Information Processing Systems 37
+(2024), 29029–29063.
+[29] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Cheng-
+gang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. 2024. Deepseek-v3
+technical report. arXiv preprint arXiv:2412.19437 (2024).
+[30] Enze Liu, Bowen Zheng, Cheng Ling, Lantao Hu, Han Li, and Wayne Xin Zhao.
+2025. Generative recommender with end-to-end learnable item tokenization.
+In Proceedings of the 48th International ACM SIGIR Conference on Research and
+Development in Information Retrieval. 729–739.
+[31] Jingzhe Liu, Liam Collins, Jiliang Tang, Tong Zhao, Neil Shah, and Clark Mingx-
+uan Ju. 2025. Understanding Generative Recommendation with Semantic IDs from
+a Model-scaling View. arXiv:2509.25522 [cs.AI] https://arxiv.org/abs/2509.25522
+[32] Langming Liu, Liu Cai, Chi Zhang, Xiangyu Zhao, Jingtong Gao, Wanyu Wang,
+Yifu Lv, Wenqi Fan, Yiqi Wang, Ming He, et al. 2023. Linrec: Linear attention
+mechanism for long-term sequential recommender systems. In Proceedings of
+the 46th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 289–299.
+[33] Curtis G Northcutt, Anish Athalye, and Jonas Mueller. 2021. Pervasive label
+errors in test sets destabilize machine learning benchmarks. arXiv preprint
+arXiv:2103.14749 (2021).
+[34] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[35] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[36] Yongming Rao, Wenliang Zhao, Benlin Liu, Jiwen Lu, Jie Zhou, and Cho-Jui Hsieh.
+2021. Dynamicvit: Efficient vision transformers with dynamic token sparsification.
+Advances in neural information processing systems 34 (2021), 13937–13949.
+[37] Yankun Ren, Zhongde Chen, Xinxing Yang, Longfei Li, Cong Jiang, Lei Cheng,
+Bo Zhang, Linjian Mo, and Jun Zhou. 2024. Enhancing sequential recommenders
+with augmented knowledge from aligned large language models. In Proceedings
+of the 47th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 345–354.
+[38] Yuzhang Shang, Mu Cai, Bingxin Xu, Yong Jae Lee, and Yan Yan. 2025. Llava-
+prumerge: Adaptive token reduction for efficient large multimodal models. In
+Proceedings of the IEEE/CVF International Conference on Computer Vision. 22857–
+22867.
+[39] Wenqi Sun, Ruobing Xie, Junjie Zhang, Wayne Xin Zhao, Leyu Lin, and Ji-Rong
+Wen. 2024. Distillation is all you need for practically using different pre-trained
+recommendation models. CoRR (2024).
+[40] Juntao Tan, Shuyuan Xu, Wenyue Hua, Yingqiang Ge, Zelong Li, and Yongfeng
+Zhang. 2024. Idgenrec: Llm-recsys alignment with textual id learning. In Proceed-
+ings of the 47th international ACM SIGIR conference on research and development
+in information retrieval. 355–364.
+[41] Dongsheng Wang, Yuxi Huang, Shen Gao, Yifan Wang, Chengrui Huang, and
+Shuo Shang. 2025. Generative next poi recommendation with semantic id. In
+Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+Mining V. 2. 2904–2914.
+[42] Jie Wang, Alexandros Karatzoglou, Ioannis Arapakis, and Joemon M Jose. 2024.
+Reinforcement learning-based recommender systems with large language models
+for state reward and action modeling. In Proceedings of the 47th International ACM
+SIGIR conference on research and development in information retrieval. 375–385.
+[43] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable item tokenization for generative
+recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management. 2400–2409.
+[44] Wenjie Wang, Xinyu Lin, Fuli Feng, Xiangnan He, and Tat-Seng Chua. 2023.
+Generative recommendation: Towards next-generation recommender paradigm.
+arXiv preprint arXiv:2304.03516 (2023).
+[45] Yidan Wang, Zhaochun Ren, Weiwei Sun, Jiyuan Yang, Zhixiang Liang, Xin
+Chen, Ruobing Xie, Su Yan, Xu Zhang, Pengjie Ren, et al. 2024. Content-based
+collaborative generation for recommender systems. In Proceedings of the 33rd
+ACM International Conference on Information and Knowledge Management. 2420–
+2430.
+[46] Ye Wang, Jiahao Xun, Minjie Hong, Jieming Zhu, Tao Jin, Wang Lin, Haoyuan
+Li, Linjun Li, Yan Xia, Zhou Zhao, et al. 2024. Eager: Two-stream generative
+recommender with behavior-semantic collaboration. In Proceedings of the 30th
+ACM SIGKDD Conference on Knowledge Discovery and Data Mining. 3245–3254.
+[47] Zhipeng Wei, Kuo Cai, Junda She, Jie Chen, Minghao Chen, Yang Zeng, Qiang Luo,
+Wencong Zeng, Ruiming Tang, Kun Gai, et al. 2025. Oneloc: Geo-aware generative
+recommender systems for local life service. arXiv preprint arXiv:2508.14646 (2025).
+[48] Yunjia Xi, Hangyu Wang, Bo Chen, Jianghao Lin, Menghui Zhu, Weiwen Liu,
+Ruiming Tang, Zhewei Wei, Weinan Zhang, and Yong Yu. 2025. Efficiency un-
+leashed: Inference acceleration for LLM-based recommender systems with spec-
+ulative decoding. In Proceedings of the 48th International ACM SIGIR Conference
+on Research and Development in Information Retrieval. 1891–1901.
+[49] Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. 2024.
+EFFICIENT STREAMING LANGUAGE MODELS WITH ATTENTION SINKS.
+The Twelfth International Conference on Learning Representations.
+[50] Longtao Xiao, Haozhao Wang, Cheng Wang, Linfei Ji, Yifan Wang, Jieming
+Zhu, Zhenhua Dong, Rui Zhang, and Ruixuan Li. 2025.
+Unger: Generative
+recommendation with a unified code via semantic and collaborative integration.
+ACM Transactions on Information Systems 44, 2 (2025), 1–31.
+[51] Chaoqun Yang, Xinyu Lin, Wenjie Wang, Yongqi Li, Teng Sun, Xianjing Han,
+and Tat-Seng Chua. 2025. EARN: Efficient Inference Acceleration for LLM-based
+Generative Recommendation by Register Tokens. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V. 2. 3483–3494.
+[52] Weihao Ye, Qiong Wu, Wenhao Lin, and Yiyi Zhou. 2025. Fit and prune: Fast and
+training-free visual token pruning for multi-modal large language models. In
+Proceedings of the AAAI Conference on Artificial Intelligence, Vol. 39. 22128–22136.
+[53] Yufei Ye, Wei Guo, Hao Wang, Hong Zhu, Yuyang Ye, Yong Liu, Huifeng Guo,
+Ruiming Tang, Defu Lian, and Enhong Chen. 2025. Fuxi-\beta: Towards a light-
+weight and fast large-scale generative recommendation model. arXiv preprint
+arXiv:2508.10615 (2025).
+[54] Zheng Zhan, Zhenglun Kong, Yifan Gong, Yushu Wu, Zichong Meng, Hangyu
+Zheng, Xuan Shen, Stratis Ioannidis, Wei Niu, Pu Zhao, et al. 2024. Exploring
+token pruning in vision state space models. Advances in Neural Information
+Processing Systems 37 (2024), 50952–50971.
+[55] Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi
+Cai, Zhao Song, Yuandong Tian, Christopher Ré, Clark Barrett, et al. 2023. H2o:
+Heavy-hitter oracle for efficient generative inference of large language models.
+Advances in Neural Information Processing Systems 36 (2023), 34661–34710.
+[56] Zuowu Zheng, Ze Wang, Fan Yang, Jiangke Fan, Teng Zhang, Yongkang Wang,
+and Xingxing Wang. 2025. EGA-V2: An End-to-end Generative Framework for
+Industrial Advertising. arXiv:2505.17549 [cs.IR] https://arxiv.org/abs/2505.17549
+[57] Qiyong Zhong, Jiajie Su, Yunshan Ma, Julian McAuley, and Yupeng Hou.
+2025. Pctx: Tokenizing Personalized Context for Generative Recommendation.
+arXiv:2510.21276 [cs.IR] https://arxiv.org/abs/2510.21276
+[58] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv preprint arXiv:2506.13695 (2025).

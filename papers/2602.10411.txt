@@ -1,0 +1,1531 @@
+GeoGR: A Generative Retrieval Framework for Spatio-Temporal
+Aware POI Recommendation
+Fangye Wang∗
+AMAP, Alibaba Group
+Beijing, China
+wangfangye.wfy@alibaba-inc.com
+Haowen Lin∗
+AMAP, Alibaba Group
+Beijing, China
+linhaowen.lhw@taobao.com
+Yifang Yuan, Siyuan Wang
+AMAP, Alibaba Group
+Beijing, China
+{yuanyifang.yyf,tuolei.wsy}@alibaba-
+inc.com
+Xiaojiang Zhou†
+AMAP, Alibaba Group
+Beijing, China
+zhouxiaojiang.zxj@taobao.com
+Song Yang
+AMAP, Alibaba Group
+Beijing, China
+song.yangs@alibaba-inc.com
+Pengjie Wang
+AMAP, Alibaba Group
+Beijing, China
+pengjie.wpj@alibaba-inc.com
+Abstract
+Next Point-of-Interest (POI) prediction is a fundamental task in
+location-based services, especially critical for large-scale naviga-
+tion platforms like AMAP that serve billions of users across diverse
+lifestyle scenarios. While recent POI recommendation approaches
+based on SIDs have achieved promising, they struggle in complex,
+sparse real-world environments due to two key limitations: (1) in-
+adequate modeling of high-quality SIDs that capture cross-category
+spatio-temporal collaborative relationships, and (2) poor alignment
+between large language models (LLMs) and the POI recommenda-
+tion task. To this end, we propose GeoGR, a geographic generative
+recommendation framework tailored for navigation-based LBS like
+AMAP, which perceives users’ contextual state changes and enables
+intent-aware POI recommendation. GeoGR features a two-stage de-
+sign: (i) a geo-aware SID tokenization pipeline that explicitly learns
+spatio-temporal collaborative semantic representations via geo-
+graphically constrained co-visited POI pairs, contrastive learning,
+and iterative refinement; and (ii) a multi-stage LLM training strategy
+that aligns non-native SID tokens through multiple template-based
+continued pre-training(CPT) and enables autoregressive POI gener-
+ation via supervised fine-tuning(SFT). Extensive experiments on
+multiple real-world datasets demonstrate GeoGR’s superiority over
+state-of-the-art baselines. Moreover, deployment on the AMAP
+platform, serving millions of users with multiple online metrics
+boosting, confirms its practical effectiveness and scalability in pro-
+duction.
+CCS Concepts
+• Information systems →Location based services; Social rec-
+ommendation; Recommender systems.
+∗Contributed equally to this research.
+†Corresponding Author
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+Keywords
+Generative Model, Location-based Service, Point-of-Interest, LLM
+ACM Reference Format:
+Fangye Wang, Haowen Lin, Yifang Yuan, Siyuan Wang, Xiaojiang Zhou,
+Song Yang, and Pengjie Wang. 2018. GeoGR: A Generative Retrieval Frame-
+work for Spatio-Temporal Aware POI Recommendation. In Proceedings of
+Make sure to enter the correct conference title from your rights confirma-
+tion email (Conference acronym ’XX). ACM, New York, NY, USA, 10 pages.
+https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+Next Point-of-Interest (POI) prediction [1, 5, 15, 27, 29, 37] aims
+to forecast the future POIs a user is likely to visit based on their
+historical trajectories and contextual signals (e.g., time, location,
+and activity patterns). This task is especially critical for navigation-
+centric, large-scale LBS platforms such as AMAP, which integrates
+a wide range of services—including navigation, dining, accommo-
+dation, tourism, and fueling—and serves billions of users. In such
+complex ecosystems, accurate POI prediction is essential not only
+for efficient route planning but also for delivering personalized,
+context-aware recommendations under highly sparse, dynamic,
+and heterogeneous usage conditions [37].
+Human mobility exhibits strong spatiotemporal continuity and
+regularity, with points of interest (POIs) often forming meaningful
+correlations that extend beyond simple sequential co-occurrence.
+Traditional approaches frame next-POI prediction as a spatiotempo-
+ral sequential recommendation task, employing specialized architec-
+tures to capture large-scale user behavior patterns [10, 11, 23, 25, 33].
+Recently, large language models (LLMs) have been increasingly
+adopted for their powerful reasoning and generalization capabil-
+ities, enabling more nuanced modeling of user intent by fusing
+historical trajectories with personal preferences and contextual
+cues [2, 7, 34, 38, 41]. However, most LLM-based methods still repre-
+sent POIs using either randomly assigned non-semantic identifiers
+or text-derived embeddings that inadequately capture collabora-
+tive relationships—particularly cross-category associations (e.g.,
+between airports, hotels, and parking lots) that emerge from real-
+world behavioral semantics and shared user intents. Generative
+Recommendation (GR) [9, 21, 36] has emerged as a promising para-
+digm by rethinking POI tokenization: rather than assigning each
+POI a unique atomic identifier, GR encodes it into a short sequence
+arXiv:2602.10411v1  [cs.IR]  11 Feb 2026
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Fangye Wang, Haowen Lin, Yifang Yuan, Siyuan Wang, Xiaojiang Zhou, Song Yang, and Pengjie Wang
+GeoGR
++
++
++
+-
+-
+-
+<a_6><b_1><c_32>
+···
+<a_6><b_1><c_95>
+Results: Geo-aware 
+Semantic IDs
+Query: Hotels 
+near Universal 
+Studios
+Search: The National 
+Palace Museum
+Behavior trajectory
+Booking: Hotel
+Navigate: Universal Studio
+Condition-
+Aware Rec.
+With Behavior
+Understand
+Parking:
+<a_9><b_1><c_8>
+Booking:
+<a_6><b_1><c_10>
+(A)
+(B)
+GeoGR
+Figure 1: (A) SID-based POI retrieval with GeoGR. (B) The
+spatio-temporal aware POI Recommendation.
+of discrete tokens—referred to as Semantic IDs (SIDs)—drawn from
+a shared, compact vocabulary. Target POIs are then generated au-
+toregressively, token by token, in a manner analogous to large
+language models (LLMs). While this design significantly improves
+memory efficiency and system scalability, the effectiveness of GR
+hinges critically on the quality of the SIDs. In particular, their abil-
+ity to capture both semantic meaning and collaborative user–POI
+interaction patterns during encoding remains a key challenge that
+is largely unaddressed in existing frameworks [8, 16].
+Although SID-based GR has achieved promising results, exist-
+ing approaches still struggle to effectively encode SIDs and per-
+form POI recommendation in complex, sparse scenarios—such
+as navigation-centric omni-scenario LBS platforms (e.g., AMAP),
+which integrate diverse interactions including navigation, dining,
+accommodation, tourism, and so on. Such environments demand
+a more sophisticated understanding of user intent under varying
+spatio-temporal contexts, e.g., “Given a user’s(who) search(what) at
+a specific time(When) and location(where), what is their underlying
+goal, destination, and likely next action(how)?” We identify two key
+challenges in this setting: (1) Inadequate modeling of high-quality
+SIDs. Current methods typically treat the LLM as an encoder that de-
+rives semantic representations solely from POI textual descriptions
+to construct SIDs. While the LLM’s strong semantic comprehension
+ensures similar POIs receive similar embeddings, this paradigm
+overlooks collaborative relationships among POIs, especially cross-
+category associations (e.g., between airport, hotel and parking lot).
+In LBS and recommendation systems, strong associations often ex-
+ist between POIs of different categories, typically arising from real
+user behavior patterns, geographic proximity, functional comple-
+mentarity, or coupling within everyday life scenarios. Even when
+auxiliary signals like co-visit IDs or geographic distances are in-
+jected into the input, the LLM often fails to effectively capture
+these structured dependencies—and may even suffer from diluted
+semantic representations due to information interference. Hence,
+it is crucial to explicitly incorporate spatiotemporal collaborative
+signals during semantic modeling, rather than relying on the LLM’s
+passive learning of implicit patterns. (2) Insufficient alignment be-
+tween the base LLM and the recommendation task. The base LLM
+is neither pre-trained on recommendation-specific knowledge nor
+inherently compatible with the newly introduced SID tokens. Di-
+rectly fine-tuning the model on a single instruction-tuning dataset is
+therefore suboptimal, as it fails to fully adapt the LLM’s generative
+capabilities to the POI recommendation domain.
+To address the aforementioned challenges, we propose GeoGR,
+a condition-aware GR framework tailored for navigation-based
+LBS scinarios. Training GeoGR comprises two core stages: (1) POI
+SID construction: Learning high-quality SID tokens by integrating
+spatial-aware semantic representations, textual attributes, and ge-
+ographically constrained co-visited POI pairs. (2) Generative POI
+recommendation: fine-tuning a LLM via a multi-stage alignment
+procedure—comprising CPTand SFT—to autoregressively generate
+POI SIDs conditioned on user context. In the SID construction stage,
+we design a three-step approach to fully exploit semantic and spatio-
+temporal collaborative associations: First, we learn spatio-temporal
+collaborativesSemantic representation by constructing geograph-
+ically constrained co-visited POI pairs and applying contrastive
+learning enhanced with LLM-based semantic encoding. Second,
+we tokenize these representations by generating dense semantic
+embeddings via an LLM and applying RQ-Kmeans [4, 16] to derive
+discrete, hierarchical SIDs. Third, we refine the SIDs using an EM-
+style iterative optimization algorithm. In the generative training
+stage, we adapt the LLM to the next-POI prediction task through
+a CPT–SFT pipeline. Since SIDs are non-native tokens to the base
+LLM, we first perform CPT using a mixture of template-based Text-
+to-SID prompt datasets to align the LLM’s vocabulary with the POI
+recommendation domain. We evaluate GeoGR on multiple public
+benchmarks and deploy it on the AMAP platform, where it serves
+millions of daily active users. Online A/B tests demonstrate signifi-
+cant improvements across key engagement metrics, confirming its
+effectiveness and scalability in real-world industrial settings.
+The major contributions are summarized as follows:
+• We propose GeoGR, a novel geographic GR framework for navigation-
+based LBS, which unifies semantic ID learning and autoregressive
+POI generation within a LLM paradigm.
+• We design a geo-aware SID tokenization pipeline that aims to
+enhance the POI SID with spatio-temporal collaborative infor-
+mation, geographically constrained co-visited pairs, contrastive
+learning, and an EM-style iterative refinement algorithm.
+• We introduce a multi-stage alignment and fine-tuning strategy
+to adapt LLMs to the next POI recommendation task, including
+CPT-based template alignment for non-native SID tokens and
+SFT for autoregressive POI generation.
+• Extensive experiments on offline and online experiments demon-
+strate the remarkable effectiveness of GeoGR.
+2
+Related Works
+POI Recommendation. Traditional next-POI recommendation
+methods are typically formulated as a sequential recommenda-
+tion task, where the goal is to predict a user’s next visited loca-
+tion based on their historical check-in sequence [11, 13, 24, 28, 35].
+Early approaches leveraged Markov chains or matrix factorization
+to model transition patterns or user–POI affinities but struggled
+to capture long-term dependencies and complex spatio-temporal
+dynamics. With the advent of deep learning, recurrent neural net-
+works (RNNs)—particularly LSTM and GRU variants—were widely
+adopted to model long-term user preferences and sequential de-
+pendencies [6]. Subsequently, transformer-based models, powered
+by self-attention mechanisms, demonstrated superior performance
+over RNNs in next-POI recommendation [11]. For instance, STAN [18]
+employs self-attention to explicitly model pairwise spatio-temporal
+
+GeoGR: A Generative Retrieval Framework for Spatio-Temporal Aware POI Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+relationships among POIs, capturing both non-consecutive tran-
+sitions and geographic proximity through interpolated distance
+encoding. More recently, the integration of large language models
+(LLMs) has opened new frontiers in semantic-aware location mod-
+eling. LLM4POI [13] fine-tunes LLMs on standard-scale datasets to
+leverage commonsense knowledge for next-POI prediction.
+Generative Recommendation. Beyond discriminative mod-
+els, generative approaches [14, 30, 37] have emerged as a pow-
+erful paradigm for recommendation by directly generating item
+identifiers—thereby eliminating the need for multi-stage cascaded
+pipelines. TIGER [22] pioneers a two-stage generative framework:
+it first learns hierarchical SIDs, then generates candidate items
+via autoregressive decoding. Common quantization methods for
+learning SIDs include RQ-VAE [12], RQ-Kmeans [4, 22]. By lever-
+aging hierarchical codewords, SIDs effectively mitigate vocabulary
+sparsity and long-tail challenges in large-scale recommendation
+systems. In industrial practice, KuaiShou proposes OneRec [4] and
+OneRec-V2 [39], which employ reinforcement learning (RL) [30]
+for user preference modeling and unify cascaded retrieval–ranking
+pipelines into an end-to-end generative framework. GNPR-SID [28]
+introduces a generative next-POI recommendation model that inte-
+grates SIDs to jointly capture intrinsic POI semantics, collaborative
+signals, and user visit patterns. In the local lifestyle services domain,
+KuaiShou further develops OneLoc [30], an end-to-end generative
+recommender that fully leverages geographic information.
+3
+Preliminaries
+3.1
+Problem Definition
+In this section, we present key definitions used throughout this
+paper and formulate the research problem. Let U = {𝑢1,𝑢2, ...,𝑢𝑀}
+and P = {𝑝1, 𝑝2, ..., 𝑝𝑁} donote the set of 𝑀users and 𝑁POIs,
+respectively. Specifically, each POI can be defined as a tuple 𝑝𝑖=
+{𝑙𝑜𝑛,𝑙𝑎𝑡,𝑙𝑜𝑐,𝑐}, which provides a rich descriptive representation in-
+cluding geographical coordinates (longitude and latitude), location
+address, and contextual information (e.g. brand, category, etc.).
+Additionally, for each user 𝑢∈U, we record their interac-
+tion trajectory (a.k.a. user check-in history) with POIs, denoted
+by 𝑇𝑢= {𝑟𝑢
+1 ,𝑟𝑢
+2 , ...,𝑟𝑢
+𝑛}. Each interaction record 𝑟𝑢
+𝑖is represented
+by 𝑟= 𝑢, 𝑝,𝑡,𝑐𝑜𝑛,𝑎, indicating the user 𝑢interacted with POI 𝑝
+at time 𝑡under condition 𝑐𝑜𝑛. In the context of AMAP APP, the
+action 𝑎encompasses various behaviors such as navigate, reserve,
+book, collect, and others. Meanwhile, the condition 𝑐𝑜𝑛captures
+additional contextual details about the user’s action, such as the
+search query, latitude and longitude, and other relevant metadata.
+These records are arranged in reverse chronological order.
+Next POI Recommendation. For a user 𝑢𝑖, given their in-
+teraction history 𝑇𝑢
+𝑖and a specific real-time condition 𝑐𝑜𝑛𝑢, the
+task is to predict the next POI 𝑝𝑛+1 that the user will interact
+with. This is formulated as maximizing the conditional probability
+𝓅(𝑝𝑛+1|𝑢𝑖,𝑇𝑢,𝑐𝑜𝑛𝑢).
+In this paper, we leverage LLM as the core engine for next-POI
+prediction, harnessing their world knowledge and reasoning capa-
+bilities to understand human mobility. We adapt LLMs to capture
+complex spatio-temporal patterns—such as sequential regularities
+and contextual dependencies—enabling nuanced modeling of mo-
+bility behavior for downstream recommendation tasks.
+4
+Methods
+We first present an overview of the GeoGR training pipeline (as
+illustrated in Figure 2), followed by a detailed description of its two
+core stages: constructing geo-aware POI semantic IDs and training
+the generative POI recommendation model.
+4.1
+Framework Overview
+Similar to existing GR models, GeoGR follows a two-stage pipeline.
+Its core innovation lies in encoding the rich semantics of POIs
+into compact, discrete tokens that seamlessly integrate with LLMs,
+thereby enhancing their ability to understand user intent based on
+contextual conditions, search queries, and mobility trajectories.
+In the first stage, we encode textual and geographic information
+for each POI—including longitude, latitude, location address, and
+contextual descriptors (e.g., name, brand, category)—into a set of
+specialized location SIDs using hierarchical vector quantization
+techniques such as RQ-VAE and RQ-Kmeans. The resulting SIDs
+preserve rich semantic information while ensuring that semanti-
+cally similar POIs are mapped to nearby representations through
+the hierarchical codebook structure. More importantly, a compact
+set of codebook tokens can efficiently represent a vast number of
+POIs, circumventing the vocabulary explosion problem that arises
+when introducing excessive new tokens into LLMs. Furthermore,
+the short length and well-defined structure of SIDs improve fine-
+tuning stability, leading to more accurate POI generation.
+In the second stage, we train the LLM to progressively under-
+stand the recommendation task and ultimately perform condition-
+aware retrieval and prediction of the next POI. First, we conduct
+CPT to align the newly introduced SID tokens with POI and recom-
+mendation corpus based on multiple pre-defined template-based
+corpus data. Building upon this CPT-LLM, we construct an instruction-
+tuning dataset specifically designed for next-location prediction
+and further refine the model via supervised fine-tuning. Through
+this process, GeoGR achieves a deep understanding of user behavior
+and delivers high-quality next-POI recommendations.
+4.2
+Geo-Aware POI Semantic ID
+Most existing LLM-based POI recommendation methods rely on
+randomly assigned identifiers (RIDs), which lack semantic meaning
+and fail to capture user intent in contextual scenarios. Moreover,
+such random encoding drastically increases model storage require-
+ments, hindering scalability and inference efficiency. To address
+these limitations, we adopt an RQ-kmeans based semantic tokeniza-
+tion strategy [4] that leverages POI textual descriptions to learn a
+coarse-to-fine hierarchical codebook through autoregressive mod-
+eling. By using a reduced, fixed-size set of tokens, our approach
+alleviates storage and computational overhead while enabling seam-
+less integration of new POIs—each mapped to semantically similar
+existing tokens—thereby improving generalization. Given the strin-
+gent requirement for geographic precision in navigation scenarios,
+our tokenization strategy comprises three key steps: (1) learning
+spatio-temporal collaborative semantic aware POI representations,
+(2) semantic representation okenization, and (3) SID optimization
+via an EM-style[3] algorithm. These steps collectively enhance the
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Fangye Wang, Haowen Lin, Yifang Yuan, Siyuan Wang, Xiaojiang Zhou, Song Yang, and Pengjie Wang
+POI Description:
+{Name},{Category},{GP
+S},{Address},{Introducti
+on},{Near by POIs}, …
+POI Description:
+{Name},{Category},{G
+PS},{Address},{Introduc
+tion},{Near by POIs}, …
+POI Description:
+{Name},{Category},{G
+PS},{Address},{Introduc
+tion},{Near by POIs}, …
+POI Description:
+{Name},{Category},{G
+PS},{Address},{Introduc
+tion},{Near by POIs}, …
+POI Description:
+{Name},{Category},{GPS},{Addr
+ess},{Introduction},{Near
+by
+POIs}, …
+Qwen-4B embedding
+Embedding
+POIs+
+POIs-
+1 pos + n neg
+POI Database
+POI Semantic ID:
+<a_3><b_1><c_7>
+Codebook 3
+Codebook 2
+1 2 3 4 … N
+3
+r0
+=
+-
+r1
+Codebook 1
+Nearest
+ℒ!"!
+K-means Clustering
+<a_13><b_8><c_2>
+<a_6><b_1><c_32>
+…
+EM-style SID
+optimization.
+Qwen-4B
+(a) Construct the Geo-aware POI Semantic ID with three steps: learning spaito-temporal collaborative semantic representation with contastive learning; Generating
+the POI SID with K-meaning cluster; Improving the POI SID with EM-style SID optimization algorithm.
+<a_13><b_8><c_2>
+<a_6><b_1><c_32>
+…
+<a_28><b_9><c_7>
+Continued
+Pre-Training
+Supervised
+Fine-Tuning
+SIDs Generation
+Added
+Tokens
+Base
+Qwen 4B
+GeoGR
+Prompt 1: User profile: {User profile},
+User
+trajectory:
+At
+{Time}
+click
+<SID>; …; At {Time}, book <SID>.
+Prompt
+2:
+<SID>
+is
+<POI
+description> located in <Address>.
+Prompt
+3:
+POI:
+<SID>;
+Name:
+{Name};
+Category:
+{Category};
+Location:{Location};
+Prompt 4: What is <SID>? It’s {POI
+description}.
+Next Token Prediction
+Instruction : Your are a…
+Input:
+User
+profile:
+{User
+profile},
+User
+trajectory:
+At
+{time},
+Click
+the
+<SID>;
+at
+{time},…;
+at
+{time},
+Book
+<SID>.
+At
+{time},
+the
+user
+located
+in
+<GPS>,
+search
+<Query>. Based on the specific …
+Next Location Prediction
+Response: <a_6><b_1><c_1>
+Online Inference
+Service
++
++
++
+<a_6><b_1><c_32>
+<a_6><b_1><c_1>
+<a_6><b_1><c_95>
+(b) Train the generative POI recommendation with two stages: the continued pre-training and the supervised fine-tuning.
+Figure 2: Two stages for obtaining GeoGR: (A) Construct the POI semantic ID; (B) Train the generative POI recommendation.
+spatial-temporal awareness of POIs, embed rich semantic infor-
+mation into SID tokens, and iteratively refine the SIDs through
+EM-style optimization guided by LLM.
+4.2.1
+Spatio-temporal Collaborative Semantic Representation. Here,
+we aim to map each POI description into a POI representation vec-
+tor for subsequent SID generation. To fully encode both semantic
+and geographic information, we construct an informative location
+description 𝑝𝑖= {𝑙𝑜𝑛,𝑙𝑎𝑡,𝑙𝑜𝑐,𝑐}, which includes geographical co-
+ordinates (longitude and latitude), location address, and contextual
+attributes such as name, brand, categories, geohash code, consump-
+tion level, active time period, among others. Existing approaches
+typically feed POI textual descriptions into a pre-trained LLM to ob-
+tain semantic embeddings. While semantically similar POIs tend to
+yield close representations—and local context can help capture spa-
+tial proximity—such purely semantic encoding suffers from two key
+limitations: (1) it overlooks POI pairs that exhibit strong spatiotem-
+poral associations despite weak semantic similarity; (2) it dilutes
+the encoding of the target POI’s intrinsic semantics by attending
+to overly long sequences of neighboring POIs. To address these
+issues, we augment POI representation learning with a contrastive
+fine-tuning strategy that explicitly models pairwise geographic dis-
+tances. Specifically, as shown in Figure 2(a), we adopt three steps:
+POI Representation. Here, we map the basic POI textual de-
+scriptions (e.g., {𝑙𝑜𝑛,𝑙𝑎𝑡,𝑙𝑜𝑐,𝑐}) into an off-the-shelf LLM(i.e., Qwen
+4B embedding) to obtain semantic embeddings:
+e𝑝𝑖= 𝐿𝐿𝑀𝑒𝑛𝑐𝑜𝑑𝑒𝑟(𝑐𝑜𝑛𝑐𝑎𝑡(𝑙𝑜𝑛,𝑙𝑎𝑡,𝑙𝑜𝑐,𝑐)).
+(1)
+Geo-Constrained Co-visited POI Pairs. In the above textual
+POI descriptions, to emphasize the intrinsic attributes of each POI,
+we refrain from directly incorporating neighboring POIs or collab-
+orative signals from multiple users into the input text. Instead, we
+explicitly model the joint constraints of geographic proximity and
+behavioral co-occurrence by constructing spatiotemporal co-visit
+POI pairs. Specifically, we first sample POI pairs from user trajec-
+tories that frequently co-occur in sequences—even if semantically
+dissimilar—using Swing similarity to downweight popular items
+and highlight genuine behavioral affinity. We then filter these pairs
+by geographic distance (e.g., 3 km), retaining only those that exhibit
+both strong collaborative signals and spatial proximity.
+POI-to-POI Contrastive Loss. We fine-tune the aforemen-
+tioned LLM using a Noise-Contrastive Estimation (NCE) loss over
+the constructed spatiotemporal co-visit POI pairs. For each positive
+pair (e𝑝𝑖, e𝑝𝑗) , the contrastive loss is defined as:
+LP2P(𝑖, 𝑗) = −log
+exp(e⊤
+𝑝𝑖e𝑝𝑗/𝜏)
+exp(e⊤𝑝𝑖e𝑝𝑗/𝜏) + Í
+𝑘∈N−exp(e⊤𝑝𝑖e𝑝𝑘/𝜏) .
+(2)
+where N−denotes the set of negative POIs and 𝜏> 0 is the temper-
+ature coefficient. Using the fine-tuned encoder 𝐿𝐿𝑀encoder , we then
+generate the POI semantic representation following Equation 1.
+
+GeoGR: A Generative Retrieval Framework for Spatio-Temporal Aware POI Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Algorithm 1 EM-style SID optimization
+Require: Pre-trained LLM 𝐿𝐿𝑀ori; initial SIDs set P; POI descrip-
+tions set P
+Ensure: Optimized SIDs P ←P𝑛
+1: P0 ←P
+2: 𝐿𝐿𝑀0 ←𝐿𝐿𝑀ori
+⊲e.g., Qwen-4B
+3: for 𝑖= 1 to 𝑛do
+4:
+Construct SFT training dataset using POI descriptions P
+and current SIDs P;
+5:
+Fine-tune 𝐿𝐿𝑀i-1 on the SFT dataset to obtain 𝐿𝐿𝑀𝑖;
+6:
+Predict new SIDs: Pi ←𝐿𝐿𝑀𝑖(P);
+7:
+Compute Acc𝑖: quantile accuracy between Pi and P𝑖−1;
+8:
+Compute HitRate𝑖: evaluate 𝐿𝐿𝑀𝑖on downstream task;
+9: end for
+10: return P𝑛
+⊲Final optimized SIDs P𝑛
+4.2.2
+Semantic representation quantization. Based on the spatially
+aware semantic representations, we employ RQ-Kmeans for tok-
+enization, which leverages residual quantization to transform POI
+embeddings into coarse-to-fine SIDs through a hierarchical set of
+discrete codebooks. The RQ-Kmeans procedure is illustrated in Fig-
+ure 2(a). The initial residual set R (1) = {e1
+𝑖|𝑖= 1, 2, ..., 𝑁} consists
+of the representations of all POIs, and each representation e0
+𝑖is
+generated by the fine-tuned LLM in previous step.
+For each layer 𝑙, we apply RQ-Kmeans[20] clustering on the
+residual set R (𝑖) to compute the codebook C(𝑙):
+C(𝑙) = 𝐾−𝑚𝑒𝑎𝑛𝑠(R (𝑖), 𝑁𝑐)
+(3)
+where C(𝑙) = {c(𝑙)
+𝑘|𝑘= 1, 2, ..., 𝑁𝑐} denotes the set of centroids
+obtained from K-means, and 𝑁𝑡is the codebook size. Using C(𝑙),
+we compute the nearest centroid inde 𝑞𝑙
+𝑖for each residual vector as:
+𝑞(𝑙)
+𝑖
+= arg min
+𝑘
+||R (𝑙)
+𝑖
+−c(𝑙)
+𝑘||,
+(4)
+where || · || is the Euclidean distance. Index 𝑞(𝑙)
+𝑖
+corresponds to the
+𝑙-th level SID token. The residual for the next layer is updated as:
+R (𝑙+1)
+𝑖
+= R (𝑙)
+𝑖
+−c(𝑙)
+𝑞(𝑙)
+𝑖
+.
+(5)
+In this work, we repeat the quantization process for 𝐿𝑐= 3 layers,
+yielding three codebooks (C(1), C(2), C(3)) . Consequently, each
+POI with descriptive input p𝑖is mapped to a hierarchical SID:
+Q𝑝𝑖= Tokenizer(e𝑝𝑖) = [𝑞(1)
+𝑖
+,𝑞(2)
+𝑖
+,𝑞(3)
+𝑖
+].
+(6)
+The full set of SIDs across all POIs is denoted as P = {Q𝑝𝑖| 𝑖=
+1, 2, . . . , 𝑁} . We represent a three-level SID as ⟨𝑎_5⟩⟨𝑏_3⟩⟨𝑐_8⟩,
+where the tokens correspond to centroid indices c(1)
+5
+, c(2)
+3
+, and
+c(3)
+8
+from the first, second, and third codebook layers, respectively.
+Empirically, this hierarchical structure enables efficient progressive
+POI generation in the recommendation system.
+4.2.3
+SID optimization with EM-style algorithm. The quality of
+SIDs critically affects the effectiveness of downstream supervised
+fine-tuning (SFT) of large language models. To improve SID quality,
+we propose an EM-style SID optimization algorithm that iteratively
+refines SIDs through self-improvement with an LLM (e.g., Qwen-
+4B). As shown in Algorithm 1, the framework alternates between
+Table 1: Diverse Template Prompts for CPT.
+Prompt 1 (User Behavior Trajectory Modeling):
+User profile: {User profile }, User trajectory: At {Time } click
+<SID>; At {Time } navigate <SID>; ...; At {Time }, book <SID>.
+Prompt 2 (POI Structured Information Alignment):
+<SID>: Name: {Name}; Category: {Category}; Location:{Loc}.
+Prompt 3 (POI Description Generation):
+POI: <SID> is {POI description } located in {Address }.
+Prompt 4 (POI Question-Answer Definition):
+What is <SID>? It’s {POI description }.
+two phases: (1) fixing the SIDs and fine-tuning the LLM to better
+predict them, and (2) fixing the LLM and updating the SIDs based
+on its predictions. Our core insight is that, since the ultimate goal
+is to generate SIDs using the LLM in the next-POI prediction task,
+we should leverage its predictive capability from the outset and use
+its outputs to refine the initial SIDs—thereby encouraging mutual
+alignment between the LLM and the SIDs. Specifically, during the
+SID prediction step (e.g., Line 6 in Algorithm 1), we employ dynamic
+beam search to generate a ranked list of the 20 candidates SIDs to
+prevent SID collisions. If the ground-truth target SID (i.e., the true
+next POI) is not included in this list, we replace it with the highest-
+probability SID from the generated candidates, ensuring that the
+final output always corresponds to a high-confidence prediction.
+4.3
+Generative POI Recommendation
+In the previous steps, we illustrate the process of generating POI
+SIDs. Building on those SIDs, we aim to propose a generative POI
+recommendation framework based on the LLMs, such as Qwen
+4B[31]. To achieve this, we adopt an instruction-tuning paradigm,
+which finetunes LLM with high-quality, domain-specific datasets.
+Since those added SID tokens are essentially out-of-vocabulary
+tokens that LLMs do not recognize, we first apply the continued
+pre-training(CPT) optimizaion for aligning the recommendation
+corpus with the added SID tokens. After continued pre-training, the
+model typically acquires an understanding of the domain-specific
+knowledge base as well as the mobility patterns underlying POIs
+and user behavior. Then, based on the CPT-LLM, we fine-tune the
+LLM using cross-scenario navigation behavior. Here, we specifi-
+cally focus on next POI generation task, ensuring that the training
+instructions are consistent with those used during online inference.
+4.3.1
+CPT optimizaion. During the Continued Pre-Training (CPT)
+phase, we design a suite of diverse prompt templates to system-
+atically align the newly introduced SIDs with the representation
+space of the LLM. Several example prompt templates are shown 1:
+Prompts 2 and 4 employ natural language and question-answering
+formats to link each SID to its POI’s semantics (e.g., category, name,
+and address), enabling contextual learning of rich semantic mean-
+ings. Prompt 3 uses structured key-value pairs to capture multi-
+dimensional POI attributes, while Prompt 1 integrates user behavior
+trajectories and profiles, allowing the model to reason about user
+intent beyond mere entity recognition—for instance, predicting
+sequential actions such as click →navigate →book. By jointly
+optimizing over these heterogeneous contexts using large-scale
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Fangye Wang, Haowen Lin, Yifang Yuan, Siyuan Wang, Xiaojiang Zhou, Song Yang, and Pengjie Wang
+unsupervised data, Continued Pre-Training (CPT) achieves two
+key objectives: (1) Semantic Injection: The model learns to treat
+SIDs as grounded semantic entities rather than abstract symbols;
+(2) Behavioral Modeling: It acquires the ability to predict or re-
+construct plausible user behavior sequences (e.g., inferring the next
+likely clicked or booked POI) based on user profiles and mobility
+history. This alignment substantially enhances downstream task
+performance by preserving the expressiveness and personalization
+of natural language while ensuring structured, controllable gen-
+eration through SID-based outputs. Formally, the CPT process is
+framed as a next-token prediction task. Given a token sequence
+𝑠= (𝑠1,𝑠2, . . . ,𝑠𝑇) drawn from a corpus that interleaves semantic
+tokens (<SID>) with their associated real-world attributes and user
+interaction contexts, the base LLM with parameters 𝜃0 is trained to
+maximize the log-likelihood of the observed sequence under the
+autoregressive assumption:
+LCPT(𝜃0) =
+𝑇∑︁
+𝑡=1
+log 𝓅𝜃0 (𝑠𝑡| 𝑠<𝑡).
+(7)
+After training, we can obtain a CPT-LLM with parameter 𝜃1.
+4.3.2
+SFT optimization. Here, we adopt next-POI prediction as
+the primary fine-tuning objective, consistent with established ap-
+proaches in the literature. Using comprehensive, cross-scenario POI
+and user behavior data, we construct a high-quality instruction-
+tuning dataset to train the large language model (LLM) to predict
+the most likely next-location Semantic ID (SID). Specifically, each
+training example follows an instruction-based prompt format com-
+prising three components: (1) an Instruction that explicitly specifies
+the prediction task; (2) an Input containing the user’s current con-
+text (e.g., location, time, search query) and short-term behavioral
+trajectory; and (3) a Response consisting of the target SID. Formally,
+the structured prompt is defined as follows:
+Next POI Prediction
+Instruction: You are a search and recommendation assistant in a map
+navigation scenario.
+Input: User profile: {User profile}, User trajectory: At {time}, Click the
+<SID>; at {time}, Navigate <SID>; …; at {time},
+Book <SID>. At
+{time}, the user located in <GPS>, search <Query>. Based on the specific
+condition, personal profile and historical behavior records, please predict
+next POI the user is most likely to visit.
+Response: <a_23><b_10><c_27>
+The full input prompt comprises both the instruction and input
+components. The short-term user trajectory consists of the most
+recent 𝐿𝑠= 32 interacted POIs (as used in our experiments). The
+current context includes the query issuance location, search query,
+timestamp, and weather conditions. Additionally, we construct a
+personalized user profile by summarizing the user’s long-term his-
+torical trajectories, capturing their activity preferences along with
+temporal and spatial visitation patterns and associated frequen-
+cies. By using compact, summarized representations instead of
+raw, ultra-long trajectories, we achieve higher training efficiency
+without compromising recommendation quality. This design en-
+ables the LLM to jointly encode and reason over both short- and
+long-term behavioral signals, thereby improving prediction per-
+formance. Meanwhile, geo-aware SIDs ensure the model remains
+Table 2: Statistics of the processed datasets. Avg.Len is the
+average length of historical action sequences.
+Dataset
+#Users
+#Items
+#Inter.
+Avg.Len
+Sparsity
+NYC
+2,083
+5,135
+104,074
+136
+98.10%
+TKY
+2,293
+7,873
+361,430
+195
+98.98%
+AMAP
+7,536K
+34,119K
+2,298,665K
+305
+99.99%
+sensitive to the spatial characteristics of POIs, facilitating accurate
+and context-aware next-POI recommendations.
+We perform full-parameter SFT based on the CPT-trained LLM.
+Given the above prompt structure, the SFT objective is to minimize
+the negative log-likelihood (NLL) loss:
+LNLL(𝜃1) = −log 𝓅𝜃1 (Q𝑡| prompt)
+= −
+3
+∑︁
+𝑖=1
+log 𝓅𝜃1
+ 𝑞(𝑖) | prompt,𝑞(<𝑖),
+(8)
+where Q𝑡= [𝑞(1),𝑞(2),𝑞(3)] denotes the SID of the target POI.
+Based on the above steps, we obtain the SFT-LLM as the POI
+GR, i.e., GeoGR. During inference, the GeoRG generates the most
+likely SID tokens autoregressively given the input prompt, which
+corresponds to approximately maximizing the conditional proba-
+bility 𝓅𝜃2 (Q𝑡| prompt) = Î3
+𝑖=1 𝓅𝜃2
+ 𝑞(𝑖) | prompt,𝑞(<𝑖), where 𝜃2
+denotes the GeoRG’s parameters. In the candidate generation phase,
+we employ beam search (or alternative decoding strategies) to ob-
+tain the top-𝑘most probable SIDs according to 𝓅𝜃2 (Q𝑡| prompt).
+5
+Experiments
+5.1
+Experimental Setting
+Datasets. We evaluate our GeoGR model on two public recommen-
+dation datasets and one large-scale proprietary dataset from the
+AMAP platform. The public datasets are derived from Foursquare [32]
+and consist of users’ historical POI check-in trajectories collected
+over an 11-month period in New York City (NYC) and Tokyo (TKY).
+However, due to their limited scale—both in terms of the number
+of users and POIs—they may not fully reflect real-world industrial
+scenarios or adequately validate the robustness of our approach. To
+address this limitation, we introduce a large-scale industrial dataset
+based on real user interactions in the AMAP mobile application.
+This dataset captures user intent by jointly analyzing search queries
+and rich contextual signals—including GPS coordinates and meta-
+data of target locations—and is used to retrieve the most relevant
+POIs for display on the app’s homepage. For the AMAP dataset,
+we define active users on a specific date as our training cohort and
+collect their complete historical behavior sequences up to that day;
+interactions from the following day constitute the test set. Detailed
+statistics are provided in Table 2. For the public Foursquare datasets,
+we follow the preprocessing protocol established in GNPR-SID [28].
+All datasets are temporally sorted, with 80% of the data allocated
+for training, 10% for validation, and the remaining 10% for testing.
+Evaluation Metrics. Following prior work [28, 30], we use two
+standard offline metrics: top-𝐾Recall (Recall@𝐾) and Normalized
+Discounted Cumulative Gain (NDCG@𝐾).
+
+GeoGR: A Generative Retrieval Framework for Spatio-Temporal Aware POI Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 3: Offline performance on NYC and TKY. "Rela.Imp" indicates the relative improvement compared to the best baselines.
+Dataset
+Metric
+Traditional
+POI Related
+Generative
+GeoGR-4B
+Rela.Imp
+SASRec
+BERT4Rec
+GRU4Rec
+Caser
+𝑆3-Rec
+TPG
+Rotan
+TIGER
+GNPR-SID
+OneLoc
+NYC
+Recall@5
+0.3151
+0.2857
+0.1977
+0.2883
+0.3071
+0.3551
+0.4448
+0.4965
+0.5311
+0.6107
+0.6407
+4.92%
+Recall@10
+0.3896
+0.3564
+0.2460
+0.3570
+0.3854
+0.4441
+0.5223
+0.5514
+0.5942
+0.6563
+0.6890
+4.98%
+Recall@20
+0.4506
+0.4130
+0.2889
+0.4135
+0.4503
+0.5121
+0.5834
+0.6001
+0.6455
+0.6977
+0.7331
+5.07%
+NDCG@5
+0.2224
+0.2074
+0.1442
+0.2044
+0.2235
+0.2464
+0.3471
+0.4131
+0.4430
+0.5355
+0.5434
+1.47%
+NDCG@10
+0.2467
+0.2304
+0.1599
+0.2267
+0.2489
+0.2755
+0.3723
+0.4276
+0.4634
+0.5504
+0.5595
+1.65%
+NDCG@20
+0.2622
+0.2448
+0.1708
+0.2410
+0.2654
+0.2927
+0.3878
+0.4443
+0.4766
+0.5608
+0.5710
+1.82%
+TKY
+Recall@5
+0.3450
+0.2649
+0.2514
+0.3257
+0.3365
+0.3725
+0.4333
+0.5031
+0.5354
+0.5964
+0.6259
+4.95%
+Recall@10
+0.4284
+0.3326
+0.3106
+0.4067
+0.4115
+0.4601
+0.5113
+0.5808
+0.6130
+0.6620
+0.6908
+4.35%
+Recall@20
+0.4976
+0.3943
+0.3651
+0.4758
+0.4739
+0.5291
+0.5894
+0.6431
+0.6675
+0.7152
+0.7302
+2.09%
+NDCG@5
+0.2384
+0.1907
+0.1833
+0.2273
+0.2423
+0.2591
+0.3293
+0.4003
+0.4437
+0.4961
+0.5100
+2.80%
+NDCG@10
+0.2655
+0.2127
+0.2025
+0.2535
+0.2666
+0.2881
+0.3568
+0.4251
+0.4623
+0.5174
+0.5203
+0.55%
+NDCG@20
+0.2831
+0.2284
+0.2163
+0.2711
+0.2825
+0.3051
+0.3739
+0.4401
+0.4788
+0.5306
+0.5403
+1.82%
+Comparison Methods. We compare GeoGR against three cat-
+egories baselines: (1) Traditional sequential models: SASRec [11],
+BERT4Rec [24], GRU4Rec [6], Caser [26],𝑆3-Rec [40]; (2) Transformer-
+based methods: TPG [17], Rotan [5]; (3) Generative LLM-based ap-
+proaches: TIGER [22], LLM4POI [13], GNPR-SID [28].
+Implementation Details. The quantization module employs
+three codebook layers across all datasets, with codebook sizes of 32,
+64, and 4096, respectively. Specifically, for NYC and TKY, we use
+32 and 64 codewords, while the AMAP dataset uses 4096. For POI
+semantic representation (Figure 2(a)), we adopt the Qwen-4B em-
+bedding model. In the SID optimization step (Section 4.2.3), we use
+the Qwen-4B language model. For the generative recommendation
+module, we employ Qwen-4B as the base LLM and perform full-
+parameter fine-tuning. We use a constant learning rate of 1 × 10−5
+with a warm-up phase of 20 steps. Training is conducted on 16 ×
+H20 GPUs, with a per-GPU batch size of 16, gradient accumulation
+steps of 2 or 4 (adjusted based on memory constraints).
+5.2
+Overall Performance
+In this section, we compare the performance of our proposed GeoGR
+model against various baselines on two public datasets. As shown
+in Table 3, we make the following observations:
+First, SID-based GR methods consistently outperform traditional
+approaches. This clearly demonstrates that conventional POI rec-
+ommenders—relying on rigid, fixed representations and predefined
+model architectures—are limited in their ability to capture nuanced
+user intent. In contrast, LLM-based methods leverage rich semantic
+signals to enable comprehensive intent understanding and deep
+contextual reasoning, resulting in substantially improved recom-
+mendation performance and generalization.
+Second, GeoGR achieves the best results across all datasets and
+evaluation metrics, consistently and significantly outperforming
+both conventional and existing LLM-based POI recommendation
+methods. On the NYC dataset, GeoGR surpasses the strongest base-
+line by 4.92% in Recall@5, 4.98% in Recall@10, and 5.07% in Re-
+call@20, as well as by 1.47% in NDCG@5, 1.65% in NDCG@10, and
+1.82% in NDCG@20. Similar improvements are observed on the
+TKY dataset, confirming the robustness of our proposed GeoGR-4B.
+These results validate the effectiveness of our pipeline—particularly
+Table 4: Ablation study on AMAP dataset.
+Variants
+Recall@5
+Recall@10
+Recall@20
+NDCG@5
+NDCG@10
+NDCG@20
+FULL
+0.5068
+0.6138
+0.7059
+0.3836
+0.4184
+0.4418
+w/o CPT
+0.4732
+0.5676
+0.6493
+0.3617
+0.3923
+0.4131
+(↓6.61%)
+(↓7.52%)
+(↓8.03%)
+(↓5.71%)
+(↓6.22%)
+(↓6.50%)
+w/o EM
+0.4661
+0.5535
+0.6372
+0.3614
+0.3896
+0.4018
+(↓8.02%)
+(↓9.82%)
+(↓9.74%)
+(↓5.80%)
+(↓6.88%)
+(↓9.05%)
+w/o EM&CPT
+0.4472
+0.5508
+0.6234
+0.3514
+0.3785
+0.3969
+(↓11.76% )
+(↓10.26% )
+(↓11.69%)
+(↓8.42%)
+(↓9.54%)
+(↓10.16%)
+w/o L𝑃2𝑃
+0.4426
+0.5218
+0.6177
+0.3431
+0.3742
+0.3859
+(↓12.66%)
+(↓14.98%)
+(↓12.50%)
+(↓10.56%)
+(↓10.56%)
+(↓12.65%)
+Base
+0.3440
+0.4145
+0.4766
+0.2631
+0.2860
+0.3018
+(w/o L𝑃2𝑃&EM&CPT)
+(↓32.11%)
+(↓32.47%)
+(↓32.48%)
+(↓31.41%)
+(↓31.64%)
+(↓31.69%)
+the construction of spatio-temporal aware SID and the joint CP-
+T/SFT optimization strategy—in aligning LLM with real-world mo-
+bility semantics for accurate POI generative recommendation.
+5.3
+Ablation Study
+To verify the effectiveness of each module in our proposed NaviRG,
+we conduct experiments on the following ablation models: (1) w/o
+CPT: we remove the CPT before SFT step; (2)w/o EM: we remove
+the EM-style SID optimiation step in section 4.2.3; (3)w/o EM&CPT:
+we remove both CPT and the EM-style SID optimiation step; (4)w/o
+L𝑝2𝑝: we remove the step for learning spatio-temporal semantic
+representation in section 4.2.1; (5)Base: We remove all the above
+additional modules, and only generate the SIDs with the basic
+POI information representations, followed by the SFT step. Table 4
+presents the performance of these ablation models across the AMAP
+dataset. We make the following observations:
+First, compared to the full model, the significant performance
+decline of all variants demonstrates the critical role of learning
+Spatio-temporal Collaborative Semantic Representations (e.g., L𝑃2𝑃
+), the EM-style SID optimization step, and the CPT training module.
+Second, learning spatio-temporal collaborative semantic repre-
+sentations before generating SIDs with RQ-Kmeans plays a rela-
+tively important role compared to the other two modules. When we
+remove the L𝑃2𝑃module in isolation, the performance degradation
+is the most pronounced.
+Third, model performance is highly sensitive to the optimization
+of SIDs. Among all ablation settings, removing CPT alone results
+in the smallest performance drop. GeoGR optimizes SIDs through
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Fangye Wang, Haowen Lin, Yifang Yuan, Siyuan Wang, Xiaojiang Zhou, Song Yang, and Pengjie Wang
+−30
+−20
+−10
+0
+10
+20
+−20
+−10
+0
+10
+20
+Street 0
+Street 1
+Street 2
+Street 3
+Street 4
+Street 5
+Street 6
+Street 7
+Street 8
+(a) Before
+−30
+−20
+−10
+0
+10
+20
+30
+−20
+−10
+0
+10
+20
+Street 0
+Street 1
+Street 2
+Street 3
+Street 4
+Street 5
+Street 6
+Street 7
+Street 8
+(b) After
+Figure 3: Visualization of POI representations before and af-
+ter applying the spatio-temporal collaborative optimization.
+a two-stage co-optimization framework: prior to SID generation,
+it optimizes POI representations by learning high-quality initial
+SIDs that integrate geographic and semantic information; after
+SID generation, it performs self-refinement by introducing an EM-
+style optimization algorithm that iteratively updates the SIDs with
+feedback signals from the LLM.
+5.4
+Visualization analysis of POI representation
+In this section, we visualize the POI semantic representations using
+t-SNE [19] before and after applying the spatio-temporal collabo-
+rative optimization described in Section 3. Specifically, we sample
+450 POIs from 9 different streets (50 POIs per street) in one city.
+From Figure 3, we observe that POIs from different streets (points
+of different colors) are well-separated after optimization. For com-
+parison, before optimizing the semantic representations with sam-
+pled geo-constrained co-visited POI pairs, points of different colors
+exhibit noticeable representation entanglement, indicating that the
+native LLM (e.g., Qwen-4B embedding) still has certain limitations
+in understanding spatial semantics, even when detailed address and
+latitude/longitude information are provided.
+Furthermore, after optimization, POIs on the same street are
+positioned more closely. Intuitively, POIs located on the same
+street should be geographically closer to each other and thus more
+likely to co-occur in local named behavioral trajectories (e.g., user
+check-in sequences or route records). This is particularly important
+in navigation-based LBS scenarios, where accurate geographical
+awareness among POIs is crucial. Combined with the quantitative
+results from the ablation studies, these visualizations demonstrate
+the effectiveness of our approach—constructing geo-constrained
+co-visited POI pairs and optimizing POI representations through
+contrastive learning.
+5.5
+Semantic and Distance Relevance of SID
+We evaluate the semantic similarity and real-world geographic
+distance among POIs based on their assigned Semantic ID (SID)
+codebooks—namely, C1, C2, and C3. Specifically, for Codebook 1
+(C1), which contains 4,096 codewords in the AMAP dataset, we
+assign a POI token to every POI. We then compute the average
+semantic similarity and the average physical distance among all
+POIs sharing the same prefix token (e.g., [𝑎1, ∗, ∗] ).
+Table 5: Evaluation of POI in various codebooks.
+Metrics
+Semantic Similarity ↑
+Location Dis.(KM) ↓
+Recall@5
+Cluster
+C1
+C2
+C3
+C1
+C2
+C3
+Base POI SID
+0.62
+0.73
+0.90
+483.4
+71.2
+11.2
+0.4426
+Our POI SID
+0.82
+0.98
+0.99
+31.9
+4.8
+1.3
+0.5068
+Table 6: Relative improvement of GeoGR compared to the
+traditional cascade retrieval baseline of the online A/B test.
+Online metrics
+WINRATE
+P_CTR
+PV_CTR
+UV_CTR
+Restaurant
++1.83%
++1.29%
++1.55%
++0.82%
+Life Services
++2.91%
++1.83%
++2.77%
++0.90%
+Tourist Attraction
++2.18%
++1.39%
++2.43%
++1.21%
+Ave.Imp
++2.31%
++1.50%
++2.25%
++0.98%
+The results are shown in Table 5. The baseline SIDs are gen-
+erated using the original POI representations from the base em-
+bedding model. In contrast, after optimization via our proposed
+spatio-temporal semantic representation learning and EM-style SID
+refinement algorithm, POIs within the same cluster exhibit signifi-
+cantly stronger semantic cohesion and are geographically closer to
+one another. This observation aligns with our core motivation for
+designing hierarchical SIDs: to map POIs that are both semantically
+related and spatial-temporal proximate to nearby or identical SIDs.
+Such alignment between semantic structure and geographic reality
+directly contributes to the substantial improvement in next-POI
+prediction performance observed in our experiments.
+5.6
+Online Experiments
+GeoGR has been deployed on the AMAP platform to power user
+query retrieval on the homepage, replacing the conventional multi-
+stage recall and coarse-ranking pipeline. When a user submits a
+query, the prompt construction module retrieves user-specific data
+from the database—including personalized preferences and histori-
+cal behavior trajectories—and combines it with real-time contextual
+signals (e.g., current location, timestamp, and search query) to form
+a complete input prompt. GeoGR then generates 50 candidate SID
+using dynamic beam search. After necessary post-processing, these
+candidates are passed to downstream fine-ranking and re-ranking
+modules to produce the final recommendations. To balance efficacy
+and inference efficiency in production, we identified GeoGR-0.6B
+as the optimal model variant. It delivers competitive recommenda-
+tion quality while maintaining a manageable latency: an average
+of 50 ms per request on NVIDIA H20 GPU, compared to 90 ms
+for GeoGR-4B. Consequently, we deployed GeoGR-0.6B in produc-
+tion and conducted a one-week online A/B test against the legacy
+multi-stage retrieval baseline.
+As shown in Table 6, we report online performance across multi-
+ple scenarios, including food, lifestyle services, and tourism. GeoGR
+achieves consistent and significant improvements across key busi-
+ness metrics: WinRate +2.32%, P_CTR +1.50%, PV_CTR +2.25%,
+UV_CTR +0.98%. WinRate is a composite metric that quantifies
+overall user engagement gains by weighting strategic actions—such
+
+GeoGR: A Generative Retrieval Framework for Spatio-Temporal Aware POI Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+as clicks, route navigation, and bookings—according to their busi-
+ness value. It reflects holistic improvements in both user satisfac-
+tion and platform utility. The other CTR-based metrics capture
+user engagement from complementary perspectives (per-item, per-
+page-view, and per-user). These results demonstrate that GeoGR
+not only surpasses traditional cascade architectures in complex,
+large-scale industrial environments but also generates recommen-
+dations that better align with real-time user intent. Our approach
+significantly enhances user experience and delivers higher-quality,
+free location-based services at scale.
+6
+Conclusion
+In this work, we present GeoGR, a novel generative recommenda-
+tion framework tailored for large-scale POI retrieval in navigation-
+based LBS scenarios. To generate geo-aware semantic POI SID, we
+start with fine-tuning the embedding encoder model based on the
+sampled geo-constrained co-visited POI pairs, and then apply the
+RQ-Kmeans and EM-style algorithms for generating and refining
+the SIDs. For training a condition-aware generative recommen-
+dation system in industrial application, we introduce a CPT and
+SFT fine-tuning procedure. The process first aligns the added SID
+tokens with multiple template prompts and then enhancing the
+optimal effectiveness of SFT with next POI prediction dataset. Ge-
+oGR has been successfully deployed in the AMAP platform, and
+achieved significant improvement in multiple metrics. In the future,
+we plan to further enhance GeoGR’s reasoning and recommenda-
+tion capabilities through approaches such as scaling up the model
+size, extending the length of user behavior sequences, constructing
+Chain-of-Thought (CoT)-based training data, and incorporating
+reinforcement learning (RL) for optimization.
+References
+[1] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong Xiao,
+Bowen Xue, Xuxin Zhang, Ying Yang, et al. 2025. Onesearch: A preliminary
+exploration of the unified end-to-end generative framework for e-commerce
+search. arXiv preprint arXiv:2509.03236 (2025).
+[2] Junyi Chen, Lu Chi, Bingyue Peng, and Zehuan Yuan. 2024. Hllm: Enhancing
+sequential recommendations via hierarchical large language models for item and
+user modeling. arXiv preprint arXiv:2409.12740 (2024).
+[3] Arthur P Dempster, Nan M Laird, and Donald B Rubin. 1977. Maximum likelihood
+from incomplete data via the EM algorithm. Journal of the royal statistical society:
+series B (methodological) 39, 1 (1977), 1–22.
+[4] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[5] Shanshan Feng, Feiyu Meng, Lisi Chen, Shuo Shang, and Yew Soon Ong. 2024.
+Rotan: A rotation-based temporal attention network for time-specific next poi
+recommendation. In Proceedings of the 30th ACM SIGKDD conference on knowledge
+discovery and data mining. 759–770.
+[6] Balázs Hidasi, Alexandros Karatzoglou, Linas Baltrunas, and Domonkos Tikk.
+2015. Session-based recommendations with recurrent neural networks. arXiv
+preprint arXiv:1511.06939 (2015).
+[7] Minjie Hong, Yan Xia, Zehan Wang, Jieming Zhu, Ye Wang, Sihang Cai, Xi-
+aoda Yang, Quanyu Dai, Zhenhua Dong, Zhimeng Zhang, et al. 2025. EAGER-
+LLM: Enhancing Large Language Models as Recommenders through Exogenous
+Behavior-Semantic Integration. In Proceedings of the ACM on Web Conference
+2025. 2754–2762.
+[8] Yupeng Hou, Jianmo Ni, Zhankui He, Noveen Sachdeva, Wang-Cheng Kang, Ed H
+Chi, Julian McAuley, and Derek Zhiyuan Cheng. 2025. ActionPiece: Contextually
+Tokenizing Action Sequences for Generative Recommendation. arXiv preprint
+arXiv:2502.13581 (2025).
+[9] Hao Jiang, Guoquan Wang, Sheng Yu, Yang Zeng, Wencong Zeng, and Guorui
+Zhou. 2025. A Plug-and-Play Spatially-Constrained Representation Enhancement
+Framework for Local-Life Recommendation. arXiv preprint arXiv:2511.12947
+(2025).
+[10] Bowen Jin, Hansi Zeng, Guoyin Wang, Xiusi Chen, Tianxin Wei, Ruirui Li,
+Zhengyang Wang, Zheng Li, Yang Li, Hanqing Lu, et al. 2023. Language models
+as semantic indexers. arXiv preprint arXiv:2310.07815 (2023).
+[11] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[12] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive image generation using residual quantization. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition. 11523–11532.
+[13] Peibo Li, Maarten de Rijke, Hao Xue, Shuang Ao, Yang Song, and Flora D Salim.
+2024. Large language models for next point-of-interest recommendation. In
+Proceedings of the 47th International ACM SIGIR Conference on Research and
+Development in Information Retrieval. 1463–1472.
+[14] Enze Liu, Bowen Zheng, Cheng Ling, Lantao Hu, Han Li, and Wayne Xin Zhao.
+2024. End-to-end learnable item tokenization for generative recommendation.
+arXiv e-prints (2024), arXiv–2409.
+[15] Shuai Liu, Ning Cao, Yile Chen, Yue Jiang, and Gao Cong. 2024. nextlocllm: next
+location prediction using LLMs. arXiv preprint arXiv:2410.09129 (2024).
+[16] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, et al. 2025. Qarm: Quantitative
+alignment multi-modal recommendation at kuaishou. In Proceedings of the 34th
+ACM International Conference on Information and Knowledge Management. 5915–
+5922.
+[17] Yan Luo, Haoyi Duan, Ye Liu, and Fu-Lai Chung. 2023. Timestamps as prompts
+for geography-aware location recommendation. In Proceedings of the 32nd ACM
+International Conference on Information and Knowledge Management. 1697–1706.
+[18] Yingtao Luo, Qiang Liu, and Zhaocheng Liu. 2021. Stan: Spatio-temporal attention
+network for next location recommendation. In Proceedings of the web conference
+2021. 2177–2185.
+[19] Laurens van der Maaten and Geoffrey Hinton. 2008. Visualizing data using t-SNE.
+Journal of machine learning research 9, Nov (2008), 2579–2605.
+[20] James B McQueen. 1967. Some methods of classification and analysis of multi-
+variate observations. In Proc. of 5th Berkeley Symposium on Math. Stat. and Prob.
+281–297.
+[21] Gustavo Penha, Edoardo D’Amico, Marco De Nadai, Enrico Palumbo, Alexandre
+Tamborrino, Ali Vardasbi, Max Lefarov, Shawn Lin, Timothy Heath, Francesco
+Fabbri, et al. 2025. Semantic ids for joint generative search and recommendation.
+In Proceedings of the Nineteenth ACM Conference on Recommender Systems. 1296–
+1301.
+[22] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[23] Chonggang Song, Chunxu Shen, Hao Gu, Yaoming Wu, Lingling Yi, Jie Wen,
+and Chuan Chen. 2024. Precise: Pre-training sequential recommenders with
+collaborative and semantic information. arXiv preprint arXiv:2412.06308 (2024).
+[24] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential recommendation with bidirectional encoder rep-
+resentations from transformer. In Proceedings of the 28th ACM international
+conference on information and knowledge management. 1441–1450.
+[25] Zhiqing Sun, Zhi-Hong Deng, Jian-Yun Nie, and Jian Tang. 2019. Rotate: Knowl-
+edge graph embedding by relational rotation in complex space. arXiv preprint
+arXiv:1902.10197 (2019).
+[26] Jiaxi Tang and Ke Wang. 2018. Personalized Top-N Sequential Recommendation
+via Convolutional Sequence Embedding. In ACM International Conference on Web
+Search and Data Mining.
+[27] Dongsheng Wang, Shen Gao, Chengrui Huang, Yuxi Huang, Ruixiang Feng, and
+Shuo Shang. 2025. TOOL4POI: A Tool-Augmented LLM Framework for Next POI
+Recommendation. arXiv preprint arXiv:2511.06405 (2025).
+[28] Dongsheng Wang, Yuxi Huang, Shen Gao, Yifan Wang, Chengrui Huang, and
+Shuo Shang. 2025. Generative next poi recommendation with semantic id. In
+Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data
+Mining V. 2. 2904–2914.
+[29] Xinglei Wang, Meng Fang, Zichao Zeng, and Tao Cheng. 2023. Where would i
+go next? large language models as human mobility predictors. arXiv preprint
+arXiv:2308.15197 (2023).
+[30] Zhipeng Wei, Kuo Cai, Junda She, Jie Chen, Minghao Chen, Yang Zeng, Qiang Luo,
+Wencong Zeng, Ruiming Tang, Kun Gai, et al. 2025. Oneloc: Geo-aware generative
+recommender systems for local life service. arXiv preprint arXiv:2508.14646 (2025).
+[31] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng,
+Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. 2025. Qwen3 technical
+report. arXiv preprint arXiv:2505.09388 (2025).
+[32] Dingqi Yang, Daqing Zhang, Vincent W Zheng, and Zhiyong Yu. 2014. Modeling
+user activity preference by leveraging user spatial temporal characteristics in
+LBSNs. IEEE Transactions on Systems, Man, and Cybernetics: Systems 45, 1 (2014),
+129–142.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Fangye Wang, Haowen Lin, Yifang Yuan, Siyuan Wang, Xiaojiang Zhou, Song Yang, and Pengjie Wang
+[33] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, et al. 2025. Sparse meets dense: Unified generative
+recommendations with cascaded sparse-dense representations. arXiv preprint
+arXiv:2503.02453 (2025).
+[34] Chao Yi, Dian Chen, Gaoyang Guo, Jiakai Tang, Jian Wu, Jing Yu, Mao Zhang,
+Sunhao Dai, Wen Chen, Wenjun Yang, et al. 2025. Recgpt technical report. arXiv
+preprint arXiv:2507.22879 (2025).
+[35] Penglong Zhai, Jie Li, Fanyi Di, Yue Liu, Yifang Yuan, Jie Huang, Peng Wu,
+Sicong Wang, Mingyang Yin, Tingting Hu, et al. 2025. Cognitive-Aligned Spatio-
+Temporal Large Language Models For Next Point-of-Interest Prediction. arXiv
+preprint arXiv:2510.14702 (2025).
+[36] Chao Zhang, Shiwei Wu, Haoxin Zhang, Tong Xu, Yan Gao, Yao Hu, and Enhong
+Chen. 2024. Notellm: A retrievable large language model for note recommenda-
+tion. In Companion Proceedings of the ACM Web Conference 2024. 170–179.
+[37] Qianru Zhang, Peng Yang, Junliang Yu, Haixin Wang, Xingwei He, Siu-Ming Yiu,
+and Hongzhi Yin. 2025. A survey on point-of-interest recommendation: Models,
+architectures, and security. IEEE Transactions on Knowledge and Data Engineering
+(2025).
+[38] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting large language models by integrating
+collaborative semantics for recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). IEEE, 1435–1448.
+[39] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, et al. 2025. Onerec-v2 technical
+report. arXiv preprint arXiv:2508.20900 (2025).
+[40] Kun Zhou, Hui Wang, Wayne Xin Zhao, Yutao Zhu, Sirui Wang, Fuzheng Zhang,
+Zhongyuan Wang, and Ji-Rong Wen. 2020. S3-rec: Self-supervised learning for se-
+quential recommendation with mutual information maximization. In Proceedings
+of the 29th ACM international conference on information & knowledge management.
+1893–1902.
+[41] Zeyu Zhou, Yan Lin, Haomin Wen, Shengnan Guo, Jilin Hu, Youfang Lin,
+and Huaiyu Wan. 2024. Plm4traj: Cognizing movement patterns and travel
+purposes from trajectories with pre-trained language models. arXiv preprint
+arXiv:2405.12459 (2024).

@@ -1,0 +1,1671 @@
+Learning to Reflect and Correct: Towards Better Decoding
+Trajectories for Large-Scale Generative Recommendation
+Haibo Xing∗
+Alibaba International Digital
+Commerce Group
+Hangzhou, China
+xinghaibo.xhb@alibaba-inc.com
+Hao Deng∗
+Alibaba International Digital
+Commerce Group
+Beijing, China
+denghao.deng@alibaba-inc.com
+Lingyu Mu
+Alibaba International Digital
+Commerce Group
+Beijing, China
+moulingyu.mly@alibaba-inc.com
+Jinxin Hu†
+Alibaba International Digital
+Commerce Group
+Beijing, China
+jinxin.hjx@alibaba-inc.com
+Yu Zhang
+Alibaba International Digital
+Commerce Group
+Beijing, China
+daoji@lazada.com
+Xiaoyi Zeng
+Alibaba International Digital
+Commerce Group
+Hangzhou, China
+yuanhan@taobao.com
+Jing Zhang†
+School of Computer Science, Wuhan
+University
+Wuhan, China
+jingzhang.cv@gmail.com
+Abstract
+Generative Recommendation (GR) has become a promising para-
+digm for large-scale recommendation systems. However, existing
+GR models typically perform single-pass decoding without explicit
+refinement, causing early deviations to accumulate and ultimately
+degrade recommendation quality. To tackle this problem, we pro-
+pose GRC, which is, to our knowledge, the first structured reflection-
+correction framework for GR that extends standard decoding into
+a Generation–Reflection–Correction (GRC) process. Concretely,
+GRC introduces a supervised reflection–correction template that
+decomposes the decoding process into initial draft generation, multi-
+granular reflection, and reflection-guided correction, thereby en-
+abling structured reflection and correction in the semantic token
+space. To further explore the enlarged refinement space introduced
+by the GRC process, we optimize the entire GRC trajectory with
+GRPO-based reinforcement learning, under a carefully designed
+reward function with token-level and trajectory-level signals. For
+efficient online serving, we propose an Entropy-Guided Reflection
+Scheduling (EGRS) strategy that dynamically allocates more correc-
+tion budget to high-uncertainty decoding trajectories during beam
+search. Extensive experiments on real-world datasets show that
+GRC consistently outperforms six state-of-the-art baselines by up
+∗Contributed equally to this research.
+†Corresponding authors.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Acronym ’XX, Woodstock, NY
+© 2026 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+to 15.74%, and online A/B tests demonstrate its substantial practical
+value in large-scale industrial recommendation, delivering a 1.79%
+lift in advertising revenue with only modest latency overhead.
+CCS Concepts
+• Information systems →Retrieval models and ranking.
+Keywords
+Generative Recommendation, Reflection, Reinforcement learning
+ACM Reference Format:
+Haibo Xing, Hao Deng, Lingyu Mu, Jinxin Hu, Yu Zhang, Xiaoyi Zeng,
+and Jing Zhang†. 2026. Learning to Reflect and Correct: Towards Better
+Decoding Trajectories for Large-Scale Generative Recommendation. In
+Proceedings of Make sure to enter the correct conference title from your rights
+confirmation email (Acronym ’XX). ACM, New York, NY, USA, 11 pages.
+https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+In large-scale recommender systems, the retrieval stage plays a
+central role in matching user needs to massive item pools [2, 3, 16].
+Recent advances in discrete semantic representations and sequence
+modeling have led to semantic-token-based Generative Recom-
+mendation (GR) [23, 35, 41], which is increasingly adopted in the
+real-world retrieval stage. In this paradigm, item embeddings are
+first quantized into multi-level discrete tokens [11, 15, 32], and the
+autoregressive GR then generates the target item’s semantic token
+trajectory directly in this discrete space, bypassing conventional
+dual-tower retrieval [18, 31]. By sharing tokens across semanti-
+cally similar items and enabling finer-grained preference modeling,
+token-driven GR shows strong potential for industrial applications
+such as e-commerce and content recommendation [26, 30].
+Despite these advantages, most GR methods still follow a one-
+pass autoregressive paradigm [10]: given user behavior, the model
+arXiv:2602.23639v1  [cs.IR]  27 Feb 2026
+
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+Errors emerge and accumulate
+Correction
+Reflection
+... ...
+Generation
+Error localization: b
+Cate: mismatch 
+Brand: correct
+Price Level: mismatch 
+(b). GR with Structured Reflection-Correction
+(a). Classic GR
+< BOS >
+< a_25 >
+< b_93 >
+< c_62 >
+< d_39 >
+< BOS >
+< a_25 >
+< b_93 >
+< c_62 >
+< d_39 >
+< a_25 >
+< b_75 >
+< c_22 >
+< d_52 >
+Semantic IDs of the Ground Truth: 
+< a_25 >
+< b_75 >
+< c_22 >
+< d_52 >
+Figure 1: Illustration of Generative Recommendation. (a)
+Classic GR, where errors accumulate along one-pass autore-
+gressive generation. (b) Our GRC, which augments genera-
+tion with structured reflection and correction.
+generates a complete semantic token sequence in a single pass and
+directly uses it for retrieval, without explicit inspection or refine-
+ment. In this setting, early decoding errors emerge and accumulate
+along the autoregressive chain [17], resembling hallucination-like
+drift in large language models (LLMs) decoding [7, 25]. For multi-
+level semantic tokens, the first token typically selects a coarse
+semantic cluster, while later tokens specify finer-grained attributes
+[15]. Once an early token deviates, subsequent tokens can only
+specialize within the wrong cluster, causing the retrieval trajectory
+to drift from the target and limiting GR accuracy.
+Fundamentally, existing methods rely on supervised imitation
+with teacher forcing to fit each item’s semantic token sequence.
+This confines training to ground-truth trajectories, but provides no
+explicit mechanism to evaluate or repair model-generated trajec-
+tories at inference. As a result, it is difficult to effectively mitigate
+error accumulation in the autoregressive generation process. Re-
+cent self-reflection mechanisms in LLMs [1, 19] offer a promising
+way to mitigate error propagation by generating a critique and
+then refining the output accordingly. However, they typically rely
+on free-form natural-language reflections and explanations, which
+are hard to align with discrete semantic tokens in GR, hindering
+fine-grained error localization and correction. Moreover, multi-
+step natural-language generation introduces substantial latency
+overhead and unpredictable tail latency, making it impractical for
+real-time industrial deployment. To sidestep these issues, ReaRec
+[27] performs implicit multi-step reasoning to refine item repre-
+sentations at inference time. However, this implicit refinement is
+inherently black-box and fails to support explicit supervision for
+correction, thereby undercutting the effectiveness of self-reflection
+mechanisms for targeted error diagnosis and correction in GR.
+To address these challenges, we draw inspiration from self-
+reflection while deliberately avoiding free-form textual feedback.
+To this end, we propose GRC, a structured framework for GR
+that replaces conventional one-pass semantic-token generation
+with an explicit Generation–Reflection–Correction process. Dur-
+ing supervised fine-tuning (SFT), we construct a Structured Re-
+flection–Correction Template that specifies how these three
+components are serialized into a single supervision trajectory. As
+illustrated in Figure 1(b), each training episode consists of three
+consecutive components: generation, reflection, and correction,
+forming a unified trajectory that endows the model with an initial
+self-correction capability. Concretely, in the generation component,
+the model first produces a candidate semantic-token trajectory as
+an initial retrieval draft, exactly as in standard GR. In the reflec-
+tion component, instead of emitting free-form natural language,
+the model generates structured reflection signals along two axes: (i)
+token-level error localization, identifying the first position in the
+draft where the generated token deviates from the reference trajec-
+tory and (ii) semantic-level consistency judgments (e.g., category
+and brand), indicating how the draft deviates from the reference. In
+the correction component, the model then rewrites the trajectory
+conditioned on both the draft and these structured reflection sig-
+nals, and the corrected trajectory is used for retrieval. By following
+this template, GRC (i) explicitly instantiates generation, reflection,
+and correction at the semantic-token level, and (ii) converts self-
+reflection from opaque natural-language critiques into a structured
+signal space that can be directly supervised and optimized. This en-
+ables the model to learn to evaluate and repair off-target trajectories,
+rather than merely imitating ground-truth token sequences.
+Incorporating GRC substantially enlarges the trajectory revision
+space, since varying reflection signals and correction edits can yield
+a combinatorially large set of generation–reflection–correction
+trajectories that simple heuristics cannot cover. If we rely only
+on the SFT stage, the model merely fits a small set of demonstra-
+tion trajectories with fixed reflection–correction behaviors, leaving
+many potentially better strategies undiscovered. To address this,
+we further introduce a Reinforcement Learning (RL) stage based
+on Group Relative Policy Optimization (GRPO) [24] to enhance the
+model’s ability to explore self-correction policies in the enlarged
+decision space. We design episode structures and reward decompo-
+sitions that are aligned with the GRC framework, so that the model
+learns a structured reflection–correction policy of "first identify
+where it went wrong, then fix it in a targeted way" rather than
+simply generating longer trajectories. In terms of reward design,
+we move beyond assessing only the correctness of the final gener-
+ated sequence and introduce three fine-grained, reflection-oriented
+rewards that directly evaluate the quality of error localization and
+correction behavior. Through this RL process, the model learns sta-
+ble self-correction strategies in the complex reflection–correction
+decision space, which in turn significantly improves the effective-
+ness and robustness of GR in large-scale recommendation scenarios.
+Considering the real-time serving constraints in large-scale rec-
+ommendation, the reflection–correction overhead incurred by GRC
+calls for selective application at inference time. We therefore pro-
+pose Entropy-Guided Reflection Scheduling (EGRS), which lever-
+ages reflection-time uncertainty to prioritize candidates with higher
+correction potential, enabling more effective use of a fixed self-
+correction budget. Concretely, EGRS uses reflection-time token
+entropy as a lightweight proxy for correction potential and, under
+a fixed beam budget, biases beam selection toward more uncertain
+trajectories for further refinement. This design preserves the stan-
+dard beam-search interface and keeps inference latency practical.
+Our main contributions are as follows:
+• We propose GRC, an explicit self-correction framework for GR.
+To the best of our knowledge, it is the first approach to move
+
+Learning to Reflect and Correct: Towards Better Decoding Trajectories for Large-Scale Generative Recommendation
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+beyond one-pass decoding by modeling a structured Genera-
+tion–Reflection–Correction process in the semantic-token space.
+By reducing error propagation in autoregressive semantic-token
+generation, GRC yields more robust trajectories and consistently
+improves retrieval accuracy.
+• We further enhance GRC’s self-reflection and self-correction ca-
+pabilities by introducing a GRPO-based reinforcement learning
+stage. In this stage, GRC directly optimizes reflection–correction
+policies in the expanded trajectory space, using an episode formu-
+lation and a reward design tailored to GRC. For efficient deploy-
+ment, we further propose EGRS, which prioritizes trajectories
+with higher uncertainty and correction potential, thereby better
+realizing the benefits of reflection under strict latency constraints.
+• We conduct extensive offline experiments on real-world datasets
+and deploy GRC in an online advertising system. The results
+show that our framework achieves consistent improvements
+over strong baselines and is practical for large-scale industrial
+deployment, with only a modest increase in inference latency.
+2
+Related Work
+2.1
+Generative Recommendation
+In large-scale recommender systems, retrieval is typically imple-
+mented with dual-tower models that embed users and items into
+a shared space and retrieve candidates via Approximate Nearest
+Neighbor (ANN) search [5, 31, 40]. Despite their effectiveness, these
+models rely on item-ID–specific parameters, exacerbating popular-
+ity bias in million-scale catalogs and limiting generalization and
+semantic utilization [39]. To mitigate this issue, recent work ex-
+plores GR with discrete semantic tokens. Early work such as TIGER
+[23] uses RQ-VAE to encode item content into multi-level semantic
+tokens, and then trains an autoregressive Transformer to generate
+the target item’s token sequence. Later work improves tokenization
+and codebook design for higher expressiveness [6, 11, 32]. Most
+GR models are trained with teacher forcing but decoded in one
+pass from self-generated prefixes, leading to exposure bias and
+error propagation [22, 23, 35, 39]. Early token errors shift later
+conditionals and cause the decoded sequence to drift in the item
+space, degrading retrieval quality. A few studies introduce limited
+correction mechanisms for GR [34, 35]. For example, COBRA [35]
+augments discrete tokens with continuous vectors and alternates
+between token generation and dense embedding prediction, leverag-
+ing ANN retrieval to partly mitigate early-token errors. ReaRec [27]
+introduces an inference-time refinement procedure that iteratively
+updates item representations for GR. However, these mechanisms
+remain largely implicit: they neither explicitly localize errors nor
+revise previously generated tokens along the trajectory.
+In comparison, GRC introduces an explicit self-correction mod-
+ule for GR that localizes token-level errors and checks semantic
+consistency during decoding, revising the semantic token sequence
+accordingly and thereby reducing error propagation.
+2.2
+Self-Reflection in Large Language Models
+Reasoning and reflection have been central to performance gains
+of LLMs on complex tasks [20, 29]. Many methods replace one-pass
+generation with multi-round reason-reflect-revise procedures. On
+the reasoning side, models construct structured reasoning paths,
+such as Tree of Thoughts [36] and ReAct [37]. On the reflection side,
+self-critique enables draft–revise iterations to improve robustness
+[8, 13]. RL task further shapes these behaviors [28]. RLHF aligns
+generation with human preferences via preference-based rewards,
+and methods such as GRPO[24] improve optimization stability
+for policy learning. In reasoning-centric settings, rewards often
+combine final correctness with intermediate-quality signals, thereby
+optimizing multi-step reasoning strategies. However, most self-
+reflection and RL optimization operate in free-form natural language:
+reflections do not map cleanly to discrete semantic-token actions,
+and multi-round reflection introduces high and variable inference
+overhead, which is undesirable for latency-sensitive retrieval.
+Unlike natural-language self-reflection, GRC performs reflection
+and correction in the semantic-token space and optimizes these
+decisions with GRPO-style RL under rewards that score both final
+retrieval quality and the reflection–correction process.
+3
+Preliminaries
+3.1
+Problem Definition
+Let U and I denote the sets of users and items, respectively. For
+each user 𝑢∈U, we represent the interaction history as S𝑢=
+[𝑖1,𝑖2, . . . ,𝑖𝑇], where 𝑖𝑡is the item interacted with at step 𝑡and
+𝑇is the maximum sequence length. Following RQ-VAE-based GR
+methods [23, 35], each item 𝑖∈I is encoded as a length 𝐿semantic
+token sequence z𝑖= [𝑧𝑖,1,𝑧𝑖,2, . . . ,𝑧𝑖,𝐿]. Here, 𝐿is the number of
+quantization levels, and 𝑧𝑖,ℓ∈Vℓis a discrete token from the ℓ-
+th codebook. Let Z be the set of valid semantic token sequences.
+We use a deterministic lookup function 𝜙: Z →I such that
+𝜙(z𝑖) = 𝑖. Thus, any generated sequence ˆz ∈Z corresponds to an
+item ˆ𝑖= 𝜙(ˆz). Given user 𝑢, GR aims to generate a candidate set
+Icand
+𝑢
+⊆I with high coverage of the user’s future relevant items.
+We model a conditional distribution 𝑝𝜃(z | S𝑢) over semantic token
+sequences. Given a target item 𝑖tar with token sequence z𝑖tar, we
+train by minimizing the negative log-likelihood:
+LMLE = −
+𝐿
+∑︁
+𝑡=1
+log𝑝𝜃
+ 𝑧𝑖tar,𝑡| 𝑧𝑖tar,<𝑡, S𝑢
+,
+(1)
+where 𝑧𝑖tar,<𝑡= [𝑧𝑖tar,1, . . . ,𝑧𝑖tar,𝑡−1] and 𝜃is the model parameters.
+3.2
+Pre-trained Generative Retrieval Backbone
+We first pre-train a standard GR model and use it as the backbone
+of our GRC framework.
+Model architecture. We use an encoder–decoder Transformer
+[23]. Given S𝑢, the encoder produces a user representation h𝑢=
+Enc𝜃(S𝑢). Conditioned on h𝑢, a Transformer decoder parameterizes
+an autoregressive distribution over semantic token sequences,
+𝑝𝜃(z | S𝑢) =
+𝐿
+Ö
+𝑡=1
+𝑝𝜃(𝑧𝑡| 𝑧<𝑡, h𝑢),
+(2)
+where 𝑝𝜃(𝑧𝑡| 𝑧<𝑡, h𝑢) is parameterized by Dec𝜃. At step 𝑡(1 ≤𝑡≤
+𝐿), the decoder outputs logits over the codebook V𝑡.
+Training and inference. During pre-training, we use teacher
+forcing and minimize LMLE (Eq. 1) by conditioning each next-token
+prediction on the ground-truth prefix. At inference, we decode
+autoregressively from a special BOS token. We use beam search
+
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+with beam size 𝐵to generate multiple trajectories {ˆz𝑏}𝐵
+𝑏=1 and map
+each to an item via 𝜙( ˆz𝑏).
+Limitations. Despite being standard, this training and inference
+setup has two limitations that motivate our GRC method:
+(1) Teacher forcing trains the model under ground-truth prefixes,
+but provides no supervision for detecting or correcting devia-
+tions when decoding from its own predictions. Consequently,
+errors can compound at inference.
+(2) With multi-level semantic tokens, early mistakes can shift sub-
+sequent conditional distributions, leading to cascading errors
+across codebooks and reduced retrieval recall.
+These limitations motivate our GRC framework, which augments
+GR with SFT and RL to enable structured reflection and correction.
+4
+Methodology
+We extend GR into a Generation–Reflection–Correction (GRC)
+framework to reduce error propagation in autoregressive decoding.
+As shown in Figure 2, our framework consists of three components:
+• SFT stage (Sec. 4.1). We first introduce a structured reflection-
+correction template and perform supervised fine-tuning, for-
+mulating the reflection process as discrete decisions over token
+positions rather than free-form text.
+• RL stage (Sec. 4.2). We further optimize the model on com-
+plete generation–reflection–correction trajectories with GRPO,
+directly refining its self-correction policies with sequence-level
+rewards in the expanded trajectory space.
+• Inference-time scheduling (Sec. 4.3). We integrate GRC with
+beam search and allocate a fixed reflection-correction budget to
+low-confidence beams based on uncertainty.
+4.1
+Supervised Fine-tuning with a Structured
+Reflection-Correction Template
+The GR backbone is trained with teacher forcing under ground-
+truth prefixes, and therefore lacks (i) the ability to identify where
+decoding diverges from the target and (ii) a mechanism to correct
+initial generations. We therefore use structured reflection signals
+rather than free-form text, enabling low-overhead correction that
+maps directly to retrieval actions.
+In this section, we introduce an SFT stage with (i) multi-granular
+reflection labels and (ii) a structured reflection-correction template.
+The template factorizes decoding into generate, reflect, and correct
+segments, making reflection a supervised, structured prediction
+problem. This design expands the correction decision space while
+keeping the number of additional decoding steps bounded.
+4.1.1
+Multi-granular reflection labels. During SFT, we employ
+the pre-trained backbone to generate 𝐵candidate outputs for each
+training instance via beam search:
+{ˆz(𝑏)}𝐵
+𝑏=1,
+ˆz(𝑏) = [ˆ𝑧(𝑏)
+1 , . . . , ˆ𝑧(𝑏)
+𝐿],
+(3)
+where 𝐵is the beam size. We use these candidates to derive re-
+flection labels. For each candidate, we annotate token-level and
+semantic-level reflection labels:
+(1) Token-level Error Localization Label. At the token level, we
+locate the first position where ˆ𝑧b differs from the target zgt as
+𝑟(𝑏)
+loc = min
+
+{𝑡∈{1, . . . , 𝐿} | ˆ𝑧(𝑏)
+𝑡
+≠𝑧gt
+𝑡} ∪{𝐿+ 1}
+
+.
+(4)
+where 𝑟(𝑏)
+loc = 𝐿+ 1 indicates a fully correct sequence.
+(2) Semantic-level Consistency Labels. To detect discrepancies
+between the generated item and the ground truth from a physical-
+attribute perspective, we introduce semantic-level consistency la-
+bels over 𝐾predefined attributes with real-world meaning. Let
+ˆ𝑖(𝑏) = 𝜙(ˆz(𝑏)) and 𝑖gt = 𝜙(zgt) denote the candidate and ground-
+truth items. We consider an attribute set A (e.g., category, seller,
+brand). For any attribute 𝑎𝑘∈A, let 𝑓𝑎𝑘(𝑖) map an item 𝑖to its
+value bucket. We then define the attribute consistency label as
+𝑟(𝑏)
+sem,𝑎𝑘=
+(
+1,
+if 𝑓𝑎𝑘(ˆ𝑖(𝑏)) = 𝑓𝑎𝑘(𝑖gt),
+0,
+otherwise.
+(5)
+Stacking these indicators produces r(𝑏)
+sem ∈{0, 1}𝐾. The dimen-
+sionality 𝐾is extensible: additional attributes can be incorporated
+by defining a new 𝑎𝑘along with its corresponding scoring function
+𝑓𝑎𝑘(·). Finally, the structured, multi-granular reflection label for
+candidate 𝑏is defined as follows:
+r(𝑏) =  𝑟(𝑏)
+loc ;
+
+𝑟(𝑏)
+sem,𝑎𝑘
+𝐾
+𝑘=1
+,
+(6)
+Here,
+
+𝑟(𝑏)
+sem,𝑎𝑘
+𝐾
+𝑘=1 summarizes semantic-level consistency, provid-
+ing structured signals for the subsequent correction module.
+4.1.2
+Structured Reflection-Correction Template. During SFT,
+we adopt a three-segment decoding template consisting of (i) initial
+prediction, (ii) multi-granular reflection, and (iii) correction, with
+total length 𝐿dec = 2𝐿+ 𝐾+ 4. We implement the template in a
+single decoding pass by concatenating the three segments into one
+sequence. Given beam candidate ˆz(𝑏), the corresponding supervised
+target sequence is:
+o(𝑏) =
+
+ˆ𝑧(𝑏)
+1
+, . . . , ˆ𝑧(𝑏)
+𝐿, ⟨EOF1⟩, 𝑟(𝑏)
+loc ,𝑟(𝑏)
+sem,𝑎1, . . . ,𝑟(𝑏)
+sem,𝑎𝐾, ⟨EOF2⟩,
+𝑧gt
+1 , . . . ,𝑧gt
+𝐿, ⟨EOF3⟩
+
+,
+(7)
+where the three segments correspond to initial prediction, reflec-
+tion labels, and the ground-truth semantic labels, respectively, and
+⟨EOF1⟩, ⟨EOF2⟩, and ⟨EOF3⟩are special tokens that delimit the
+three parts of the template.
+Initial prediction segment. The initial prediction segment matches
+pre-training: triggered by ⟨BOS1⟩, it autoregressively generates ˆz(𝑏),
+where positions 1, . . . , 𝐿predict the 𝐿semantic tokens.
+Reflection segment. The reflection segment starts at position 𝐿+2,
+triggered by ⟨BOS2⟩. With causal masking, the reflection tokens
+can attend to the entire initially predicted sequence. In addition, we
+treat the 𝐾+ 1 reflection labels as conditionally independent given
+the shared context and predict them in parallel by modifying the
+decoder self-attention mask to block attention across reflection po-
+sitions. The mask preserves cross-segment causality, and reflection
+tokens cannot attend to any subsequent correction or ground-truth
+tokens. Formally, the distribution of the 𝑗-th reflection label is:
+𝑝ref
+𝜃,𝑗= 𝑝𝜃
+ 𝑟(𝑏)
+𝑗
+| S𝑢, ˆz(𝑏),
+𝑗∈{0, . . . , 𝐾}.
+(8)
+
+Learning to Reflect and Correct: Towards Better Decoding Trajectories for Large-Scale Generative Recommendation
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+` 
+Encoder
+< BOS1 >
+Decoder
+Generation
+Reflection
+Correction
+< a_19 > < b_81 > < c_47 >
+< a_19 > < b_12 > < c_32 >
+(a). Structured GRC Template
+SIDs
+SIDs
+< a_19 > < b_81 > < c_47 >
+< a_19 > < b_12 > < c_32 >
+CateID
+< x_b >
+< y_s >
+< z_d >
+CateID
+< cate_23 >
+< cate_52 >
+< x_b >
+< z_d >
+diff begins at SID b
+diff cate
+first draft
+ground trurh
+BrandID
+BrandID
+< brand_19 >
+< brand_19 >
+< y_s >
+same brand
+ 
+ 
+(b). GRPO-based Self-Correction
+(c). Entropy-Guided Reflection Scheduling
+beam score: 0.82, entropy: 0.12
+total score: 0.82+0.12=0.94
+beam score: 0.54, entropy: 0.53
+total score: 0.54+0.53=1.07
+First draft
+Second draft
+SID a
+SID b
+SID c
+SID x
+SID y
+SID z
+SID a
+SID b
+SID c
+SID a
+SID b
+SID c
+SID x
+SID y
+SID z
+SID a
+SID b
+SID c
+SID Mask
+GRCt
+GRCt+1
+GRPO
+Token Hit Reward
+Quality Improvement Reward
+< a_19 > < b_81 > < c_47 >
+< a_19 > < b_12 > < c_32 >
+< x_b >
+< y_s >
+< z_d >
+first draft: < a_19 >, < b_31 >, < c_23 >
+second draft: < a_19 >, < b_19 >, < c_32 >
+reward: 5.0
+Target item: < a_19 >, < b_12 >, < c_32>, <brand_19>, <cate_52>
+width: 3
+Reflection
+width: 5
+all right
+< BOS2 >
+< BOS3 >
+< EOF1 >
+< EOF2 >
+< EOF3 >
+Semantic Matching Reward
+first attribute prediction: <brand_45>, <cate_31>
+reflection prediction: <y_s>, <z_d>
+second attribute prediction: <brand_36>, <cate_52>
+reward: 1.0
+first draft: < a_19 >, < b_31 >, < c_23 >
+second draft: < a_19 >, < b_12 >, < c_32 >
+reward: 2.0
+Error Localization Reward
+first draft: < a_19 >, < b_31 >, < c_23 >
+reflection prediction: <x_b>
+second draft: < a_19 >, < b_12 >, < c_32 >
+reward: 1.5
+Figure 2: Overview of the proposed GRC framework, which extends standard generative retrieval into a structured Gener-
+ation–Reflection–Correction process with (a). Supervised reflection–correction template, (b). GRPO-based optimization of
+self–correction, and (c). Entropy-Guided Reflection Scheduling integrated with beam search for practical deployment.
+At inference time, we predict all structured reflection tokens in
+parallel within a single decoder forward pass by applying the self-
+attention mask shown in Figure 2, which removes intra-reflection
+dependencies, instead of decoding them iteratively token by token.
+Correction segment. The correction segment starts at position
+𝐿+ 𝐾+ 3, triggered by ⟨BOS3⟩. The correction segment generates
+the final sequence conditioned on ˆz(𝑏) and r(𝑏), and is trained with
+standard teacher forcing.
+Although the correction segment still uses an autoregressive
+Transformer, it differs from pre-training by conditioning on two
+additional signals: (i) initial candidate sequence ˆz(𝑏), (ii) multi-
+dimensional reflection labels r(𝑏). The conditional distribution is:
+𝑝cor
+𝜃,𝑡= 𝑝𝜃
+
+𝑧gt
+𝑡| S𝑢,𝑧gt
+<𝑡, ˆz(𝑏), r(𝑏)
+.
+(9)
+This makes the correction distribution explicitly depend on the
+model’s initial generation and reflection signals, rather than only
+the user history. The three-segment template allows us to supervise
+generation, reflection, and correction in a single pass. We optimize
+the SFT objective:
+LSFT =LMLE + 𝜆rcLrc,
+Lrc = −
+𝐾
+∑︁
+𝑗=0
+log𝑝ref
+𝜃,𝑗−
+𝐿
+∑︁
+𝑡=1
+log𝑝cor
+𝜃,𝑡.
+(10)
+In Eq.10, we apply LMLE to the initial prediction segment and
+use Lrc to supervise reflection and correction. The coefficient 𝜆rc
+controls the overall weight of this additional supervision.
+Overall, SFT trains the model to follow a structured generate,
+reflect, and correct procedure, which provides a strong initialization
+for subsequent RL.
+4.2
+GRPO-Enhanced Exploration of GRC
+Correction Space
+In Section 4.1, we presented an SFT stage with a structured generate-
+reflect-correct template that provides basic self-correction behavior.
+This supervision is driven by offline-constructed labels and does
+not provide an end-to-end signal for the success of the full generate-
+reflect-correct trajectory, nor does it encourage exploration of al-
+ternative correction strategies.
+To address these issues, we apply GRPO to optimize the model
+on full generate-reflect-correct trajectories. We keep the GRPO
+algorithm unchanged, and instead tailor the episode definition and
+rewards to encourage a diagnose-then-correct behavior.
+4.2.1
+Episode Definition for GRC. We treat the entire GRC
+procedure, from S𝑢to the final corrected output, as a single RL
+episode. Given S𝑢and the ground-truth sequence zgt, each episode
+consists of three steps. First, conditioned on S𝑢and initialized with
+⟨BOS1⟩, the policy samples an initial sequence ˆz(0) ∼𝜋𝜃(z | S𝑢).
+Second, conditioned on this initial draft ˆz(0), the policy generates
+structured reflection tokens that characterize where and how the
+trajectory deviates from the target:
+ˆr =  ˆ𝑟loc; [ˆ𝑟sem,𝑎𝑘]𝐾
+𝑘=1
+ ∼𝜋𝜃(r | ˆz(0), S𝑢).
+(11)
+The ground-truth reflection label rgt (Sec. 4.1.1) is then used to
+compute the reflection-oriented components of the reward. Finally,
+initialized with ⟨BOS3⟩, the policy samples a corrected sequence
+
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+ˆz(1) ∼𝜋𝜃
+ z | ˆz(0), ˆr, S𝑢
+. We denote the entire trajectory as
+𝜏=  S𝑢, ˆz(0), ˆr, ˆz(1).
+(12)
+In this way, GRPO optimizes the reflection–correction policy
+in the enlarged trajectory space, rather than merely imitating the
+supervised correction template.
+4.2.2
+Reward Shaping for the GRC Trajectory. In this part, we
+design rewards to (i) decouple generation quality from correction
+behavior and (ii) leverage the reflection labels (Sec 4.1.1) to evaluate
+both the final output and the intermediate reflection and correction
+decisions. Formally, the total reward is defined as:
+𝑅= 𝑅task + 𝛽cor𝑅cor,
+(13)
+where 𝑅task evaluates generation quality, 𝑅cor evaluates reflection
+and correction quality, and 𝛽cor controls their relative importance.
+(i) Task Reward: Token-Level Retrieval Gain.
+Due to autoregressive dependencies, early errors often propagate
+to later positions and causes error accumulation [23]. Motivated by
+this, we use a token-level hit count as the task signal, computed
+separately for the initial and corrected sequences as:
+ℓ0 =
+𝐿
+∑︁
+𝑡=1
+I
+h
+ˆ𝑧(0)
+𝑡
+= 𝑧gt
+𝑡
+i
+, ℓ1 =
+𝐿
+∑︁
+𝑡=1
+I
+h
+ˆ𝑧(1)
+𝑡
+= 𝑧gt
+𝑡
+i
+,
+(14)
+We then define the task reward as follows, placing greater emphasis
+on the corrected sequence via the coefficient 𝛽last.
+𝑅task = ℓ0 + 𝛽𝑙𝑎𝑠𝑡ℓ1.
+(15)
+(ii) Correction Reward: Trajectory-Level Reflection Gain.
+To further shape correction behavior, we leverage the reflec-
+tion labels (Sec. 4.1.1) and the difference between ˆ𝑧(0)
+𝑡
+and ˆ𝑧(1)
+𝑡
+to
+evaluate correction behavior along three dimensions:
+𝑅cor = 𝛽loc𝑅loc + 𝛽sem𝑅sem + 𝑅Δ,
+(16)
+where 𝛽loc and 𝛽sem weight the 𝑅loc and 𝑅sem, respectively.
+(1) Error Localization Reward 𝑅loc. This component rewards
+both accurate error localization and effective correction within
+the predicted region. Let ˆ𝑟loc denote the predicted first-divergence
+position, and𝑟gt
+loc denote the real first-divergence position. We define
+the label-accuracy reward as follows:
+𝑅loc-label = I[ˆ𝑟loc = 𝑟gt
+loc],
+(17)
+where I[·] is the indicator function. We define the predicted error
+region Eloc
+pred = {𝑡| 𝑡≥ˆ𝑟loc} and the set of actually corrected
+positions as Cfix-loc =
+
+𝑡| ˆ𝑧(0)
+𝑡
+≠𝑧gt
+𝑡, ˆ𝑧(1)
+𝑡
+= 𝑧gt
+𝑡
+	
+. We then quantify
+position-level correction using the hit ratio 𝑅pos-cor:
+𝑅loc-cor =
+|Eloc
+pred ∩Cfix-loc|
+|Eloc
+pred| + 𝜀
+,
+(18)
+where 𝜀> 0 is a small constant. Accordingly, we define the error
+localization reward as 𝑅loc = 𝑅loc-label + 𝑅loc-cor.
+(2) Semantic Matching Reward 𝑅sem. This term rewards accu-
+rate semantic reflection and subsequent semantic alignment after
+correction. The semantic-label accuracy is
+𝑅sem-label = 1
+𝐾
+𝐾
+∑︁
+𝑘=1
+I
+
+ˆ𝑟sem,𝑎𝑘= 𝑟gt
+sem,𝑎𝑘
+
+.
+(19)
+We further reward attributes that are initially predicted as mis-
+matched (i.e. ˆ𝑟sem,𝑎𝑘= 0) but become matched after correction.
+Let ˆ𝑖(0) = 𝜙(ˆz(0)), ˆ𝑖(1) = 𝜙(ˆz(1)), and 𝑖gt denote the initial predic-
+tion, the corrected prediction, and the target item, respectively. For
+each attribute 𝑎𝑘, we define a semantic-level correction indicator
+𝑅sem-cor,𝑎𝑘and average it over attributes to obtain 𝑅sem-cor:
+𝑅sem-cor = 1
+𝐾
+𝐾
+∑︁
+𝑘=1
+𝑅sem-cor,𝑎𝑘,
+𝑅sem-cor,𝑎𝑘= I
+
+ˆ𝑟sem,𝑎𝑘= 0 ∧𝑓𝑎𝑘(ˆ𝑖(0)) ≠𝑓𝑎𝑘(𝑖gt) ∧
+𝑓𝑎𝑘(ˆ𝑖(1)) = 𝑓𝑎𝑘(𝑖gt)
+
+,
+(20)
+where ∧denotes logical conjunction. The semantic matching re-
+ward is set as 𝑅sem = 𝑅sem-label + 𝑅sem-cor.
+(3) Quality Improvement Reward 𝑅Δ. We further reward strict
+improvement and define 𝑅Δ as
+𝑅Δ =
+(
+ℓ1 −ℓ0,
+if ℓ1 > ℓ0,
+0,
+otherwise.
+(21)
+Together, these rewards provide trajectory-level signals over
+both generation quality and correction behavior, allowing GRPO
+to effectively optimize the reflection–correction policy.
+4.2.3
+Training Pipeline. Given the above episode and reward
+definitions, we train GRC with GRPO using advantages computed
+within each user group. The training proceeds in three steps:
+(1) Initialization and rollout. We initialize the policy with
+the SFT weights, i.e., 𝜃0 ←𝜃SFT. At each iteration, we sample a
+minibatch of user histories and roll out one or more trajectories
+per user, obtaining episode {𝜏𝑖} and their rewards {𝑅𝑖}.
+(2) Group-wise advantage estimation. We group episodes by
+user and compute a group-relative advantage 𝐴𝑖by normalizing
+and ranking {𝑅𝑗} within each group, which reduces sensitivity to
+reward scale and stabilizes optimization. 𝐴𝑖is define as:
+𝐴𝑖= GRAdv 𝑅𝑖; {𝑅𝑗}𝑗∈group(𝑖)
+,
+(22)
+where GRAdv(·) denotes the GRPO group-relative advantage com-
+puted by rank-normalizing returns within each user group.
+(3) GRPO objective. We then update the policy with the GRPO
+clipped objective and a standard KL penalty:
+LGRPO(𝜃) = E𝑖
+h
+min   𝜋𝜃
+𝜋𝜃old
+𝐴𝑖, clip  𝜋𝜃
+𝜋𝜃old
+, 1 −𝜖, 1 + 𝜖𝐴𝑖
+
+−𝛽𝑘𝑙KL 𝜋𝜃∥𝜋𝜃ref
+i
+(23)
+where 𝜋𝜃old denotes the old policy, 𝜋𝜃ref is the reference policy, 𝜋𝜃is
+the current policy and 𝛽𝑘𝑙controls the strength of the KL penalty.
+4.3
+Entropy-Guided Reflection Scheduling
+In large-scale recommender systems, GR is typically deployed with
+beam search to balance effectiveness and latency. However, run-
+ning a full reflection–correction procedure on every beam is com-
+putationally prohibitive. We therefore propose an entropy-guided
+reflection scheduling (EGRS) strategy that is tightly integrated with
+beam search and allocates limited reflection capacity to trajectories
+that are more likely to benefit from self-correction.
+
+Learning to Reflect and Correct: Towards Better Decoding Trajectories for Large-Scale Generative Recommendation
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+At inference time, for each user 𝑢, we first apply beam search to
+generate 𝐵initial candidate paths {ˆz(0)
+𝑏}𝐵
+𝑏=1, where ˆz(0)
+𝑏
+denotes the
+semantic token sequence of the 𝑏-th beam with length 𝐿. We then
+enter the reflection stage, where the model generates reflection
+tokens for each path and leverages their uncertainty to guide sub-
+sequent beam selection. For paths whose reflection explicitly
+predicts that the initial generation is already correct, we skip
+further regeneration and retain the original trajectory.
+For the 𝑏-th beam, let ˆr𝑏= (𝑟𝑏,1, . . . ,𝑟𝑏,𝑇𝑟) denote the generated
+reflection token sequence. We quantify reflection uncertainty using
+the average token-level entropy during reflection:
+¯𝐻ref
+𝑏
+= 1
+𝑇𝑟
+𝑇𝑟
+∑︁
+𝑡=1
+©­­
+«
+−
+∑︁
+𝑣∈Vref
+𝑡
+𝑝𝜃
+
+𝑣| ˆz(0)
+𝑏, S𝑢,𝑡
+
+log𝑝𝜃
+
+𝑣| ˆz(0)
+𝑏, S𝑢,𝑡
+ª®®
+¬
+,
+(24)
+where𝑇𝑟= 𝐾+1 is the number of reflection slots, and𝑡∈{1, . . . ,𝑇𝑟}
+indexes the slot. Vref
+𝑡
+denotes the vocabulary for slot 𝑡. A larger
+¯𝐻ref
+𝑏
+indicates lower confidence in the reflection tokens for path 𝑏,
+suggesting that its current correction state is more uncertain and
+potentially more error-prone.
+We use the average reflection entropy ¯𝐻ref
+𝑏
+to re-rank beams
+during correction. For each beam path 𝑏, let scorebase
+𝑏
+be the stan-
+dard beam score, i.e., the sum of log-probabilities along its draft
+trajectory ˆz(0)
+𝑏. We define an entropy-calibrated score:
+scoreEGRS
+𝑏
+= scorebase
+𝑏
++ 𝛼e · ¯𝐻ref
+𝑏,
+(25)
+where 𝛼e > 0 controls the strength of entropy calibration. During
+correction, we maintain a fixed beam budget 𝐵and prune candidates
+by 𝐵←Top-𝐵 {scoreEGRS
+𝑏
+}𝑏∈𝐵
+ instead of scorebase
+𝑏
+. As a result,
+high-entropy paths are more likely to survive pruning and thus
+receive more downstream correction computation under the same
+beam budget, while low-entropy paths are discarded earlier. This
+yields an entropy-aware scheduling mechanism without changing
+the standard beam-search interface, making it easy to tune under
+practical latency constraints.
+5
+Offline Experiments
+In this section, we conduct extensive experiments on three datasets
+to evaluate the effectiveness of the proposed method and to answer
+the following research questions:
+• RQ1: How does GRC perform in comparison with other state-of-
+the-art retrieval models?
+• RQ2: How does each component contribute to the overall per-
+formance of GRC?
+• RQ3: How do hyperparameters influence the model performance?
+• RQ4: How well does GRC perform in online environments?
+5.1
+Experimental Setup
+Dataset. We evaluate our proposed method on three datasets. The
+first two are publicly available benchmark datasets, and the third is
+an in-house industrial dataset.
+• Amazon Product Reviews datasets. To evaluate our method,
+we use public benchmarks derived from the Amazon Product
+Reviews dataset [9], which contains user reviews and item meta-
+data from May 1996 to July 2014. We focus on two categories:
+Arts and Musical Instruments. Arts includes 390 thousand inter-
+actions from 45 thousand users over 21 thousand items, while
+Musical Instruments contains 206 thousand interactions from 25
+thousand users over 10 thousand items. Following the standard
+leave-one-out protocol [14], we use the last item of each sequence
+for testing, the second-to-last for validation, and the remaining
+interactions for training.
+• Industrial Dataset. We construct an in-house offline dataset
+from sequential user behaviors and feedback logs on a large-scale
+e-commerce advertising platform. It covers multiple traffic sce-
+narios (e.g., homepage feeds, product detail pages, and interactive
+gaming sections) and spans March–August 2025. The dataset con-
+tains over 1 billion interactions from 19 million users over 25
+million advertisements, providing broad coverage of real-world
+recommendation behavior.
+Baselines. To evaluate the effectiveness of our method, we compare
+GRC with six representative baselines, summarized below.
+• DSSM [12] : A dual-tower model that augments user and item
+embeddings with side information features and incorporates user
+behavior sequence modeling to capture richer user preferences.
+• SASRec [14] : A Transformer-based model that employs the
+self-attention mechanism to capture long-term dependencies.
+• HSTU [38] : A generative retrieval model that first flattens all
+ID-type features on the input side and directly generates item
+IDs from dense user representations, without constructing se-
+mantic IDs. In contrast, our method still relies on semantic ID
+compression and focuses on self-correction in the token space.
+• TIGER [23] : A GR model with the encoder– decoder architec-
+ture that constructs semantic IDs via RQ-VAE, and employs an
+autoregressive decoder to generate items.
+• ReaRec [27] : A transformer-based model that generate implicit
+intermediate outcomes without explicitly defined inference paths.
+• COBRA [35] : A generative retrieval model with a decoder-only
+architecture, which additionally leverages dense user embeddings
+for nearest-neighbor retrieval to expand the candidate set when
+the generative model returns an insufficient number of items.
+• Ours / Ablations :𝐺𝑅𝐶𝑆𝐹𝑇removes RL from 𝐺𝑅𝐶𝑅𝐿, and 𝐺𝐶𝑆𝐹𝑇
+further removes the reflection labels from 𝐺𝑅𝐶𝑆𝐹𝑇while keeping
+the same two-pass draft-and-correct prediction procedure.
+Evaluation Metrics. For evaluation, we adopt 𝑅𝑒𝑐𝑎𝑙𝑙@𝐾(𝑅@𝐾)
+and 𝑁𝐷𝐶𝐺@𝐾(𝑁@𝐾) as standard recommendation metrics, with
+𝐾set to 5 and 10. To align our offline evaluation with the model’s on-
+line performance in real-world industrial scenarios, we additionally
+report 𝑅𝑒𝑐𝑎𝑙𝑙@100 and 𝑅𝑒𝑐𝑎𝑙𝑙@200 in the ablation study section.
+Implementation Details. This section describes the hyperparam-
+eter settings in our experiments. The training process is conducted
+on a distributed Pytorch [21] platform with 2 parameter servers
+and 10 workers, each equipped with a single Nvidia A100 GPU. To
+ensure a fair comparison, we keep the total number of Transformer
+layers and the hidden size consistent across generative models. Se-
+mantic attribute features are included in the encoder input for all
+compared methods, so that performance gains of GRC will not
+be attributed to additional attribute information. We employ
+the pretrained Qwen3-8B model [33] to encode item embeddings
+and train an RQ-VAE with a 4-layer codebook (300 codewords per
+layer) on each dataset. The codebook is fixed after training, and
+all GR methods share it to obtain semantic IDs for both training
+
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+Table 1: Performance comparison across different recommendation paradigms. 𝐺𝐶𝑆𝐹𝑇denotes the single two-pass decoding
+variant without reflection labels, 𝐺𝑅𝐶𝑆𝐹𝑇denotes our method after supervised fine-tuning with the structured template, and
+𝐺𝑅𝐶𝑅𝐿further leverages GRPO to explore and refine self-correction strategies. The best metric for each dataset is highlighted
+in bold, and the second-best is underlined. The last row reports the relative improvement of 𝐺𝑅𝐶𝑅𝐿over the strongest baseline.
+Method
+Arts
+Instruments
+Industrial Dataset
+R@5
+N@5
+R@10
+N@10
+R@5
+N@5
+R@10
+N@10
+R@5
+N@5
+R@10
+N@10
+DSSM
+0.0611
+0.0436
+0.0833
+0.0461
+0.0618
+0.0447
+0.0845
+0.0528
+0.0954
+0.0689
+0.1204
+0.0913
+SASRec
+0.0668
+0.0483
+0.0906
+0.0523
+0.0690
+0.0583
+0.0918
+0.0657
+0.0997
+0.0726
+0.1288
+0.0942
+HSTU
+0.0761
+0.0558
+0.1027
+0.0616
+0.0804
+0.0636
+0.1023
+0.0702
+0.0895
+0.0654
+0.1152
+0.0873
+TIGER
+0.0796
+0.0577
+0.1051
+0.0634
+0.0849
+0.0715
+0.1078
+0.0776
+0.1131
+0.0828
+0.1383
+0.0997
+ReaRec
+0.0762
+0.0541
+0.1037
+0.0612
+0.0825
+0.0678
+0.1064
+0.0747
+0.1055
+0.0779
+0.1322
+0.0975
+COBRA
+0.0812
+0.0612
+0.1095
+0.0682
+0.0861
+0.0688
+0.1095
+0.0763
+0.1090
+0.0802
+0.1438
+0.1063
+𝐺𝐶𝑆𝐹𝑇
+0.0811
+0.0597
+0.1074
+0.0661
+0.0875
+0.0743
+0.1102
+0.0791
+0.1164
+0.0837
+0.1409
+0.1039
+𝐺𝑅𝐶𝑆𝐹𝑇
+0.0832
+0.0628
+0.1132
+0.0715
+0.0912
+0.0771
+0.1148
+0.0812
+0.1207
+0.0856
+0.1512
+0.1074
+GRC𝑅𝐿
+0.0868
+0.0667
+0.1191
+0.0749
+0.0946
+0.0794
+0.1208
+0.0873
+0.1309
+0.0935
+0.1648
+0.1165
+Improv.
++6.90%
++8.99%
++8.77%
++9.82%
++9.87%
++11.05%
++10.32%
++12.50%
++15.74%
++12.92%
++14.60%
++9.60%
+Table 2: Reflection Quality on the Industrial Dataset.
+Method
+Accloc@5
+Accloc@10
+Acccat@5
+Acccat@10
+𝐺𝑅𝐶𝑆𝐹𝑇
+56.32%
+53.35%
+74.42%
+71.85%
+𝐺𝑅𝐶𝑅𝐿
+61.26%
+59.94%
+77.73%
+76.20%
+and inference. Encoder–decoder models are configured with one
+encoder layer and two decoder layers, while COBRA, as a decoder-
+only model, uses three stacked decoder layers. For all experiments,
+we use an embedding size of 128 and a hidden size of 640 for fair
+comparison. In the SFT stage, we set the weight of Lrc in the loss
+function to 𝜆𝑟𝑐= 1.2. In the RL stage, we set the clipping parameter
+𝜖to 0.15 and the regularization coefficient 𝛽to 0.03, which provide
+a reasonable trade-off between exploration and exploitation. Since
+policy optimization is not the main focus of this work, we do not
+conduct a dedicated sensitivity study for these two parameters. In
+reward design, we set 𝛽𝑐𝑜𝑟to 2.2, placing more emphasis on reflec-
+tion and correction quality than on the initial generation quality.
+We further introduce a hyperparameter 𝛽𝑙𝑎𝑠𝑡to balance the con-
+tributions of the final and initial generations in the reward. Based
+on empirical observations that up-weighting the final generation
+improves performance, we set 𝛽𝑙𝑎𝑠𝑡= 2.0. Then, we introduce 𝛽𝑙𝑜𝑐
+and 𝛽𝑠𝑒𝑚, which control the position-level and semantic-level cor-
+rection rewards, respectively. We select their values via grid search
+and use 𝛽𝑙𝑜𝑐= 1.0 and 𝛽𝑠𝑒𝑚= 0.8. At inference time, we use beam
+search with 𝐵= 200 for both offline evaluation and online serving.
+The entropy coefficient 𝛼𝑒is set to 0.2. Regarding the attribute
+set used for semantic-level consistency, we use the leaf category
+(no extra annotation) on the public datasets, and use both the leaf
+category and brand on the industrial dataset.
+5.2
+Experiment Performance (RQ1)
+Table 1 reports the overall performance of GRC against multiple
+baselines on both public and industrial datasets. The best results
+are highlighted in bold, and the second-best results are underlined.
+Based on these results, we make the following observations:
+• Overall effectiveness. GRC𝑅𝐿consistently outperforms all base-
+lines on three datasets, with average relative gains of 10.84%
+(R@5), 10.99% (N@5), 11.23% (R@10), and 10.64% (N@10) over
+the strongest baseline. The improvements are most pronounced
+on the Industrial dataset, where GRC exceeds 15% in R@5, high-
+lighting its practical value for large-scale recommendation. The
+results further highlight the advantage of explicit reflection and
+correction in reducing error propagation during decoding.
+• Generative retrieval vs. Representation-based retrieval.
+TIGER and COBRA consistently outperform DSSM and SASRec,
+confirming the advantage of generative retrieval in large-scale
+recommendation. Among generative baselines, COBRA attains
+the strongest performance on most datasets by leveraging approx-
+imate nearest neighbor search to enrich the candidate set, thereby
+enhancing generalization. In contrast, HSTU degrades sharply
+on the industrial dataset, suggesting that directly generating raw
+item IDs is inadequate when the item corpus is extremely large
+(over 103 times larger than the public datasets). This observation
+highlights the necessity of semantic vocabulary compression for
+generative retrieval in real-world settings.
+• Impact of Reflection labels in GRC. We verify the role of re-
+flection with two observations. First, 𝐺𝑅𝐶SFT consistently outper-
+forms 𝐺𝐶SFT across all datasets, showing that explicit, structured
+reflection improves the subsequent correction beyond what can
+be achieved by an extra decoding pass. Second, we measure re-
+flection quality by the average accuracy over the top-𝐾first-pass
+drafts (𝐾∈{5, 10}), as shown in Table 2. 𝐴𝑐𝑐loc@𝐾for first-
+divergence localization and 𝐴𝑐𝑐cat@𝐾for category-consistency
+prediction. 𝐺𝑅𝐶RL yields higher 𝐴𝑐𝑐loc@𝐾and 𝐴𝑐𝑐cat@𝐾than
+𝐺𝑅𝐶SFT, indicating that RL improves reflection quality, which is
+consistent with its better final recommendation performance.
+• Impact of SFT and RL stage in GRC. Our GRC surpasses
+TIGER and COBRA on all datasets and metrics, showing the
+benefit of explicitly modeling a Generate–Reflect–Correct pro-
+cess. Since GRC𝑆𝐹𝑇is implemented by augmenting TIGER
+with our structured reflection–correction template, TIGER
+serves as a natural baseline of GRC𝑆𝐹𝑇. The results show that
+𝐺𝑅𝐶𝑆𝐹𝑇yields consistent gains over TIGER across all datasets
+and metrics, and matches or exceeds COBRA in most settings
+(with a minor gap on R@5 for Arts). 𝐺𝑅𝐶𝑅𝐿further optimizes
+
+Learning to Reflect and Correct: Towards Better Decoding Trajectories for Large-Scale Generative Recommendation
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+the full GRC trajectory via GRPO using both token-level and
+trajectory-level rewards, and achieves state-of-the-art perfor-
+mance across all datasets and metrics.
+Table 3: Ablation Study of GRC.
+Method
+R@5
+R@10
+R@100
+R@200
+𝐺𝑅𝐶𝑅𝐿
+0.1309
+0.1648
+0.2928
+0.3576
+𝐺𝑅𝐶𝑆𝐹𝑇
+0.1207
+0.1512
+0.2735
+0.3389
+w/o 𝑅𝑡𝑎𝑠𝑘
+0.0973
+0.1126
+0.2341
+0.2953
+w/o 𝑅𝑐𝑜𝑟
+0.1238
+0.1573
+0.2776
+0.3412
+w/o 𝑅𝑙𝑜𝑐in 𝑅𝑐𝑜𝑟
+0.1275
+0.1621
+0.2873
+0.3519
+w/o 𝑅𝑠𝑒𝑚in 𝑅𝑐𝑜𝑟
+0.1282
+0.1614
+0.2864
+0.3497
+w/o 𝑅Δ in 𝑅𝑐𝑜𝑟
+0.1244
+0.1598
+0.2827
+0.3463
+w/o 𝐸𝐺𝑅𝑆
+0.1287
+0.1629
+0.2801
+0.3428
+5.3
+Ablation Study (RQ2)
+To investigate the effectiveness of each component in the proposed
+model, we conduct a series of ablation studies on the industrial
+dataset, which represents the most complex and representative sce-
+nario on our recommendation platform. As shown in Section 5.1, the
+industrial dataset is orders of magnitude larger in scale than public
+datasets, providing a more challenging evaluation environment.
+• w/o 𝑅𝑡𝑎𝑠𝑘, remove the task reward so that RL focuses solely on
+encouraging the reflection–correction ability.
+• w/o 𝑅𝑐𝑜𝑟, remove the correction reward so that RL only optimizes
+the generation quality of the entire trajectory.
+• w/o 𝑅𝑙𝑜𝑐, drops the error localization term, preventing the model
+from being rewarded for localizing the first erroneous token.
+• w/o𝑅𝑠𝑒𝑚, removes the semantic matching term, ignoring whether
+the model correctly identifies and fixes semantic mismatches
+across bucketed attributes (e.g., category, brand).
+• w/o 𝑅Δ, discards the quality improvement term, so the reward
+no longer enforces strict improvement of the final sequence and
+cannot distinguish trajectories that merely detect errors from
+those that actually produce a better corrected sequence.
+• w/o 𝐸𝐺𝑅𝑆, keeps all inference settings identical to the full model,
+but disables EGRS by setting 𝛼𝑒= 0 in Eq. 25 (i.e., removing
+the entropy term). As a result, beam pruning relies solely on the
+standard beam-search score, without using reflection entropy.
+Table 3 yields the following observations:
+• Overall, removing any module leads to a noticeable degradation,
+indicating that each part of our design contributes meaningfully
+to the final performance.
+• If we remove the task reward 𝑅𝑡𝑎𝑠𝑘, the model suffers a severe
+performance collapse. In this case, the RL objective is no longer
+anchored to the original next-item prediction goal and optimizes
+only reflection–correction signals, which we empirically observe
+to induce reward hacking behaviors and an unstable policy. This
+indicates that 𝑅𝑡𝑎𝑠𝑘is indispensable for keeping the RL opti-
+mization aligned with the underlying retrieval objective.
+Among the remaining terms, discarding the semantic-correction
+reward 𝑅𝑐𝑜𝑟causes the largest drop across all metrics, highlight-
+ing that explicitly rewarding successful reflection and correction
+is crucial for effective RL optimization. Within 𝑅𝑐𝑜𝑟, removing the
+quality-improvement subterm 𝑅Δ yields the most pronounced
+decline, confirming that encouraging positive pre–post quality
+gain is the key driver of these improvements.
+• Disabling the EGRS substantially degrades R@100 and R@200,
+showing that dynamically allocating reflection budget to high-
+uncertainty decoding trajectories effectively directs limited com-
+putation to promising corrections, yielding higher reflection
+success rate under a fixed budget.
+Figure 3: Sensitivity Analysis
+5.4
+Sensitivity Analysis (RQ3)
+In this section, we analyze the sensitivity of our model to several
+key hyperparameters. Specifically, we focus on the coefficient 𝜆𝑟𝑐
+in the SFT stage, which controls the relative contribution of the
+reflection and correction objective to the overall training signal; the
+coefficient 𝛽𝑐𝑜𝑟in the RL stage, which scales the overall strength
+of the reflection and correction reward against the task reward
+𝑅𝑡𝑎𝑠𝑘; the factor 𝛽𝑙𝑎𝑠𝑡, which controls the trade-off between the two
+components of 𝑅𝑡𝑎𝑠𝑘, thereby emphasizing the quality of the final
+corrected output; and the weights 𝛽𝑙𝑜𝑐and 𝛽𝑠𝑒𝑚inside 𝑅𝑐𝑜𝑟, which
+govern the impact of position-level and bucket-level improvement
+signals when shaping the correction reward. These experiments
+are conducted on the industrial dataset, using five perturbed values
+in the neighborhood of the chosen value. Figure 3 summarizes the
+results of these hyperparameter tuning experiments, from which
+we make the following observations.
+• Correction Template coefficient 𝜆𝑟𝑐: GRC maintains high and
+stable performance as 𝜆𝑟𝑐varies from 0.8 to 1.6, with only a
+marginal improvement around 1.0–1.2, indicating that once the
+subsequent RL stage is applied, the model becomes largely insen-
+sitive to the SFT loss weight.
+• Correction Reward coefficient 𝛽𝑐𝑜𝑟: GRC consistently im-
+proves across all recall metrics as 𝛽𝑐𝑜𝑟increases from 1.4 to 2.2,
+suggesting that strengthening the reflection–correction rewards
+in the RL stage effectively exploits the enlarged decision space
+and yields substantial performance gains.
+• Token Reward coefficient 𝛽𝑙𝑎𝑠𝑡: GRC benefits steadily from
+increasing 𝛽𝑙𝑎𝑠𝑡in the range 1.0–2.0, showing that placing more
+emphasis on the reward of post-reflection tokens (relative to
+pre-reflection tokens) leads to better retrieval quality.
+• Position and Semantic Correction Coefficients 𝛽𝑙𝑜𝑐, 𝛽𝑠𝑒𝑚:
+GRC remains robust when 𝛽𝑙𝑜𝑐ranges from 0.8 to 1.4 and 𝛽𝑠𝑒𝑚
+
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+ranges from 0.6 to 1.2, with only slight performance degradation
+observed at 𝛽𝑙𝑜𝑐= 0.6 and 𝛽𝑠𝑒𝑚= 0.4. This suggests that the
+model is generally insensitive to both token- and semantic-level
+correction rewards unless they are excessively down-weighted.
+• Entropy Scheduling Coefficient 𝛼𝑒: GRC exhibits moderate
+sensitivity to 𝛼𝑒, with Recall@100/200 peaking around 𝛼𝑒= 0.2.
+When 𝛼𝑒is too large, the entropy term overly dominates the
+beam score and suppresses high-quality token combinations fa-
+vored by standard beam search; when it is too small, low-entropy
+(high-confidence) trajectories occupy more beam slots, leaving
+insufficient capacity for uncertain paths that contribute to tail re-
+call. These results indicate that a properly tuned entropy weight
+is essential for fully exploiting entropy-guided beam search.
+6
+Online Experiments
+We further evaluated GRC in an online A/B test on our e-commerce
+advertising platform from Jan 2 to Jan 12, 2026. We used our in-
+house TIGER implementation as the baseline and deployed GRC as
+the treatment. The control and treatment buckets each contained
+15% of randomly sampled users. Compared with TIGER, GRC im-
+proved advertising revenue by 1.79%, CTR by 2.11%, and GMV by
+2.04%, all statistically significant (𝑝< 0.05, two-sided test). With
+FlashAttention [4] enabled for both variants to accelerate inference,
+P99 latency increased modestly from 27 ms to 31 ms due to the
+additional reflection and correction passes. Overall, GRC provides
+a favorable accuracy–latency trade-off in production.
+7
+Conclusion
+In this paper, we propose GRC, a structured reflection-correction
+framework for generative recommendation that mitigates error ac-
+cumulation of one-pass decoding. GRC explicitly extends standard
+decoding into a Generation–Reflection–Correction process in the
+semantic-token space, enabling the model to detect deviations in the
+first draft and revise trajectories conditioned on structured, multi-
+granular reflection signals. To better optimize reflection–correction
+decisions in the enlarged trajectory space, we further introduce
+a GRPO-based reinforcement learning stage with well-designed
+rewards that jointly capture token accuracy, error localization, se-
+mantic consistency, and post-correction improvement. During in-
+ference, we design EGRS, an entropy-guided scheduling strategy
+integrated with beam search, to allocate limited correction budget to
+high-uncertainty trajectories under latency constraints. Extensive
+offline experiments and online A/B tests in a large-scale commer-
+cial system demonstrate that GRC consistently improves retrieval
+quality with modest latency overhead, offering a practical and scal-
+able approach to self-corrective generative recommendation. We
+believe this framework helps bridge the gap between one-pass GR
+and robust, reasoning-aware recommenders, and can serve as a
+foundation for future work on reflection-enhanced GR.
+References
+[1] Essential AI, :, Darsh J Shah, Peter Rushton, Somanshu Singla, Mohit Parmar,
+Kurt Smith, Yash Vanjani, Ashish Vaswani, Adarsh Chaluvaraju, Andrew Hojel,
+Andrew Ma, Anil Thomas, Anthony Polloreno, Ashish Tanwer, Burhan Drak Sibai,
+Divya S Mansingka, Divya Shivaprasad, Ishaan Shah, Karl Stratos, Khoi Nguyen,
+Michael Callahan, Michael Pust, Mrinal Iyer, Philip Monk, Platon Mazarakis,
+Ritvik Kapila, Saurabh Srivastava, and Tim Romanski. 2025. Rethinking Reflection
+in Pre-Training. arXiv:2504.04022 [cs.CL] https://arxiv.org/abs/2504.04022
+[2] Yukuo Cen, Jianwei Zhang, Xu Zou, Chang Zhou, Hongxia Yang, and Jie Tang.
+2020. Controllable Multi-Interest Framework for Recommendation. In Proceedings
+of the 26th ACM SIGKDD International Conference on Knowledge Discovery &
+Data Mining (Virtual Event, CA, USA) (KDD ’20). Association for Computing
+Machinery, New York, NY, USA, 2942–2951. doi:10.1145/3394486.3403344
+[3] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep Neural Networks
+for YouTube Recommendations. In Proceedings of the 10th ACM Conference on
+Recommender Systems (Boston, Massachusetts, USA) (RecSys ’16). Association
+for Computing Machinery, New York, NY, USA, 191–198. doi:10.1145/2959100.
+2959190
+[4] Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022.
+FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness.
+arXiv:2205.14135 [cs.LG] https://arxiv.org/abs/2205.14135
+[5] Hao Deng, Haibo Xing, Kanefumi Matsuyama, Yulei Huang, Jinxin Hu, Hong Wen,
+Jia Xu, Zulong Chen, Yu Zhang, Xiaoyi Zeng, et al. 2025. Heterrec: Heterogeneous
+information transformer for scalable sequential recommendation. In Proceedings
+of the 48th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 3020–3024.
+[6] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[7] Cheng Gao, Huimin Chen, Chaojun Xiao, Zhiyi Chen, Zhiyuan Liu, and Maosong
+Sun. 2025. H-Neurons: On the Existence, Impact, and Origin of Hallucination-
+Associated Neurons in LLMs. arXiv:2512.01797 [cs.AI] https://arxiv.org/abs/2512.
+01797
+[8] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin
+Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al. 2025. Deepseek-r1:
+Incentivizing reasoning capability in llms via reinforcement learning. arXiv
+preprint arXiv:2501.12948 (2025).
+[9] Ruining He and Julian McAuley. 2016. Ups and Downs: Modeling the Visual Evo-
+lution of Fashion Trends with One-Class Collaborative Filtering. In Proceedings of
+the 25th International Conference on World Wide Web (Montréal, Québec, Canada)
+(WWW ’16). International World Wide Web Conferences Steering Committee,
+Republic and Canton of Geneva, CHE, 507–517. doi:10.1145/2872427.2883037
+[10] Min Hou, Le Wu, Yuxin Liao, Yonghui Yang, Zhen Zhang, Changlong Zheng, Han
+Wu, and Richang Hong. 2025. A Survey on Generative Recommendation: Data,
+Model, and Tasks. arXiv:2510.27157 [cs.IR] https://arxiv.org/abs/2510.27157
+[11] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating Long
+Semantic IDs in Parallel for Recommendation. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V.2 (Toronto ON,
+Canada) (KDD ’25). Association for Computing Machinery, New York, NY, USA,
+956–966. doi:10.1145/3711896.3736979
+[12] Po-Sen Huang, Xiaodong He, Jianfeng Gao, Li Deng, Alex Acero, and Larry
+Heck. 2013. Learning deep structured semantic models for web search using
+clickthrough data. In Proceedings of the 22nd ACM International Conference on
+Information & Knowledge Management (San Francisco, California, USA) (CIKM
+’13). Association for Computing Machinery, New York, NY, USA, 2333–2338.
+doi:10.1145/2505515.2505665
+[13] Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richardson, Ahmed El-Kishky,
+Aiden Low, Alec Helyar, Aleksander Madry, Alex Beutel, Alex Carney, et al. 2024.
+Openai o1 system card. arXiv preprint arXiv:2412.16720 (2024).
+[14] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[15] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive Image Generation using Residual Quantization. 11513–11522.
+doi:10.1109/CVPR52688.2022.01123
+[16] Chao Li, Zhiyuan Liu, Mengmeng Wu, Yuchi Xu, Huan Zhao, Pipei Huang,
+Guoliang Kang, Qiwei Chen, Wei Li, and Dik Lun Lee. 2019. Multi-Interest
+Network with Dynamic Routing for Recommendation at Tmall. In Proceedings of
+the 28th ACM International Conference on Information and Knowledge Management
+(Beijing, China) (CIKM ’19). Association for Computing Machinery, New York,
+NY, USA, 2615–2623. doi:10.1145/3357384.3357814
+[17] Xiaopeng Li, Bo Chen, Junda She, Shiteng Cao, You Wang, Qinlin Jia, Haiying He,
+Zheli Zhou, Zhao Liu, Ji Liu, Zhiyang Zhang, Yu Zhou, Guoping Tang, Yiqing Yang,
+Chengcheng Guo, Si Dong, Kuo Cai, Pengyue Jia, Maolin Wang, and Xiangyu
+Zhao. 2025. A Survey of Generative Recommendation from a Tri-Decoupled
+Perspective: Tokenization, Architecture, and Optimization. doi:10.13140/RG.2.2.
+25096.48642
+[18] Juexin Lin, Sachin Yadav, Feng Liu, Nicholas Rossi, Praveen R Suram, Satya Chem-
+bolu, Prijith Chandran, Hrushikesh Mohapatra, Tony Lee, Alessandro Magnani,
+et al. 2024. Enhancing Relevance of Embedding-based Retrieval at Walmart. In
+Proceedings of the 33rd ACM International Conference on Information and Knowl-
+edge Management. 4694–4701.
+[19] Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler Hallinan, Luyu Gao, Sarah
+Wiegreffe, Uri Alon, Nouha Dziri, Shrimai Prabhumoye, Yiming Yang, Shashank
+
+Learning to Reflect and Correct: Towards Better Decoding Trajectories for Large-Scale Generative Recommendation
+Acronym ’XX, June 03–05, 2018, Woodstock, NY
+Gupta, Bodhisattwa Prasad Majumder, Katherine Hermann, Sean Welleck, Amir
+Yazdanbakhsh, and Peter Clark. 2023. SELF-REFINE: iterative refinement with self-
+feedback. In Proceedings of the 37th International Conference on Neural Information
+Processing Systems (New Orleans, LA, USA) (NIPS ’23). Curran Associates Inc.,
+Red Hook, NY, USA, Article 2019, 61 pages.
+[20] Christopher D Manning. 2022. Human language understanding & reasoning.
+Daedalus 151, 2 (2022), 127–138.
+[21] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory
+Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban
+Desmaison, Andreas Köpf, Edward Yang, Zach DeVito, Martin Raison, Alykhan
+Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai, and Soumith
+Chintala. 2019. PyTorch: an imperative style, high-performance deep learning
+library. Curran Associates Inc., Red Hook, NY, USA.
+[22] Andrea Pozzi, Alessandro Incremona, Daniele Tessera, and Daniele Toti. 2025.
+Mitigating exposure bias in large language model distillation: an imitation learn-
+ing approach. Neural Computing and Applications (2025), 1–17.
+[23] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[24] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei
+Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. 2024. Deepseekmath: Pushing
+the limits of mathematical reasoning in open language models. arXiv preprint
+arXiv:2402.03300 (2024).
+[25] Shuzheng Si, Qingyi Wang, Haozhe Zhao, Yuzhuo Bai, Guanqiao Chen, Kangyang
+Luo, Gang Chen, Fanchao Qi, Minjia Zhang, Baobao Chang, and Maosong
+Sun. 2026.
+FaithLens: Detecting and Explaining Faithfulness Hallucination.
+arXiv:2512.20182 [cs.CL] https://arxiv.org/abs/2512.20182
+[26] Anima Singh, Trung Vu, Nikhil Mehta, Raghunandan Keshavan, Maheswaran
+Sathiamoorthy, Yilin Zheng, Lichan Hong, Lukasz Heldt, Li Wei, Devansh Tandon,
+Ed Chi, and Xinyang Yi. 2024. Better Generalization with Semantic IDs: A
+Case Study in Ranking for Recommendations. In Proceedings of the 18th ACM
+Conference on Recommender Systems (Bari, Italy) (RecSys ’24). Association for
+Computing Machinery, New York, NY, USA, 1039–1044. doi:10.1145/3640457.
+3688190
+[27] Jiakai Tang, Sunhao Dai, Teng Shi, Jun Xu, Xu Chen, Wen Chen, Wu Jian, and
+Yuning Jiang. 2025. Think Before Recommend: Unleashing the Latent Reasoning
+Power for Sequential Recommendation. arXiv:2503.22675 [cs.IR] https://arxiv.
+org/abs/2503.22675
+[28] Zhongwei Wan, Zhihao Dou, Che Liu, Yu Zhang, Dongfei Cui, Qinjian Zhao,
+Hui Shen, Jing Xiong, Yi Xin, Yifan Jiang, et al. 2025. Srpo: Enhancing multi-
+modal llm reasoning via reflection-aware reinforcement learning. arXiv preprint
+arXiv:2506.01713 (2025).
+[29] Zhenyu Wu, Qingkai Zeng, Zhihan Zhang, Zhaoxuan Tan, Chao Shen, and
+Meng Jiang. 2024. Large language models can self-correct with key condition
+verification. arXiv preprint arXiv:2405.14092 (2024).
+[30] Haibo Xing, Hao Deng, Yucheng Mao, Jinxin Hu, Yi Xu, Hao Zhang, Jiahao
+Wang, Shizhun Wang, Yu Zhang, Xiaoyi Zeng, and Jing Zhang. 2025. REG4Rec:
+Reasoning-Enhanced Generative Model for Large-Scale Recommendation Sys-
+tems. arXiv preprint arXiv:2508.15308 (2025).
+[31] Haibo Xing, Kanefumi Matsuyama, Hao Deng, Jinxin Hu, Yu Zhang, and Xiaoyi
+Zeng. 2025. ESANS: Effective and Semantic-Aware Negative Sampling for Large-
+Scale Retrieval Systems. In Proceedings of the ACM on Web Conference 2025
+(Sydney NSW, Australia) (WWW ’25). Association for Computing Machinery,
+New York, NY, USA, 462–471. doi:10.1145/3696410.3714600
+[32] Yi Xu, Moyu Zhang, Chenxuan Li, Zhihao Liao, Haibo Xing, Hao Deng, Jinxin
+Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang. 2025. MMQ: Multimodal Mixture-
+of-Quantization Tokenization for Semantic ID Generation and User Behavioral
+Adaptation. arXiv:2508.15281 [cs.IR] https://arxiv.org/abs/2508.15281
+[33] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng,
+Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Dayiheng
+Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong
+Tang, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jing Zhou,
+Jingren Zhou, Junyang Lin, Kai Dang, Keqin Bao, Kexin Yang, Le Yu, Lianghao
+Deng, Mei Li, Mingfeng Xue, Mingze Li, Pei Zhang, Peng Wang, Qin Zhu, Rui
+Men, Ruize Gao, Shixuan Liu, Shuang Luo, Tianhao Li, Tianyi Tang, Wenbiao Yin,
+Xingzhang Ren, Xinyu Wang, Xinyu Zhang, Xuancheng Ren, Yang Fan, Yang Su,
+Yichang Zhang, Yinger Zhang, Yu Wan, Yuqiong Liu, Zekun Wang, Zeyu Cui,
+Zhenru Zhang, Zhipeng Zhou, and Zihan Qiu. 2025. Qwen3 Technical Report.
+arXiv preprint arXiv:2505.09388 (2025).
+[34] Liu Yang, Fabian Paischer, Kaveh Hassani, Jiacheng Li, Shuai Shao, Zhang Gabriel
+Li, Yun He, Xue Feng, Nima Noorshams, Sem Park, et al. 2024. Unifying gen-
+erative and dense retrieval for sequential recommendation.
+arXiv preprint
+arXiv:2411.18814 (2024).
+[35] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, et al. 2025. Sparse meets dense: Unified generative
+recommendations with cascaded sparse-dense representations. arXiv preprint
+arXiv:2503.02453 (2025).
+[36] Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, Tom Griffiths, Yuan Cao, and
+Karthik Narasimhan. 2023. Tree of thoughts: Deliberate problem solving with
+large language models. Advances in neural information processing systems 36
+(2023), 11809–11822.
+[37] Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan,
+and Yuan Cao. 2023. React: Synergizing reasoning and acting in language models.
+In International Conference on Learning Representations (ICLR).
+[38] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Jiayuan He, Yinghai Lu, and Yu Shi. 2024. Actions
+speak louder than words: trillion-parameter sequential transducers for generative
+recommendations. In Proceedings of the 41st International Conference on Machine
+Learning (Vienna, Austria) (ICML’24). JMLR.org, Article 2414, 26 pages.
+[39] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, et al. 2024. Actions speak louder than words:
+Trillion-parameter sequential transducers for generative recommendations. arXiv
+preprint arXiv:2402.17152 (2024).
+[40] Yukun Zheng, Jiang Bian, Guanghao Meng, Chao Zhang, Honggang Wang,
+Zhixuan Zhang, Sen Li, Tao Zhuang, Qingwen Liu, and Xiaoyi Zeng. 2022.
+Multi-Objective Personalized Product Retrieval in Taobao Search. arXiv preprint
+arXiv:2210.04170 (2022).
+[41] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo,
+Qianqian Wang, Qigen Hu, Rui Huang, Shiyao Wang, Weifeng Ding, Wuchao Li,
+Xinchen Luo, Xingmei Wang, Zexuan Cheng, Zixing Zhang, Bin Zhang, Boxuan
+Wang, Chaoyi Ma, Chengru Song, Chenhui Wang, Di Wang, Dongxue Meng, Fan
+Yang, Fangyu Zhang, Feng Jiang, Fuxing Zhang, Gang Wang, Guowang Zhang,
+Han Li, Hengrui Hu, Hezheng Lin, Hongtao Cheng, Hongyang Cao, Huanjie
+Wang, Jiaming Huang, Jiapeng Chen, Jiaqiang Liu, Jinghui Jia, Kun Gai, Lantao
+Hu, Liang Zeng, Liao Yu, Qiang Wang, Qidong Zhou, Shengzhe Wang, Shihui He,
+Shuang Yang, Shujie Yang, Sui Huang, Tao Wu, Tiantian He, Tingting Gao, Wei
+Yuan, Xiao Liang, Xiaoxiao Xu, Xugang Liu, Yan Wang, Yi Wang, Yiwu Liu, Yue
+Song, Yufei Zhang, Yunfan Wu, Yunfeng Zhao, and Zhanyu Liu. 2025. OneRec
+Technical Report. arXiv:2506.13695 [cs.IR] https://arxiv.org/abs/2506.13695

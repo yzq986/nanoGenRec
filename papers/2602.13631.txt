@@ -1,0 +1,1432 @@
+GEMs: Breaking the Long-Sequence Barrier in Generative
+Recommendation with a Multi-Stream Decoder
+Yu Zhou∗
+zhouyu12@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Chengcheng Guo∗
+guochengcheng03@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Kuo Cai
+caikuo@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Ji Liu
+liuji06@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Qiang Luo†
+luoqiang@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Ruiming Tang†
+tangruiming2015@163.com
+Kuaishou Inc.
+Beijing, China
+Han Li
+lihan08@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Kun Gai
+gai.kun@qq.com
+Unaffiliated
+Beijing, China
+Guorui Zhou
+zhouguorui@kuaishou.com
+Kuaishou Inc.
+Beijing, China
+Abstract
+While generative recommendations (GR) possess strong sequential
+reasoning capabilities, they face significant challenges when pro-
+cessing extremely long user behavior sequences: the high computa-
+tional cost forces practical sequence lengths to be limited, prevent-
+ing models from capturing users’ lifelong interests; meanwhile, the
+inherent "recency bias" of attention mechanisms further weakens
+learning from long-term history. To overcome this bottleneck, we
+propose GEMs (Generative rEcommendation with a Multi-stream
+decoder), a novel and unified framework designed to break the long-
+sequence barrier by capturing users’ lifelong interaction sequences
+through a multi-stream perspective. Specifically, GEMs partitions
+user behaviors into three temporal streams—Recent, Mid-term, and
+Lifecycle—and employs tailored inference schemes for each: a one-
+stage real-time extractor for immediate dynamics, a lightweight
+indexer for cross attention to balance accuracy and cost for mid-
+term sequences, and a two-stage offline-online compression module
+for lifelong modeling. These streams are integrated via a parameter-
+free fusion strategy to enable holistic interest representation. Ex-
+tensive experiments on large-scale industrial datasets demonstrate
+that GEMs significantly outperforms state-of-the-art methods in
+recommendation accuracy. Notably, GEMs is the first lifelong GR
+framework successfully deployed in a high-concurrency industrial
+environment, achieving superior inference efficiency while process-
+ing user sequences of over 100,000 interactions.
+* Equal contribution.
+† Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2026 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+User Interest Modeling, Lifelong User Behavior, Generative Recom-
+mendation, Recommendation System
+ACM Reference Format:
+Yu Zhou, Chengcheng Guo, Kuo Cai, Ji Liu, Qiang Luo, Ruiming Tang, Han
+Li, Kun Gai, and Guorui Zhou. 2026. GEMs: Breaking the Long-Sequence
+Barrier in Generative Recommendation with a Multi-Stream Decoder. In
+Proceedings of Make sure to enter the correct conference title from your rights
+confirmation email (Conference acronym ’XX). ACM, New York, NY, USA,
+10 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+In recommendation systems (RS), effective user sequence modeling
+is crucial for capturing users’ actual intents and enhancing their
+experience, where the length of the input user sequence is a criti-
+cal factor. Empirical studies have consistently shown that scaling
+the length of user behavior sequences can significantly improve
+the modeling of long-term user preferences [2]. Moreover, longer
+historical sequences can encapsulate richer user information in RS,
+such as periodic interests and the evolution of preferences over
+time, thereby enhancing recommendation performance [31]. In
+practice, methods such as TWINS [3] and TWINS-V2 [22] improve
+the model’s ability to capture user interests by incorporating users’
+full lifetime sequences, deepening the understanding of user in-
+terests and consequently boosting performance in click-through
+rate (CTR) prediction tasks. Other works, including MARM [18],
+MISS [7], and ENCODE [37], have independently validated the pos-
+itive impact of modeling users’ long-term and even entire lifetime
+sequences across diverse recommendation scenarios. Recently, ad-
+vances in Large Language Models (LLMs) have opened a promising
+direction by enhancing user sequence modeling capabilities under
+scaling laws, leading to the emergence of generative recommen-
+dation (GR) as a new paradigm in RS [14]. Pioneering methods
+arXiv:2602.13631v1  [cs.IR]  14 Feb 2026
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zhou et al.
+such as OneRec [35], OneRec V2 [36], MGTR [9], PinRec [1], and
+RecGPT [30] have demonstrated the practical potential of GRs in
+real-time recommendation tasks. Given the powerful reasoning
+capabilities of GRs, integrating ultra-long user sequence modeling
+presents a promising avenue in this emerging field.
+Although incorporating lifelong user sequences in GRs has been
+discussed in several existing works [4, 9, 28, 29, 32], they have failed
+to address these critical issues:
+• Sequence Length Barrier: Due to the high computational cost
+of modeling longer historical sequences in GRs, most industrially
+deployed GRs are limited to a maximum sequence length of
+less than 10,000 [2, 4, 29, 31]. However, in real-time industrial
+recommendation scenarios, the most recent 10,000 interaction
+behaviors typically cover only several months of a user’s history,
+failing to capture their lifelong behavior patterns [22].
+• Inefficient Sequence Scaling: Empirical experiments indicate
+that the performance gains achieved by GRs from increasing
+the length of users’ historical sequences are sub-linear. Given
+the stringent latency requirements for recommendation requests
+in real-time scenarios, GRs implemented on the Transformer
+architecture exhibit a low return on investment (ROI) in long-
+sequence contexts, as illustrated in Fig. 1.
+• Recency Bias in Attention: Concurrently, analyses of the at-
+tention mechanisms in GRs from a long-sequence perspective
+reveal that GRs exhibit a strong tendency to attend primarily to
+the recent segments of user sequences for inference, which is
+verified in Sec. 4.5. This pattern hinders their ability to leverage
+the entirety of long-term user behavioral histories effectively.
+To tackle these issues, we propose GEMs, a unified framework
+based on GR modeling to capture the entire user lifelong se-
+quences from a multi-stream perspective. Our key insight is to
+treat long-sequence modeling as a multi-timescale memory reading
+problem, where different temporal ranges require distinct computa-
+tional strategies. Specifically, GEMs partitions user sequences into
+three streams: Recent, Mid-term, and Lifecycle. To capture users’
+short-term interests, which evolve rapidly and reflect recent user dy-
+namics, we employ a one-stage inference scheme for the real-time
+generation of recent interest representations. The lightweight in-
+dexer for cross attention is specifically applied in mid-term to bal-
+ance the accuracy of user interest inference with the computational
+cost of real-time inference. For the lifecycle stream, we apply a two-
+stage inference framework: the offline stage processes the users’
+full lifecycle stream, transforming it into representations that facili-
+tate efficient real-time inference. The processed representations are
+then aggregated via a parameter-free fusion strategy—avoiding
+additional online latency and training instability—before feeding
+into the unified GR decoder for final recommendation generation.
+Based on the aforementioned structure, GEMs can handle users’
+lifelong sequences with lower inference costs, thereby improving
+its performance on recommendation tasks.
+Our main contributions are:
+• We propose a unified framework for modeling the entire users’
+life-time sequence under GR paradigm, allowing GR to efficiently
+process users’ interaction history.
+• By incorporating users’ lifelong historical sequences into GR, we
+enhance the model’s capability to comprehend both long-term
+0×
+5×
+10×
+15×
+20×
+25×
+30×
+Ratio of Serving GPU Nums
+64
+128
+256
+512
+1024
+2048
+5000
+Sequence Length
+9.50
+9.75
+10.00
+10.25
+10.50
+10.75
+11.00
+Training Loss
+Baseline (Training Loss)
+Gems (Training Loss)
+Baseline (Serving GPU Nums)
+Gems (Serving GPU Nums)
+Figure 1: Analyzing the effect of sequence length on training
+loss and serving resources. GEMs can handle longer user
+history sequences with fewer inference resources, thereby
+improving performance on recommendation tasks.
+and short-term user interests, achieving improved recommenda-
+tion metrics on industrial-scale datasets and online A/B tests.
+• We have successfully deployed GEMs in industrial settings and
+optimized its inference efficiency for high-concurrency scenarios
+through various strategies.
+2
+Preliminary
+Sequential Recommendations. Let X be the entire corpus of
+items. For user 𝑢, 𝑋𝑢= [𝑥1, ..,𝑥𝑡−1] is the interacted sequence of 𝑢.
+The sequential recommendation returns a set of item candidates to
+predict the next interacted item 𝑥𝑡.
+Generative Recommendations. Each item 𝑥in the item cor-
+pus X can be represented by an embedding ℎ∈R𝑑𝑖𝑚. With a
+quatinization model such as RQ-VAE and Residual K-means, ℎ
+can be quantized into a list of discrete codes [𝑠1,𝑠2, . . . ,𝑠𝑑], i.e.,
+Semantic IDs. Generative recommendations take user sequence
+𝑋𝑢= [𝑥1, ..,𝑥𝑡−1] as inputs, then auto-regressively predict the Se-
+mantic ID sequence of the next item 𝑥𝑡.
+3
+Methods
+3.1
+Overview
+3.1.1
+Sequence Segmentation. The architecture of GEMs is shown
+in Fig. 2. Based on Encoder-Decoder paradigm, we develop a multi-
+stream structure to process users’ lifelong sequences effectively.
+Let the lifelong interaction sequence of user 𝑢be defined as
+𝑋𝑢= [𝑥1, . . . ,𝑥𝑇], where 𝑇denotes the sequence length. Here, 𝑥1
+represents the oldest item in the sequence and 𝑥𝑇the most recent
+one; all subsequent sequence descriptions follow this chronological
+order from oldest to newest. In real-world industrial deployments,
+𝑇can be as large as over 100,000 interactions.
+The sequence is divided based on token budgets, introducing
+two thresholds 1 < 𝑇lifecycle < 𝑇recent < 𝑇. The first threshold,
+𝑇recent, is used to select the most recent behaviors, which capture
+users’ immediate feedback. The second threshold, 𝑇lifecycle, marks
+the boundary beyond which behaviors are considered long-term
+historical interests, covering all possible content a user may have
+interacted with. The intermediate segment corresponds to mid-term
+interests. We maintain a uniform threshold across different users,
+based on the consideration that user interaction patterns tend to
+become consistent given a large number of samples.
+
+GEMs: Breaking the Long-Sequence Barrier in Generative Recommendation with a Multi-Stream Decoder
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+xx
+Mid-term Encoder
+Recent Encoder
+Offline Module
+Lifecycle Encoder
+Encoder
+Encoder
+QLA Compression
+Trecent
+Tlifecycle
+Older
+Newer
+Next Item
+<a_23>
+<b_19>
+<c_54>
+Cross Attention
+Indexer CA
+Cross Attention
+FFN
+FFN
+Multi-stream Decoder *L
+Causal Self Attention
+FFN
+BOS
+<a_23>
+<b_19>
+<b_19>
+<c_54>
+<a_23>
+Multi Head Attention
+Indexer Score Per KV
+Light Indexer
+Top-K Selector
+Qindex
+Windex
+QMHA
+Full Len KV Sequence
+...
+Selected KV Sequence
+...
+Attended SIDs
+SID1
+SID2
+SID3
+.
+(b) User Interest Extraction
+(c) Multi-stream Decoder
+(d) Implementation of Indexer CA
+...
+...
+...
+Quantize
+...
+Lifecycle
+Mid-term
+Recent
+(a) Sequence Segmentation
+...
+...
+Lifecycle features
+KV Storage
+Cached
+Lightweight ENCs
+...
+Hrecent
+...
+...
+...
+...
+...
+...
+HMid-term
+HLifecycle
+...
+...
+HMid-term
+Figure 2: Overall framework of GEMs. (a): The user sequence is partitioned iinto three segments—Recent, Mid-term, and
+Lifecycle. (b): Interest extraction from users’ lifelong sequences. We derive corresponding interest representations through
+dedicated encoders. (c): A multi-stream decoder for predicting the user’s next item of interest. All streams are then fused via
+parameter-free fusion to generate the final prediction. (d): Implementation of the Indexer CA block. This module adopts an
+indexer-selector design that incorporates a pre-filtering strategy on the full-length key-value sequences, significantly reducing
+the computational cost of Multi-Head Attention.
+𝑋𝑢, recent = 𝑋𝑢[𝑇recent : ];
+𝑋𝑢, mid-term = 𝑋𝑢[(𝑇lifecycle + 1) : 𝑇recent];
+𝑋𝑢, lifecycle = 𝑋𝑢[: 𝑇lifecycle],
+(1)
+Based on these thresholds, the lifelong interaction sequence ies
+partitioned into three chronological subsequences: Recent, Mid-
+Term, and Lifecycle, each representing a distinct stage of user
+interests, which will be discussed in Sec. 3.1.2. We emphasis the
+implementation of mid-term sequences using a lightweight indexer
+mechanism detailed in Section 3.2. Subsequently, a parameter-free
+fusion strategy to integrate the user’s sub-interest representations
+is introduced in Section 3.3. Finally, the training and inference
+strategy is presented in Section 3.4.
+3.1.2
+Multi-Stream Framework. To effectively process sequences
+of vastly different lengths and characteristics, we design specialized
+encoders for each stream:
+Recent Stream. For the recent sequence 𝑋𝑢, recent, we extract
+multi-modal features including video ID (𝑣𝑖𝑑), author ID (𝑎𝑖𝑑), video
+tags (𝑡𝑎𝑔), timestamp (𝑡𝑠), playtime (𝑝𝑡), video duration (𝑑𝑢𝑟), and
+interaction labels (𝑙𝑎𝑏𝑒𝑙). These features are concatenated and pro-
+jected via an MLP to obtain hidden representations:
+𝑓𝑖
+recent = [𝑒𝑖
+𝑣𝑖𝑑,𝑒𝑖
+𝑎𝑖𝑑,𝑒𝑖
+𝑡𝑎𝑔,𝑒𝑖
+𝑡𝑠,𝑒𝑖
+𝑝𝑡,𝑒𝑖
+𝑑𝑢𝑟,𝑒𝑖
+𝑙𝑎𝑏𝑒𝑙]
+ℎ𝑖
+𝑟𝑒𝑐𝑒𝑛𝑡= MLP(𝑓𝑖
+recent), 𝑖∈[1,𝑇recent]
+(2)
+We then apply multi-layer self-attention with position embeddings
+to capture users’ immediate interests from hidden representations.
+Mid-term Stream. For mid-term sequences containing thou-
+sands of tokens, we employ a lightweight indexer-based cross atten-
+tion mechanism. This approach selectively attends to informative
+tokens through a sparse attention scheme, significantly reducing
+computational complexity while maintaining signal quality. Sec-
+tion 3.2 details the implementation of the lightweight indexer.
+Lifecycle Stream. To handle ultra-long sequences exceeding
+100,000 interactions, inspired by VISTA [5], we adopt a two-stage
+mechanism. In the offline stage, we compress the lifecycle history
+using a quasi-linear attention (QLA) with QLU optimization:
+QLUAttn(𝑇, 𝐸) = 𝜑(𝑄[𝐸])𝜑 𝜑(𝐾[𝑇])⊤𝑉[𝑇] +
+Δ(𝜑(𝑄[𝐸]),𝜑(𝐾[𝑇]))𝑉[𝑇]
+(3)
+This compression is supervised via a generative reconstruction
+loss Lrecon = Í𝑀−1
+𝑖=1 ∥𝑣𝑖−𝑢𝑖+1∥2
+2, where 𝑣𝑖and 𝑢𝑖+1 represent com-
+pressed and reconstructed representations. During inference, com-
+pressed representations are retrieved from a low-latency KV system
+and processed by a lightweight self-attention module.
+3.2
+Lightweight Indexer for Cross Attention
+We propose a lightweight indexer mechanism for modeling our
+mid-term sequences. Accurately capturing interest shifts beyond
+recent preferences can improve recommendation diversity and re-
+veal interests underrepresented in recent behavior. However, mid-
+term sequences typically contain thousands of tokens, making full
+attention computationally expensive and noisy. To address this, we
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zhou et al.
+propose a lightweight indexer for cross attention that selectively at-
+tends to informative tokens, thereby enhancing the signal-to-noise
+ratio and reducing complexity.
+Lightweight Indexer. To mitigate the computational cost of full
+cross-attention, we introduce a lightweight indexer that selects a
+high-value subset of tokens. The indexer is trained to mimic the at-
+tention distribution of full cross-attention blocks but uses far fewer
+heads. The mid-term sequence 𝑋𝑢,mid-term is processed into initial
+hidden representations 𝐻(0)mid-term using the aforementioned
+behavior encoder followed by an MLP projection. The subsequent
+decoder comprises 𝐿mid layers, each with 𝐻standard attention
+heads. For the ℎ-th head in the 𝑗-th block, during training, we first
+compute the full cross-attention scores 𝑆(𝑗,ℎ)mid-term :
+𝑄(𝑗,ℎ)
+mid-term =𝑊(𝑗,ℎ)
+𝑄,mid-term𝐻(𝑗−1)
+mid-term,
+𝐾(𝑗)
+mid-term =𝑊(𝑗,ℎ)
+𝐾,mid-term𝐻(𝑗−1)
+mid-term,
+𝑆(𝑗,ℎ)
+mid-term = 𝑄(𝑗,ℎ)
+mid-term
+𝑇𝐾(𝑗,ℎ)
+mid-term/
+√︁
+𝑑𝑘,
+𝑆(𝑗)
+mid-term =
+𝐻
+∑︁
+ℎ=1
+𝑆(𝑗,ℎ)
+mid-term.
+(4)
+We then compute an alternative attention score using a separate
+projection with far fewer heads 𝐻indexer ≪𝐻:
+𝑄(𝑗,ℎ)
+indexer =𝑊(𝑗,ℎ)
+𝑄,indexer𝐻(𝑗−1)
+mid-term,
+𝐾(𝑗)
+indexer =𝑊(𝑗,ℎ)
+𝐾,indexer𝐻(𝑗−1)
+mid-term,
+𝑆(𝑗,ℎ)
+indexer = 𝑄(𝑗,ℎ)
+indexer
+𝑇𝐾(𝑗,ℎ)
+indexer/
+√︁
+𝑑𝑘,
+𝐷(𝑗) =𝑊(𝑗)
+𝐷𝐻(𝑗−1)
+mid-term,
+𝑆(𝑗)
+indexer = 𝐷(𝑗)𝑇[𝑆(𝑗,1)
+indexer; ...;𝑆(𝑗,𝐻indexer)
+indexer
+].
+(5)
+Here 𝑆(𝑗)indexer denotes the scoring output of the lightweight in-
+dexer at block 𝑗. It is aligned with the full attention score𝑆(𝑗)mid-term
+via Kullback–Leibler divergence:
+L𝑖𝑛𝑑𝑒𝑥𝑒𝑟=
+𝐿
+∑︁
+𝑗=1
+𝐷𝐾𝐿(𝑆(𝑗)
+indexer | Softmax(𝑆(𝑗)
+mid-term))
+(6)
+Sparse Attention Mechanism. The indexer scores reflect the
+importance of each key with respect to a given query. Based on
+the trained 𝑆(𝑗)indexer, we select the top-𝐾keys and values per
+query to perform sparse attention. Each block also includes residual
+connections and a feed-forward network:
+𝐻(𝑗)′
+mid-term = 𝐻(𝑗−1)
+mid-term + SparseCrossAttn(𝐻(𝑗−1)
+mid-term, 𝑖∈Top𝐾(𝑆(𝑗)
+indexer)),
+𝐻(𝑗)
+mid-term = 𝐻(𝑗)′
+mid-term + FFN(RMSN(𝐻(𝑗) ′mid-term)).
+(7)
+𝐻(𝐿mid)
+mid-term is the output of the indexer-based cross-attention. During
+inference, selecting high-quality tokens via the indexer eliminates
+full attention over all tokens, shifting part of the computational cost
+to training. Our experiments include comprehensive comparisons
+to validate the inference efficiency of this sparse attention scheme.
+3.3
+Parameter-Free Fusion
+The decoder autoregressively generate the Semantic IDs for the
+user’s next item. We take the representation vector of the target
+video 𝑥𝑡’s Semantic IDs, [𝐸𝑠1𝑥𝑡; ...; 𝐸𝑠d𝑥𝑡]:
+𝐷(0) = [𝐸BOS; 𝐸𝑠1𝑥𝑡; ...; 𝐸𝑠d𝑥𝑡]
+(8)
+Assuming there are 𝐿blocks, each decoder block 𝑗first applies multi-
+head causal self-attention, allowing tokens at a later hierarchical
+level to gather information from preceding SID tokens:
+𝐷(𝑗)′ = 𝐷(𝑗−1) + CausalSelfAttn(𝐷(𝑗−1) ),
+(9)
+Subsequently, 𝐷(𝑗)′ interacts with user interests via stream-specific
+cross-attention over the encoded memories. Each stream has inde-
+pendent parameters, and both are equipped with residual connec-
+tions. For stream 𝑠∈{recent, mid-term, lifecycle}, we compute:
+𝐷(𝑗)
+𝑠
+= 𝐷(𝑗)′ + CrossAttn
+
+𝐷(𝑗)′, 𝐻(𝐿𝑠)
+𝑠
+, 𝐻(𝐿𝑠)
+𝑠
+
+,
+𝐷(𝑗)∗
+𝑠
+= 𝐷(𝑗)
+𝑠
++ FFN
+
+RMSN
+
+𝐷(𝑗)
+𝑠
+
+.
+(10)
+Three hidden states for each stream are formed: 𝐷(𝑗)
+recent, 𝐷(𝑗)
+mid-term,
+and 𝐷(𝑗)∗
+lifelong. The method for fusing multiple user sequence features
+on the decoder is crucial for final generation quality. Interestingly,
+the most effective approach is also the simplest. We directly fuse
+hidden states using a non-learnable, parameter-free summation:
+𝐷(𝑗) = 𝐷(𝑗)∗
+recent + 𝐷(𝑗)∗
+mid-term + 𝐷(𝑗)∗
+lifelong.
+(11)
+In practice, many prior works fuse multiple sequences using
+learnable weights, like gating or MLP-based fusion strategy, which
+can be effective when different streams are drawn from similar
+distributions. In our ultra-long sequence setting, however, the mid-
+term and lifecycle streams exhibit a larger distribution shift from the
+next-item target than the recent stream. As a result, learnable fusion
+often collapses to over-weighting the recent stream, weakening
+the contribution of longer-term signals. We validate this effect
+empirically in Section 4.5 and provide a visualization analysis.
+3.4
+Training and Inference Strategy
+Training Stage The main task is optimized using LNTP: the final
+hidden state 𝐷(𝑗) of the decoder is dot-producted with codebook
+vectors C ∈R𝑀×𝑑ℎto compute the generation probability 𝑝𝜃(𝑠𝑑
+𝑥𝑡|
+. . .) of the positive sample. Negative log-likelihood is then used to
+maximize this probability:
+LNTP = −log𝑝𝜃(𝑠𝑑
+𝑥𝑡| . . .).
+(12)
+The overall training loss for the model is defined as:
+L = LNTP + 𝜆L𝑖𝑛𝑑𝑒𝑥𝑒𝑟,
+(13)
+where 𝜆∈{1, 0} controls whether Lindexer are back propagated.
+The training of GEMs consists of three stages:
+• Stage 1: Full-sequence training convergence. Token selection
+by the indexer is disabled, and gradients from Lindexer are frozen
+(𝜆= 0). This stage primarily converges the original item tokens
+and full-attention parameters, preventing potential instability in
+the indexer’s supervision signal.
+• Stage 2: Indexer training convergence. After LNTP converges,
+Lindexer are enabled (𝜆= 1) to align 𝑆(𝑗)
+indexer with 𝑆(𝑗)
+mid-term.
+• Stage 3: Indexer inference convergence. Once Lindexer con-
+verges, token selection via the indexer is activated, ensuring that
+the final training objective aligns with the online inference task.
+It is noteworthy that the indexer is detached during training. The
+indexer is optimized solely based on Lindexer. This design decouples
+the ’select’ and ’attention’ operations in the sparse attention mecha-
+nism, preventing the leakage of the indexer’s reasoning capabilities
+
+GEMs: Breaking the Long-Sequence Barrier in Generative Recommendation with a Multi-Stream Decoder
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 1: Overall performance of GEMs and baselines evaluated by Recall@𝐾and NDCG@𝐾, where 𝐾∈{100, 500, 1000}. The best
+results are in bold, and the second-best are underlined. GEMs shows promising results by outperforming all baselines.
+Methods
+Seq Len
+Recall@100
+NDCG@100
+Recall@500
+NDCG@500
+Recall@1000
+NDCG@1000
+MPFormer
+64
+0.0706
+0.0033
+0.1581
+0.0069
+0.2010
+0.0084
+256
+0.0803
+0.0037
+0.1794
+0.0073
+0.2114
+0.0090
+TDM
+2000
+0.0674
+0.0027
+0.1677
+0.0071
+0.2098
+0.0084
+4000
+0.0635
+0.0026
+0.1701
+0.0072
+0.2112
+0.0086
+MISS
+4000
+0.0844
+0.0028
+0.2033
+0.0074
+0.2441
+0.0089
+GPRP
+N/A
+0.0414
+0.0015
+0.0661
+0.0030
+0.0929
+0.0042
+Kuaiformer
+64
+0.0622
+0.0029
+0.1388
+0.0063
+0.1761
+0.0080
+256
+0.0724
+0.0031
+0.1421
+0.0071
+0.1901
+0.0081
+MIND
+1000
+0.0457
+0.0024
+0.0933
+0.0049
+0.1445
+0.0069
+2000
+0.0481
+0.0025
+0.1012
+0.0051
+0.1501
+0.0070
+CRM
+64
+0.0409
+0.0022
+0.0977
+0.0049
+0.1437
+0.0068
+256
+0.0591
+0.0028
+0.1034
+0.0051
+0.1513
+0.0071
+TIGER
+256
+0.1017
+0.0044
+0.1914
+0.0101
+0.2350
+0.0120
+1024
+0.1282
+0.0053
+0.2351
+0.0104
+0.2847
+0.0139
+GRank
+1024
+0.1010
+0.0047
+0.2396
+0.0109
+0.3178
+0.0142
+Proposed
+Lifelong
+0.1553
+0.0064
+0.2911
+0.0122
+0.3511
+0.0145
+Improv.
+21.14%
+20.75%
+21.49%
+11.93%
+10.47%
+2.11%
+into the cross-attention module. This safeguards against potential
+discrepancies between the indexer’s training and inference stages.
+Inference Stage We incorporate a beam search structure during
+the inference stage to facilitate end-to-end recommendation. Specifi-
+cally, during the inference stage of GEMs, beginning with the [𝐵𝑂𝑆]
+token, GEMs generates next token through a beam-search strategy.
+The number of generation steps equals the codebook depth, while
+the beam width at each level is determined by the number of items
+to be returned per request.
+Table 2: Dataset statistics.
+Data
+Size
+Users
+400 million per day
+Items
+100 million per day
+User-item Interactions
+50 billion per day
+Avg. User Sequence Length
+14.5 thousand
+Max. User Sequence Length
+100 thousand
+4
+Experiments
+In this section, extensive empirical experiments are conducted with
+GEMs to answer the following research questions:
+RQ1: How does GEMs perform compared to existing strong base-
+lines for sequential modeling?
+RQ2: Does each introduced stream increase the final performance?
+RQ3: Is the proposed parameter-free fusion mechanism optimal
+compared to other fusion strategies?
+RQ4: Is the proposed indexer-based encoder structure efficient?
+RQ5: How does the model size influence the experimental results?
+RQ6: Does the model lead to improvements in real-world industry
+A/B testing metrics?
+4.1
+Dataset
+In related work on ultra-long user sequence modeling, real indus-
+trial datasets rather than public benchmarks are commonly used
+for evaluation [2, 3, 22]. The primary reason is that existing public
+benchmarks are limited in scale and lack sufficient user historical
+behaviors. For example, the average sequence length in the Amazon
+Review [19] dataset is about 8, while sequences in the Taobao [20]
+dataset are mostly around 500. Even the longest dataset [10] we
+identified in our survey contains sequences only at the thousand-
+level. Achieving good experimental results on these datasets does
+not necessarily translate to industrial scenarios, especially where
+user lifetime sequences often exceed 100,000 interactions. There-
+fore, following the practice established in prior work on ultra-long
+user sequence modeling, we conduct experiments on real-world
+data from an industrial application.
+Our experiments are performed on data from Kuaishou, one
+of the leading short-video platforms in China. Relevant dataset
+statistics are provided in Tab. 2. The training logs cover 400 million
+daily active users, 100 million items and 50 billion logs each day.
+We train models (including baselines) in online learning manners.
+4.2
+Metrics
+For overall performance, we use Recall@𝐾and NDCG@𝐾(𝐾∈
+{100, 500, 1000}) to evaluate model performance.
+In addition, we also incorporate the hierarchical recall (Hrecall@
+Level𝑙@1000) proposed by Guo et al. [6] as an additional evaluation
+measure. This metric assesses the recall at any intermediate step
+during the beam search process, which is crucial for evaluating
+model performance at different stages of inference. Consequently,
+we focus on this metric in our ablation studies to verify the contri-
+bution of each proposed stream to the final results.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zhou et al.
+4.3
+Overall Performance (RQ1)
+4.3.1
+Baselines. We include 9 methods for sequential modeling as
+our baselines:
+• MPFormer [23]: A transformer-based multi-target retrieval.
+• TDM [38]: A tree-based deep model for large-scale retrieval.
+• MISS [7]: A multi-modal tree-based retrieval with bi-stream
+sequence modeling.
+• GPRP [34]: A retrieval model using cascaded samples.
+• Kuaiformer [16]: A transformer-based retrieval model.
+• MIND [13]: A capsule network for multi-interest modeling.
+• TIGER [21]: An encoder-decoder structure for SID generation.
+• GRank [24]: A retrieve-then-rank model for recommendation.
+• CRM [15]: A transformer-based controllable retrieval model.
+4.3.2
+Results.
+• GEMs outperforms all baseline methods. Across all evaluated
+cut-offs 𝐾∈100, 500, 1000, GEMs achieves superior performance
+over all baselines in terms of both Recall@𝐾and NDCG@𝐾.
+Specifically, it yields a relative improvement of 21.14% in Recall@100
+and 21.21% in NDCG@100 compared to the best baseline. Simi-
+larly, improvements of 21.49% in Recall@500 and 8.28% in NDCG@500
+are observed.
+• GEMs models significantly longer sequences. Among the
+baselines, MISS models sequences up to 4000 in length using two
+SIM modules, while GRank handles sequences of 1024 via atten-
+tion mechanisms. By contrast, GEMs incorporates lifelong-length
+sequences, contributing to its recommendation performance.
+• The relative improvement of GEMs is more pronounced
+at smaller retrieval sizes. For instance, at 𝐾= 100, the rel-
+ative gains in Recall@100 and NDCG@100 are notably larger
+compared to those at higher values of 𝐾.
+4.3.3
+Implementation Details. In GEMs, the hidden dimension is
+set to 1024. The maximum user sequence length can be as long as
+𝑇= 100, 000. We define the most recent𝑇recent = 256 interactions as
+the short-term sequence. Interactions from 𝑇recent up to 𝑇lifecycle =
+5, 000 are designated as the mid-term sequence, and all interactions
+beyond that constitute the lifelong sequence. All items are quantized
+using Residual K-means into a three-level codebook with sizes
+[8192, 8192, 8192]. The decoder consists of 4 layers, and the recent-
+stream also employs 4 layers. The standard attention mechanism
+uses 8 heads, while the Lightweight Indexer uses 2 attention heads.
+4.4
+Ablation Studies (RQ2)
+Table 3: The ablation results of removing streams evaluated
+by Hrecall@Levell@1000. The best results are in bold. Re-
+moving any stream leads to performance degradation.
+ID
+Settings
+Hrecall@
+Level1@1000
+Hrecall@
+Level2@1000
+Hrecall@
+Level3@1000
+(1)
+Recent only
+0.9311
+0.4093
+0.2660
+(2)
+Recent and mid-term only
+0.9372
+0.4322
+0.3310
+(3)
+Recent and lifecycle only
+0.9420
+0.4290
+0.3210
+(4)
+Proposed
+0.9420
+0.5115
+0.3817
+This work integrates recent, mid-term, and lifecycle streams.
+In this experiment, we aim to verify that each stream introduced
+by the proposed model contributes positively to performance by
+ablating specific streams from the full model. The experimental
+results are presented in Table 3.
+Row (4) corresponds to the proposed full architecture. In row (3),
+we remove the lifecycle stream. While the hierarchical recall at Level
+1 remains comparable, it drops substantially at subsequent levels,
+indicating that the lifecycle structure contributes significantly to
+the later stages of inference. In row (2), we remove the mid-term
+stream, which leads to a notable drop in performance at Level 1.
+The degradation at deeper levels, though present, is less severe
+than in row (3), suggesting that the mid-term stream is particularly
+beneficial for first-level inference. Finally, in row (1), where only the
+recent stream is retained, performance declines significantly across
+all levels. These results collectively demonstrate the effectiveness
+and rationale behind our multi-stream design.
+4.5
+Analysis of Fusion Strategies (RQ3)
+Table 4: Fusion strategies evaluated by Hrecall@Levell@1000.
+The best results are in bold. An illustration of strategy (a)—(d)
+is shown in Fig. 3.
+Fusion
+Statrategy
+Hrecall@
+Level1@1000
+Hrecall@
+Level2@1000
+Hrecall@
+Level3@1000
+(a)
+0.9317
+0.4750
+0.3412
+(b)
+0.9368
+0.4834
+0.3603
+(c)
+0.9360
+0.4819
+0.3537
+(d)
+0.9420
+0.5115
+0.3817
+We propose a parameter-free fusion strategy for our multi-stream
+decoder, which we argue is optimal for modeling ultra-long se-
+quences in real-world industrial scenarios. Therefore, we compare
+the optimal strategy (d), i.e., the parameter-free fusion strategy,
+with three alternative strategies.
+• (a) Full concatenation of input tokens from all streams, processed
+by a single shared encoder and decoder;
+• (b) Separate encoders for each stream, with their outputs con-
+catenated and fed into a shared decoder;
+• (c) A variant identical to (d) except that the three streams are
+fused using gated weighting.
+The corresponding architectures are illustrated in Fig. 3. Empirical
+results are presented in Table 4.
+Our parameter-free fusion strategy achieves the best experimen-
+tal results. This can be attributed to the fact that the parameter-free
+fusion strategy does not employ learnable parameters to weight
+the different streams. When learnable parameters are used to as-
+sign weights to the streams, the model tends to favor the most
+recent stream, failing to learn from earlier streams. This behavior
+is empirically supported by Fig. 4, where we visualize the cross-
+attention weights across the three streams in strategies (a) and (b).
+As shown, the majority of attention is allocated solely to the
+recent stream. In contrast, the parameter-free fusion strategy, by
+avoiding learnable weighting parameters, allows all three streams
+to contribute equally to the final recommendation outcome. We also
+visualize strategy (c) with gated weighting in Fig. 4, demonstrating
+
+GEMs: Breaking the Long-Sequence Barrier in Generative Recommendation with a Multi-Stream Decoder
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+xx
+Cross Attention
+FFN
+Causal Self 
+Attention
+BOS
+SID1
+SID2
+SID1
+SID2
+SID3
+C
+Encoder
+Lightweight
+ENCs
+Encoder
+x
+Joint Encoder
+x
+Cross Attention
+FFN
+Causal Self 
+Attention
+BOS
+SID1
+SID2
+SID1
+SID2
+SID3
+QLA 
+Compression
+Recent 
+Tokens
+Mid-term 
+Tokens
+Lifecycle 
+Features
+C
+(a) Joint Encoder & Decoder
+(b) Joint Decoder
+xx
+Causal Self Attention
+BOS
+SID1
+SID2
+SID1
+SID2
+SID3
+(c) Gated Fusion
+xx
+Cross Attention
+Indexer
+Cross Attention
+FFN
+FFN
+Causal Self Attention
+FFN
+BOS
+SID1
+SID2
+SID1
+SID2
+SID3
+(d) Parameter-free Fusion
+Gate
+Cross Attention
+Indexer
+Cross Attention
+FFN
+×
+Gate
+Gate
+×
+×
+FFN
+FFN
+...
+Encoder
+Lightweight
+ENCs
+Encoder
+Encoder
+Lightweight
+ENCs
+Encoder
+Figure 3: Comparison of fusion strategies. (a): All streams share a single encoder and a single decoder. (b): Separate encoders
+are used for the three streams, and their concatenated outputs are fed into a joint decoder. (c): Separate encoders and cross-
+attentions, whose outputs are fused fused with gated weighting. (d): Our proposed parameter-free fusion strategy, where each
+stream employs independent cross-attentions, whose outputs are fused without learnable parameters.
+Figure 4: Analysis of fusion stageties. The model tends to
+allocate more attention to the recent stream.
+that adding learnable parameters impairs the model’s ability to cap-
+ture information equally from sequences across different timescales,
+which consequently leads to poorer results in Table 3.
+4.6
+Analysis of Indexer Efficiency (RQ4)
+Table 5: Comparison between using the indexer and brute-
+force extraction for the mid-term sequence, in terms of in-
+ference latency and performance. The best results are high-
+lighted in bold.
+Settings
+Performance
+Aggregation
+Method
+Trecent
+Tlifecycle
+Inference
+Latency (ms)
+Recall
+@1000
+Brute-force
+1000
+2000
+60.18
+0.3312
+Brute-force
+1000
+5000
+103.68
+0.3464
+Indexer
+1000
+5000
+32.2
+0.3511
+We propose a novel lightweight indexer for cross attention to
+efficiently handle the mid-term sequence while reducing compu-
+tational complexity. In this section, we empirically investigate the
+efficiency of the indexer. Specifically, we compare our lightweight
+indexer with a brute-force self-attention mechanism applied to the
+mid-term sequence. This comparison evaluates whether the indexer
+is computationally efficient and whether it can mitigate noise in
+the mid-term sequence to improve recommendation performance.
+The results are shown in Table 5. The brute-force approach sig-
+nificantly increases inference latency. With 𝑇lifecycle = 5000, the
+latency increases by approximately fivefold. Even when the se-
+quence length is reduced, the latency remains higher than that of
+the indexer. Furthermore, the indexer’s ability to filter sequence
+noise leads to better performance than the brute-force method.
+These findings demonstrate that our designed lightweight indexer
+improves performance while achieving lower inference latency.
+4.7
+Analysis of Model Size (RQ5)
+l = 3
+l = 2
+0.5×
+1×
+2×
+2.5×
+Parameter Size
+36.0%
+39.0%
+42.0%
+45.0%
+48.0%
+51.0%
+HRecall@levell@1000 (%)
+36.45%
+38.17%
+39.06%
+39.62%
+49.73%
+51.15%
+51.52%
+52.04%
+Figure 5: Analysis of model size. The model’s capacity in-
+creases with scaling.
+We conduct an empirical study on model size to investigate the
+scalability of the GEMs. By progressively increasing the number of
+model parameters—specifically by expanding the hidden size and
+increasing the number of attention heads—we observe the changes
+in hierarchical recall (Hrecall@Level𝑙@1000). Figure 5 presents the
+experimental results for 𝑙∈{2, 3} under different parameter scales.
+It can be observed that model performance improves steadily with
+scaling, demonstrating the scalability of the GEMs framework.
+4.8
+Online A/B Test Results (RQ6)
+While improvements in offline evaluation metrics are observed,
+they do not necessarily translate into gains in real-world industrial
+settings. To validate the practical impact, we conducted online A/B
+tests with real users. We allocated 5% of users as the control group,
+which was served recommendations from a generative recommen-
+dation model using only the recent 256 historical interactions. An
+additional 5% of users were assigned to the experimental group,
+which received recommendations from the proposed model. The
+experiment ran for seven days on both the Kuaishou and Kuaishou
+Lite platforms. The results are presented in Table 6.
+GEMs achieves significant improvements across all key metrics
+in both products compared to the control group. On Kuaishou Lite,
+the total app usage time increases by 0.17%, and the total video
+watch time increases by 0.35%. These results indicate that our
+method effectively enhances user watching time, thereby improving
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zhou et al.
+Table 6: Online A/B test results. This table shows relative improvements of experimental groups over control groups. All results
+are statistically significant on 0.05 significant level.
+Apps
+Total App
+Usage Time
+Total App
+Usage Time (CI)
+App Usage Time
+per User
+App Usage Time
+Per User (CI)
+Video
+Watch Time
+Watch Time
+per Video View
+Kuaishou
+0.13%
+[+0.07%, +0.19%]
+0.11%
+[+0.05%, +0.17%]
+0.20%
+0.42%
+Kuaishou Lite
+0.17%
+[+0.06%,+ 0.27%]
+0.14%
+[+0.07%,+ 0.25%]
+0.35%
+0.26%
+user experience. This demonstrates that the proposed multi-stream
+decoder paradigm contributes to higher user engagement.
+5
+Training and Deployment Optimization
+5.1
+Training
+The model is trained using an online learning approach. We have
+implemented several optimizations to maximize training efficiency
+on modern high-performance GPUs. 1) Mixed Precision training
+with BF16/FP16 is employed, which increases training throughput
+on a single GPU. As a result, a larger batch size can be used (in-
+creased by ~42%), and training runtime improves by ~37%. This
+significantly enhances the efficiency of streaming training. 2) Flash
+Attention is adopted to accelerate attention computations. Given
+the extensive use of attention mechanisms in the model, this opti-
+mization further increases the batch size per GPU by ~10%.
+5.2
+Online Serving
+We have successfully deployed GEMs in an industrial setting, vali-
+dating its availability in scenarios with strict inference latency con-
+straints. 1) Lightweight Indexer for Cross Attention structure
+substantially reduces graph runtime. Since the model only needs
+to compute over a small subset of user sequence tokens, inference
+efficiency is greatly improved. By deploying the indexer, GEMs
+reduces latency by ~70% while maintaining comparable online in-
+ference performance. Table 5 previously presents experimental
+comparisons between the indexer and brute-force aggregation. 2)
+Mixed precision inference is utilized to accelerate online serving,
+which reduces graph runtime by ~21%. 3) TensorRT is used to opti-
+mize the computation graph of GEMs in actual deployment, freeing
+~70% of GPU memory. 4) User Batching Scheme is introduced
+to processe multiple user requests simultaneously during a single
+computation graph execution, further reducing latency by ~12%.
+6
+Related Work
+6.1
+Generative Recommendations
+Generative recommendation is steering the research direction of
+recommendation systems from traditional DNN architectures to-
+wards generative architectures. It is defined as a system where the
+model autoregressively predicts the next item a user will interact
+with, based on the user’s historical sequence [14]. Early pioneering
+works, such as DSI [25] and TIGER [21], employ the T5 architecture
+to encode user sequences and decode target Semantic ID sequences.
+LC-Rec [33] integrates collaborative signals into the training of
+generative models. COBRA enhances the incorporation of multi-
+modal semantic information within generative recommendation.
+OneRec [35] proposes an end-to-end recommendation paradigm to
+replace the traditional cascaded framework. More recently, OneLoc
+[27] introduces a model for POI recommendation that conditions
+generation on geo-aware semantic information. Beyond model ar-
+chitecture, discrete semantic tokenization is also a primary research
+focus in generative recommendation. TIGER quantizes items into
+discrete Semantic IDs based on RQ-VAE [12]. QARM [17] further
+employs Residual K-means to reduce codebook collision rates. LET-
+TER [26] incorporates hierarchical semantics, collaborative signals,
+and code assignment diversity into its tokenization process.
+However, existing generative recommendation methods have
+not adequately addressed the modeling of lifelong sequences in
+real-world industrial scenarios. They fail to consider how to incor-
+porate multi-scale sequential user features under the strict latency
+constraints typical of industrial environments.
+6.2
+Lifelong Sequence Modeling
+Several ranking and retrieval models have explored methods for
+incorporating long user sequences. TWIN [3] and its successor
+TWIN V2 [22] efficiently adapt information from sequences of up
+to 10,000 items within ranking models. LONGER [2] effectively
+introduces sequences of a similar length into the retrieval stage.
+OneTrans [32] introduces an end-to-end Transformer mechanism
+capable of modeling sequences with a length of 2048. Furthermore,
+MARM [18] successfully models sequences of up to 6400 items
+based on a cached memory mechanism.
+Within the domain of generative recommendation, user sequences
+typically remain under 10,000 items. For instance, Meta’s HSTU
+[31] models sequences of 8,000 items within a Transformer-based
+architecture. Other models such as HLLM [4] handle approximately
+1,000 items, while Dual-Flow [8], LUM [29] manage 4,000 items,
+and GenRank [11] processes fewer than 500 items. It is evident
+that existing research, particularly in generative recommendation,
+has not sufficiently explored the efficient modeling of lifelong user
+sequences, especially those exceeding 100,000 interactions.
+7
+Conclusion
+In this paper, we introduced GEMs, a multi-stream decoder frame-
+work that effectively extends the sequence modeling capacity of
+generative recommendations to the entire user lifecycle. By decou-
+pling user interests into recent, mid-term, and lifelong streams with
+specialized encoding mechanisms, GEMs addresses the critical chal-
+lenges of high computational costs and the "recency bias" inherent
+in long-sequence modeling. Experimental results and online A/B
+testing in a large-scale industiral scenario confirm that GEMs not
+only enhances recommendation performance by capturing multifac-
+eted user interests but also meets the stringent latency requirements
+of industrial real-time systems. Our work provides a practical and
+efficient solution for integrating ultra-long user behavior modeling
+into the next generation of generative recommendation systems.
+
+GEMs: Breaking the Long-Sequence Barrier in Generative Recommendation with a Multi-Stream Decoder
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+References
+[1] Anirudhan Badrinath, Prabhat Agarwal, Laksh Bhasin, Jaewon Yang, Jiajing
+Xu, and Charles Rosenberg. 2025. PinRec: Outcome-Conditioned, Multi-Token
+Generative Retrieval for Industry-Scale Recommendation Systems. arXiv preprint
+arXiv:2504.10507 (2025).
+[2] Zheng Chai, Qin Ren, Xijun Xiao, Huizhi Yang, Bo Han, Sijun Zhang, Di Chen,
+Hui Lu, Wenlin Zhao, Lele Yu, Xionghang Xie, Shiru Ren, Xiang Sun, Yaocheng
+Tan, Peng Xu, Yuchao Zheng, and Di Wu. 2025. LONGER: Scaling Up Long
+Sequence Modeling in Industrial Recommenders. arXiv:2505.04421 [cs.IR] https:
+//arxiv.org/abs/2505.04421
+[3] Jianxin Chang, Chenbin Zhang, Zhiyi Fu, Xiaoxue Zang, Lin Guan, Jing Lu, Yiqun
+Hui, Dewei Leng, Yanan Niu, Yang Song, et al. 2023. TWIN: TWo-stage interest
+network for lifelong user behavior modeling in CTR prediction at kuaishou. In
+Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining. 3785–3794.
+[4] Junyi Chen, Lu Chi, Bingyue Peng, and Zehuan Yuan. 2024. HLLM: Enhancing
+Sequential Recommendations via Hierarchical Large Language Models for Item
+and User Modeling. arXiv:2409.12740 [cs.IR] https://arxiv.org/abs/2409.12740
+[5] Zhimin Chen, Chenyu Zhao, Ka Chun Mo, Yunjiang Jiang, Jane H Lee, Shouwei
+Chen, Khushhall Chandra Mahajan, Ning Jiang, Kai Ren, Jinhui Li, et al. 2025.
+Massive Memorization with Hundreds of Trillions of Parameters for Sequential
+Transducer Generative Recommenders. arXiv preprint arXiv:2510.22049 (2025).
+[6] Chengcheng Guo, Kuo Cai, Yu Zhou, Qiang Luo, Ruiming Tang, Han Li, Kun
+Gai, and Guorui Zhou. 2026. PROMISE: Process Reward Models Unlock Test-
+Time Scaling Laws in Generative Recommendations. arXiv:2601.04674 [cs.IR]
+https://arxiv.org/abs/2601.04674
+[7] Chengcheng Guo, Junda She, Kuo Cai, Shiyao Wang, Qigen Hu, Qiang Luo, Guorui
+Zhou, and Kun Gai. 2025. MISS: Multi-Modal Tree Indexing and Searching with
+Lifelong Sequential Behavior for Retrieval Recommendation. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+5683–5690.
+[8] Hao Guo, Erpeng Xue, Lei Huang, Shichao Wang, Xiaolei Wang, Lei Wang, Jin-
+peng Wang, and Sheng Chen. 2025. Action is All You Need: Dual-Flow Generative
+Ranking Network for Recommendation. arXiv preprint arXiv:2505.16752 (2025).
+[9] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, et al. 2025. Mtgr: Industrial-
+scale generative recommendation framework in meituan. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+5731–5738.
+[10] F Maxwell Harper and Joseph A Konstan. 2015. The movielens datasets: History
+and context. Acm transactions on interactive intelligent systems (tiis) 5, 4 (2015),
+1–19.
+[11] Yanhua Huang, Yuqi Chen, Xiong Cao, Rui Yang, Mingliang Qi, Yinghao Zhu,
+Qingchang Han, Yaowei Liu, Zhaoyu Liu, Xuefeng Yao, et al. 2025. Towards
+Large-scale Generative Ranking. arXiv preprint arXiv:2505.04180 (2025).
+[12] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive image generation using residual quantization. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition. 11523–11532.
+[13] Chao Li, Zhiyuan Liu, Mengmeng Wu, Yuchi Xu, Huan Zhao, Pipei Huang,
+Guoliang Kang, Qiwei Chen, Wei Li, and Dik Lun Lee. 2019. Multi-interest
+network with dynamic routing for recommendation at Tmall. In Proceedings of
+the 28th ACM international conference on information and knowledge management.
+2615–2623.
+[14] Xiaopeng Li, Bo Chen, Junda She, Shiteng Cao, You Wang, Qinlin Jia, Haiying He,
+Zheli Zhou, Zhao Liu, Ji Liu, Zhiyang Zhang, Yu Zhou, Guoping Tang, Yiqing Yang,
+Chengcheng Guo, Si Dong, Kuo Cai, Pengyue Jia, Maolin Wang, Wanyu Wang,
+Shiyao Wang, Xinchen Luo, Qigen Hu, Qiang Luo, Xiao Lv, Chaoyi Ma, Ruiming
+Tang, Kun Gai, Guorui Zhou, and Xiangyu Zhao. 2025. A Survey of Generative
+Recommendation from a Tri-Decoupled Perspective: Tokenization, Architecture,
+and Optimization. Preprints (December 2025). doi:10.20944/preprints202512.0203.
+v1
+[15] Chi Liu, Jiangxia Cao, Rui Huang, Kuo Cai, Weifeng Ding, Qiang Luo, Kun Gai,
+and Guorui Zhou. 2024. CRM: Retrieval Model with Controllable Condition.
+arXiv preprint arXiv:2412.13844 (2024).
+[16] Chi Liu, Jiangxia Cao, Rui Huang, Kai Zheng, Qiang Luo, Kun Gai, and Guorui
+Zhou. 2024. KuaiFormer: Transformer-Based Retrieval at Kuaishou. arXiv preprint
+arXiv:2411.10057 (2024).
+[17] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, et al. 2025. Qarm: Quantitative
+alignment multi-modal recommendation at kuaishou. In Proceedings of the 34th
+ACM International Conference on Information and Knowledge Management. 5915–
+5922.
+[18] Xiao Lv, Jiangxia Cao, Shijie Guan, Xiaoyou Zhou, Zhiguang Qi, Yaqiang Zang,
+Ming Li, Ben Wang, Kun Gai, and Guorui Zhou. 2024. MARM: Unlocking the
+Future of Recommendation Systems through Memory Augmentation and Scalable
+Complexity. arXiv preprint arXiv:2411.09425 (2024).
+[19] Julian McAuley, Christopher Targett, Qinfeng Shi, and Anton Van Den Hengel.
+2015. Image-based recommendations on styles and substitutes. In Proceedings
+of the 38th international ACM SIGIR conference on research and development in
+information retrieval. 43–52.
+[20] Qi Pi, Weijie Bian, Guorui Zhou, Xiaoqiang Zhu, and Kun Gai. 2019. Practice
+on long sequential user behavior modeling for click-through rate prediction.
+In Proceedings of the 25th ACM SIGKDD international conference on knowledge
+discovery & data mining. 2671–2679.
+[21] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[22] Zihua Si, Lin Guan, ZhongXiang Sun, Xiaoxue Zang, Jing Lu, Yiqun Hui, Xingchao
+Cao, Zeyu Yang, Yichen Zheng, Dewei Leng, et al. 2024. Twin v2: Scaling ultra-
+long user behavior sequence modeling for enhanced ctr prediction at kuaishou.
+In Proceedings of the 33rd ACM International Conference on Information and
+Knowledge Management. 4890–4897.
+[23] Yijia Sun, Shanshan Huang, Linxiao Che, Haitao Lu, Qiang Luo, Kun Gai, and
+Guorui Zhou. 2025. MPFormer: Adaptive Framework for Industrial Multi-Task
+Personalized Sequential Retriever. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management. 2832–2841.
+[24] Yijia Sun, Shanshan Huang, Zhiyuan Guan, Qiang Luo, Ruiming Tang, Kun Gai,
+and Guorui Zhou. 2025. GRank: Towards Target-Aware and Streamlined Indus-
+trial Retrieval with a Generate-Rank Framework. arXiv preprint arXiv:2510.15299
+(2025).
+[25] Yi Tay, Vinh Tran, Mostafa Dehghani, Jianmo Ni, Dara Bahri, Harsh Mehta,
+Zhen Qin, Kai Hui, Zhe Zhao, Jai Gupta, et al. 2022. Transformer memory as a
+differentiable search index. Advances in Neural Information Processing Systems
+35 (2022), 21831–21843.
+[26] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable item tokenization for generative
+recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management. 2400–2409.
+[27] Zhipeng Wei, Kuo Cai, Junda She, Jie Chen, Minghao Chen, Yang Zeng, Qiang Luo,
+Wencong Zeng, Ruiming Tang, Kun Gai, et al. 2025. Oneloc: Geo-aware generative
+recommender systems for local life service. arXiv preprint arXiv:2508.14646 (2025).
+[28] Yi Xu, Moyu Zhang, Chenxuan Li, Zhihao Liao, Haibo Xing, Hao Deng, Jinxin
+Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang. 2025. Mmq: Multimodal mixture-
+of-quantization tokenization for semantic id generation and user behavioral
+adaptation. arXiv preprint arXiv:2508.15281 (2025).
+[29] Bencheng Yan, Shilei Liu, Zhiyuan Zeng, Zihao Wang, Yizhen Zhang, Yujin Yuan,
+Langming Liu, Jiaqi Liu, Di Wang, Wenbo Su, Wang Pengjie, Jian Xu, and Bo
+Zheng. 2025. Unlocking Scaling Law in Industrial Recommendation Systems
+with a Three-step Paradigm based Large User Model. arXiv:2502.08309 [cs.IR]
+https://arxiv.org/abs/2502.08309
+[30] Chao Yi, Dian Chen, Gaoyang Guo, Jiakai Tang, Jian Wu, Jing Yu, Mao Zhang,
+Sunhao Dai, Wen Chen, Wenjun Yang, et al. 2025. Recgpt technical report. arXiv
+preprint arXiv:2507.22879 (2025).
+[31] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, Yinghai Lu, and Yu Shi. 2024. Actions Speak
+Louder than Words: Trillion-Parameter Sequential Transducers for Generative
+Recommendations. arXiv:2402.17152 [cs.LG] https://arxiv.org/abs/2402.17152
+[32] Zhaoqi Zhang, Haolei Pei, Jun Guo, Tianyu Wang, Yufei Feng, Hui Sun, Shaowei
+Liu, and Aixin Sun. 2025. OneTrans: Unified Feature Interaction and Sequence
+Modeling with One Transformer in Industrial Recommender. arXiv preprint
+arXiv:2510.26104 (2025).
+[33] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting large language models by integrating
+collaborative semantics for recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). IEEE, 1435–1448.
+[34] Kai Zheng, Haijun Zhao, Rui Huang, Beichuan Zhang, Na Mou, Yanan Niu, Yang
+Song, Hongning Wang, and Kun Gai. 2024. Full stage learning to rank: A unified
+framework for multi-stage systems. In Proceedings of the ACM Web Conference
+2024. 3621–3631.
+[35] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv preprint arXiv:2506.13695 (2025).
+[36] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, et al. 2025. Onerec-v2 technical
+report. arXiv preprint arXiv:2508.20900 (2025).
+[37] Wen-Ji Zhou, Yuhang Zheng, Yinfu Feng, Yunan Ye, Rong Xiao, Long Chen,
+Xiaosong Yang, and Jun Xiao. 2024. ENCODE: Breaking the Trade-Off Between
+Performance and Efficiency in Long-Term User Behavior Modeling. IEEE Trans-
+actions on Knowledge and Data Engineering (2024).
+[38] Han Zhu, Xiang Li, Pengye Zhang, Guozheng Li, Jie He, Han Li, and Kun Gai.
+2018. Learning tree-based deep model for recommender systems. In Proceedings
+of the 24th ACM SIGKDD international conference on knowledge discovery & data
+mining. 1079–1088.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Zhou et al.
+Received 14 February 2026; revised 14 February 2026; accepted 14 February
+2026

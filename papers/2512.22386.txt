@@ -1,0 +1,2111 @@
+OxygenREC Technical Report
+2025-12-31
+OxygenREC: An Instruction-Following Generative Framework for
+E-commerce Recommendation
+Xuegang Haoć, Ming Zhangć, Alex Li, Xiangyu Qian, Zhi Ma, Yanlong Zang, Shijie Yang, Zhongxuan Han, Xiaolong
+Ma, Jinguang Liu, Zhen Li, Zhida Jiang, Shusheng Wang, Ning Tang, Yanchen Qiao, Chenxiang Yang, Chen Sun,
+Jincheng Yuan, Chunhua Peng, Heng Hu, Peijun Yang, Baopeng Yuan, Caiyun Qiu, Zhaolong Xing, Haofei Yuan,
+Haipeng Zhang, Yuzhang Guo, Weijie Ding, Jiahua Gao, Hao Huang, Zhen Chen, Tongxuan Liu, Pinghua Gongć
+JD.com, Beijing, China Contact: {haoxuegang.1, zhangming229, gongpinghua1}@jd.com
+Traditional recommendation systems suffer from inconsistency in multi-stage optimization objectives. Gen-
+erative Recommendation (GR) mitigates them through an end-to-end framework; however, existing methods
+still rely on matching mechanisms based on inductive patterns. Although responsive, they lack the ability to
+uncover complex user intents that require deductive reasoning based on world knowledge. Meanwhile, LLMs
+show strong deep reasoning capabilities, but their latency and computational costs remain challenging for in-
+dustrial applications. More critically, there are performance bottlenecks in multi-scenario scalability: as shown
+in Figure 1, existing solutions require independent training and deployment for each scenario, leading to low
+resource utilization and high maintenance costs—a challenge unaddressed in GR literature. To address these,
+we present OxygenREC, an industrial recommendation system that leverages Fast-Slow Thinking to deliver
+deep reasoning with strict latency and multi-scenario requirements of real-world environments.
+First, we adopt a Fast-Slow Thinking architecture. Slow thinking uses a near-line LLM pipeline to synthesize
+Contextual Reasoning Instructions, while fast thinking employs a high-efﬁciency encoder–decoder backbone
+for real-time generation. Second, to ensure reasoning instructions effectively enhance recommendation genera-
+tion, we introduce a semantic alignment mechanism with Instruction-Guided Retrieval (IGR) to ﬁlter intent-
+relevant historical behaviors and use a Query-to-Item (Q2I) loss for instruction-item consistency. Finally, to
+resolve multi-scenario scalability, we transform scenario information into controllable instructions, using uni-
+ﬁed reward mapping and Soft Adaptive Group Clip Policy Optimization (SA-GCPO) to align policies with
+diverse business objectives, realizing a “train-once-deploy-everywhere” paradigm.
+For large-scale deployment, we develop a uniﬁed PyTorch-based training framework that achieves 40% Model
+FLOPs Utilization (MFU), and the xLLM [38] for high-performance inference serving, which has been open-
+sourced. OxygenREC achieves signiﬁcant GMV and order volume increases in multiple core scenarios, demon-
+strating remarkable ﬂexibility and scalability across diverse recommendation scenarios.
+(a) Cascading Methods
+(b) Generative Methods
+(c) OxygenRec(ours)
+Retrieve
+PreRank
+Rank
+multi-scenario
+multi-scenario
+Reward Model
+Encoder
+Decoder
+BOS
+s0
+s1
+s0
+s1
+s2
+Reward Model
+Generative
+Model
+Adapter
+scenario info
+scenario info
+scenario info
+Unified Reward Model
+Encoder
+Decoder
+BOS
+Instruct
+multi-scenarios
+Scenario Instruction
+LLM
+(near-line)
+Reasoning Instruction
+Generative
+Model
+s0
+s1
+s0
+s1
+s2
+Figure 1: Recommendation Architectures: (a) Cascading Methods: Fragmented optimization across multi
+stages. (b) Generative Methods: Uniﬁed model but limited by poor world-knowledge based reasoning and
+multi-scenario scalability. (c) OxygenREC (Ours): Achieves uniﬁcation of deductive reasoning and multi-
+scenario adaption via Fast-Slow Thinking.
+JD Oxygen is JDs next-generation e-commerce AI architecture.
+1
+arXiv:2512.22386v2  [cs.IR]  31 Dec 2025
+
+OxygenREC Technical Report
+Contents
+1
+Introduction
+3
+2
+The OxygenREC Framework
+5
+2.1
+Overview . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+5
+2.2
+LLM-driven User and Item Inputs
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+6
+2.3
+Instruction-Following Uniﬁed Pre-training . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+8
+2.4
+Post-training with Multi-Scenario Alignment
+. . . . . . . . . . . . . . . . . . . . . . . . . .
+11
+3
+System Implementation and Optimization
+15
+3.1
+Uniﬁed Training Framework . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+15
+3.2
+Inference Optimization based on xLLM . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+16
+3.3
+Inference Deployment of Reasoning Instructions
+. . . . . . . . . . . . . . . . . . . . . . . .
+16
+4
+Evaluation and Results
+17
+4.1
+Evaluation Metrics
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+17
+4.2
+Ablation Studies and Analysis
+. . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+18
+4.3
+Instruction-Following Uniﬁcation Analysis
+. . . . . . . . . . . . . . . . . . . . . . . . . . .
+21
+4.4
+Post-training of OxygenREC . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+23
+4.5
+Online A/B Test Performance and Industrial Impact . . . . . . . . . . . . . . . . . . . . . . .
+25
+5
+Conclusion and Future Work
+26
+A Related Work
+34
+B
+Contextual Reasoning Instructions
+35
+C Detailed Deﬁnitions of Scenario Instructions
+36
+2
+
+OxygenREC Technical Report
+1. Introduction
+Traditional recommendation systems usually use a multi-stage cascaded pipeline [15, 16, 71], which often
+suffers from multi-stage objective misalignment and error propagation across stages. Recently, Generative
+Recommendation (GR) [36, 68] has emerged as a new paradigm that treats recommendation as an end-to-
+end sequence generation task, enabling global optimization and better efﬁciency. However, deploying GR in
+complex industrial settings still faces two key challenges:
+First, limited deductive reasoning capabilities.
+Current GR methods mostly learn inductively from user
+behavior [10]. This falls short in scenarios that demand real-world knowledge and deep deductive reasoning.
+This manifests in two critical gaps:
+(1) Data Gaps in Complex Contexts: Traditional recommendation models depend on observed signals—
+such as location, time, and user demographics—but often struggle when encountering new or rarely seen com-
+binations of context. For example, consider the scenario “young parents in Chengdu during the winter solstice,”
+represented by the triplet (Chengdu, winter solstice, young parents). Conventional systems typically fall back
+on generic suggestions like “winter coats”, missing the real need of this couple: suitable clothing for their baby.
+In contrast, a Deductive Context-aware Reasoning approach can infer—without relying on behavioral log—that
+“moisture-wicking baby sleepwear” better matches the users requirements, drawing on spatiotemporal knowl-
+edge about baby caring in cold-humid winter.
+(2) Logic Gaps in Intent Interpretation:
+Inductive models also face challenges when interpreting
+ambiguous user behavior. Imagine a photography enthusiast repeatedly comparing the Huawei Mate 70 and
+iPhone 16 Pro. Such activity is often misread as strong interest in both devices, leading to repetitive or irrelevant
+recommendations. However, the user might simply be unsatisﬁed because neither option fully meets his/her
+interest. In such case, a deductive recommender can clarify this ambiguity by incorporating additional context—
+for instance, the users history of watching photography tutorials—to deduce that high-quality mobile imaging is
+the true priority. As a result, it might suggest the Huawei Pura series—a phone designed for professional-level
+photography—even if the user has never viewed or interacted with it before.
+Together, these examples show how deductive reasoning enhances GR systems beyond simple pattern
+recognition. By ﬁlling data gaps through commonsense generalization and resolving logic gaps via Context-
+Aware Intent Reasoning and Deep Intent Disambiguation, the system moves past statistical associations to act
+more like a knowledgeable assistant—one that truly understands what users need. Although integrating LLMs
+shows promise, directly using LLM backbones [12, 24, 39, 69] poses a critical trade-off: how to inject deductive
+world knowledge without causing unacceptably high online inference latency.
+Second, the dilemma between multi-scenario adaptation and resource efﬁciency.
+Industrial platforms
+deliver recommendation services across diverse scenarios (e.g., feeds and shopping-carts). While training ded-
+icated models for each scenario brings additional operational and computational costs; conversely, a simple
+uniﬁed model often suffers from negative transfer issues. Most multi-scenario recommendation research pri-
+marily focuses on discriminative ranking models, relying on scenario-speciﬁc tower structures or complex
+routing/gating mechanisms to mitigate negative transfer [8, 40, 51, 55]. In contrast, there are few works that
+focus on how to make generative recommendation work consistently across different types of scenarios.
+To address the above challenges, we propose OxygenREC, an instruction-following uniﬁed generative
+framework for large-scale e-commerce recommendation. The proposed framework incorporates world knowl-
+edge for deductive intent reasoning and supports scalable multi-scenario services within a single uniﬁed back-
+bone network. Our contributions are four-fold:
+3
+
+OxygenREC Technical Report
+• Fast-Slow Thinking Architecture with Deductive Knowledge Injection. We propose a Fast-Slow
+Thinking architecture that injects world knowledge and deductive reasoning without introducing online
+latency: a near-line LLM pipeline performs slow intent reasoning and generates high-precision Contex-
+tual Reasoning Instructions, while a high-throughput encoder–decoder backbone network conducts fast
+real-time generation based on these instructions.
+• Semantic Alignment for Effective Instruction Control. To make instructions effective, we use a Query-
+to-Item (Q2I) loss to map them into the item embedding space. Since target items and user history share
+the same format, this mapping enables the instruction to search for relevant past items. We then use
+Instruction-Guided Retrieval (IGR) to ﬁlter out irrelevant history. By removing this noise, the model can
+focus solely on what the instruction asks for, ensuring the ﬁnal output is tightly controlled by the user’s
+intent.
+• Scalable Multi-Scenario Alignment via Instruction and Reinforcement Learning (RL). We convert
+scenario-speciﬁc contexts into scenario instructions within our generative model. To handle multiple
+business objectives, we use a uniﬁed Reward Mapping Service alongside Soft Adaptive Group Clip Policy
+Optimization (SA-GCPO) to sync a single policy with different business objectives. This approach allows
+us to “train-once-deploy-everywhere” while maintaining high performance across various scenarios.
+• Large-Scale Production Deployment. We deployed OxygenREC in JD.com’s core recommendation
+scenarios. Online A/B tests conﬁrmed its impact, with signiﬁcant gains in both order volume and GMV.
+The system is efﬁcient and scales easily to handle massive trafﬁc. It has proven to be a reliable engine
+for growth, even in the most demanding industrial environments.
+The remainder of this paper is organized as follows. Section 2 presents the OxygenREC framework.
+Section 3 details the system implementation and optimization. Section 4 evaluates OxygenREC through com-
+prehensive experiments. Section 5 concludes and outlines future work. For a detailed review of related work,
+see Appendix A.
+4
+
+OxygenREC Technical Report
+2. The OxygenREC Framework
+2.1. Overview
+1. Folding Lighted Snowflake 
+Decoration
+2. Mens Waterproof Hiking Shoes
+A. Homepage
+B. Channel
+C. For you
+D. Checkout Add-on
+(d) Multi-scenario Alignment
+(a) Instruction Following Framework
+ℒ!"#$!%
+Reward Mapping
+ℒ!"!
+𝑠ku!"#$
+%
+𝑠ku!&'
+%
+Text
+Extractor
+Image
+Extractor
+❄
+❄
+Type Embedding
+× N
+🔥
+QFormer
+MLP
+e!
+"
+𝑠ku!"#$
+(
+𝑠ku!&'
+(
+Text
+Extractor
+Image
+Extractor
+❄
+❄
+Type Embedding
+e!
+#
+q
+(b) Multimodal Quantized Item Representations
+× N
+🔥
+QFormer
+MLP
+q
+RQ-Kmeans
+sid!
+sid"
+sid#
+(c) Contextual Reasoning Instructions
+LLM!"
+LLM#!
+User Behavior 
+Sequence
+Spatiotemporal & 
+Profile Signals
+User Recent Queries
+1. wine gift box
+2. phone case
+3. Ribs Automatic Umbrella
+Queries
+Hints
+xx channel, trigger item sid)
+’ , sid+’ , sid,
+’  cate: phone
+User
+IGR
+ℒ$!%
+❄
+Adapter🔥
+❄
+Adapter🔥
+Adapter❄
+🔥
+Decoder
+Generate @ K
+🔥
+Encoder
+sid"
+sid#
+sid$
+sid$
+sid#
+User 
+Info
+Recent 
+Actions
+BOS
+Related 
+Actions
+ℒ!"#
+Instruct Token
+Model Parameters Share
+Rewrite 
+Lifelong History
+Target Item
+Instruct
+Near-Line Generate & Retrieve
+1. wine gi
+2. foam case
+3. Ribs Automatic Umbrella
+Figure 2: The Overall Architecture of OxygenREC. (a) Instruction Following Framework: A transformer-
+based encoder–decoder backbone that generates semantic item sequences conditioned on speciﬁc instructions.
+(b) Multimodal Quantized Representations: Items are tokenized as multimodal semantic IDs via residual
+quantization of contrastively trained embeddings, enabling compact and expressive item representations. (c)
+Contextual Reasoning Instructions: A near-line LLM pipeline that analyzes user behavior and context to
+synthesize such instructions, bridging the gap between inductive patterns and deductive reasoning. (d) Multi-
+Scenario Alignment: We achieve a “train-once-deploy-everywhere” workﬂow by coupling scenario instruc-
+tions with RL-based alignment.
+OxygenREC uniﬁes diverse recommendation tasks into a single Instruction-Following Generative paradigm.
+As illustrated in Figure 2, OxygenREC is designed to bridge the gap between high-level reasoning and real-time
+industrial recommendation through two key innovations, and addresses both challenges simultaneously:
+• Fast-Slow Thinking: A near-line LLM pipeline (slow thinking) distills complex user intents into com-
+pact Contextual Reasoning Instructions, injecting world knowledge and deductive signals without incur-
+ring online LLM latency. A high-throughput encoder–decoder backbone (fast thinking) then produces
+item sequences under strict latency constraints.
+• Low-Cost Multi-Scenario Adaptation: Instead of separate models, we use one framework for all sce-
+narios. Based on instruction control mechanism, we use scenario instructions to steer model behavior.
+For consistency, a reward mapping service and uniﬁed reward model provide a single standard to bal-
+ance diverse objectives across the platform. During inference, preﬁx-constrained beam search enforces
+local business rules and candidate pools. This renders the system highly adaptable yet lean enough for
+large-scale deployment.
+The end-to-end workﬂow consists of four stages:
+1. Model Input Representation: The input layer integrates three components into a uniﬁed space. User
+inputs consist of proﬁle features and LLM-driven reasoning intents. Item inputs are represented by
+multimodal Semantic IDs (SIDs), which map items into a semantic latent space. Finally, contextual
+5
+
+OxygenREC Technical Report
+inputs provide real-time scenario information (see Appendix C for details), serving as the foundation for
+instruction control.
+2. Instruction-Following Pre-training: The model learns to follow instructions via a multi-task objective
+that combines Next Token Prediction (NTP) with semantic alignment.
+3. Post-training with Multi-Scenario Alignment: This stage leverages a reward mapping service to trans-
+late diverse, scenario-speciﬁc objectives (e.g., diversity, format) into uniﬁed reward signals, facilitating a
+novel policy optimization strategy for multi-objective reﬁnement.
+4. Multi-Scenario Serving: This framework enables a single model to serve diverse scenarios simultane-
+ously. It employs preﬁx-constrained decoding technology to strictly follow scenario-speciﬁc business
+rules and candidate pools during inference, thereby maximizing resource utilization efﬁciency.
+The subsequent sections detail these components: Section 2.2 introduces the SID and instruction construc-
+tion; Section 2.3 describes the pre-training and controllable generation mechanisms; and Section 2.4 discusses
+post-training and multi-scenario alignment.
+2.2. LLM-driven User and Item Inputs
+2.2.1. Model Input Representation
+As illustrated in Figure 2 (a), OxygenREC adopts an encoder–decoder architecture. The encoder maps the
+user-side inputs into a latent space, while the decoder generates recommendation sequences conditioned on
+instructions. Below, we detail the input compositions for both components.
+• Encoder Input (Xenc): The encoder integrates three key input sources: (1) User Proﬁle, capturing
+static attributes like demographics; (2) User Behavior, which is further split into short-term and long-
+term sequences. Short-term behaviors model the real-time evolution of user interests. For long-term
+history, we introduce IGR to ﬁlter a user’s long-term history. By using the instruction as a query, the
+model retrieves only the past actions that are relevant to the current intent. This enhances instruction
+controllability, ensuring the model does not get distracted by old, irrelevant data. At the same time, it
+provides an efﬁcient way to incorporate long-term interests, giving the model a deeper understanding of
+the user without the usual computational lag.
+• Decoder Input: The decoder is conditioned on the encoded user representation Xenc and a composite
+instruction prompt P. This prompt integrates two distinct signals: (1) Scenario Instructions (Is) for
+domain control, and (2) Contextual Reasoning Instructions (Ir) for deductive intent guidance. Together,
+they steer the auto-regressive generation of the target item sequence.
+2.2.2. Multimodal Quantized Item Representations
+As shown in Figure 2 (b), we construct a uniﬁed vocabulary by training a multimodal item encoder and dis-
+cretizing its output. The encoder is optimized via a contrastive Item-to-Item (I2I) objective [45, 46] using
+large-scale item pairs derived from cross-scenario co-occurrence behaviors. Each item is represented by textual
+metadata and product images, processed by separate encoders. To fuse these features, we employ a lightweight
+module where modality-speciﬁc projections map the inputs into a shared space, subsequently processed by
+Q-Former [34] and MLP layers to model cross-modal interactions. The resulting 256-dimensional embeddings
+are then discretized using the RQ-KMeans scheme [22]. This residual quantization process assigns each item
+6
+
+OxygenREC Technical Report
+LLM!"!
+LLM!""
+LLM#!
+LLM!"
+Spatiotemporal & Profile Signals
+User Behavior Sequence
+User
+Instruction
+Store
+Recent Queries
+Instructions & Reasons
+❄
+🔥
+🔥
+Figure 3: Overview of our Contextual Reasoning Instructions pipeline. Two parallel branches generate con-
+textual instructions and reasons from spatiotemporal + proﬁle signals and recent user behavior sequences. In
+parallel, LLMQR rewrites noisy or truncated recent queries, and all outputs are combined to form the ﬁnal In-
+structions and Reasons for downstream generation
+a tuple of discrete codes in a coarse-to-ﬁne manner. We employ a hierarchical structure with a depth of 3
+and a vocabulary size of 8,192 per level, establishing a compact and expressive semantic ID space tailored for
+auto-regressive generation.
+2.2.3. Contextual Reasoning Instructions
+As illustrated in Figure 2 (c), this section presents an architecture that integrates world knowledge and deductive
+reasoning while avoiding online LLM latency: a near-line LLM pipeline performs slow intent reasoning and
+synthesizes high-precision contextual reasoning instructions. Our core goal is to leverage LLMs to construct
+a controllable and interpretable intermediate instruction layer for generative recommendation systems. This
+instruction layer serves as an explicit semantic bridge between raw user behaviors and downstream retrieval or
+recommendation models, thereby improving intent alignment and system stability.
+As shown in Figure 3, we transform complex recommendation signals into a reasoning process based on
+multi-dimensional contexts. We build an instruction generation architecture with three parallel branches to map
+spatiotemporal context, search semantics, and historical behavior into text-based Instructions and corresponding
+Reasons. This explicit text modeling enhances the interpretability of recommendation decisions and allows us
+to monitor intermediate outputs independently.
+Spatiotemporal and proﬁle Reasoning (STP).
+This type of instruction focuses on inferring the users explicit
+needs under speciﬁc environment constraints. It covers three aspects: (i) Event-driven reasoning: it identiﬁes
+important holidays or seasonal features in the current time and place, and infers related shopping intent. (ii)
+Proﬁle-driven reasoning: it uses the users static traits (such as gender, age, and spending power) to form
+personalized product preference conclusions. (iii) STP Fusion reasoning: it combines local culture with real-
+time weather/time to infer localized needs, such as “food intent related to the winter solstice in northern China”.
+See Section B in the supplementary material for a detailed case illustration.
+In practice, we use the JoyAI LLM to generate these instructions and store them in a hierarchical way
+based on the “time–location–persona” triple. During online requests, we use the current time, location, and
+user proﬁle as an index to retrieve and return results quickly.
+7
+
+OxygenREC Technical Report
+User Query Rewrite.
+Real queries may have incomplete intent or semantic shift because of language noise
+or input truncation (such as “foam case” or “wine gi”). We propose LLMQR to do semantic completion and
+normalization. Its training set includes two types of data: identity-preserving and rewrite-required. The core
+data comes from in-session self-correction traces, title alignment data guided by click feedback, and six types of
+synthetic error samples generated with DeepSeek-R1 [23]. We then perform supervised ﬁne-tuning on Qwen3-
+0.6B [3]. In human evaluation, this module reaches a pass rate of 95.33%, which is much better than the Vanilla
+DeepSeek-R1 baseline (88.67%). This ensures high-quality conversion from the raw user need to normalized,
+intent-aligned instructions.
+User Intent Reasoning.
+Real user searches usually carry clear and strong immediate intent. Given user be-
+havior sequence and preference information, the model generates both intent-matched instructions and their
+reasoning reasons at the same time. Adding a rationale not only explains the logic behind the recommenda-
+tion, but also helps the model ﬁnd deeper motivations from noisy behaviors, which greatly improves intent
+recognition accuracy. See Section B in the supplementary material for a detailed case illustration.
+To handle the lack of explicit rationale labels in real logs, we design a data reﬁning and auto-labeling
+pipeline with multiple LLMs working together. First, we use LLMQR to map the ﬁnal user query into a normal-
+ized query, and then use Qwen3-32B to aggregate and deduplicate it to get a standard intent target. Next, for
+the full behavior sequence, we use Qwen3-32B again to do alignment ﬁltering, and keep only the subsequence
+that is strongly related to and supports the target intent, thereby reducing noise. Finally, based on the ﬁltered
+sequence and the intent target, we use DeepSeek-R1 to automatically generate rationales as pseudo labels for
+training. After supervised ﬁne-tuning on Qwen3-0.6B, the model generates intent-aligned instructions and
+reasons, and achieves a 72% usability rate in human evaluation.
+2.3. Instruction-Following Uniﬁed Pre-training
+To support the goal of injecting deductive knowledge and achieving multi-scenario adaptation, the pre-training
+stage focuses on the following four components:
+• Dual-Instruction Formulation: We deﬁne reasoning instructions (Ir) to inject deductive knowledge through
+a fast-slow thinking mechanism, and scenario instructions (Is) to adapt the model across diverse contexts.
+• Backbone with IGR: This component strengthens the fast-slow logic by using intent from “slow” reasoning
+to ﬁlter the “raw materials” (user history) for the “fast” generator, improving both accuracy and efﬁciency.
+• Heterogeneous Data Mixture: By combining search and diverse recommendation trafﬁc, we provide varied
+instruction-label pairs. This facilitates instruction-following generation and helps the backbone adapt to
+various scenarios across the app.
+• Multi-Objective Training: We use joint learning objectives to align instructions with target items, supporting
+effective control of the generation process.
+2.3.1. Instruction Framework Design
+Our framework reformulates recommendation as an instruction-following generation task, P(Y | X,Is,Ir). By
+training the model to follow both scenario and reasoning instructions, the backbone learns to dynamically adjust
+its generation distribution according to the provided context.
+8
+
+OxygenREC Technical Report
+2.3.2. Dual-Instruction Formulation
+Composite Instruction Prompt.
+In practice, the instruction prompt consists of Scenario Instructions (Is)
+and Contextual Reasoning Instructions (Ir). Is contains two ﬁelds: scenario information and an optional
+trigger item. Ir is represented as a dense embedding projected from its textual source via the adapter. The
+availability of trigger items and the construction of Ir vary across scenarios and between training and serving;
+we summarize these signals and the resulting conditional formulations in the pre-training section.
+Scenario Instructions (Is).
+Is speciﬁes the scenario context for controllable generation. It includes (1) sce-
+nario information (available for all scenarios), and (2) an optional trigger item (available only for some
+scenarios). Scenario information may include a scenario ID as well as other contextual signals about the target
+scenario; it guides the generation style and the candidate/item distribution, since different scenarios may permit
+different item pools and users may exhibit different preferences across scenarios. When present, the trigger
+item provides local context (e.g., the channel entry item in Channel Feeds, or the main item for I2I related rec-
+ommendations). In practice, the trigger item is only available in scenarios such as channel feeds and I2I related
+recommendations, while scenarios like Homepage and Search typically do not have a trigger item. Overall, Is
+helps one backbone serve multiple scenarios by adapting the generation style and candidate/item distribution,
+rather than training and deploying a separate model for each scenario.
+Contextual Reasoning Instructions (Ir).
+Ir is a dense embedding obtained by projecting a textual instruc-
+tion—indicating users’ latent intent through an adapter (Section 2.3.3). During online inference, the textual
+instruction is synthesized by our near-line LLM pipeline (Section 2.2.3 and Figure 3). During training, to effec-
+tively enhance the model’s instruction-following capability, we leverage the rewritten/normalized user query
+in search data as a natural textual source for Ir; for recommendation scenarios where textual instructions are
+unavailable, we use a default (learnable) instruction embedding. This design serves two purposes: (1) utilizing
+search queries as a natural and high-quality data source for instruction alignment, and (2) improving robustness
+in online serving, where near-line inference may fail or be delayed and Ir may be missing—in such cases, the
+model can still produce reasonable recommendations conditioned on Is and user history.
+2.3.3. Generative Backbone with IGR
+OxygenREC adopts an encoder–decoder architecture similar to OneRec [68], but distinguishes itself by speciﬁ-
+cally augmenting the decoder with the Instruction Prompt (Is,Ir) as conditional inputs. This enables the model
+to auto-regressively generate item sequences that are explicitly guided by the user’s latent intent and scenario
+context.
+To enhance controllable generation, we ensure that the user’s historical context is consistent with the current
+instruction. Long-term user history typically contains many interactions that are irrelevant to the user’s imme-
+diate intent. If the model processes the entire history, these irrelevant signals can interfere with its ability to
+follow the instruction. We therefore use IGR to ﬁlter the history and select interactions that are most relevant to
+the instruction prompt. This ensures that the input context is aligned with the control signals (Is,Ir), leading to
+more precise output. As illustrated in Figure 2 (a), this mechanism consists of three components: (1) Adapter:
+projects instructions and items into a shared embedding space; (2) Q2I alignment: uses the ground-truth target
+to supervise instruction–item similarity during training; and (3) IGR: performs top-K retrieval at inference time
+to provide the decoder with an instruction-aligned context.
+9
+
+OxygenREC Technical Report
+Adapter Mechanism for Feature Mapping.
+For similarity-based retrieval, the query and history items must
+be comparable in the same space. However, the query is driven by (Is,Ir), while history items are described by
+item IDs, side features, and texts. We use adapter layers [26] to project them into a shared embedding space.
+The textual instruction Itext
+r
+is generated by the near-line pipeline in Section 2.2.3 and is encoded by the same
+text encoder g(·) used for item texts. The embeddings are deﬁned as:
+eq = Concat
+
+ϕscn(Is),gtrain(Itext
+r
+)
+
+et = Concat
+
+ϕitem(vt),ϕside(ut),gtrain(xt)
+
+eh = Concat
+
+ϕitem(vh),ϕside(uh),gfrozen(xh)
+
+q = ψq(eq),
+t = ψi(et),
+h = ψi(eh)
+(1)
+where ψq and ψi are projection networks. Is consists of scenario information s and trigger item z (using
+z = zdef when absent). ϕscn(·) projects scenario information into the embedding space. ϕitem(·) and ϕside(·)
+embed item IDs (vt,vh) and side-information features (ut,uh). xt and xh are the textual descriptions of the target
+item and history items. g(·) is the shared text encoder; we denote trainable/frozen usage as gtrain(·) and gfrozen(·).
+Since long-term histories can be very long, we do not backpropagate gradients through the long-history branch
+(including gfrozen(xh)) during training to reduce compute and communication overhead.
+Q2I Alignment.
+To make the query embedding q and history item embeddings {h} comparable for retrieval,
+we align q with the target item embedding t. The target item t is available only during training and serves
+as a supervised signal to anchor the query into the item space. Since both t and history items are projected
+by the same adapter ψi, this alignment ensures that q can be used to retrieve relevant history interactions at
+serving time when the ground-truth target is absent. Speciﬁcally, for a batch of size B with normalized query
+embeddings Q = {q1,...,qB} and normalized target item embeddings T = {t1,...,tB}, we optimize the following
+auxiliary objective:
+LQ2I = −1
+B
+B
+∑
+i=1
+qi ·ti
+|
+{z
+}
+Alignment
++λr (−log[Var(Q)·Var(T)])
+|
+{z
+}
+Regularization
++λd
+1
+B2 −B ∑
+i̸=j
+(q⊤
+i qj)2
+|
+{z
+}
+Decorrelation
+(2)
+where λr and λd control the strengths of the regularization and decorrelation terms. Var(Q) and Var(T) denote
+the average variance (across embedding dimensions) within the batch. The regularization and decorrelation
+terms help avoid dimensional collapse and reduce embedding redundancy [61, 66].
+IGR.
+With the aligned embedding space, IGR uses the query embedding q to retrieve the top-K most relevant
+interactions from the long-term history (in the ψi space). This does more than just reduce noise and shorten
+input sequences for efﬁciency; it directly strengthens instruction control. By ﬁltering out irrelevant history, IGR
+ensures the model stays locked onto the user’s current request rather than being distracted by past habits.
+2.3.4. Instruction-Following Pre-training: Data Mixture, Signals, and Objectives
+Data Mixture.
+Our pre-training data is a mixture of search and multiple recommendation scenarios (e.g.,
+Homepage, Channel Feeds, and I2I related recommendations). This design brings several beneﬁts. First, it
+enables uniﬁed modeling of user trajectories across the app, since real user journeys often interleave browsing,
+channel entry, item-to-item exploration, and search. Second, it substantially expands the amount of usable
+supervision: in e-commerce, positive feedback signals (e.g., purchase and add-to-cart) are typically sparser
+than in content platforms, and incorporating both search and recommendation trafﬁc improves coverage and
+10
+
+OxygenREC Technical Report
+data efﬁciency. Finally, training on scenarios with and without contextual reasoning instructions improves
+robustness when the instruction is missing in online serving.
+Training Signals and Scenario-Speciﬁc Formulation.
+Across all scenarios, we always include scenario
+information as part of Is. Some scenarios additionally provide an optional trigger item (e.g., channel entry item
+or the main item on product detail page/cart). For Ir, only search data provides an observed query as a direct
+textual source; for recommendation scenarios where the near-line instruction is unavailable during training,
+we use a default (learnable) instruction embedding. Table 1 summarizes the resulting training signals and
+scenario-speciﬁc conditional formulations.
+Scenario
+Scenario Info
+Trigger Item
+Contextual Reasoning
+Formulation
+Search
+✓
+zdef
+query-derived
+P(Y | X,Is(s,zdef),Ir(q))
+Homepage
+✓
+zdef
+default emb.
+P(Y | X,Is(s,zdef),Idef
+r
+)
+Channel Feeds
+✓
+zentry
+default emb.
+P(Y | X,Is(s,zentry),Idef
+r
+)
+Related Rec.
+(Item-to-Item)
+✓
+zmain
+default emb.
+P(Y | X,Is(s,zmain),Idef
+r
+)
+Table 1: Training signals and scenario-speciﬁc conditional formulations. Scenario information (s) is always
+available. The trigger item is denoted by z (using zdef when absent). Ir(q) denotes the contextual reasoning
+instruction embedding projected from the (rewritten/normalized) query, while Idef
+r
+denotes a default learnable
+embedding used when the textual instruction is unavailable in training.
+Joint Learning Objectives.
+The training objective combines generation accuracy with query-to-item align-
+ment:
+L = LNTP +λLQ2I
+(3)
+Weighted Next Token Prediction (LNTP).
+To prioritize high-value user behaviors, we optimize the auto-
+regressive likelihood of the target item sequence with a weighted NTP loss. Higher weights are assigned to
+conversion-related tokens (e.g., Purchase > Cart > Click).
+2.4. Post-training with Multi-Scenario Alignment
+2.4.1. Post-training Framework
+In the post-training phase, unlike previous methods that perform ﬁne-tuning in a single scenario, we adopt a
+multi-scenario modeling approach. OxygenREC post-training primarily consists of two components: a reward
+mapping system based on different scenarios to provide feedback signals, and a post-training process based on
+RL designed for various tasks across different scenarios. We construct a real-online reward mapping system
+that includes an online uniﬁed ranking model service and other multi-task rewards. We propose SA-GCPO
+to adopt a soft-adaptive function to compute importance sampling weights while incorporating reward scores
+derived from real user behavior as the threshold to distinguish positive and negative advantage samples.
+The post-training process of the OxygenREC primarily consists of three modules: the reward service,
+inference stage, and policy learning, as illustrated in Figure 4. For multi-scenario information, we construct
+features based on the users historical proﬁle and sequential behavior data across multiple scenarios, which
+are then fed into the policy model for generation. During the inference stage, multiple candidate items are
+generated. We employ the uniﬁed ranking model as an online reward service, which returns a score based on
+the requested item and user information via an online ranking service and other rule-based methods. Finally,
+11
+
+OxygenREC Technical Report
+Scene 1
+Scene 2
+Scene N
+OxygenRec🔥
+Target Item
+User Info
+Seq Feature
+Reward
+score
+Unified
+Ranking Model
+SFT
+SA-GCPO
+Inference Stage
+Policy Learning
+Reward Service
+Figure 4: The post-training process of OxygenREC
+we conduct SFT and RL for policy learning. The policy model is updated and we repeat this process for the
+next iteration until the model converges.
+2.4.2. Multi-Scenario Adaptation
+Most current GR methods [10, 39, 68, 69] conduct SFT and RL separately for different scenarios during post-
+training stage. These scenario-speciﬁc training processes are then paired with a ranking model that provides
+reward signals for RL. However, this approach necessitates the costly development and online deployment
+of individual GR model and ranking service for each scenario. To address this inefﬁciency, our reward map-
+ping system employs a uniﬁed ranking model as a centralized reward model service. Then we conduct the
+post-training collectively on data from various scenarios, which signiﬁcantly reduces the computational costs
+associated with both training and large-scale online deployment. To achieve robust performance across diverse
+scenarios, we construct a scenario-aware reward mapping as follows:
+Scenario-Aware Reward Mapping.
+As shown in Figure 2 (d), the system incorporates RL stage using re-
+wards tailored to speciﬁc recommendation scenarios. The total reward score is a weighted combination of
+following distinct rewards:
+1. Format Reward: Penalize structural errors to ensure valid item semantic ID output.
+2. Relative Reward: Reward items relevant to the user’s immediate context and query (based on Q2I
+semantic relationships).
+3. Ranking Reward: Reward sequences that maximize business objectives like GMV or Conversion Rate.
+4. Diversity Reward: Evaluate the diversity of a group of items generated by the GR model.
+Uniﬁed Ranking Model.
+We develop a novel uniﬁed multi-scenario ranking model to serve as the core of
+the Reward Mapping Service, providing a consistent ranking reward across diverse scenarios. Many traditional
+multi-scenario recommendations, such as STAR [51] and PEPNet [9], introduce complex specialized structures
+to mitigate the negative transfer problem and require maintaining separate model instances or intricate routing
+logic, leading to high operational and maintenance costs. To address these problems in GR, we propose a uniﬁed
+list-wise approach for both ofﬂine training and online learning of our ranking models. By constructing uniﬁed
+12
+
+OxygenREC Technical Report
+Scene 1
+Feature Extraction Block
+Scene 1 Feats
+Scene 2 Feats
+Scene N Feats
+…
+Scene 2
+Feature Extraction Block
+Scene N
+Feature Extraction Block
+…
+Target 1
+Target 2
+Target N
+…
+(a) Traditional Single-scenario Ranking Model
+Scene Feats
+Centered
+Feature Extraction Block
+Request 1
+Scene Feats
+Request 2
+Scene Feats
+Request N
+Scene Feats
+Requests from Difference Scenes
+…
+…
+Targets of Difference Requests
+Scene 1-specific 
+parameters
+Target 1 Target 2
+Target N
+Tokenizer
+Transformer-based Feature 
+Extraction Block
+Norm
+Multi-head Attention
+Add
+Norm
+FFN
+Add
+Customized Causal Mask
+…
+Outputs of Difference Target
+Ouput1
+Ouput2
+OuputN
+(b) Traditional Multi-scenario Ranking Model
+(c) Unified Ranking Model
+Scene 2-specific 
+parameters
+Scene N-specific 
+parameters
+…
+⨂
+⨂
+⨂
+Target
+Figure 5: Comparison of model architectures: traditional ranking models vs. our uniﬁed ranking model
+representation tokens from heterogeneous user features and processing them through a shared Transformer-
+based feature extraction block, we achieve comprehensive cross-scenario feature interaction and consistent
+scaling effects, as shown in Figure 5. The model further incorporates an adaptive modeling mechanism designed
+to address input feature heterogeneity, thereby comprehensively enhancing its representational capacity.
+We construct multi-scenario training samples by using a label packing strategy, transforming traditional
+point-wise samples into list-wise samples. These samples are arranged chronologically according to users’
+request sequences, with a customized causal masking mechanism applied during training to explicitly model
+user behavior trajectories. Through explicit behavior trajectory modeling, the system can maximize conversion
+gains throughout the entire user path while improving the efﬁciency of joint recommendations across multiple
+positions. Compared to existing methods, the proposed uniﬁed ranking model demonstrates more consistent
+scaling effects across different scenarios and tasks.
+2.4.3. Reinforcement Learning
+Preference alignment during post-training is critical for enhancing model performance. Numerous studies [23]
+adopt GRPO for policy learning. OneRec-v1 [68] proposes ECPO, which clips policies with large ratios to
+ensure training stability. OneRec-v2 [69] truncates gradients within a bound to address instability arising from
+negative samples. However, in our scenario, the issue of training instability becomes more pronounced as
+OxygenREC requires uniﬁed training across multiple environments. In addition, because our reward mapping
+involves scores from various tasks such as format, relative, and ranking reward, the hard clipping strategy
+adopted by most existing methods often leads to sample inefﬁciency and discontinuous gradients. Recently,
+several works [21] in language modeling have employed smooth gate functions rather than hard clipping to
+maintain training stability. By utilizing soft gate functions, gradients can decay smoothly, preserving more
+learning signals while ensuring stability.
+Soft Adaptive Group Clip Policy Optimization.
+In this section, we propose SA-GCPO, adopting a soft
+adaptive method to compute importance sampling weight, while also incorporating reward scores derived from
+real user behavior as the threshold to distinguish positive and negative advantage samples. We further adopt
+an asymmetric temperature control mechanism, applying different temperature coefﬁcients to positive and neg-
+ative advantage samples, respectively. This design accelerates the gradient decay of negative samples, thereby
+alleviating issues of gradient diffusion and training instability. Unlike [21], which employs the sign of advan-
+tage values to distinguish between positive and negative advantage samples, we propose a method based on real
+user feedback to deﬁne them. In most RLVR methods [23, 32, 56] for LLM reasoning and mathematical tasks,
+rewards often have clear positive or negative deﬁnitions. However, due to the multi-scenario and multi-task
+nature of our reward design in OxygenREC, simply relying on the sign of the advantage value becomes insuf-
+13
+
+OxygenREC Technical Report
+ﬁcient. To address this, we introduce reward scores derived from real user feedback as a threshold to deﬁne
+positive and negative advantages, and subsequently apply different temperature coefﬁcients. This approach en-
+ables the explicit deﬁnition of positive feedback samples during such multi-scenario, multi-task post-training.
+We summarize our proposed SA-GCPO as follows:
+Given each sample x ∼D, for a group of items {yi}G
+i=1 generated from behavior policy πθold for sample x,
+our proposed SA-GCPO employs the following optimization objective:
+JSA-GCPO(θ) = Ex∼D,{yi}G
+i=1∼πθold(·|x)
+"
+1
+G
+G
+∑
+i=1
+1
+|yi|
+|yi|
+∑
+t=1
+fi,t(ri,t(θ))Γadv(bAi,t,R∗
+g)
+#
+,
+(4)
+where G is the number of generated items for each sample x and ri,t(θ) represents the token-level importance
+ratio. The deﬁnition is as follows:
+ri,t(θ) = πθ(yi,t | x,yi,<t)
+πθold(yi,t | x,yi,<t)
+(5)
+In Equation 4, fi,t(ρ) denotes the soft adaptive function:
+fi,t(ρ) = σ (τi,t(ρ −1))· 4
+τi,t
+,
+τi,t =
+
+
+
+τpos,
+Γadv(bAi,t,R∗
+g) > 0,
+τneg,
+otherwise,
+(6)
+where τpos and τneg are the temperatures set for positive and negative samples. σ(z) = 1/(1+e−z) is the sigmoid
+function. Its gradient weight wi,t(θ) is given by:
+wi,t(θ) = 4 pi,t(θ)(1−pi,t(θ)),
+pi,t(θ) = σ (τi,t (ri,t(θ)−1)),
+(7)
+which peaks at ri,t(θ) = 1 and decays smoothly as ri,t(θ) deviates, implementing a soft trust region of ri,t(θ).
+Γadv in Equation 4 represents the threshold function to distinct the positive and negative advantage samples of
+bAi,t, which is denoted as follows:
+Γadv(bAi,t,R∗
+g) =
+
+
+
+0,
+bAi,t > 0 and Ri < R∗
+g,
+bAi,t,
+otherwise,
+(8)
+where Ri is the reward score for the item yi and R∗
+g denotes the reward of the target item in this group. bAi is the
+normalized advantage for item yi, the calculation of bAi given by:
+bAi,t = bAi = Ri −mean({Ri}G
+i=1)
+std({Ri}G
+i=1)
+(9)
+The main advantages of the design in our methods are as follows:
+• Adaptive smooth gating: Replace hard clipping function with a continuous sigmoid-based gate function,
+reducing optimization noise and enhancing training stability.
+• Real user feedback as threshold for pos/neg advantages: The reward scores derived from user real
+feedback are employed as the threshold for distinguishing positive and negative advantage samples,
+thereby mitigating the issue of reward hacking during the RL training process.
+• Asymmetric temperature control: Uses a different temperature setting for τneg and τpos to more rapidly
+attenuate negative-token gradients, improving stability.
+14
+
+OxygenREC Technical Report
+• Sequence-level coherence: Since the SID represents a single item, SA-GCPO reduces to a smooth
+sequence-level gate similar to GSPO [67] but without abrupt clipping.
+3. System Implementation and Optimization
+3.1. Uniﬁed Training Framework
+The training of OxygenREC presents a unique engineering challenge, which requires simultaneously handling
+terabyte-scale sparse embeddings (typical of recommendation systems) and billion-scale dense parameters
+(typical of LLMs). Traditional frameworks create a divide: TensorFlow excels at sparse optimization but lacks
+mature LLM support, while PyTorch dominates LLM training but it is not applicable with industrial-scale
+embeddings.
+To bridge this gap, we propose a uniﬁed training framework built on PyTorch [35] that integrates industrial-
+grade sparse and dense engines. Inspired by efﬁcient distributed training techniques [28, 52], the training is
+conducted on a production cluster with 128 NVIDIA H800 GPUs, utilizing 400GB/s NVLink and 8Œ200Gb/s
+RoCEv2 RDMA for high-performance interconnects. We achieve an overall Model FLOPs Utilization (MFU)
+of 40% through the following key optimizations.
+3.1.1. Distributed Sparse Optimization
+We designed a large-scale distributed sparse engine to handle massive embedding tables efﬁciently within
+PyTorch. It implements a non-overlapping partition strategy for embeddings across workers, coupled with hier-
+archical HBM-MEM caching. A multi-stage pipeline is established to hide the inherent latency of embedding
+access. To avoid embedding staleness, we implement a dual-buffer mechanism to provide strong consistency
+guarantees. Our optimizations reduce the time proportion of sparse operations from 15% to 5% and achieve
+1.1-2.4× speedup over state-of-the-art open-source embedding solutions.
+3.1.2. Operator-Level Acceleration
+For the LLM backbone, we integrate mature optimizations including BF16 mixed-precision training [31] and
+ZeRO [47] for memory efﬁciency. We also employ advanced attention mechanisms [17, 49] and efﬁcient archi-
+tectures [19, 50]. However, standard attention implementations (e.g., FlashAttention) are not suitable for the
+hybrid masking patterns required in generative recommendation. To address this, we develop a dedicated atten-
+tion acceleration library. By leveraging CUTLASS [57] and TileLang [59] for custom kernel compilation, our
+training framework supports ﬂexible mask conﬁgurations and achieves speedups of 1.7× and 3.0× compared
+to FlexAttention [18] and torch.compile [2], respectively.
+3.1.3. Scenario-Aware Reinforcement Learning
+The post-training RL phase involves distinct workﬂow designs and model characteristics, particularly with
+respect to handling large-scale sparse parameters and multi-scenario customization. We build a customized RL
+workﬂow on top of Ray [42]. In collocated deployment modes, we enable shared-memory access for sparse
+tables to eliminate redundant copying, ensuring efﬁcient synchronization during the high-throughput sample
+generation phase.
+15
+
+OxygenREC Technical Report
+3.2. Inference Optimization based on xLLM
+GR integrates LLMs to enhance sequence understanding, but its inference workload differs markedly from
+standard LLM serving. GR typically processes long user-history prompts while generating relatively short
+outputs under a large beam width (e.g., beam size = 256-512). This setting makes decoding the dominant
+bottleneck: beyond the increased number of active hypotheses, large-beam decoding incurs substantial extra
+overhead in candidate sorting and stochastic sampling, and it ampliﬁes KV-cache capacity/trafﬁc pressure and
+memory access inefﬁciency compared to standard greedy sampling.
+To meet strict Service Level Objectives (SLOs), we develop xGR [44], a dedicated serving system built
+upon the high-performance xLLM framework [38]. xGR adopts a tightly coupled three-tier architecture to
+maximize hardware efﬁciency:
+• xSchedule (System Level): A sophisticated scheduler that manages task parallelism. It enables ﬁne-
+grained pipeline overlapping across batching, request handling, and kernel execution, ensuring high GPU
+utilization.
+• xAttention (Operator Level): Built upon xLLM’s PagedAttention, this module is further customized
+for GR’s attention patterns (e.g., long prompts + short decoding, hybrid masks). It strengthens KV-
+cache management and introduces staged compute allocation to better match the large-beam decoding
+workload.
+• xBeam (Algorithm Level): A specialized module designed to handle the massive sorting overhead of
+large-beam decoding and support advanced sampling strategies over billion-scale item spaces.
+Deep Customization for OxygenREC.
+Leveraging this architecture, We implement critical optimizations
+for OxygenREC:
+Specialized Beam Search & Sampling. Unlike standard NLP tasks that prioritize deterministic outputs,
+recommendation requires balancing accuracy with diversity. xBeam implements a highly optimized Beam Sam-
+ple kernel that efﬁciently combines top-k selection with nucleus/multinomial sampling. It employs operator-
+level fusion to handle the stochasticity without performance degradation, signiﬁcantly reducing decoding la-
+tency compared to vanilla implementations.
+Preﬁx-Constrained Decoding. To enforce scenario-speciﬁc rules, we integrated a Trie Index mechanism
+into the inference loop. This lightweight index dynamically generates logit masks at each step, guaranteeing
+100% generation legality within designated item pools with negligible runtime overhead.
+3.3. Inference Deployment of Reasoning Instructions
+We adopt a near-line updating mechanism to achieve a balance between the timeliness of recommendation
+signals and overall system overhead. Our deployment architecture consists of two cascaded components: an
+LLM-based instruction generation service and an Adapter-based text encoder service.
+The LLM instruction model operates in a near-line setting, where it synthesizes natural-language reasoning
+instructions by fusing spatiotemporal context and user behavioral history. These instructions are not generated
+on-the-ﬂy during user requests; instead, they are produced in batch. The subsequent Adapter text encoder then
+converts each textual instruction into a dense embedding vector. This embedding is indexed by the user ID and
+stored in a low-latency key-value store (e.g., Redis cluster), ready for real-time consumption by the downstream
+generative recommender.
+16
+
+OxygenREC Technical Report
+To capture both long-term preferences and short-term intent shifts, we implement a hybrid update strategy:
+1. Daily full refresh: An ofﬂine job regenerates spatiotemporal and behavioral instructions for all daily active
+users, incorporating the latest contextual signals (e.g., season, location) and accumulated interactions.
+2. Near-line incremental update: When a user performs high-value actions—such as effective searches,
+views, cart additions, or purchases—the system triggers a near-real-time instruction update. To prevent
+excessive write pressure and system instability caused by bursty interactions, we employ a time-window ag-
+gregation strategy: within a short sliding window (e.g., 5 minutes), multiple behavioral events from the same
+user are merged into a uniﬁed intent summary, and only a single instruction regeneration and storage write
+is executed at the windows end. This design preserves signal responsiveness while signiﬁcantly reducing
+backend load.
+During online inference, the generative recommendation model simply retrieves the precomputed instruc-
+tion embedding via the user ID—enabling zero online LLM calls, low-latency serving, and high semantic ﬁdelity
+in the ﬁnal recommendations.
+4. Evaluation and Results
+4.1. Evaluation Metrics
+Model Evaluation Metrics.
+• HitRate@K (HR@K): This metric quantiﬁes the precision of the generative process by measuring the
+proportion of test instances where the generated candidate strictly aligns with the ground-truth semantic
+ID sequence across all hierarchical code levels within the top-K beam search hypotheses [20].
+• Recall@K: This metric assesses the model’s capacity to cover the user’s relevant interests. It is calcu-
+lated as the ratio of the user’s daily positive interactions that are successfully identiﬁed within the top-K
+generated candidates relative to the full set of observed user behaviors for that day.
+Semantic ID Evaluation Metrics.
+• SID Codebook Coverage: This metric evaluates the utilization efﬁciency of the hierarchical semantic
+space. Unlike simple code usage, it measures the joint path occupancy at each quantization level. Specif-
+ically, for a given depth L (where L ∈{1,2,3}), the coverage is deﬁned as the ratio of unique code tuples
+(c1,...,cL) actually assigned to the active SKU set relative to the total theoretical capacity of that concep-
+tual space (i.e., |V|L, where |V| is the codebook width). This reﬂects how effectively the SKUs populate
+the exponentially growing combination space.
+• Semantic Cluster Purity: This metric evaluates the alignment between the learned semantic clusters and
+human-deﬁned taxonomies. It is calculated by measuring the mean dominance of the primary category
+within each semantic ID’s corresponding SKU set. A higher purity score indicates that the semantic IDs
+effectively capture the high-level category semantics (e.g., SKUs grouped under a speciﬁc semantic ID
+consistently belong to the “Electronics” category rather than a mix of unrelated categories).
+• Semantic ID Collision: This metric quantiﬁes the discriminative power of the semantic identiﬁers in
+distinguishing individual items within the billion-scale SKU pool. It is measured by the distribution of
+item cardinality for each unique SID tuple. We report the SKU counts at key quantiles (e.g., P90, P99). A
+lower SKU count at these upper quantiles indicates ﬁner granularity, meaning the semantic ID sequence
+provides a more precise representation closer to a unique item identiﬁer.
+17
+
+OxygenREC Technical Report
+• Codebook Load Balance: This metric measures the uniformity of item distribution across the quantiza-
+tion codebook. It quantiﬁes the deviation of actual cluster sizes (number of SKUs assigned to a speciﬁc
+code) from the theoretical uniform distribution (Total SKUs / Codebook Size). By examining this ratio
+at various quantiles, we assess whether the RQ-KMeans process effectively utilizes the full capacity of
+the codebook or suffers from mode collapse (where speciﬁc codes are over-utilized while others remain
+under-utilized).
+4.2. Ablation Studies and Analysis
+In this section, we conduct a comprehensive ablation study to validate the effectiveness of our proposed compo-
+nents. We ﬁrst analyze the evolution of SID representations and their impact on retrieval quality. Subsequently,
+we explore the scalability and performance of the generative backbone under various architectural conﬁgura-
+tions.
+Lightweight Multimodal Design.
+We conduct a systematic analysis of the multimodal encoder design by
+progressively ablating and iteratively reﬁning its architecture. This process starts from a faithful reproduction
+of the OneRec-style multimodal model, which adopts a large pretrained multimodal backbone (e.g., MiniCPM-
+V [65]) followed by multiple stacked Q-Former [34] layers for feature compression.
+To reduce computational cost, we ﬁrst replace the heavy multimodal backbone with a series of lighter
+vision-language models, including variants from the SAIL [11] and InternVL [13] families. Although inference
+becomes signiﬁcantly faster, the overall recommendation performance shows almost no improvement. We
+further perform a systematic comparison among pure-text encoders, pure-vision encoders, and multimodal
+backbone models [33, 37, 60]. Surprisingly, the pure-text encoder Qwen3 [3, 63] substantially outperforms
+other multimodal alternatives.
+This observation motivates our ﬁnal model design. Speciﬁcally, we employ the Qwen3 text encoder and
+the CLIP [45] image encoder to independently extract textual and visual representations, which are then jointly
+fused and compressed through a dedicated fusion module composed of Q-Former layers and MLP layers. Dur-
+ing the compression process, the query tokens in the Q-Former are progressively reﬁned and enhanced via
+residual initialization across layers. Compared with simply replacing multimodal backbones, focusing on the
+fusion architecture itself yields more than a 30% relative improvement in HitRate@1 over the initial OneRec-
+style variants, while achieving up to a 32Œ speedup in embedding inference.
+Semantic ID Evolution.
+We investigate the impact of different item representation strategies by iterating
+through four versions of semantic IDs. The progression moves from a unimodal textual baseline to a sophis-
+ticated multi-view contrastive alignment framework. Table 2 presents the quantitative evaluation of these SID
+versions. We assess the quality of the learned representations using Codebook Coverage, Semantic Diversity,
+P99 Collision (SKU count at P99).
+The detailed conﬁgurations for each version are as follows:
+• V1 Semantic ID (Textual Baseline): This version constructs discrete latent representations purely from
+textual semantics. Item embeddings are encoded using the pre-trained M3E [14] based on item titles.
+These continuous embeddings are then discretized via RQ-KMeans into a hierarchical 3-layer codebook,
+with a vocabulary size of 2,048 per level.
+• V2 Semantic ID (Multimodal & Behavioral): This iteration introduces multimodal understanding and
+behavioral alignment. We utilize the MiniCPM-V-8B to encode both item titles and images. To bridge
+18
+
+OxygenREC Technical Report
+Table 2: Detailed Evaluation of Semantic ID Versions.
+Metric
+V1 (Textual)
+V2 (MiniCPM)
+V3 (Fusion)
+V4 (Multi-Source)
+Codebook Coverage (↑)
+Codebook1
+100%
+100%
+100%
+100%
+Codebook2
+72.33%
+31.22%
+70.03%
+69.56%
+Codebook3
+2.74%
+0.013%
+0.14%
+0.15%
+Cluster Purity (↑)
+Cate1
+86.30%
+83.31%
+84.38%
+92.80%
+Cate2
+73.45%
+66.80%
+70.35%
+79.90%
+Cate3
+53.68%
+41.99%
+48.41%
+59.73%
+SID Collision (↓)
+P90
+10
+6
+2
+2
+P99
+79
+21
+9
+9
+P999
+419
+73
+34
+35
+Load Balance (→100%)
+P25
+32.49%
+88.53%
+89.25%
+89.92%
+P75
+144.22%
+114.66%
+107.39%
+105.40%
+P90
+212.84%
+122.14%
+118.60%
+118.09%
+Note: ↑: Higher is better; ↓: Lower is better; →100%: Closer to 100% is better.
+the semantic gap, we apply contrastive learning where positive pairs are derived from I2I co-occurrence
+graphs mined via the Swing algorithm. The resulting embeddings are quantized into a larger hierarchical
+codebook (3 layers, 8,192 width).
+• V3 Semantic ID (Advanced Fusion Architecture): This version upgrades the backbone to a powerful
+fusion architecture combining Qwen3 and CLIP [45]. The model is trained using the previously described
+fusion structure with a contrastive objective, strictly supervising the learning process using swing-based
+I2I pairs as ground-truth labels. The latent space is mapped to a 3-layer codebook with a width of 8,192
+using RQ-KMeans.
+• V4 Semantic ID (Multi-Source Alignment): The most advanced version leverages the Qwen3 and
+CLIP-ViT [45] fusion backbone but signiﬁcantly enhances the contrastive learning paradigm through
+multi-source supervision. We integrate diverse alignment signals, including Q2I associations, Swing-
+based behavioral I2I pairs, and semantic peers (items under the same query and category). This multi-
+view approach ensures robust semantic consistency before the ﬁnal RQ-KMeans quantization (3 layers,
+8,192 width).
+Analysis of Semantic ID Quality. As shown in Table 2, the evolution of semantic ID versions demon-
+strates a clear trajectory towards higher expressiveness and stability. While the V1 (Textual) baseline appears
+to have high codebook coverage, this is primarily an artifact of its signiﬁcantly smaller codebook size (2048
+vs. 8192), which fundamentally limits its resolution capacity—evidenced by its poor P999 collision count of
+419. In contrast, V2 (MiniCPM) suffers from low coverage in deeper levels (0.013% at L3), indicating par-
+tial codebook collapse. The V3 (Fusion) and V4 (Multi-Source) iterations successfully address these issues
+by leveraging robust multimodal alignment. Most notably, V4 achieves state-of-the-art performance across all
+critical dimensions: it attains the highest Cluster Purity (92.80% at Cate-L1) by injecting explicit category
+semantics; delivers superior SID Collision (reducing P999 collisions to just 35, ensuring ﬁne-grained item
+distinction); and maintains an optimal Load Balance (P90 of 118.09%), conﬁrming that the multi-source con-
+trastive learning paradigm effectively maximizes the utilization and uniformity of the high-dimensional latent
+space.
+19
+
+OxygenREC Technical Report
+Generative Backbone Architecture Ablation.
+Having established the optimal semantic ID representation
+(V4), we further investigate the scaling laws and architectural hyperparameters of the generative backbone.
+We construct several pre-trained models with varying capacities by systematically adjusting the depth of en-
+coder/decoder layers, the model dimensions (hidden state and intermediate sizes), and the Mixture-of-Experts
+(MoE) conﬁgurations (total vs. active experts) [50]. All models are trained on the same dataset to isolate the
+effects of parameter scaling.
+Table 3 details the architectural speciﬁcations of the evaluated model variants, scaling from 0.1B to 3.0B
+parameters.
+Table 3: Model Conﬁgurations for Generative Backbone Ablation.
+Model Size (Tot/Act)
+Enc Layers
+Dec Layers
+Dim (Hidden/Inter)
+Experts (Tot/Act)
+0.1B / 0.1B
+4
+4
+1024/512
+2/1
+0.4B / 0.3B
+4
+6
+2048/1024
+4/2
+0.7B / 0.4B
+4
+8
+2048/1024
+8/2
+1.5B / 0.4B
+4
+8
+2048/1024
+24/2
+3.0B / 0.6B
+4
+16
+2048/1024
+24/2
+We assess the generative performance of these variants using hitrate and recall metrics. Furthermore, to
+analyze training dynamics, we monitor the NTP Loss. Table 4 and Figure 6 present the retrieval metrics and
+the loss scaling laws, respectively.
+Figure 6: NTP Loss Scaling Laws.
+Table 4: Performance Comparison.
+Model Size (Tot)
+HR@1
+HR@10
+Recall@10
+Recall@30
+0.1B
+3.99%
+13.17%
+10.10%
+15.11%
+0.4B
+4.42%
+15.03%
+11.38%
+17.34%
+0.7B
+4.84%
+16.33%
+12.32%
+18.71%
+1.6B
+4.92%
+16.61%
+12.51%
+19.01%
+3.0B
+5.02%
+16.99%
+12.78%
+19.53%
+Note: Results represent overall metrics across nearly all core scenarios at JD App using the full-scale training dataset.
+Scaling Law Validation and MoE Saturation Analysis. The experimental results in Table 4 and Fig-
+ure 6 empirically validate the scaling laws within our generative recommendation framework. We observe a
+general positive correlation between model capacity and retrieval performance. Speciﬁcally, scaling the model
+from 0.1B to 3.0B yields a monotonic improvement in HR@10, rising from 13.17% to 16.99%. Figure 6
+20
+
+OxygenREC Technical Report
+demonstrates this, illustrating that larger models generally achieve lower asymptotic NTP loss.
+A detailed analysis reveals a distinct plateauing phase between the 0.7B and 1.6B variants, where the loss
+curves exhibit signiﬁcant overlap despite the increase in total parameter count. We speculate that this diminish-
+ing return might be linked to the sparse activation mechanism of the MoE architecture. As both conﬁgurations
+utilize the same number of active experts (2) per token, the effective parameter count involved in each forward
+pass remains comparable, potentially limiting the immediate gains from simply expanding the expert pool.
+However, the 3.0B model appears to overcome this bottleneck, likely due to the increased depth (16 decoder
+layers), which extends the computational path and further drives down the NTP loss.
+4.3. Instruction-Following Uniﬁcation Analysis
+This section investigates the efﬁcacy of our proposed instruction-following mechanism, which serves as the cor-
+nerstone for unifying disparate recommendation tasks into a single generative framework. In our architecture,
+a composite Instruction Token is prepended to the decoder input to steer the generation process. It is worth
+noting that to enable rapid and efﬁcient exploration of model structures, the ablation studies in this subsection
+are conducted on a representative subset of the full dataset. To rigorously validate this design, we conduct a
+ﬁve-stage analysis: ﬁrst, identifying the optimal positional strategy for integrating the token; second, dissecting
+the contribution of its constituent components (Scenario vs. Trigger); third, evaluating the impact of the IGR
+components; fourth, demonstrating the superiority of the uniﬁed model over traditional isolated SFT baselines
+across ﬁve core scenarios; and ﬁnally, verifying the sensitivity of the decoder to these instructions via masking
+experiments.
+Instruction Token Integration Strategies.
+We ﬁrst determine the optimal position for inserting the instruc-
+tion token into the decoder’s input sequence relative to the Begin-Of-Sequence (BOS) marker. We compare ﬁve
+strategies: (1) No Instruction (Baseline); (2) Replace BOS; (3) Add to BOS (element-wise sum); (4) Insert
+Left of BOS; and (5) Insert Right of BOS.
+Table 5 presents the comparative results. The “Insert Right of BOS” strategy consistently yields the high-
+est hitrate and recall across all metrics. This ﬁnding suggests that placing the instruction after the standard BOS
+marker allows the decoder to ﬁrst initialize its state and then immediately condition its subsequent autoregres-
+sive generation on the speciﬁc context, providing the most effective guidance ﬂow.
+Table 5: Performance comparison of different instruction token integration strategies.
+Integration Strategy
+HR@1
+HR@10
+Recall@10
+Recall@30
+No Instruction
+2.78%
+10.38%
+8.18%
+13.01%
+Replace BOS
+3.30%
+12.08%
+9.12%
+14.38%
+Add to BOS
+3.50%
+12.59%
+9.52%
+14.93%
+Insert Left of BOS
+3.33%
+12.17%
+9.21%
+14.50%
+Insert Right of BOS
+3.53%
+12.68%
+9.58%
+14.91%
+Instruction Component Ablation.
+Building upon the optimal “Insert Right of BOS” strategy, we further
+dissect the composition of the instruction token itself. We verify whether fusing both Scenario ID and Trigger
+Item ID is necessary compared to using either component in isolation.
+As shown in Table 6, while using Scenario ID or Trigger Item ID alone improves performance over the
+“No Instruction” baseline, the Concatenated Instruction (Scenario + Trigger) achieves better results. Further-
+more, the Fused Instruction approach, which projects the combined features into a uniﬁed representation before
+21
+
+OxygenREC Technical Report
+integration, delivers the best performance across all metrics. This indicates that the two signals provide comple-
+mentary guidance: the Scenario ID deﬁnes the global domain characteristics (e.g., price sensitivity in homepage
+vs. add-on logic in cart), while the Trigger Item ID provides ﬁne-grained, localized user intent context. The
+superior performance of the fused approach suggests that a deeper integration of these signals allows the model
+to better capture the interactions between scenario context and user intent.
+Table 6: Ablation study on Instruction Token components.
+Instruction Components
+HR@1
+HR@10
+Recall@10
+Recall@30
+No Instruction (Baseline)
+2.78%
+10.38%
+8.18%
+13.01%
+Scenario ID Only (1 token)
+3.30%
+12.17%
+9.22%
+14.50%
+Trigger Item ID Only (1 token)
+3.22%
+11.60%
+9.13%
+13.98%
+Concatenated (Scenario + Trigger, 2 tokens)
+3.53%
+12.68%
+9.58%
+14.91%
+Fused (Scenario + Trigger, 1 token)
+3.60%
+12.82%
+9.68%
+15.08%
+IGR Ablation.
+To validate the effectiveness of IGR mechanism and Q2I alignment, we conduct ablation
+studies under search-dominated scenarios. As shown in Table 7, introducing IGR alone improves the retrieval
+quality by better focusing on relevant historical interactions. The full model with both IGR and Q2I alignment
+achieves the best performance, demonstrating that explicit alignment between query and item spaces is crucial
+for effective IGR.
+Table 7: Ablation study on IGR components
+Conﬁguration
+HR@1
+HR@10
+Recall@10
+Recall@30
+Base Model (w/o IGR/Q2I)
+3.76%
+12.20%
+9.87%
+15.53%
++ IGR Only
+4.02%
+12.91%
+10.25%
+15.95%
++ IGR+Q2I (Full)
+4.19%
+13.38%
+10.52%
+16.23%
+Uniﬁed Instruction-Following Model vs. Independent SFT Baselines.
+We compare our Uniﬁed Instruction-
+Following Model against the industry-standard Pretrain and Scenario Independent SFT approach, where
+separate models are ﬁne-tuned exclusively for each speciﬁc scenario. Table 8 illustrates the performance across
+ﬁve distinct deployment scenarios. The uniﬁed model consistently outperforms the isolated baselines. This
+superiority is attributed to Synergistic Knowledge Transfer, where high-resource Scenarios (like Homepage)
+enhance the representation learning for lower-resource Scenarios; Universal User Modeling, which captures
+a holistic view of user interests; and signiﬁcantly improved Operational Efﬁciency, as a single model reduces
+maintenance and GPU overhead compared to managing ﬁve separate checkpoints.
+Table 8: Performance comparison: Uniﬁed Instruction-Following Model vs. Independent SFT Baselines across
+six core scenarios.
+Metric
+Model Type
+Scenario 1 Scenario 2 Scenario 3 Scenario 4 Scenario 5 Scenario 6
+HR@1
+Independent SFT
+6.39%
+8.17%
+1.12%
+1.83%
+7.22%
+5.29%
+Uniﬁed Model
+15.39%
+20.75%
+17.24%
+6.34%
+10.54%
+25.75%
+HR@10 Independent SFT
+23.29%
+29.05%
+5.22%
+8.44%
+29.84%
+19.38%
+Uniﬁed Model
+46.73%
+55.02%
+53.57%
+29.89%
+37.90%
+62.62%
+Trigger Instruction Sensitivity Analysis.
+To rigorously verify that the uniﬁed model effectively utilizes the
+Trigger Item component of the instruction token as a control signal—rather than merely ignoring it—we conduct
+22
+
+OxygenREC Technical Report
+an inference-time sensitivity analysis. We focus speciﬁcally on Scenarios 3, 4, 5, and 6, which are explicitly
+designed to be driven by trigger items (Scenarios 1 and 2 are excluded as they operate without speciﬁc trigger
+inputs).
+In this experiment, we freeze the model parameters and replace the authentic Trigger Item ID in the
+instruction token with a generic “Default” embedding during the decoding process. As presented in Table 9,
+substituting the speciﬁc trigger with a default value leads to a substantial degradation in retrieval metrics across
+all tested scenarios. This sharp drop conﬁrms the validity of our instruction mechanism: the decoder heavily
+relies on the ﬁne-grained trigger signal to effectively contextualize the user’s immediate intent, acting as a
+critical “steering wheel” for the generative process.
+Table 9: Sensitivity Analysis: Impact of masking the Trigger Item ID during inference (Scenarios 3, 4, 5, 6).
+Metric
+Inference Setting
+Scenario 3
+Scenario 4
+Scenario 5
+Scenario 6
+HR@1
+Correct Trigger (Instruction)
+20.75%
+6.34%
+10.54%
+25.75%
+Masked Trigger (Default)
+10.71%
+1.96%
+9.26%
+18.55%
+HR@10
+Correct Trigger (Instruction)
+55.02%
+29.89%
+37.90%
+62.62%
+Masked Trigger (Default)
+40.96%
+11.31%
+35.74%
+50.52%
+4.4. Post-training of OxygenREC
+In this section, we primarily validate the effectiveness of synthetic data and the results of training a uniﬁed
+model across various scenarios. OneRec-v2 [69] proposes an online RL learning approach based on user
+behavior data streams. Through interaction with extensive real-time user data streams, it updates policies
+according to real user behavior preferences. However, this approach heavily relies on real-time user feedback
+and often suffers from reward hacking in data-sparse scenarios. We address this by adopting a post-training
+method that generates a large amount of synthetic data and performs uniﬁed post-training process to enhance
+the model’s robustness across different scenarios.
+0
+20
+33
+50
+Ratio of Synthetic Data (%)
+0.40
+0.45
+0.50
+0.55
+0.60
+0.65
+Hit Rate@10
+GRPO
+SA-GCPO
+Figure 7: Evaluation of synthetic data
+Validate the effectiveness of synthetic data.
+Firstly, we conducted experiments to validate the effectiveness
+of synthetic data. Speciﬁcally, we utilized user proﬁles from historical data and candidate items generated by
+the policy model to query the ranking model to obtain reward scores. These scores were then employed as
+rewards for policy learning.
+23
+
+OxygenREC Technical Report
+We employ the pre-trained OxygenREC-0.7B MOE as the backbone model. Then we conduct the RL
+training to validate the effectiveness of synthetic data. As illustrated in Figure 7, we select one of the scenarios
+to present HR@10 across varying proportions of synthetic data used during training. The proportion denotes
+the percentage of synthetic samples incorporated into the training dataset. When the ratio of synthetic data
+is 0, it represents the performance of the warm-start pretrained model at the test data. We observe that the
+performance of GRPO exhibits considerable instability across varying proportions of synthetic data, whereas
+SA-GCPO demonstrates more consistent results. Moreover, SA-GCPO shows superior performance compared
+to GRPO across different proportions of synthetic data, which demonstrates the effectiveness of our proposed
+method.
+Table 10: Evaluation of proposed SA-GCPO with other methods
+Methods
+Ratio of synthetic data
+HR@1
+HR@10
+OxygenREC0.7B-GRPO
+33%
+23.85%
+62.15%
+OxygenREC0.7B-GSPO
+33%
+24.13%
+62.88%
+OxygenREC0.7B-SA-GCPO
+33%
+25.58%
+65.95%
+Effectiveness of proposed SA-GCPO.
+When it comes to the post-training stage, there are numerous effec-
+tive methods to enhance the effectiveness of RL stage. GRPO [23] has been widely applied in post-training
+across LLMs, VLMs and GRs. Recently, many modiﬁed approaches based on GRPO have emerged, such as
+GSPO [67], which enhances model performance by computing importance sampling along the sequence, which
+also represents a promising attempt in the ﬁeld of GR. This is because treating semantic IDs as an entire se-
+quence for importance sampling is more meaningful than performing importance sampling at the token level.
+We implement this approach by training in our OxygenREC framework. To validate the effectiveness of our
+proposed SA-GCPO, we conducted experiments comparing its performance with that of GRPO and modiﬁed
+version of GSPO. We warm-start pre-trained OxygenREC-0.7B as the backbone and control the proportion of
+synthetic data at 33%. We show the experimental result in Table 10. As it shows in the table, GSPO is slightly
+better than that of GRPO in terms of HR@1 and HR@10. SA-GCPO achieves +1.45pp and +1.73pp compared
+with the HR@1 of GSPO and GRPO, respectively. When it comes to HR@10, SA-GCPO achieves more than
++3pp, which demonstrates the superior performance of our RL method.
+Ablation study for different settings of τpos and τneg.
+In addition, we conducted ablation experiments to
+validate the effect of separate temperature setting for positive and negative advantage samples in our proposed
+SA-GCPO. As shown in Table 11, we experimented with different temperature coefﬁcients for positive and neg-
+ative samples. When τpos > τneg, the model performance becomes more stable. Assigning a lower temperature
+coefﬁcient to negative samples helps prevent performance collapse during RL training and enhances overall
+training stability.
+Table 11: Ablation study of temperatures set for positive and negative samples of SA-GCPO
+τpos
+τneg
+HR@1
+HR@10
+1.0
+1.05
+25.35%
+65.64%
+1.0
+1.0
+25.48%
+65.95%
+1.0
+0.95
+25.51%
+66.01%
+24
+
+OxygenREC Technical Report
+4.5. Online A/B Test Performance and Industrial Impact
+Deployment Scenarios and User Lifecycle Coverage. The implementation of the xLLM inference engine
+signiﬁcantly enhanced the model’s throughput and latency performance, enabling the generative recommen-
+dation system to handle high-concurrency requests with reduced computational overhead. This performance
+breakthrough facilitated the deployment of our model across three sequentially dependent scenarios on the JD
+App, forming a holistic closed-loop covering the user’s entire session lifecycle.
+• Phase 1: Interest Triggering (Homepage Floor). The ﬁrst deployment covers the high-trafﬁc Scenario
+11 and Scenario 22 on the JD App homepage. Characterized by massive DAU and strict low-latency
+constraints, this scenario serves as the entry point. It recommends visually engaging items highly relevant
+to user interests, attracting clicks that guide users into the downstream feeds.
+• Phase 2: Deep Exploration (Feeds Recommendation). When users click on SKUs in the two sce-
+narios (Scenario 1 and Scenario 2) on the homepage, they will be directed to the corresponding feed
+pages (Scenario 3 and Scenario 4). Here, the system generates recommendations based on the “trigger
+SKU” (the clicked item) and the user’s long/short-term behavior. This scenario encourages prolonged
+engagement (browsing duration) through an inﬁnite scroll mechanism, fostering intent for adding-to-cart
+or purchasing.
+• Phase 3: Immediate Conversion (Checkout Path Recommendations). The ﬁnal phase targets the
+transaction process. When a user adds an item to the cart, an Add-to-Cart Overlay (Scenario 5) imme-
+diately exposes a sequence of related items. Similarly, the Checkout Add-on (Scenario 6) page displays
+recommendations during the payment process, allowing users to conveniently pick up supplementary
+items. These Checkout Path scenarios capitalize on the user’s strong purchase intent to drive immediate
+additional conversions.
+Together, these scenarios create a synergistic pathway: attracting attention (Guidance), retaining interest (Re-
+tention), and facilitating transactions (Conversion), thereby optimizing the user experience throughout their
+entire request lifecycle.
+Online A/B Testing Results.
+We conducted rigorous online A/B testing across the aforementioned scenarios
+to validate the business impact of our generative framework. For each deployment, users were randomly buck-
+eted into experimental and control groups, each accounting for 10% of the total trafﬁc. The experimental group
+was served by our proposed model, while the control group relied on the existing production baseline.
+As summarized in Table 12, the generative model achieved statistically signiﬁcant improvements across
+all key business metrics—including User Click-Through Rate (UCTR), User Conversion Rate (UCTCVR),
+Order Volume, and Gross Merchandise Value (GMV)—demonstrating its robustness across diverse operational
+environments ranging from high-trafﬁc homepage slots to high-intent transactional ﬂows. The table also details
+the speciﬁc operational characteristics (DAU, Latency, Candidate Scale) for each scenario.
+In summary, the online A/B test results afﬁrm the superiority of the generative paradigm in real-world
+industrial settings. As evidenced in Table 12, the proposed model delivers consistent performance uplifts
+across disparate trafﬁc environments. Notably, in the Feeds scenarios (e.g., Scenario 3), the model drives a
+remarkable 8%+ surge in order volume, indicating its ability to prioritize high-quality items that genuinely
+1Scenario 1: A “Billion Subsidy” program where the platform subsidizes brand-name products to offer users price advantages below
+market cost.
+2Scenario 2: A “Budget & Free Shipping” channel designed to satisfy user demand for the lowest price range within speciﬁc
+categories and speciﬁcations.
+25
+
+OxygenREC Technical Report
+Table 12: Online A/B Test Lift at First Launch
+Scenario
+UCTR
+UCTCVR
+Order Volume
+GMV
+Latency
+Homepage Floor
+Scenario 1
++0.68%
++2.71%
++2.81%
++4.52%
+50ms
+Scenario 2
++3.55%
++2.26%
++2.21%
++8.40%
+Channel Feeds
+Scenario 3∗
+-0.25%
++7.89%
++8.03%
++1.46%
+80ms
+Scenario 4
++0.78%
++2.17%
++1.49%
++1.66%
+Checkout Path
+Scenario 5
++0.40%
++4.21%
++4.28%
++11.80%
+50ms
+Scenario 6
++3.29%
++3.00%
++2.92%
++4.15%
+Note: ∗denotes scenarios where OxygenREC has achieved end-to-end replacement of traditional recommendation systems, with the
+generative model replacing Recall and Pre-Ranking stages, while the Ranking stage serves as the reward mapping service.
+align with purchase intent rather than merely optimizing for shallow clicks. Furthermore, in the transaction-
+critical Checkout Path (Scenario 5-6), the model successfully capitalizes on immediate user intent to achieve
+substantial gains in order volume despite billion-scale candidate spaces. These results validate that the uniﬁed
+generative framework effectively translates semantic understanding into tangible business growth across the
+user’s entire shopping lifecycle.
+5. Conclusion and Future Work
+In this work, we introduce OxygenREC, a generative recommendation system that successfully integrates
+deep reasoning capabilities with the strict latency and scalability requirements of real-world deployment. We
+implement and validated the effectiveness of a Fast–Slow Thinking architecture: the “slow” part uses a near-
+line LLM to generate clear and high-quality Contextual Reasoning Instructions by analyzing user behavior
+and context, while the “fast” part—a lightweight encoder-decoder model—generates recommendations in real-
+time based on those instructions. More importantly, we address the gap between training and deployment
+by ensuring consistency between the training data for the slow path (derived from historical search logs) and
+the data encountered online by the fast path. It achieves smooth knowledge transfer without calling LLMs
+online—thereby maintaining low latency while still enabling intelligent reasoning.
+Furthermore, we explored instruction-following in GR, a core capability of LLM, which has been long
+overlooked in recommendation tasks. We achieved effective instruction control through semantic alignment.
+Our Instruction-Guided Retrieval module retrieves the most relevant historical user behaviors based on the
+instructions, and our Query-to-Item loss function ensures consistency between the recommendation results and
+the intent of the instructions, so that the ﬁnal output truly reﬂects the intended reasoning logic. It provides a
+valuable reference paradigm for industrialscale recommendation models.
+Finally, OxygenREC embodies the concept of ‘train-once-deploy-everywhere’. Unlike training separate
+models for different scenarios (such as the homepage or cart), we convert scenario-speciﬁc information into
+structured Scenario Instructions. We enable a single model to learn to handle tasks across all scenarios through
+shared reward signals using Soft Adaptive Group Clip Policy Optimization. The system has been fully deployed
+in JD.coms core recommendation scenarios. OxygenREC delivered signiﬁcant business gains from its initial
+launch across multiple scenarios, demonstrating its real-world impact and practical value. Future work includes
+the following promising directions.
+Latency Optimization through Non-Autoregressive Generation.
+The current framework, reliant on se-
+quential NTP, faces a fundamental scalability barrier: decoding latency increases linearly with the required
+26
+
+OxygenREC Technical Report
+recommendation list length, severely hindering high-throughput real-time deployment. Our long-term goal is
+to overcome this limitation by transitioning to a highly efﬁcient Non-Autoregressive (NAR) parallel generation
+paradigm.
+This initiative aims to drastically minimize serving latency and maximize throughput by generating the
+entire sequence of semantic identiﬁers simultaneously. This shift is critical for maintaining performance as the
+model complexity and knowledge integration depth increase.
+Multi-Scenario User Trajectory Modeling for Deep Intent Discovery.
+The current instruction system ef-
+fectively utilizes immediate context and scene information. However, users’ true purchase intent is often a
+complex decision trajectory spanning multiple distinct scenarios (e.g., Homepage, Search, Cart, Checkout)
+within the platform. Our focus will pivot towards multi-scenario user trajectory modeling to capture the full
+context of user behavior.
+This direction will involve integrating and analyzing cross-scenario sequences to uncover deep-seated user
+goals and the evolution of their intent between different pages. By capturing these complex dynamics, we can
+upgrade our instruction system to utilize richer, hierarchical intent signals for the LLM backbone, ensuring
+more precise and long-term optimal recommendations. This strategy will be further aligned with long-term
+user value via a robust closed-loop learning mechanism.
+27
+
+OxygenREC Technical Report
+References
+[1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman,
+Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4 technical report. arXiv
+preprint arXiv:2303.08774, 2023.
+[2] Jason Ansel, Edward Yang, Horace He, Natalia Gimelshein, Animesh Jain, Michael Voznesensky, Bin
+Bao, Peter Bell, David Berard, Evgeni Burovski, et al. Pytorch 2: Faster machine learning through dy-
+namic python bytecode transformation and graph compilation. In Proceedings of the 29th ACM Interna-
+tional Conference on Architectural Support for Programming Languages and Operating Systems, Volume
+2, pages 929–947, 2024.
+[3] Jinze Bai et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388, 2025.
+[4] Chen Bao, Fan Li, Tongtong Wang, Qingxiao Sun, Menxin Li, Xiaolong Ma, Tongxuan Liu, Tao Peng,
+Yifan Wang, Peijun Yang, et al. Recgpt technical report. arXiv preprint arXiv:2507.22879, 2025.
+[5] Chen Bao, Fan Li, Tongtong Wang, Qingxiao Sun, Menxin Li, Xiaolong Ma, Tongxuan Liu, Tao Peng,
+Yifan Wang, Peijun Yang, et al. Recgpt-v2: Grounding recommendations on user intent via multi-agent
+chain-of-thought reasoning. arXiv preprint arXiv:2512.14503, 2025.
+[6] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind
+Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners.
+Advances in neural information processing systems, 33:1877–1901, 2020.
+[7] Mateusz Buda, Atsuto Maki, and Maciej A Mazurowski. A systematic study of the class imbalance
+problem in convolutional neural networks. In Neural Networks, pages 148–167. Elsevier, 2018.
+[8] Rich Caruana. Multitask learning. Machine learning, 28:41–75, 1997.
+[9] Jianxin Chang, Chenbin Zhang, Zhiyi Fu, Xiaoxue Zang, Lin Guan, Jing Lu, Yiqun Hui, Dewei Leng,
+Yanan Niu, Yang Yang, et al. Pepnet: Parameter and embedding personalized network for infusing with
+personalized prior information. In Proceedings of the 29th ACM SIGKDD Conference on Knowledge
+Discovery and Data Mining, pages 3785–3794, 2023.
+[10] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong Xiao, Bowen Xue, Xuxin
+Zhang, Ying Yang, et al. Onesearch: A preliminary exploration of the uniﬁed end-to-end generative
+framework for e-commerce search. arXiv preprint arXiv:2509.03236, 2025.
+[11] Haotian Chen et al. Scalable vision language model training via high quality data curation. In Proceedings
+of the 63rd Annual Meeting of the Association for Computational Linguistics, 2025.
+[12] Junyi Chen, Lu Chi, Bingyue Peng, and Zehuan Yuan. Hllm: Enhancing sequential recommendations via
+hierarchical large language models for item and user modeling. arXiv preprint arXiv:2409.12740, 2024.
+[13] Zhe Chen et al. Internvl: Scaling up vision foundation models and aligning for generic visual-linguistic
+tasks. arXiv preprint arXiv:2312.14238, 2024.
+[14] Zhicheng Chen et al. M3e: Multi-modal multi-grained embedding. arXiv preprint, 2024.
+[15] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra, Hrishi Aradhye, Glen
+Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, et al. Wide & deep learning for recommender systems.
+In Proceedings of the 1st workshop on deep learning for recommender systems, pages 7–10, 2016.
+28
+
+OxygenREC Technical Report
+[16] Paul Covington, Jay Adams, and Emre Sargin. Deep neural networks for youtube recommendations. In
+Proceedings of the 10th ACM conference on recommender systems, pages 191–198, 2016.
+[17] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. Flashattention: Fast and memory-
+efﬁcient exact attention with io-awareness. Advances in neural information processing systems, 35:16344–
+16359, 2022.
+[18] Juechu Dong, Boyuan Feng, Driss Guessous, Yanbo Liang, and Horace He. Flexattention: A program-
+ming model for generating fused attention variants. In Eighth Conference on Machine Learning and
+Systems.
+[19] William Fedus, Barret Zoph, and Noam Shazeer.
+Switch transformers: Scaling to trillion parameter
+models with simple and efﬁcient sparsity. The Journal of Machine Learning Research, 23(1):5232–5270,
+2022.
+[20] Markus Freitag and Yaser Al-Onaizan. Beam search: Faster and better than greedy decoding. In Proceed-
+ings of the 2017 Conference on Empirical Methods in Natural Language Processing, pages 2746–2750,
+2017.
+[21] Chang Gao, Chujie Zheng, Xiong-Hui Chen, Kai Dang, Shixuan Liu, Bowen Yu, An Yang, Shuai Bai,
+Jingren Zhou, and Junyang Lin. Soft adaptive policy optimization. arXiv preprint arXiv:2511.20347,
+2025.
+[22] Yu Gu, Li Chen, Yong Li, Guo Wang, Chunjie Lin, Min Li, Bing Ren, Hao Chen, Ning Zhang, Chao Liu,
+et al. Residual vector quantization for high-quality compression of high-dimensional data. In International
+Conference on Machine Learning, pages 15493–15513. PMLR, 2024.
+[23] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong
+Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement
+learning. arXiv preprint arXiv:2501.12948, 2025.
+[24] Ruining He, Lukasz Heldt, Lichan Hong, Raghunandan Keshavan, Shifan Mao, Nikhil Mehta, Zhengyang
+Su, Alicia Tsai, Yueqi Wang, Shao-Chuan Wang, et al. Plum: Adapting pre-trained language models for
+industrial-scale generative recommendations. arXiv preprint arXiv:2510.07784, 2025.
+[25] Yu Hou, Jin Zhang, Ruobing Wang, Weinan Li, Xinyi Zhang, Yong Ren, Pengjie Wang, Zhenhua Qi,
+Qiao Wang, Fuzhen Li, et al. Synergen: Contextualized generative recommender for uniﬁed search and
+recommendation. arXiv preprint arXiv:2509.21777, 2025.
+[26] Neil Houlsby, Andrei Giurgiu, Stanislaw Jastrzebski, Bruna Morrone, Quentin de Laroussilhe, Andrea
+Gesmundo, Mona Attariyan, and Sylvain Gelly. Parameter-efﬁcient transfer learning for nlp. In Interna-
+tional Conference on Machine Learning, pages 2790–2799. PMLR, 2019.
+[27] Haofeng Huang and Ling Gai. Q-bert4rec: Quantized semantic-id representation learning for multimodal
+recommendation. arXiv preprint arXiv:2512.02474, 2025.
+[28] Yanping Huang, Youlong Cheng, Ankur Bapna, Orhan Firat, Dehao Chen, Mia Chen, HyoukJoong Lee,
+Jiquan Ngiam, Quoc V Le, Yonghui Wu, et al. Gpipe: Efﬁcient training of giant neural networks using
+pipeline parallelism. In Advances in neural information processing systems, volume 32, 2019.
+[29] Zheng Hui, Xiaokai Wei, Reza Shirkavand, Chen Wang, Weizhi Zhang, Alejandro Peláez, and Michelle
+Gong. Semantics meet signals: Dual codebook representationl learning for generative recommendation.
+arXiv preprint arXiv:2511.20673, 2025.
+29
+
+OxygenREC Technical Report
+[30] Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richardson, Ahmed El-Kishky, Aiden Low, Alec Hel-
+yar, Aleksander Madry, Alex Beutel, Alex Carney, et al.
+Openai o1 system card.
+arXiv preprint
+arXiv:2412.16720, 2024.
+[31] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess, Rewon Child, Scott
+Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models. arXiv
+preprint arXiv:2001.08361, 2020.
+[32] Nathan Lambert, Valentina Pyatkin, Jacob Morrison, LJ Miranda, Bill Yuchen Lin, Stephanie Evans,
+Michael Mueller, Shashank Arora, Nouha Zhang, Edward Reif, et al. Tülu 3: Pushing frontiers in open
+language model post-training. arXiv preprint arXiv:2411.15124, 2024.
+[33] Feng Li, Renrui Zhang, Hao Zhang, Yuanhan Zhang, Bo Li, Wei Li, Zejun Ma, and Chunyuan Li.
+Llava-next-interleave: Tackling multi-image, video, and 3d in large multimodal models. arXiv preprint
+arXiv:2407.07895, 2024.
+[34] Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi. Blip-2: Bootstrapping language-image pre-
+training with frozen image encoders and large language models. In International Conference on Machine
+Learning, pages 19730–19742. PMLR, 2023.
+[35] Shen Li, Yanli Zhao, Rohan Varma, Omkar Salpekar, Pieter Noordhuis, Teng Qian, Lily Davidson, Gre-
+gory Oleynik, Jongsoo Pan, Mikhail Rakhuba, and Qiao Yang. Pytorch distributed: Experiences on ac-
+celerating data parallel training. In Proceedings of the VLDB Endowment, volume 13, pages 2815–2828,
+2020.
+[36] Xinyu Lin, Wenjie Wang, Fuli Feng, Xiangnan He, and Tat-Seng Chua. A survey of generative recom-
+mendation from a tri-decoupled perspective: Tokenization, architecture, and optimization. arXiv preprint
+arXiv:2512.02030, 2025.
+[37] Han Liu, Yinwei Wei, Xuemeng Song, Weili Guan, Yuan-Fang Li, and Liqiang Nie. Mmgrec: Multimodal
+generative recommendation with transformer model. arXiv preprint arXiv:2404.16555, 2024.
+[38] Tongxuan Liu, Tao Peng, Peijun Yang, Xiaoyang Zhao, Xiusheng Lu, Weizhe Huang, Zirui Liu, Xiaoyu
+Chen, Zhiwei Liang, Jun Xiong, Donghe Jin, Minchao Zhang, Jinrong Guo, Yingxu Deng, Xu Zhang,
+Xianzhe Dong, Siqi Wang, Siyu Wu, Yu Wu, Zihan Tang, Yuting Zeng, Yanshu Wang, Jinguang Liu,
+Meng Kang, Menxin Li, Yunlong Wang, Yiming Liu, Xiaolong Ma, Yifan Wang, Yichen Zhang, Jinrun
+Yin, Keyang Zheng, Jiawei Yin, Jun Zhang, Ziyue Wang, Xiaobo Lin, Liangyu Liu, Liwei Lan, Yang Liu,
+Chunhua Peng, Han Liu, Songcheng Ren, Xuezhu Wang, Yunheng Shen, Yi Wang, Guyue Liu, Hui Chen,
+Tong Yang, Hailong Yang, Jing Li, Guiguang Ding, and Ke Zhang. xllm: Acceleration framework for
+large language models. arXiv preprint arXiv:2510.14686, 2025.
+[39] Zhanyu Liu, Shiyao Wang, Xingmei Wang, Rongzhou Zhang, Jiaxin Deng, Honghui Bao, Jinghao Zhang,
+Wuchao Li, Pengfei Zheng, Xiangyu Wu, et al. Onerec-think: In-text reasoning for generative recommen-
+dation. arXiv preprint arXiv:2510.11639, 2025.
+[40] Jiaqi Ma, Zhe Zhao, Xinyang Yi, Jilin Chen, Lichan Hong, and Ed H Chi. Modeling task relationships
+in multi-task learning with multi-gate mixture-of-experts. In Proceedings of the 24th ACM SIGKDD
+international conference on knowledge discovery & data mining, pages 1930–1939, 2018.
+[41] Kai Mei and Yongfeng Zhang. Lightlm: a lightweight deep and narrow language model for generative
+recommendation. arXiv preprint arXiv:2310.17488, 2023.
+30
+
+OxygenREC Technical Report
+[42] Philipp Moritz, Robert Nishihara, Stephanie Wang, Alexey Tumanov, Richard Liaw, Eric Liang, Melih
+Elibol, Zongheng Yang, William Paul, Michael I Jordan, et al. Ray: A distributed framework for emerging
+{AI} applications. In 13th USENIX symposium on operating systems design and implementation (OSDI
+18), pages 561–577, 2018.
+[43] Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang,
+Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to follow instructions with
+human feedback. Advances in neural information processing systems, 35:27730–27744, 2022.
+[44] Qingxiao Sun, Tongxuan Liu, Shen Zhang, Siyu Wu, Peijun Yang, Haotian Liang, Menxin Li, Xiaolong
+Ma, Zhiwei Liang, Ziyi Ren, Minchao Zhang, Xinyu Liu, Ke Zhang, Depei Qian, Hailong Yang. xgr: A
+generative recommendation oriented serving system. arXiv preprint arXiv:2512.11529, 2025.
+[45] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish
+Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual models from
+natural language supervision. In International conference on machine learning, pages 8748–8763. PMLR,
+2021.
+[46] Alec Radford, Karthik Narasimhan, Tim Salimans, and Ilya Sutskever. Improving language understanding
+by generative pre-training. OpenAI blog, 1(1), 2018.
+[47] Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He.
+Zero: Memory optimizations
+toward training trillion parameter models. In SC20: International Conference for High Performance
+Computing, Networking, Storage and Analysis, pages 1–16. IEEE, 2020.
+[48] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan, Trung Vu, Lukasz Heldt,
+Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al. Recommender systems with generative retrieval.
+Advances in Neural Information Processing Systems, 36:10299–10315, 2023.
+[49] Noam Shazeer. Glu variants improve transformer. In arXiv preprint arXiv:2002.05202, 2020.
+[50] Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff
+Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. In International
+Conference on Learning Representations, 2017.
+[51] Xiang-Rong Sheng, Liqin Zhao, Guorui Zhou, Xinyao Ding, Binding Dai, Qiang Luo, Siran Yang, Jing-
+shan Lv, Chi Zhang, Hongbo Deng, et al. One model to serve all: Star topology adaptive recommender for
+multi-domain ctr prediction. In Proceedings of the 30th ACM International Conference on Information &
+Knowledge Management, pages 4104–4113, 2021.
+[52] Mohammad Shoeybi, Mostofa Patwary, Raul Puri, Patrick LeGresley, Jared Casper, and Bryan Catan-
+zaro. Megatron-lm: Training multi-billion parameter language models using model parallelism. In arXiv
+preprint arXiv:1909.08053, 2019.
+[53] Anushya Subbiah, Vikram Aggarwal, James Pine, Steffen Rendle, Krishna Sayana, and Kun Su. Efﬁcient
+item id generation for large-scale llm-based recommendation. arXiv preprint arXiv:2509.03746, 2025.
+[54] Juntao Tan, Shuyuan Xu, Wenyue Hua, Yingqiang Ge, Zelong Li, and Yongfeng Zhang. Idgenrec: Llm-
+recsys alignment with textual id learning. In Proceedings of the 47th international ACM SIGIR conference
+on research and development in information retrieval, pages 355–364, 2024.
+31
+
+OxygenREC Technical Report
+[55] Hongyan Tang, Junning Liu, Ming Zhao, and Xudong Gong. Progressive layered extraction (ple): A
+novel multi-task learning (mtl) model for personalized recommendations. In Proceedings of the 14th
+ACM Conference on Recommender Systems, pages 269–278, 2020.
+[56] Kimi Team et al. Kimi k1.5: Scaling reinforcement learning with llms. arXiv preprint arXiv:2501.12599,
+2025.
+[57] Vijay Thakkar, Pradeep Ramani, Cris Cecka, Aniket Shivam, Honghao Lu, Ethan Yan, Jack Kosaian, Mark
+Hoemmen, Haicheng Wu, Andrew Kerr, Matt Nicely, Duane Merrill, Dustyn Blasig, Aditya Atluri, Fengqi
+Qiao, Piotr Majcher, Paul Springer, Markus Hohnerbach, Jin Wang, and Manish Gupta.
+CUTLASS,
+January 2023.
+[58] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, ukasz
+Kaiser, and Illia Polosukhin.
+Attention is all you need.
+Advances in neural information processing
+systems, 30:5998–6008, 2017.
+[59] Lei Wang, Yu Cheng, Yining Shi, Zhengju Tang, Zhiwen Mo, Wenhao Xie, Lingxiao Ma, Yuqing Xia,
+Jilong Xue, Fan Yang, et al. Tilelang: A composable tiled programming model for ai systems. arXiv
+preprint arXiv:2504.17577, 2025.
+[60] Peng Wang, Shijie Wang, Junyang Lin, Shuai Bai, Xiaohuan Zhou, Jingren Zhou, Xinggang Wang, and
+Chang Zhou. One-peace: Exploring one general representation model toward unlimited modalities. arXiv
+preprint arXiv:2305.11172, 2023.
+[61] Tongzhou Wang and Phillip Isola. Understanding contrastive representation learning through alignment
+and uniformity on the hypersphere. In 37th International Conference on Machine Learning: ICML 2020,
+Online, 13-18 July 2020, Part 13 of 15, 2021.
+[62] Haibo Xing, Hao Deng, Yucheng Mao, Jinxin Hu, Yi Xu, Hao Zhang, Jiahao Wang, Shizhun Wang,
+Yu Zhang, Xiaoyi Zeng, et al. Reg4rec: Reasoning-enhanced generative model for large-scale recommen-
+dation systems. arXiv preprint arXiv:2508.15308, 2025.
+[63] Jin Xu, Zhifang Guo, Jinzheng He, Hangrui Hu, Ting He, Shuai Bai, Keqin Chen, Jialin Wang, Yang Fan,
+Kai Dang, et al. Qwen2. 5-omni technical report. arXiv preprint arXiv:2503.20215, 2025.
+[64] Huimin Yan, Longfei Xu, Junjie Sun, Ni Ou, Wei Luo, Xing Tan, Ran Cheng, Kaikui Liu, and Xiangx-
+iang Chu. Intsr: An integrated generative framework for search and recommendation. arXiv preprint
+arXiv:2509.21179, 2025.
+[65] Yuan Yao et al. Minicpm-v: A gpt-4v level mllm on your phone. arXiv preprint arXiv:2408.01800, 2024.
+[66] Jure Zbontar, Li Jing, Ishan Misra, Yann LeCun, and Stéphane Deny. Barlow twins: Self-supervised
+learning via redundancy reduction. In International Conference on Machine Learning, pages 12310–
+12320. PMLR, 2021.
+[67] Chujie Zheng, Shixuan Liu, Mingze Li, Xiong-Hui Chen, Bowen Yu, Chang Gao, Kai Dang, Yuqiong Liu,
+Rui Men, An Yang, et al. Group sequence policy optimization. arXiv preprint arXiv:2507.18071, 2025.
+[68] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qianqian Wang, Qigen Hu,
+Rui Huang, Shiyao Wang, et al. Onerec technical report. arXiv preprint arXiv:2506.13695, 2025.
+[69] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian
+Ren, Lu Ren, Liao Yu, et al. Onerec-v2 technical report. arXiv preprint arXiv:2508.20900, 2025.
+32
+
+OxygenREC Technical Report
+[70] Feng Zhu, Yan Wang, Chaochao Chen, Jun Liu, Mehmet Orgun, and Jia Wu. Cross-domain recommenda-
+tion: challenges, progress, and prospects. arXiv preprint arXiv:2103.01696, 2021.
+[71] Jie Zhu, Zhifang Fan, Xiaoxie Zhu, Yuchen Jiang, Hangyu Wang, Xintian Han, Haoran Ding, Xinmin
+Wang, Wenlin Zhao, Zhen Gong, et al. Rankmixer: Scaling up ranking models in industrial recommenders.
+In Proceedings of the 34th ACM International Conference on Information and Knowledge Management,
+pages 6309–6316, 2025.
+33
+
+OxygenREC Technical Report
+A. Related Work
+We brieﬂy review related work along three axes: generative recommendation, LLM-based recommendation
+systems, and multi-scenario adaptation.
+Generative Recommendation.
+GR has recently emerged as a paradigm shift, reformulating recommenda-
+tion as an end-to-end sequence generation task [36, 48, 68]. Unlike traditional discriminative models that score
+candidates from a ﬁxed pool, GR models directly generate target item identiﬁers. A core challenge in this
+paradigm lies in tokenization—representing items as discrete tokens. Early works utilized raw textual IDs,
+while recent advancements have shifted towards SIDs [27, 29, 53, 54]. Methods like RQ-VAE [48] and resid-
+ual quantization [22] create hierarchical codes that capture semantic relationships, balancing expressiveness
+with vocabulary size. Recent works have explored unifying search and recommendation through generative
+approaches, like SynerGen [25] and IntSR [64]. However, these methods are built upon traditional ranking
+models rather than semantic ID-based generation. While some approaches integrate large language models for
+enhanced reasoning capabilities, like RecGPT series [4, 5], they employ ofﬂine LLM inference for reasoning
+and rely on simple ANN-based dual-tower retrieval for online serving, which limits their ability to fully lever-
+age LLM reasoning capabilities in real-time scenarios. From an architectural perspective, the backbone of GR
+typically employs transformer-based encoder–decoder or decoder-only architectures [41, 58, 62]. These uniﬁed
+structures are naturally aligned with modern GPU accelerators, offering signiﬁcant throughput advantages over
+fragmented deep learning pipelines. However, despite these advances, most GR methods remain fundamen-
+tally inductive. They excel at ﬁtting historical interaction patterns but lack the deductive reasoning capabilities
+required to infer complex user intents from sparse or novel contexts.
+Large Language Models for Recommendation.
+The success of LLMs in NLP [1, 6, 30, 43] has spurred
+interest in adapting them for recommendation. Some approaches directly utilize LLMs as the recommendation
+backbone [12, 24, 39], leveraging their vast world knowledge and reasoning abilities. For instance, OneRec-
+think [39] integrates Chain-of-Thought (CoT) reasoning to enhance interpretability. However, deploying such
+models in industrial settings faces severe latency and cost constraints. The computational overhead of autore-
+gressive decoding with billion-scale parameters is often prohibitive for real-time serving [69].
+Multi-Scenario Recommendation and Controllability.
+Industrial e-commerce platforms serve diverse sce-
+narios (e.g., Homepage, Feeds, Cart), each with distinct user behaviors and objectives. Traditional Multi-
+Scenario Recommendation (MSR) approaches have primarily been developed for discriminative ranking mod-
+els, relying on specialized architectural interventions like gating [51], star-topology units [9], or routing mech-
+anisms to mitigate negative transfer. While effective, these methods introduce structural complexity and create
+information bottlenecks through implicit parameter modulation, often requiring maintaining separate model
+instances or intricate routing logic that increases operational and maintenance costs.
+However, adapting these traditional MSR techniques to GR presents unique challenges. Most existing
+multi-scenario approaches for GR [25] remain largely exploratory and do not fully address the fundamental
+trade-off between uniﬁed modeling and scenario-speciﬁc adaptation. Related challenges also manifest in cross-
+domain recommendation [70] and handling imbalanced data distributions [7] across different scenarios, but
+solutions remain predominantly discriminative in nature.
+34
+
+OxygenREC Technical Report
+B. Contextual Reasoning Instructions
+The efﬁcacy of instruction-following generative recommendation hinges critically on the quality of the reason-
+ing instructions. To bridge raw behavioral signals with high-level, interpretable intent, we design a structured
+prompting strategy that synthesizes spatiotemporal context, user proﬁles, and multi-scale behavioral dynamics
+into natural-language instructions. This enables the LLM to perform deductive reasoning grounded in real-
+world semantics rather than mere pattern matching.
+Spatiotemporal and User Proﬁle Instructions.
+We enrich prompts with three foundational contextual sig-
+nals and generate instructions based on geography, time, and identity: spatial features (geographic location
+such as city or climate zone, which reﬂects region-speciﬁc demand like winter gear in northern cities), temporal
+features (calendar date, seasonality, holidays, and diurnal patterns such as lunchtime browsing vs. evening shop-
+ping, capturing time-sensitive intent), and user proﬁle features (demographic and device attributes—including
+age group, gender, consumption tier, device type, and registered region—that shape baseline preferences).
+Spatiotemporal Reasoning
+Input:
+• Location: Beijing
+• Date: December 21, 2025
+• User Proﬁle: male, 30 years old, white-collar, mid-to-high spending tier
+Output: (Reasoning Instructions)
+Based solely on geographic and temporal context:
+• Temporal inference: December 21 is the winter solstice, which is a traditional Chinese festival “Frozen
+dumplings (traditional winter solstice food)”
+• Spatial inference: Beijings dry, sub-zero winter climate implies strong need for thermal protection dur-
+ing outdoor activities. “Bosideng men’s long down jacket 90% white duck down”
+Prompt Design for User Intent Mining.
+We split the prompt design of the User Intent Mining module into
+two parts: input and system prompt. Input describes what information we provide to the model, while the
+system prompt speciﬁes how the model should reason and what format it should output.
+Input. The input contains two complementary behavior sequences, written as a time-ordered natural lan-
+guage behavior narrative. This helps the model capture sequential patterns (e.g., “search add to cart browse
+category”) and infer the users short-term shopping goal: (1) Long-term behavior sequence: up to 90 days of
+past interactions (click, add-to-cart, purchase), which reﬂects stable category preferences and long-term inter-
+ests; (2) Short-term behavior sequence: interactions within the last 24 hours, which reﬂect session-level intent
+and recent context changes.
+System Prompt. The system prompt guides the model to extract key signals from user behaviors and
+controls the output format. We ask the model to consider factors such as multi-level category interest, in-
+tent strength of different action types, time decay to emphasize recent behaviors, and scenario-aware category
+grouping, and to write high-conﬁdence signals explicitly into the generated Instruction and Reason.
+35
+
+OxygenREC Technical Report
+User Intent Reasoning
+Input:
+• Added a full-suspension mountain bike (soft-tail) to cart on Dec 19 at 18:30 (high intent, L2: Outdoor
+Cycling);
+• Clicked Huawei Mate 70 and iPhone 16 Pro on Dec 20 during lunch break (comparative browsing, L1:
+Consumer Electronics);
+• Long-term Interests Input: Digital products, men’s fashion, cycling, outdoor sports.
+Output: (Reasoning Instructions)
+• Complementarity: Cart addition of a mountain bike infer need for cycling accessories (gloves, bala-
+clava). “Winter cycling gloves with touchscreen compatibility”,“Thermal balaclava for outdoor riding”
+• Interest fusion: Intersection of long-term interests in cycling and digital products “GoPro HERO13
+Black for action recording”
+• Flagship exploration: Recent clicks on premium smartphones suggest competitive alternatives across
+brands with key differentiators.
+“Latest ﬂagship smartphones (OPPO Find X9 – periscope zoom /
+Xiaomi 17 – 120W HyperCharge / Huawei Pura X – satellite communication / iPhone 17 – iOS ecosys-
+tem)”
+This case demonstrates seamless fusion of seasonal culture, geographic climate adaptation, long-term
+identity (tech/outdoor enthusiast), and short-term behavioral signals—enabling context-aware, multi-intent rec-
+ommendation generation via our LLM-powered framework.
+C. Detailed Deﬁnitions of Scenario Instructions
+To provide a deeper understanding of how OxygenREC adapts to diverse industrial contexts, we detail the
+composition and operational logic of our scenario instructions. As described in Section 2.3.2, this instruction
+acts as a strong inductive bias, consisting of a Scenario Identiﬁer and an optional Trigger Item.
+Scenario Identiﬁer: Guiding the Generative Distribution.
+The scenario ID serves as a high-level control
+token that shifts the model’s generative distribution to match the speciﬁc business objectives and item pools of
+a given recommendation surface. Table 13 illustrates typical scenarios in our system.
+Table 13: Examples of Scenario Identiﬁers and their Business Objectives.
+Scenario ID
+User Intent Context
+Business Objectives & Distribution
+Homepage_Feed
+Passive browsing, low speciﬁc
+intent.
+Exploration: Diverse categories, high CTR
+items, broad interest coverage.
+Channel_Feed
+Active entry via a speciﬁc
+category/item.
+Thematic Consistency: Items strictly within
+the channel’s theme (e.g., Digital).
+Cart_CrossSell
+High purchase intent for a speciﬁc
+item.
+Conversion: Complementary accessories or
+bundles (e.g., Phone →Case).
+Trigger Item: Providing Explicit Contextual Anchors.
+The trigger item is an explicit signal represent-
+ing the user’s immediate focus. Crucially, its inﬂuence is modulated by the Scenario ID, leading to context-
+dependent recommendations even for the same trigger. We illustrate this interaction with a concrete example
+where the trigger item is an iPhone 15.
+36
+
+OxygenREC Technical Report
+Case 1: Channel Feed Scenario (Discovery).
+• Context: The user clicks on an iPhone 15 on the homepage to enter the “Digital Channel”.
+• Role of Trigger: The iPhone 15 serves as a Category Anchor.
+• Model Behavior: The model generates a feed of similar but diverse high-end digital products (e.g., iPads,
+High-end Android phones, Bluetooth speakers). The goal is to encourage continued browsing within the
+tech theme.
+Case 2: Item to Item Relative Recommendation (Completion).
+• Context: The user adds the iPhone 15 to their shopping cart.
+• Role of Trigger: The iPhone 15 serves as a Complementary Anchor.
+• Model Behavior: The model strictly generates functional accessories (e.g., USB-C cables, MagSafe
+cases, AirPods). Generating another phone here would be a negative user experience.
+This comparison demonstrates why both signals are necessary: the Trigger Item provides the content,
+while the Scenario ID dictates the relationship (Similarity vs. Complementarity).
+37

@@ -1,0 +1,1650 @@
+arXiv:2506.05781v1  [cs.IR]  6 Jun 2025
+Generating Long Semantic IDs in Parallel for Recommendation
+Yupeng Hou
+yphou@ucsd.edu
+University of California, San Diego
+La Jolla, United States
+Jiacheng Li
+jiachengli@meta.com
+Meta AI
+Sunnyvale, United States
+Ashley Shin
+ashleyshin@ucsd.edu
+University of California, San Diego
+La Jolla, United States
+Jinsung Jeon
+jij014@ucsd.edu
+University of California, San Diego
+La Jolla, United States
+Abhishek Santhanam
+absanthanam@ucsd.edu
+University of California, San Diego
+La Jolla, United States
+Wei Shao
+weis@meta.com
+Meta AI
+Sunnyvale, United States
+Kaveh Hassani
+kavehhassani@meta.com
+Meta AI
+Toronto, Canada
+Ning Yao
+nyao@meta.com
+Meta AI
+Sunnyvale, United States
+Julian McAuley
+jmcauley@ucsd.edu
+University of California, San Diego
+La Jolla, United States
+Abstract
+Semantic ID-based recommendation models tokenize each item into
+a small number of discrete tokens that preserve specific semantics,
+leading to better performance, scalability, and memory efficiency.
+While recent models adopt a generative approach, they often suffer
+from inefficient inference due to the reliance on resource-intensive
+beam search and multiple forward passes through the neural se-
+quence model. As a result, the length of semantic IDs is typically
+restricted (e.g., to just 4 tokens), limiting their expressiveness. To
+address these challenges, we propose RPG, a lightweight frame-
+work for semantic ID-based recommendation. The key idea is to
+produce unordered, long semantic IDs, allowing the model to pre-
+dict all tokens in parallel. We train the model to predict each token
+independently using a multi-token prediction loss, directly inte-
+grating semantics into the learning objective. During inference,
+we construct a graph connecting similar semantic IDs and guide
+decoding to avoid generating invalid IDs. Experiments show that
+scaling up semantic ID length to 64 enables RPG to outperform
+generative baselines by an average of 12.6% on the NDCG@10,
+while also improving inference efficiency. Code is available at:
+https://github.com/facebookresearch/RPG_KDD2025.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Sequential Recommendation; Semantic ID
+ACM Reference Format:
+Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam,
+Wei Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating
+Long Semantic IDs in Parallel for Recommendation. In Proceedings of the
+31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining V.2
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+KDD ’25, Toronto, ON, Canada
+© 2025 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-1454-2/2025/08
+https://doi.org/10.1145/3711896.3736979
+(KDD ’25), August 3–7, 2025, Toronto, ON, Canada. ACM, New York, NY, USA,
+11 pages. https://doi.org/10.1145/3711896.3736979
+1
+Introduction
+A semantic ID represents an item as a sequence of discrete tokens
+from a shared vocabulary [14, 39, 56, 65]. Unlike traditional recom-
+mender systems that rely on unique item IDs [12, 21], semantic IDs
+eliminate the need for large embedding tables that scale with the
+total number of items. Early semantic ID-based recommendation
+models follow a retrieval paradigm, learning vector representations
+for items based on their semantic IDs and retrieving those closest
+to the user representation [14, 38]. Although effective, these models
+still require runtime memory proportional to the number of items.
+More recently, a generative paradigm has emerged [9, 39], where
+models are trained to autoregressively generate the next semantic
+ID in a token-by-token manner. These generative models make
+recommendations by decoding in the semantic ID space, resulting
+in runtime memory and latency independent of the number of
+items. Additionally, fine-grained semantics are explicitly integrated
+into the training objective by having the model generate sub-item
+tokens instead of entire items, resulting in strong performance.
+Despite their promise, semantic ID-based generative models
+introduce significant latency issue in model inference. Com-
+pared to retrieval-based methods, where recommendations involve
+a single-step decoding process (i.e., each token represents one
+item, and the next item is recommended by decoding the next to-
+ken), generative models require multi-step decoding. For example,
+TIGER [39] autoregressively generates the next item’s semantic IDs
+in a token-by-token manner. In this multi-step decoding process,
+each step requires at least one batch of sequence model forward-
+ing. To generate a ranking list of size 𝐾, TIGER employs beam
+search [11], maintaining the top 𝑏beams (semantic ID prefixes) and
+forwarding them through the neural encoder at each step. Because
+of autoregressive token generation and beam search, generative
+recommendation models require significantly more neural network
+forward passes for a single recommendation.
+Moreover, the inference methods of existing generative recom-
+mendation models limit the expressiveness of semantic IDs. To
+
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Yupeng Hou et al.
+ensure token-by-token autoregressive generation runs with reason-
+able latency, these models typically tokenize each item into a short
+sequence of semantic IDs. For example, TIGER uses 4 tokens per
+item, resulting in a decoding process of 4 steps per recommendation.
+However, representing an item with so few discrete tokens may
+be insufficient, especially as item features carry richer semantics.
+Retrieval-based methods like VQ-Rec [14] use longer semantic ID
+sequences (e.g., 32 tokens per item), but applying such long se-
+quences in generative models is impractical. Running beam search
+for 32 steps would be computationally prohibitive.
+In this work, we aim to develop a semantic ID-based recommen-
+dation model that offers both efficient inference and expressive
+semantic IDs. Instead of generating semantic IDs token by token,
+we propose generating all tokens of the next item’s semantic ID in
+parallel. This approach allows us to decode the entire semantic ID
+in a single step. Since the number of decoding steps is independent
+of the semantic ID length, we can design expressive and long se-
+mantic IDs. However, applying this idea is non-trivial due to the
+following challenges: (1) Sparse decoding space. Generating all
+tokens in parallel removes sequential dependencies between tokens.
+However, it also means that predicting one token is independent
+of the predictions of other tokens. This lack of awareness makes it
+extremely difficult to map the predicted token combination to an ex-
+isting semantic ID from the item pool. For example, if each semantic
+ID consists of 32 tokens, with each token selected from a codebook
+of 256, the total number of possible semantic IDs is 25632 ≃1077.
+Even if there are billions of items, the valid semantic IDs remain
+sparse compared to this vast decoding space (109 ≪1077). (2) Ef-
+ficient unordered decoding. In recommendation tasks, we typi-
+cally generate a top-𝐾recommendation list for each input instance.
+Naively enumerating all candidate items would require runtime
+memory similar to retrieval-based methods, negating the benefits
+of generative approaches. Existing decoding methods, such as beam
+search, assume that tokens within a semantic ID follow a specific
+order. However, this assumption is unnecessary when generating
+tokens in parallel. Therefore, a well-designed semantic ID decoding
+method is needed to handle unordered tokens efficiently.
+To this end, we propose RPG, which stands for Recommendation
+with Parallel semantic ID Generation. To align with parallel decod-
+ing, we tokenize each item into an unordered long semantic ID (up
+to 64 tokens per item) using optimized product quantization [8, 19].
+To enable the model to generate semantic IDs in parallel, we train
+it with a multi-token prediction (MTP) objective [10] instead of
+the conventional next-token prediction objective [39]. By applying
+MTP, sub-item semantics are explicitly incorporated into the train-
+ing objective, similar to next-token prediction. Given MTP as the
+training objective, the prediction score for a candidate semantic ID
+is computed by summing the log probabilities of the ground-truth
+tokens across all digits. A key observation is that when two semantic
+IDs differ in only a few digits, their prediction scores should remain
+similar. Inspired by the widely used constrained beam search [13],
+which constructs a tree structure linking semantic prefixes that
+differ by only one digit, we propose a graph-constrained decoding
+method for unordered semantic IDs. This method connects similar
+semantic IDs (which have close prediction scores) by an edge in the
+graph structure. The decoding process follows an iterative graph
+propagation approach. Starting with a randomly initialized beam
+of semantic IDs, we propagate on the graph to identify semantic
+IDs that are close to the existing beam. We retain those with higher
+prediction scores and repeat the process for a predefined number
+of iterations to obtain the final top-𝐾recommendations.
+We show that the runtime memory and time complexities of
+RPG’s inference process are independent of the number of candidate
+items. Extensive experiments on three public benchmarks and a
+larger public dataset demonstrate that RPG benefits from expressive
+long semantic IDs and parallel generation, achieving the overall
+best performance among the compared baselines while being more
+efficient than existing semantic ID-based generative methods.
+2
+Method
+In this section, we introduce RPG, a recommendation model that
+generates each token of the next semantic ID in parallel. We for-
+mulate this task as a sequential recommendation problem. Given
+a user, RPG takes a sequence of previously interacted items, 𝑠=
+{𝑖1,𝑖2, . . . ,𝑖𝑡−1}, as input and predicts the next item 𝑖𝑡. First, we
+describe how RPG tokenizes and represents each item using a long
+semantic ID (Section 2.1). Next, we explain how RPG learns to gen-
+erate semantic IDs in parallel by optimizing the multi-token predic-
+tion objective (Section 2.2). We then introduce graph-constrained
+decoding, which efficiently decodes unordered long semantic IDs
+during inference (Section 2.3). Finally, we discuss the connections
+between RPG and both retrieval-based and generative models. Fig-
+ure 1 illustrates the overall framework of the proposed approach.
+2.1
+Long Semantic ID-based Item
+Representation
+In recommender systems, each item is typically associated with
+multiple content features (e.g., text descriptions and images). A
+common pipeline for item representation first encodes raw fea-
+tures into dense vector representations using a semantic encoder
+(e.g., pretrained language models [35, 36]). Then, these vectors are
+tokenized into discrete tokens. Most existing semantic ID-based
+generative approaches use relatively short semantic IDs, typically
+with only four digits, due to efficiency concerns. In this work, we
+aim to design a model that generates each token in a semantic ID
+in parallel, enabling the use of longer semantic IDs without signif-
+icantly impacting efficiency. In this section, we describe how we
+convert raw features into semantic IDs and how we represent each
+item using long semantic IDs.
+2.1.1
+Long Semantic ID Construction. After obtaining semantic
+representations for each item [39, 62], we adopt product quanti-
+zation instead of the commonly used residual quantization-based
+methods (e.g., RQ-VAE [39, 55]). There are two key reasons for this
+choice: (1) predicting tokens in semantic IDs in parallel eliminates
+the need for sequential dependencies in RQ-based methods; (2)
+existing studies suggest that RQ-based semantic IDs suffer from
+unbalanced information distribution among tokens and poor scala-
+bility [57]. Concretely, following Hou et al. [14], we use optimized
+product quantization (OPQ) [8, 19] to produce a tuple of 𝑚tokens
+(𝑐1, . . . ,𝑐𝑚) for each item 𝑖, where 𝑐1 ∈C(1) = {1, . . . , 𝑀},𝑐2 ∈
+C(2) = {𝑀+ 1, . . . , 2𝑀}, and so on. Here, 𝑀represents the code-
+book size for each digit of the semantic ID. Each token in the tuple
+
+Generating Long Semantic IDs in Parallel for Recommendation
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Transformer Decoder
+c5
+c23
+c55
+c5
+c25
+c78
+Item 233
+Item 515
+Tokens
+Token Embedding Table
+Aggregation
+Head
+c5
+c25
+c55
+Training w/ Multi-token Prediction
+(1) Sample the
+initial beam
+Learning to generate
+semantic IDs in parallel
+Head
+Head
+Inference w/ Graph-constrained Decoding
+(2) Propagate on
+decoding graph
+(3) Keep the
+best   nodes
+(4) Iterate for  steps
+Candidate SID
+SID in beam
+Similar SIDs
+Propagation
+Final recommendations
+c5
+c25 c55
+c3
+c23 c69
+beam size 
+Figure 1: The overall framework of RPG.
+is drawn from a different codebook, with each codebook corre-
+sponding to the semantic information of a subvector of the original
+semantic representation. In this work, we set the semantic ID length
+𝑚to a maximum of 64, which is significantly longer than the typical
+length of 4 used in generative recommendation models.
+2.1.2
+Semantic ID Embedding Aggregation. After tokenizing each
+item into a semantic ID of length 𝑚, we consider how to represent
+each item in the input sequence. For each codebook, we assign
+a learnable token embedding table 𝑬𝑗∈R𝑀×𝑑. This allows us
+to obtain the corresponding token embeddings (𝒆1,𝑐1, . . . , 𝒆𝑚,𝑐𝑚)
+for item 𝑖. Given that semantic IDs can be as long as 64 in this
+work, directly concatenating them may make the input token se-
+quence too long, leading to efficiency and context length chal-
+lenges [39]. To address this, we adopt an item-level input represen-
+tation for sequence modeling. Specifically, we aggregate the token
+embeddings into a single item representation, 𝒗𝑖∈R𝑑, defined as
+𝒗𝑖= Aggr(𝒆1,𝑐1, . . . , 𝒆𝑚,𝑐𝑚), where Aggr(·) is an aggregation func-
+tion. In practice, we can use mean or max pooling to aggregate the
+token embeddings efficiently [14].
+2.2
+Learning to Generate Semantic IDs in
+Parallel
+Given the input item representation sequence {𝒗1, 𝒗2, . . . , 𝒗𝑡−1}
+and the target semantic ID (𝑐𝑡,1,𝑐𝑡,2, . . . ,𝑐𝑡,𝑚), we first introduce
+the learning objective that allows the model to generate tokens in
+parallel (Section 2.2.1). Then, we present an efficient method for
+logit calculation in models optimized with this objective.
+2.2.1
+Multi-token Prediction Objective. The key idea behind an
+efficient semantic ID-based recommendation model is to predict all
+tokens in the next semantic IDs in parallel. To achieve this, we draw
+inspiration from the multi-token prediction (MTP) objective [10].
+First, we encode the item representation sequence using Trans-
+former decoders, obtaining a sequence representation 𝒔∈R𝑑. We
+then formulate the problem as training the model to fit the probabil-
+ity P(𝑐𝑡,1, . . . ,𝑐𝑡,𝑚|𝑠), which represents the likelihood that a given
+token combination appears in the next semantic IDs among all
+possible combinations. Since each token produced by OPQ encodes
+a separate subvector of the target item’s semantic representation,
+we assume that tokens in the tuple are conditionally independent
+given the input sequence 𝑠. This allows us to factorize the probabil-
+ity as Î𝑚
+𝑗=1 P(𝑗) (𝑐𝑡,𝑗|𝑠), where P(𝑗) (𝑐𝑡,𝑗|𝑠) is the probability of the
+𝑗-th token being in the next semantic ID. Formally, the MTP loss is
+defined as:
+L = −
+𝑚
+∑︁
+𝑗=1
+log P(𝑗) (𝑐𝑡,𝑗|𝑠) = −
+𝑚
+∑︁
+𝑗=1
+log
+exp(𝒆⊤𝑐𝑡,𝑗· g𝑗(𝒔)/𝜏)
+Í
+𝑐∈C(𝑗) exp(𝒆⊤𝑐· g𝑗(𝒔)/𝜏) ,
+(1)
+where 𝜏is the temperature hyperparameter, g𝑗(·) is a projection
+head (specifically, an MLP module [1, 3]) that maps sequence repre-
+sentations to the space of tokens in codebook C(𝑗).
+Note that the MTP loss functions differently from the widely
+used cross-entropy loss defined in the item pool [14, 21]. MTP loss
+optimizes the probability of the target semantic ID in the token
+space, i.e.,, against all possible token combinations. In contrast, tra-
+ditional item-based cross-entropy loss optimizes the probability of
+the ground-truth item ID in the item space, i.e.,, against all other
+items. Additionally, similar to the next-token prediction loss used
+in generative recommendation models [39, 56], MTP directly inte-
+grates tokens in semantic IDs into the learning objective, enabling
+fine-grained semantic learning.
+2.2.2
+Efficient Logit Calculation. Given a model optimized with
+MTP loss, we propose an efficient logit calculation method. During
+inference, we compute L in Equation (1) as the logits. A straight-
+forward approach is to calculate logits for each candidate item
+individually by enumerating token embeddings, computing logits
+for each token, and summing them. This results in a time com-
+plexity of 𝑂(𝑁𝑚𝑑) for 𝑁candidate items. However, this method
+involves redundant dot product calculations between sequence rep-
+resentations and token embeddings. Popular tokens may undergo
+multiple dot product operations with the sequence representation.
+To address this inefficiency, we first cache the dot product between
+the sequence representation and all token embeddings:
+𝒑(𝑗) = softmax(𝑬𝑗· g𝑗(𝒔)/𝜏) ∈R𝑀,
+(2)
+where 𝑀is the codebook size, independent of the number of can-
+didate items. Then, for a candidate semantic ID (𝑐1, . . . ,𝑐𝑚), the
+logits can be computed as:
+𝑚
+∑︁
+𝑗=1
+log 𝒑(𝑗)
+𝑐𝑗,
+(3)
+
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Yupeng Hou et al.
+2
+4
+6
+8
+10
+12
+14
+16
+# differing digits between two semantic IDs
+0.1
+0.2
+0.3
+0.4
+|  logits|
+Figure 2: The relationship between the number of differing
+digits in two semantic IDs and the absolute difference in their
+predicted logits on the “Sports” dataset. As the number of
+differing digits increases, the model predicts increasingly
+different logits.
+achieving a reduced time complexity of 𝑂(𝑀𝑚𝑑+𝑁𝑚). This cached
+version is more efficient when 𝑁>
+𝑑
+𝑑−1𝑀. The choice of method
+depends on the serving scenario, and people can decide which
+inference approach works best for their needs.
+2.3
+Next Semantic ID Decoding with Graph
+Constraints
+For a model trained with the MTP objective, we aim to develop a de-
+coding approach that is: (1) more efficient than naively enumerating
+all candidate items or applying beam search, and (2) more likely to
+generate valid semantic IDs rather than illegal token combinations.
+Observation. The key insight lies in the unordered nature of PQ-
+based semantic IDs and logit calculation. Specifically, the logit of a
+candidate item is computed by summing the logits of each token in
+the corresponding semantic ID (Equation (3)). Consequently, when
+two semantic IDs differ by only a few digits, their logits should
+remain similar, as many token logits are identical. This observation
+is also empirically verified in Figure 2.
+Overview. Inspired by constrained beam search [13], which uses
+a tree structure to connect similar semantic prefixes, we propose
+a graph-constrained semantic ID decoding method. This method
+links similar semantic IDs through a graph structure to guide the
+decoding process. The main idea is to start by sampling a random
+set of semantic IDs, propagate through the graph to explore new
+semantic IDs with slightly higher or lower logits, retain those with
+the best logits, and repeat this process for a fixed number of steps.
+2.3.1
+Building Graph to Connect Similar Semantic IDs. After train-
+ing a model, we construct the decoding graph, which connects
+semantically similar semantic IDs. A node represents a valid seman-
+tic ID from the item pool. For any two nodes, (𝑐1,1, . . . ,𝑐1,𝑚) and
+(𝑐2,1, . . . ,𝑐2,𝑚), we compute their semantic similarity as Í𝑚
+𝑗=1 𝒆⊤
+𝑗,𝑐1,𝑗·
+𝒆𝑗,𝑐2,𝑗. These similarity scores serve as edge weights in the graph.
+Since the initial graph is dense, it is inefficient and impractical. To
+address this, we sparsify it by retaining only the top 𝑘edges with
+the highest similarities for each node. Once built, the graph can be
+used throughout model inference until the model is retrained or
+the items are re-tokenized.
+2.3.2
+Decoding with Iterative Graph Propagation. Given an input
+sequence, we first cache the token logits following Equation (2).
+Table 1: Statistics of the processed datasets. “Avg. 𝑡” denotes
+the average number of interactions per input sequence.
+Datasets
+#Users
+#Items
+#Interactions
+Avg. 𝑡
+Sports
+18,357
+35,598
+260,739
+8.32
+Beauty
+22,363
+12,101
+176,139
+8.87
+Toys
+19,412
+11,924
+148,185
+8.63
+CDs
+75,258
+64,443
+1,022,334
+14.58
+(1) Sampling an initial beam. Decoding begins by sampling
+𝑏semantic IDs from the item pool. We use the term “beam” by
+analogy with beam search, where 𝑏denotes the beam size.
+(2) Propagating on the decoding graph. Similar to constrained
+beam search, the next step is to explore a larger set of semantic pre-
+fixes (or semantic IDs) and retain the best ones. Since neighboring
+nodes in the graph tend to have similar logits, we expand the beam
+by propagating through the graph, including all 𝑏× 𝑘neighbors of
+the current beam into a temporary set.
+(3) Keeping the best 𝑏nodes. After expanding the beam, we
+compute their logits using the cached logits from Equation (3). The
+𝑏nodes with the highest logits are then retained as the next beam.
+(4) Iterating for 𝑞steps. We repeat steps (2) and (3) for 𝑞itera-
+tions to obtain the final results. Since each node has an edge to itself,
+this iterative beam update ensures that the average logits never
+decrease. In the worst case, if the beam remains unchanged for two
+consecutive steps, the logits will stay the same. The semantic IDs
+in the final beam are recommended as top 𝐾predictions.
+2.3.3
+Complexity Analysis. The decoding method has 𝑞steps, with
+each step involving at most 𝑂(𝑏𝑘) nodes. This results in a time com-
+plexity of 𝑂(𝑀𝑚𝑑+ 𝑏𝑞𝑘𝑚) by replacing 𝑂(𝑁) with 𝑂(𝑏𝑞𝑘) in Sec-
+tion 2.2.2, making it independent of the number of items. In practice,
+the graph propagation process can be further parallelized, e.g., by
+using distributed computation techniques like MapReduce [4].
+2.4
+Discussion
+In this section, we discuss the differences and connections between
+RPG and both retrieval-based and generative models.
+2.4.1
+Comparison of RPG and Retrieval-based Models. Compared
+to retrieval-based models like VQ-Rec [14], RPG offers two ad-
+vantages that are typically exclusive to generative models: (i) its
+inference time complexity is independent of the total number of
+items, and (ii) it explicitly integrates sub-item level semantics into
+the learning objective. While the proposed graph-constrained de-
+coding can be viewed as a form of approximate nearest neighbor
+(ANN) search, most existing ANN methods, such as those based on
+quantization codes [7], still require enumerating all items, resulting
+in time complexity proportional to the total number of items.
+2.4.2
+Comparison of RPG and Generative Models. Compared to
+generative models like TIGER [39], RPG reduces the number of
+sequence encoder forward passes per input instance from approxi-
+mately 𝑂(𝑏𝑚) to just 𝑂(1), greatly improving inference efficiency
+(Section 3.3). Additionally, RPG benefits from a long semantic ID,
+which is empirically shown to be more expressive (Section 3.5.2).
+
+Generating Long Semantic IDs in Parallel for Recommendation
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Table 2: Performance comparison among baselines and RPG. The best performance score is denoted in bold. The second-best
+performance score is denoted in underline. RPG statistically outperforms the best baselines at a significance level of 𝑝< 0.05
+by paired t-test.
+Model
+Sports and Outdoors
+Beauty
+Toys and Games
+CDs and Vinyl
+R@5
+N@5
+R@10
+N@10
+R@5
+N@5
+R@10
+N@10
+R@5
+N@5
+R@10
+N@10
+R@5
+N@5
+R@10
+N@10
+Item ID-based
+Caser
+0.0116
+0.0072
+0.0194
+0.0097
+0.0205
+0.0131
+0.0347
+0.0176
+0.0166
+0.0107
+0.0270
+0.0141
+0.0116
+0.0073
+0.0205
+0.0101
+GRU4Rec
+0.0129
+0.0086
+0.0204
+0.0110
+0.0164
+0.0099
+0.0283
+0.0137
+0.0097
+0.0059
+0.0176
+0.0084
+0.0195
+0.0120
+0.0353
+0.0171
+HGN
+0.0189
+0.0120
+0.0313
+0.0159
+0.0325
+0.0206
+0.0512
+0.0266
+0.0321
+0.0221
+0.0497
+0.0277
+0.0259
+0.0153
+0.0467
+0.0220
+BERT4Rec
+0.0115
+0.0075
+0.0191
+0.0099
+0.0203
+0.0124
+0.0347
+0.0170
+0.0116
+0.0071
+0.0203
+0.0099
+0.0326
+0.0201
+0.0547
+0.0271
+SASRec
+0.0233
+0.0154
+0.0350
+0.0192
+0.0387
+0.0249
+0.0605
+0.0318
+0.0463
+0.0306
+0.0675
+0.0374
+0.0351
+0.0177
+0.0619
+0.0263
+FDSA
+0.0182
+0.0122
+0.0288
+0.0156
+0.0267
+0.0163
+0.0407
+0.0208
+0.0228
+0.0140
+0.0381
+0.0189
+0.0226
+0.0137
+0.0378
+0.0186
+S3-Rec
+0.0251
+0.0161
+0.0385
+0.0204
+0.0387
+0.0244
+0.0647
+0.0327
+0.0443
+0.0294
+0.0700
+0.0376
+0.0213
+0.0130
+0.0375
+0.0182
+Semantic ID-based
+RecJPQ
+0.0141
+0.0076
+0.0220
+0.0102
+0.0311
+0.0167
+0.0482
+0.0222
+0.0331
+0.0182
+0.0484
+0.0231
+0.0075
+0.0046
+0.0138
+0.0066
+VQ-Rec
+0.0208
+0.0144
+0.0300
+0.0173
+0.0457
+0.0317
+0.0664
+0.0383
+0.0497
+0.0346
+0.0737
+0.0423
+0.0352
+0.0238
+0.0520
+0.0292
+TIGER
+0.0264
+0.0181
+0.0400
+0.0225
+0.0454
+0.0321
+0.0648
+0.0384
+0.0521
+0.0371
+0.0712
+0.0432
+0.0492
+0.0329
+0.0748
+0.0411
+HSTU
+0.0258
+0.0165
+0.0414
+0.0215
+0.0469
+0.0314
+0.0704
+0.0389
+0.0433
+0.0281
+0.0669
+0.0357
+0.0417
+0.0275
+0.0638
+0.0346
+RPG
+0.0314
+0.0216
+0.0463
+0.0263
+0.0550
+0.0381
+0.0809
+0.0464
+0.0592
+0.0401
+0.0869
+0.0490
+0.0498
+0.0338
+0.0735
+0.0415
+3
+Experiments
+In this section, we empirically demonstrate the effectiveness and
+efficiency of the proposed method RPG.
+3.1
+Experimental Setup
+Dataset. We conduct experiments using four categories from the
+Amazon Reviews dataset [34]: “Sports and Outdoors” (Sports),
+“Beauty” (Beauty), “Toys and Games” (Toys), and “CDs and Vinyl”
+(CDs). The first three categories are commonly used for benchmark-
+ing semantic ID-based generative recommendation methods [18, 20,
+39]. Additionally, we include “CDs”, which has approximately four
+times more interactions than “Sports”, to evaluate performance on
+larger datasets.
+Following previous studies [14, 39, 66], we treat users’ historical
+reviews as “interactions” and arrange them chronologically to form
+input interaction sequences, with earlier reviews appearing first. We
+adopt the widely used leave-last-out evaluation protocol [21, 39, 59],
+where the last item in each sequence is reserved for testing and
+the second-to-last item for validation. Table 1 presents the detailed
+statistics of the four datasets.
+Baselines. We evaluate the performance of RPG by comparing it
+with the following item ID-based and semantic ID-based baselines.
+• Caser [45] encodes the item ID sequence patterns using con-
+volutional filters.
+• GRU4Rec [12] is a recurrent neural network (RNN)-based ap-
+proach proposed for session-based recommendation.
+• HGN [33] applies the gating mechanism to RNN-based models.
+• BERT4Rec [43] uses a bidirectional Transformer encoder to
+model item ID sequences and is trained with a Cloze-style objective.
+• SASRec [21] uses a self-attentive Transformer decoder to model
+item ID sequences by optimizing a binary cross-entropy objective.
+• FDSA [58] processes the item ID sequences and item feature
+sequences separately through self-attention blocks.
+• S3-Rec [66] is first pretrained by optimizing self-supervised
+objectives to capture the correlations between item features and
+item IDs. Then the model is fine-tuned for next-item prediction
+objective, using only item IDs.
+• VQRec [14] tokenizes each item using product quantization
+into semantic IDs. The semantic ID embeddings are pooled together
+to represent each item.
+• TIGER [39] tokenizes each item using RQ-VAE. The model
+is then trained to autoregressively generate the next semantic ID
+token by token and employs beam search for inference.
+• RecJPQ [38] applies joint product quantization to replace item
+embeddings with a concatenation of shared sub-embeddings.
+• HSTU [56] discretizes raw item features into tokens, treating
+them as input tokens for generative recommendation. To ensure a
+fair comparison, we use the same 4-digit OPQ-tokenized semantic
+IDs as the item tokens.
+Evaluation setting. We use Recall@𝐾and NDCD@𝐾as met-
+rics to evaluate the methods, where 𝐾∈{5, 10}, following Rajput
+et al. [39]. Model checkpoints with the best performance on the
+validation set are used for evaluation on the test set.
+Implementation details. We use most of the baseline results
+from Rajput et al. [39], while implementing other baselines mainly
+using RecBole [60]. We carefully tune the baselines’ hyperparame-
+ters following the original papers’ suggestions. For model training,
+we train all implemented models for a maximum of 150 steps with
+a batch size of 256. We tune the learning rate in {0.01, 0.003, 0.001}.
+We use an early stopping strategy to stop training if the validation
+results do not improve for 20 consecutive epochs.
+We implement our method using HuggingFace transformers [50]
+and FAISS library [7]. To ensure a fair comparison with the base-
+line that has the largest number of parameters (TIGER, 13M), we
+use a 2-layer Transformer decoder with an embedding dimension
+
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Yupeng Hou et al.
+of 𝑑= 448, a feed-forward layer dimension of 1024, and 4 atten-
+tion heads, which achieve a similar number of parameters. We
+tune the temperature 𝜏∈{0.03, 0.05, 0.07} and semantic ID length
+𝑚∈{4, 8, 16, 32, 64}. For the semantic encoder, we mainly use Ope-
+nAI’s text-embedding-3-large1 to show the expressive abilities
+of long semantic IDs, but also conduct additional experiments using
+sentence-t5-base [35] for fair comparison with benchmark re-
+sults (Section 3.5.2). For model inference, we use a beam size 𝑏= 10,
+tune the number of edges per node 𝑘∈{50, 100, 500} and iteration
+steps 𝑞∈{2, 3, 5}. Please refer to Appendix B for more details.
+3.2
+Overall Performance
+We compare RPG with item ID-based and semantic ID-based base-
+lines across three benchmarks and one larger public dataset. The
+results are shown in Table 2.
+Across all datasets, methods leveraging semantic IDs generally
+outperform traditional item ID-based approaches. This aligns with
+the broader observation that incorporating item features and richer
+semantic information boosts recommendation quality. Within the
+semantic ID-based category, TIGER and HSTU consistently secure
+the second-best positions. These strong performances show the
+benefits of integrating semantic tokens into learning objectives
+over traditional methods.
+Compared to all baselines, the proposed RPG achieves the best
+overall performance, ranking first in 11 out of 12 metrics. It out-
+performs the strongest baseline by an average of 12.6% on the
+NDCG@10 metric. Similar to generative models, RPG uses seman-
+tic tokens as predictive targets, learning sub-item semantics. By
+generating tokens in semantic IDs in parallel, RPG efficiently and
+effectively leverages long and expressive semantic IDs with up to
+64 digits per item.
+3.3
+Inference Efficiency Analysis
+One of the main advantages of RPG is the efficient inference method
+(Section 2.3) that has a complexity unrelated to the size of the item
+pool. We’ve conducted efficiency analyses from a complexity per-
+spective in Section 2.3.3. In this section, we empirically demonstrate
+the efficiency of RPG. Based on the “Sports” dataset, we add varying
+numbers of dummy items to the item pool, achieving item pool
+sizes from 2 × 104 to 50 × 104 items. We then measure the required
+runtime memory (GB) and clock time (s) for model inference over
+one epoch on the test set. We illustrate the results in Figure 3. Note
+that all results are measured under a fixed set of hyperparameters,
+so the reported inference memory and time may not correspond to
+the best-performing configuration for each model. Here, runtime
+memory primarily refers to the GPU memory used to compute log-
+its and generate the next tokens, including intermediate activations,
+rather than the total storage required to hold model parameters. A
+detailed breakdown of memory usage is provided in Table 8.
+We observe that both retrieval-based baselines, SASRec and VQ-
+Rec, require increasing memory and inference time as the item
+pool expands. In contrast, the generative baseline TIGER and the
+proposed RPG maintain constant memory usage and inference time
+regardless of the total number of items. Moreover, RPG reduces
+1https://openai.com/index/new-embedding-models-and-api-updates/
+2 3
+5
+10
+20
+50
+(a) #items (×104) (log)
+0
+2
+4
+memory (GB)
+2 3
+5
+10
+20
+50
+(b) #items (×104) (log)
+101
+102
+time (s) (log)
+SASRec
+VQ-Rec
+TIGER
+RPG (ours)
+Figure 3: Comparison of runtime memory consumption and
+inference time w.r.t. the item pool size on the “Sports” dataset.
+Table 3: Ablation analysis of RPG. The recommendation
+performance is measured using NDCG@10. The best per-
+formance is denoted in bold fonts.
+Variants
+Sports
+Beauty
+Toys
+CDs
+Semantic ID Setting
+(1.1) OPQ →Random
+0.0179
+0.0359
+0.0288
+0.0078
+(1.2) OPQ →RQ
+0.0242
+0.0421
+0.0458
+0.0406
+Model Architecture
+(2.1) no proj. head
+0.0252
+0.0423
+0.0430
+0.0361
+(2.2) shared proj. head
+0.0256
+0.0424
+0.0438
+0.0368
+Model Inference
+(3.1) beam search
+0.0000
+0.0000
+0.0000
+0.0000
+(3.2) w/o graph constraints
+0.0082
+0.0214
+0.0205
+0.0183
+RPG (ours)
+0.0263
+0.0464
+0.0490
+0.0415
+runtime memory consumption by nearly 25× and achieves an in-
+ference speedup of almost 15× compared to TIGER. These results
+show that RPG inherits the scalability of generative models (i.e.,
+inference cost independent of the number of items), while being
+significantly more efficient than existing generative baselines in
+both memory and time.
+3.4
+Ablation Study
+We conduct ablation analyses in Table 3 to study how each module
+contributes to the overall performance of RPG.
+(1) We first examine whether OPQ is a good choice for tokenizing
+items into long semantic IDs. We replace OPQ with (1.1) randomly
+assigned discrete tokens or (1.2) RQ-based semantic IDs, and in both
+cases, performance drops. The drop is especially significant when
+using random tokens, indicating that the multi-token prediction
+loss effectively learns the semantics embedded in the long semantic
+IDs and fails when there is no semantic meaning in the IDs.
+(2) We then examine the designs of the projection head used in
+the MTP loss (Equation (1)). By default, we use a separate projection
+head for each digit of the semantic IDs. We implement two other
+variants: (2.1) removing the projection head and directly using the
+final hidden state of the sequence model to compute token logits,
+and (2.2) using a single shared projection head for all digits of the
+
+Generating Long Semantic IDs in Parallel for Recommendation
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+4
+8
+16
+32
+64
+0.02
+0.04
+Sports
+4
+8
+16
+32
+64
+Beauty
+4
+8
+16
+32
+64
+Toys
+4
+8
+16
+32
+64
+CDs
+#digits of semantic IDs (log)
+NDCG@10
+Figure 4: Scalability analysis of the performance (NDCG@10)
+of RPG w.r.t. semantic ID length.
+semantic IDs. Both variants lead to performance drops, highlighting
+the importance of mapping the sequence representation to different
+semantic spaces for decoding each digit of the tokens.
+(3) We further experiment with two alternative inference meth-
+ods: (3.1) beam search, which is commonly used in autoregressive
+generative models, and (3.2) inference without graph constraints,
+where the decoding graph is removed, and a similar number of
+semantic IDs are visited as in RPG, approximately 25% of the item
+pool (Table 6). Our results show that beam search struggles because
+OPQ-based semantic ID lacks sequential dependencies. As a re-
+sult, it easily falls into local optima during long beam search steps.
+Additionally, removing the decoding graph significantly reduces
+performance, highlighting its importance in guiding the generation
+of long semantic IDs.
+3.5
+Further Analysis
+3.5.1
+Scalability of Semantic ID Lengths. The length of semantic
+IDs, 𝑚(i.e., the number of digits in semantic IDs), is an impor-
+tant factor affecting recommendation efficiency and performance.
+We vary 𝑚∈{4, 8, 16, 32, 64} to examine how well the proposed
+method, RPG, scales with semantic ID length. From Figure 4, we
+observe that, in general, longer OPQ-based semantic IDs lead to
+better performance. However, for smaller datasets, they may con-
+verge earlier. The optimal length for the “Sports,” “Beauty,” and
+“Toys” datasets is 16, 32, and 16, respectively. For our largest dataset
+“CDs”, a semantic ID length of 64 achieves the best performance.
+These results demonstrate that our method scales effectively with
+increasing semantic ID length, particularly for larger datasets.
+3.5.2
+Expressive Ability Analysis. One assumption of using long
+semantic IDs is that they offer better expressive power than short
+ones. The original paper of TIGER indicates that they employ a
+Sentence-T5 semantic encoder (specifically, sentence-t5-base in
+our reproduction). In this experiment, we introduce a more pow-
+erful semantic encoder, OpenAI’s text-embedding-3-large, to
+examine whether the semantic ID design can be expressive and
+benefit from the improved semantic encoder. We primarily compare
+TIGER with our proposed method, RPG, using different semantic
+encoders and varying semantic ID lengths.
+From Table 4, we observe that replacing sentence-t5-base with
+text-embedding-3-large does not always improve TIGER’s per-
+formance when using 4-digit RQ-based semantic IDs. However, for
+RPG, a longer semantic ID performs better than a 4-digit one, even
+when using sentence-t5-base, and it already surpasses TIGER
+Table 4: Analysis of the expressive ability of short and long se-
+mantic IDs. The recommendation performance is measured
+using NDCG@10. “PLM” denotes the pretrained language
+model that encodes raw item features into representations.
+The best performance of each model is denoted in bold.
+Model
+PLM
+#digits Sports Beauty
+Toys
+CDs
+TIGER sentence-t5-base
+4
+0.0225
+0.0384
+0.0432 0.0411
+text-emb-3-large
+4
+0.0243
+0.0411
+0.0390
+0.0409
+RPG
+sentence-t5-base
+4
+0.0152
+0.0292
+0.0330
+0.0186
+text-emb-3-large
+4
+0.0117
+0.0235
+0.0275
+0.0175
+sentence-t5-base
+16 ~ 64
+0.0238
+0.0429
+0.0460
+0.0380
+text-emb-3-large
+16 ~ 64
+0.0263
+0.0464
+0.0490 0.0415
+[0, 5]
+[6, 10]
+[11, 15]
+[16, 20]
+0.00
+0.01
+0.02
+NDCG@10
+SASRec
+VQ-Rec
+TIGER
+RPG
+Figure 5: Cold-start analysis on the “Sports” dataset. Test
+items are divided into four groups based on the number of
+times they appear in the training set.
+with the same encoder. Improving the encoder while maintaining
+long semantic IDs (up to 64 digits) further boosts performance. This
+demonstrates that the long semantic ID designed in RPG is more
+expressive and can benefit from a stronger semantic encoder.
+3.5.3
+Cold-Start Recommendation. Since RPG optimizes by directly
+predicting semantic IDs within the token space, it is natural to
+hypothesize that it has a similar cold-start recommendation ability
+to other semantic ID-based methods like VQ-Rec and TIGER. We
+conduct experiments to evaluate how well RPG recommends long-
+tail items. We divide the test set items into four groups based on
+their occurrence in the training set: [0, 5], [6, 10], [11, 15],
+and [16, 20]. As shown in Figure 5, RPG achieves the best overall
+cold-start recommendation performance, demonstrating the strong
+ability of the MTP objective to learn item semantics. The long
+semantic IDs also enhance the tokens’ semantic richness, further
+improving performance.
+3.5.4
+Hyperparameter Analysis. In this section, we tune the hyper-
+parameters of the graph-constrained decoding method to analyze
+their impact on recommendation performance. The experiments
+are conducted on the “Sports” dataset with a default beam size of
+𝑏= 10, number of edges per node 𝑘= 50, and iteration steps 𝑞= 2.
+The results are shown in Figure 6.
+Beam size 𝑏. The beam size determines the number of semantic
+IDs retained in the beam at each step. In traditional beam search,
+a larger beam size brings the inference results closer to the global
+optimum, while a smaller one may lead to a local optimum. We vary
+the beam size as 𝑏∈{10, 20, 30, 40, 50}. From Figure 6, we observe
+
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Yupeng Hou et al.
+10
+20
+30
+40
+50
+0.00
+0.02
+NDCG@10
+Beam Size (b)
+10
+20
+50
+100
+200
+300
+#Edges (k)
+0
+1
+2
+3
+4
+5
+#Steps (q)
+Figure 6: Model inference hyperparameter analysis. Each sub-
+plot shows the effect of varying one hyperparameter while
+keeping the others fixed.
+that, using NDCG@10 as the recommendation performance metric,
+a beam size larger than 10 does not differ significantly from 10.
+These results suggest that it is generally safe to use a relatively
+small beam size (as long as it is larger than the 𝐾in the top-𝐾
+metric) to improve efficiency.
+Number of edges per node 𝑘. The parameter 𝑘controls the num-
+ber of edges per node in the graph, determining how many candi-
+date connections are considered at each decoding step. A higher
+𝑘allows the model to explore more diverse paths, potentially im-
+proving recommendation performance. We evaluate 𝑘with values
+{10, 20, 50, 100, 200, 300}. From Figure 6, we observe a clear upward
+trend in NDCG@10 as 𝑘increases, with performance stabilizing
+beyond 𝑘= 100. This suggests that incorporating more edges en-
+hances the model’s ability to identify relevant recommendations,
+but excessive values provide diminishing returns. Since increasing
+𝑘also increases computation, we need to balance performance and
+efficiency by choosing an appropriate 𝑘.
+Number of iteration steps 𝑞. The iteration steps 𝑞determine how
+many rounds of graph propagation are performed. We evaluate
+𝑞with values {0, 1, 2, 3, 4, 5}. As shown in Figure 6, increasing 𝑞
+significantly improves NDCG@10 from 𝑞= 0 to 𝑞= 2, indicating
+that additional iterations enhance recommendation performance.
+However, performance saturates after 𝑞= 2, suggesting that the
+beam may converge for 𝑞> 2. This indicates that a small number
+of decoding steps (e.g., 𝑞= 2 or 𝑞= 3) is sufficient to reach optimal
+performance while maintaining efficiency.
+4
+Related Work
+Sequential recommendation. Sequential behavior patterns are
+useful for identifying user needs and providing recommendations.
+The sequential recommendation task usually takes a sequence of
+items as input. Early methods use Markov Chains to measure the
+item transitions [40]. In recent years, mainstream sequential recom-
+mender systems have come to use neural network models, includ-
+ing recurrent neural networks (RNN) [12, 23, 54], convolutional
+neural networks (CNN) [45], Transformers [21, 43], and graph neu-
+ral networks (GNN) [2, 51]. Previous research mainly uses item
+IDs as the fundamental input of the sequential recommendation
+models. With the development of pretrained models and advanced
+feature encoders [5, 31], sequential recommendation models that
+are based on dense item features, usually called modality-based
+methods [15, 24, 53], have also grown popular. While using only
+modality features often makes optimization difficult [14, 15], re-
+searchers have addressed this by converting modality features into
+discrete tokens, known as semantic IDs [39]. This approach has led
+to the development of both item-level models [14, 38] and token-
+level models [39, 56, 62] for the sequential recommendation task.
+Semantic ID-based recommendation. Semantic ID refers to a se-
+quence of discrete tokens that jointly index an item while retaining
+some semantics [14, 39, 42, 62]. Existing methods for construct-
+ing semantic IDs tokenize item features such as text [20, 62], im-
+ages [30], and collaborative signals [32, 37, 48, 49] using techniques
+like quantization [39, 47, 63, 64, 67], hierarchical clustering [18, 41],
+or joint training with recommendation models [29]. By indexing
+items with semantic IDs, one can maintain a fixed vocabulary of to-
+kens independent of the number of items, enabling scalable [32, 56]
+and memory-efficient models [38, 39, 46].
+Early semantic ID-based recommendation models were primar-
+ily retrieval-based. Each item’s semantic ID was embedded, and
+the closest aggregated semantic ID embeddings to the user repre-
+sentation were retrieved [14, 38, 52]. With the rise of generative
+models and insights from scaling laws in related fields, such as large
+language models (LLMs) [61] and generative retrieval [25, 26, 46],
+generative recommendation has emerged as a promising paradigm
+for sequential recommendation [16, 17, 27, 39, 56]. In generative rec-
+ommendation, tokens in semantic IDs directly serve as input for the
+sequence encoder. Models are then trained to autoregressively gen-
+erate the tokens, which can be then parsed as predicted items. These
+generative models explicitly integrate semantics into the learning
+objective and align more naturally with LLMs [20, 22, 44, 62]. How-
+ever, generative recommendation methods suffer from high infer-
+ence latency due to their autoregressive nature. Several studies have
+aimed to accelerate generative recommendation inference [6, 28],
+mainly by adapting techniques like speculative decoding to the
+recommendation task. However, these approaches do not funda-
+mentally change the way semantic IDs are generated. In this work,
+we explore an efficient semantic ID prediction approach that pre-
+dicts each digit of a semantic ID in parallel.
+5
+Conclusion
+In this work, we propose RPG, an efficient and effective semantic
+ID-based recommendation approach. Instead of autoregressively
+generating tokens, our key idea is to predict each digit in parallel.
+This removes the sequential dependency between digits, allowing
+the use of unordered, long, and expressive semantic IDs. To en-
+able parallel generation, we optimize the model with a multi-token
+prediction loss, explicitly integrating semantics into the learning
+objective. For inference, we leverage the observation that simi-
+lar semantic IDs produce similar prediction logits. Based on this,
+we introduce a graph-constrained decoding method. By connect-
+ing semantic IDs with similar meanings, we iteratively refine the
+maintained beam of semantic IDs through graph propagation. Ex-
+perimental results show that RPG is both effective and efficient
+in terms of memory consumption and inference speed. For future
+work, we plan to explore how to align MTP-optimized semantic ID-
+based recommendation models with LLMs. Our goal is to develop
+an efficient LLM-based recommendation model that supports long
+semantic IDs with strong expressive ability.
+
+Generating Long Semantic IDs in Parallel for Recommendation
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+References
+[1] Tianle Cai, Yuhong Li, Zhengyang Geng, Hongwu Peng, Jason D. Lee, Deming
+Chen, and Tri Dao. 2024. Medusa: Simple LLM Inference Acceleration Framework
+with Multiple Decoding Heads. arXiv preprint arXiv:2401.10774 (2024).
+[2] Jianxin Chang, Chen Gao, Yu Zheng, Yiqun Hui, Yanan Niu, Yang Song, Depeng
+Jin, and Yong Li. 2021. Sequential Recommendation with Graph Neural Networks.
+In SIGIR.
+[3] Ting Chen, Simon Kornblith, Mohammad Norouzi, and Geoffrey E. Hinton. 2020.
+A Simple Framework for Contrastive Learning of Visual Representations. In
+ICML.
+[4] Jeffrey Dean and Sanjay Ghemawat. 2008. MapReduce: simplified data processing
+on large clusters. Commun. ACM 51, 1 (2008), 107–113.
+[5] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. BERT:
+Pre-training of Deep Bidirectional Transformers for Language Understanding. In
+NAACL.
+[6] Yijie Ding, Yupeng Hou, Jiacheng Li, and Julian McAuley. 2024.
+Inductive
+Generative Recommendation via Retrieval-based Speculation. arXiv preprint
+arXiv:2410.02939 (2024).
+[7] Matthijs Douze, Alexandr Guzhva, Chengqi Deng, Jeff Johnson, Gergely Szilvasy,
+Pierre-Emmanuel Mazaré, Maria Lomeli, Lucas Hosseini, and Hervé Jégou. 2024.
+The faiss library. arXiv preprint arXiv:2401.08281 (2024).
+[8] Tiezheng Ge, Kaiming He, Qifa Ke, and Jian Sun. 2014. Optimized Product
+Quantization. IEEE Trans. Pattern Anal. Mach. Intell. 36, 4 (2014), 744–755.
+[9] Shijie Geng, Shuchang Liu, Zuohui Fu, Yingqiang Ge, and Yongfeng Zhang. 2022.
+Recommendation as Language Processing (RLP): A Unified Pretrain, Personalized
+Prompt & Predict Paradigm (P5). In RecSys.
+[10] Fabian Gloeckle, Badr Youbi Idrissi, Baptiste Rozière, David Lopez-Paz, and
+Gabriel Synnaeve. 2024. Better & faster large language models via multi-token
+prediction. arXiv preprint arXiv:2404.19737 (2024).
+[11] Alex Graves. 2012. Sequence transduction with recurrent neural networks. arXiv
+preprint arXiv:1211.3711 (2012).
+[12] Balázs Hidasi, Alexandros Karatzoglou, Linas Baltrunas, and Domonkos Tikk.
+2016. Session-based Recommendations with Recurrent Neural Networks. In
+ICLR.
+[13] Chris Hokamp and Qun Liu. 2017. Lexically Constrained Decoding for Sequence
+Generation Using Grid Beam Search. In ACL. 1535–1546.
+[14] Yupeng Hou, Zhankui He, Julian McAuley, and Wayne Xin Zhao. 2023. Learning
+vector-quantized item representation for transferable sequential recommenders.
+In WWW. 1162–1171.
+[15] Yupeng Hou, Shanlei Mu, Wayne Xin Zhao, Yaliang Li, Bolin Ding, and Ji-Rong
+Wen. 2022. Towards universal sequence representation learning for recommender
+systems. In KDD. 585–593.
+[16] Yupeng Hou, Jianmo Ni, Zhankui He, Noveen Sachdeva, Wang-Cheng Kang, Ed H.
+Chi, Julian McAuley, and Derek Zhiyuan Cheng. 2025. ActionPiece: Contextually
+Tokenizing Action Sequences for Generative Recommendation. In ICML.
+[17] Yupeng Hou, An Zhang, Leheng Sheng, Zhengyi Yang, Xiang Wang, Tat-Seng
+Chua, and Julian McAuley. 2025. Generative Recommendation Models: Progress
+and Directions. In Companion Proceedings of the ACM on Web Conference 2025.
+13–16.
+[18] Wenyue Hua, Shuyuan Xu, Yingqiang Ge, and Yongfeng Zhang. 2023. How to
+Index Item IDs for Recommendation Foundation Models. In SIGIR-AP.
+[19] Hervé Jégou, Matthijs Douze, and Cordelia Schmid. 2011. Product Quantization
+for Nearest Neighbor Search. IEEE Trans. Pattern Anal. Mach. Intell. 33, 1 (2011),
+117–128.
+[20] Bowen Jin, Hansi Zeng, Guoyin Wang, Xiusi Chen, Tianxin Wei, Ruirui Li,
+Zhengyang Wang, Zheng Li, Yang Li, Hanqing Lu, Suhang Wang, Jiawei Han,
+and Xianfeng Tang. 2024. Language Models As Semantic Indexers. In ICML.
+[21] Wang-Cheng Kang and Julian J. McAuley. 2018. Self-Attentive Sequential Rec-
+ommendation. In ICDM.
+[22] Guanghan Li, Xun Zhang, Yufei Zhang, Yifan Yin, Guojun Yin, and Wei Lin. 2025.
+Semantic Convergence: Harmonizing Recommender Systems via Two-Stage
+Alignment and Behavioral Semantic Tokenization. In AAAI.
+[23] Jing Li, Pengjie Ren, Zhumin Chen, Zhaochun Ren, Tao Lian, and Jun Ma. 2017.
+Neural Attentive Session-based Recommendation. In CIKM.
+[24] Jiacheng Li, Ming Wang, Jin Li, Jinmiao Fu, Xin Shen, Jingbo Shang, and Julian
+McAuley. 2023. Text is all you need: Learning language representations for
+sequential recommendation. In KDD.
+[25] Xiaoxi Li, Jiajie Jin, Yujia Zhou, Yuyao Zhang, Peitian Zhang, Yutao Zhu, and
+Zhicheng Dou. 2024. From Matching to Generation: A Survey on Generative
+Information Retrieval. arXiv preprint arXiv:2404.14851 (2024).
+[26] Yongqi Li, Xinyu Lin, Wenjie Wang, Fuli Feng, Liang Pang, Wenjie Li, Liqiang
+Nie, Xiangnan He, and Tat-Seng Chua. 2024. A Survey of Generative Search
+and Recommendation in the Era of Large Language Models. arXiv preprint
+arXiv:2404.16924 (2024).
+[27] Xinyu Lin, Haihan Shi, Wenjie Wang, Fuli Feng, Qifan Wang, See-Kiong Ng, and
+Tat-Seng Chua. 2025. Order-agnostic Identifier for Large Language Model-based
+Generative Recommendation. In SIGIR.
+[28] Xinyu Lin, Chaoqun Yang, Wenjie Wang, Yongqi Li, Cunxiao Du, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Efficient Inference for Large Language Model-
+based Generative Recommendation. arXiv preprint arXiv:2410.05165 (2024).
+[29] Enze Liu, Bowen Zheng, Cheng Ling, Lantao Hu, Han Li, and Wayne Xin Zhao.
+2024. End-to-End Learnable Item Tokenization for Generative Recommendation.
+arXiv preprint arXiv:2409.05546 (2024).
+[30] Han Liu, Yinwei Wei, Xuemeng Song, Weili Guan, Yuan-Fang Li, and Liqiang
+Nie. 2024. MMGRec: Multimodal Generative Recommendation with Transformer
+Model. arXiv preprint arXiv:2404.16555 (2024).
+[31] Yinhan Liu, Myle Ott, Naman Goyal, Jingfei Du, Mandar Joshi, Danqi Chen, Omer
+Levy, Mike Lewis, Luke Zettlemoyer, and Veselin Stoyanov. 2019. Roberta: A
+robustly optimized bert pretraining approach. arXiv:1907.11692 (2019).
+[32] Zihan Liu, Yupeng Hou, and Julian McAuley. 2024. Multi-Behavior Generative
+Recommendation. In CIKM.
+[33] Chen Ma, Peng Kang, and Xue Liu. 2019. Hierarchical Gating Networks for
+Sequential Recommendation. In KDD.
+[34] Julian J. McAuley, Christopher Targett, Qinfeng Shi, and Anton van den Hengel.
+2015. Image-Based Recommendations on Styles and Substitutes. In SIGIR.
+[35] Jianmo Ni, Gustavo Hernandez Abrego, Noah Constant, Ji Ma, Keith Hall, Daniel
+Cer, and Yinfei Yang. 2022. Sentence-T5: Scalable Sentence Encoders from Pre-
+trained Text-to-Text Models. In Findings of ACL.
+[36] Jianmo Ni, Chen Qu, Jing Lu, Zhuyun Dai, Gustavo Hernandez Abrego, Ji Ma,
+Vincent Zhao, Yi Luan, Keith Hall, Ming-Wei Chang, et al. 2022. Large Dual
+Encoders Are Generalizable Retrievers. In EMNLP. 9844–9855.
+[37] Aleksandr V Petrov and Craig Macdonald. 2023. Generative sequential recom-
+mendation with gptrec. arXiv preprint arXiv:2306.11114 (2023).
+[38] Aleksandr V Petrov and Craig Macdonald. 2024. RecJPQ: training large-catalogue
+sequential recommenders. In Proceedings of the 17th ACM International Conference
+on Web Search and Data Mining. 538–547.
+[39] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah Samost, Maciej
+Kula, Ed H. Chi, and Maheswaran Sathiamoorthy. 2023. Recommender Systems
+with Generative Retrieval. In NeurIPS.
+[40] Steffen Rendle, Christoph Freudenthaler, and Lars Schmidt-Thieme. 2010. Factor-
+izing personalized Markov chains for next-basket recommendation. In WWW.
+[41] Zihua Si, Zhongxiang Sun, Jiale Chen, Guozhang Chen, Xiaoxue Zang, Kai Zheng,
+Yang Song, Xiao Zhang, Jun Xu, and Kun Gai. 2024. Generative retrieval with
+semantic tree-structured item identifiers via contrastive learning. In SIGIR-AP.
+[42] Anima Singh, Trung Vu, Nikhil Mehta, Raghunandan Keshavan, Maheswaran
+Sathiamoorthy, Yilin Zheng, Lichan Hong, Lukasz Heldt, Li Wei, Devansh Tandon,
+Ed H. Chi, and Xinyang Yi. 2024. Better Generalization with Semantic IDs: A
+Case Study in Ranking for Recommendations. In RecSys.
+[43] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential Recommendation with Bidirectional Encoder Repre-
+sentations from Transformer. In CIKM.
+[44] Juntao Tan, Shuyuan Xu, Wenyue Hua, Yingqiang Ge, Zelong Li, and Yongfeng
+Zhang. 2024. Idgenrec: Llm-recsys alignment with textual id learning. In SIGIR.
+[45] Jiaxi Tang and Ke Wang. 2018. Personalized Top-N Sequential Recommendation
+via Convolutional Sequence Embedding. In WSDM.
+[46] Yi Tay, Vinh Tran, Mostafa Dehghani, Jianmo Ni, Dara Bahri, Harsh Mehta, Zhen
+Qin, Kai Hui, Zhe Zhao, Jai Prakash Gupta, Tal Schuster, William W. Cohen, and
+Donald Metzler. 2022. Transformer memory as a differentiable search index. In
+NeurIPS.
+[47] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable Tokenizer for LLM-based Genera-
+tive Recommendation. In CIKM.
+[48] Yidan Wang, Zhaochun Ren, Weiwei Sun, Jiyuan Yang, Zhixiang Liang, Xin
+Chen, Ruobing Xie, Su Yan, Xu Zhang, Pengjie Ren, Zhumin Chen, and Xin Xin.
+2024. Enhanced Generative Recommendation via Content and Collaboration
+Integration. arXiv preprint arXiv:2403.18480 (2024).
+[49] Ye Wang, Jiahao Xun, Minjie Hong, Jieming Zhu, Tao Jin, Wang Lin, Haoyuan
+Li, Linjun Li, Yan Xia, Zhou Zhao, and Zhenhua Dong. 2024. EAGER: Two-
+Stream Generative Recommender with Behavior-Semantic Collaboration. In
+KDD. 3245–3254.
+[50] Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue,
+Anthony Moi, Pierric Cistac, Tim Rault, Remi Louf, Morgan Funtowicz, Joe
+Davison, Sam Shleifer, Patrick von Platen, Clara Ma, Yacine Jernite, Julien Plu,
+Canwen Xu, Teven Le Scao, Sylvain Gugger, Mariama Drame, Quentin Lhoest,
+and Alexander Rush. 2020. Transformers: State-of-the-Art Natural Language
+Processing. In EMNLP.
+[51] Shu Wu, Yuyuan Tang, Yanqiao Zhu, Liang Wang, Xing Xie, and Tieniu Tan. 2019.
+Session-Based Recommendation with Graph Neural Networks. In AAAI.
+[52] Liu Yang, Fabian Paischer, Kaveh Hassani, Jiacheng Li, Shuai Shao, Zhang Gabriel
+Li, Yun He, Xue Feng, Nima Noorshams, Sem Park, Bo Long, Robert D Nowak,
+Xiaoli Gao, and Hamid Eghbalzadeh. 2024. Unifying Generative and Dense
+Retrieval for Sequential Recommendation. arXiv preprint arXiv:2411.18814 (2024).
+[53] Zheng Yuan, Fajie Yuan, Yu Song, Youhua Li, Junchen Fu, Fei Yang, Yunzhu
+Pan, and Yongxin Ni. 2023. Where to go next for recommender systems? id-vs.
+
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Yupeng Hou et al.
+Table 5: Notations and explanations.
+Notation
+Explaination
+𝑖1
+The item IDs
+𝑁
+The number of items
+𝑡
+The length of interaction sequences
+𝑐1
+The individual tokens in semantic IDs
+𝑚
+The length (number of tokens) of semantic IDs
+C(1)
+The vocabulary of tokens in semantic IDs
+𝑀
+The codebook size for each digit of the semantic ID
+𝑬𝑗
+The embedding lookup table for semantic IDs’ 𝑗th digit
+𝑑
+The dimension for token and item embeddings
+𝒆1,𝑐1
+The token embedding
+𝒗𝑖
+The item representation
+𝒔
+The user (sequence) representation
+𝜏
+The temperature hyperparameter
+g𝑗(·)
+The projection head
+𝒑(𝑗)
+The log probability (i.e., logit) of the next token
+𝑘
+The number of edges for each node in the decoding graph
+𝑏
+The beam size
+𝑞
+The number of steps in the decoding process
+Table 6: Best hyperparameters of RPG for each dataset.
+Hyperparameter
+Sports
+Beauty
+Toys
+CDs
+semantic ID length 𝑚
+16
+32
+16
+64
+learning rate
+0.003
+0.01
+0.003
+0.001
+temperature 𝜏
+0.03
+0.03
+0.03
+0.03
+beam size 𝑏
+10
+10
+10
+10
+# edges per node 𝑘
+100
+100
+50
+500
+# iteration steps 𝑞
+2
+3
+5
+3
+Number/ratio of visited items under the best hyperparameter.
+# visited items
+2 × 103
+3 × 103
+2.5 × 103
+1.5 × 104
+ratio of visited items
+10.90%
+24.79%
+20.97%
+23.28%
+Table 7: Performance and inference time per epoch of TIGER
+w.r.t. #digit of semantic IDs. “OOM” denotes out-of-memory.
+#digit
+NDCG@10
+Time (s)
+4
+0.0243
+259
+8
+0.0219
+788
+16
+0.0054
+2,544
+32
+OOM
+OOM
+modality-based recommender models revisited. In SIGIR.
+[54] Zhenrui Yue, Yueqi Wang, Zhankui He, Huimin Zeng, Julian McAuley, and Dong
+Wang. 2024. Linear recurrent units for sequential recommendation. In WSDM.
+930–938.
+[55] Neil Zeghidour, Alejandro Luebs, Ahmed Omran, Jan Skoglund, and Marco
+Tagliasacchi. 2022. SoundStream: An End-to-End Neural Audio Codec. IEEE
+ACM Trans. Audio Speech Lang. Process. 30 (2022), 495–507.
+[56] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, Yinghai Lu, and Yu Shi. 2024. Actions Speak
+Louder than Words: Trillion-Parameter Sequential Transducers for Generative
+Recommendations. In ICML.
+[57] Taolin Zhang, Junwei Pan, Jinpeng Wang, Yaohua Zha, Tao Dai, Bin Chen,
+Ruisheng Luo, Xiaoxiang Deng, Yuan Wang, Ming Yue, et al. 2024.
+To-
+wards Scalable Semantic Representation for Recommendation. arXiv preprint
+arXiv:2410.09560 (2024).
+[58] Tingting Zhang, Pengpeng Zhao, Yanchi Liu, Victor S. Sheng, Jiajie Xu, De-
+qing Wang, Guanfeng Liu, and Xiaofang Zhou. 2019. Feature-level Deeper
+Self-Attention Network for Sequential Recommendation. In IJCAI.
+[59] Wayne Xin Zhao, Zihan Lin, Zhichao Feng, Pengfei Wang, and Ji-Rong Wen. 2022.
+A revisiting study of appropriate offline evaluation for top-N recommendation
+algorithms. ACM Transactions on Information Systems 41, 2 (2022), 1–41.
+[60] Wayne Xin Zhao, Shanlei Mu, Yupeng Hou, Zihan Lin, Yushuo Chen, Xingyu
+Pan, Kaiyuan Li, Yujie Lu, Hui Wang, Changxin Tian, Yingqian Min, Zhichao
+Feng, Xinyan Fan, Xu Chen, Pengfei Wang, Wendi Ji, Yaliang Li, Xiaoling Wang,
+and Ji-Rong Wen. 2021. RecBole: Towards a Unified, Comprehensive and Efficient
+Framework for Recommendation Algorithms. In CIKM.
+[61] Wayne Xin Zhao, Kun Zhou, Junyi Li, Tianyi Tang, Xiaolei Wang, Yupeng Hou,
+Yingqian Min, Beichen Zhang, Junjie Zhang, Zican Dong, Yifan Du, Chen Yang,
+Yushuo Chen, Zhipeng Chen, Jinhao Jiang, Ruiyang Ren, Yifan Li, Xinyu Tang,
+Zikang Liu, Peiyu Liu, Jian-Yun Nie, and Ji-Rong Wen. 2023. A Survey of Large
+Language Models. arXiv preprint arXiv:2303.18223 (2023).
+[62] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, and Ji-
+Rong Wen. 2024. Adapting Large Language Models by Integrating Collaborative
+Semantics for Recommendation. In ICDE.
+[63] Bowen Zheng, Enze Liu, Zhongfu Chen, Zhongrui Ma, Yue Wang, Wayne Xin
+Zhao, and Ji-Rong Wen. 2025. Pre-training Generative Recommender with Multi-
+Identifier Item Tokenization. arXiv preprint arXiv:2504.04400 (2025).
+[64] Bowen Zheng, Hongyu Lu, Yu Chen, Wayne Xin Zhao, and Ji-Rong Wen. 2025.
+Universal Item Tokenization for Transferable Generative Recommendation. arXiv
+preprint arXiv:2504.04405 (2025).
+[65] Bowen Zheng, Junjie Zhang, Hongyu Lu, Yu Chen, Ming Chen, Wayne Xin Zhao,
+and Ji-Rong Wen. 2024. Enhancing Graph Contrastive Learning with Reliable and
+Informative Augmentation for Recommendation. arXiv preprint arXiv:2409.05633
+(2024).
+[66] Kun Zhou, Hui Wang, Wayne Xin Zhao, Yutao Zhu, Sirui Wang, Fuzheng Zhang,
+Zhongyuan Wang, and Ji-Rong Wen. 2020. S3-Rec: Self-Supervised Learning for
+Sequential Recommendation with Mutual Information Maximization. In CIKM.
+[67] Jieming Zhu, Mengqun Jin, Qijiong Liu, Zexuan Qiu, Zhenhua Dong, and Xiu Li.
+2024. CoST: Contrastive Quantization based Semantic Tokenization for Genera-
+tive Recommendation. In RecSys.
+Appendices
+A
+Notations
+We summarize the notations used throughout the paper in Table 5.
+B
+Additional Implementation Details
+All experiments were conducted on a single NVIDIA RTX 3090
+GPU (24GB). For moderate-scale datasets (Sports, Beauty, Toys),
+each model training under a fixed hyperparameter setting takes
+less than 2 GPU hours. We tuned “learning rate”, “temperature”,
+and “#digit”, totaling 45 hyperparameter settings, resulting in un-
+der 90 GPU hours per dataset. For the large-scale dataset (CDs),
+each training takes under 8 hours, totaling about 180 GPU hours
+for all checkpoints reported. Regarding model inference, we evalu-
+ate all checkpoints on validation sets using the method described
+in Section 2.2.2. After identifying the best checkpoint, we further
+tune inference-time hyperparameters (𝑘and 𝑞) over 9 combinations.
+This tuning process is lightweight and requires less than 1 GPU
+hour in total. We present the best hyperparameters for each dataset
+of RPG in Table 6.
+C
+Additional Discussion
+What happens when equipping TIGER with long semantic
+IDs? To explore how existing semantic ID-based generative recom-
+mendation models perform with longer semantic IDs, we conduct
+experiments on the Sports dataset using TIGER [39] as the base
+model. We employ text-embedding-3-large as the PLM to gen-
+erate semantic IDs and increase the number of digits by applying
+more levels of residual quantization. As shown in Table 7, increas-
+ing the number of digits from 4 to 16 consistently degrades TIGER’s
+
+Generating Long Semantic IDs in Parallel for Recommendation
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Table 8: Memory consumption breakdown. The term “fetched
+storage” refers to the amount of storage actually accessed to
+generate a ranking list for a user. The memory consumption
+of sequence encoders (i.e., Transformer blocks) is omitted.
+Method
+NDCG@10
+Storage
+Fetched Storage
+SASRec
+0.0192
+𝑂(𝑁𝑑)
+𝑂(𝑵𝑑)
+RecJPQ
+0.0102
+𝑂(𝑀𝑑+ 𝑁𝑚)
+𝑂(𝑀𝑑+ 𝑵𝑚)
+VQ-Rec
+0.0173
+𝑂(𝑀𝑚𝑑+ 𝑁𝑚)
+𝑂(𝑀𝑚𝑑+ 𝑵𝑚)
+RPG
+0.0263
+𝑂(𝑀𝑚𝑑+ 𝑁(𝑚+ 𝑘))
+𝑂(𝑀𝑚𝑑+ 𝒃𝒒𝒌𝑚)
+performance and significantly slows down inference. These results
+highlight the difficulty of scaling semantic ID length in existing
+models. In contrast, RPG not only handles long semantic IDs ef-
+ficiently (Figure 3) but also benefits from increased ID length in
+terms of performance (Figure 4).
+Can multiple items share the same token set? Yes, this is possi-
+ble. In RPG, each node in the decoding graph is initialized per item,
+rather than per unique token set. That said, since RPG uses long
+semantic IDs (e.g., 64 tokens), the likelihood of two distinct items
+sharing the exact same token set is very low.
+Why does RPG perform worse than TIGER when #digits = 4?
+As shown in Table 4, RPG underperforms TIGER when both use se-
+mantic IDs of length 4. However, comparing the two models under
+the same ID length is not particularly meaningful, given their fun-
+damental differences in learning objectives, inference mechanisms,
+and semantic ID construction. When using their optimal semantic
+ID lengths, RPG consistently outperforms TIGER across all datasets
+while also achieving better inference efficiency (Figure 3).
+Memory consumption breakdown. To better understand the
+memory footprint of RPG compared to existing methods, we provide
+a detailed breakdown in Table 8. RPG consumes more total storage,
+as it maintains a token embedding table, an item-token mapping
+table, and a decoding graph. However, during inference, RPG is the
+only model that avoids accessing the entire storage but accesses a
+small subset of items, typically around 10-25%.

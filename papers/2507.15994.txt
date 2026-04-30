@@ -1,0 +1,1407 @@
+Scaling Recommender Transformers to One Billion Parameters
+Kirill Khrylchenko∗
+HSE University
+Moscow, Russia
+elightelol@gmail.com
+Artem Matveev
+Yandex, HSE University
+Moscow, Russia
+matfu21@ya.ru
+Sergei Makeev
+Yandex
+Moscow, Russia
+neuralsrg@gmail.com
+Vladimir Baikalov∗
+ITMO University
+Saint-Petersburg, Russia
+nonameuntitled159@gmail.com
+Abstract
+While large transformer models have been successfully used in
+many real-world applications such as natural language processing,
+computer vision, and speech processing, scaling transformers for
+recommender systems remains a challenging problem. Recently,
+the Generative Recommenders framework was proposed as a way
+to scale beyond typical Deep Learning Recommendation Models
+(DLRMs). By reformulating recommendation as a sequential trans-
+duction task, it improves scaling properties in terms of compute.
+Nevertheless, the largest encoder configuration reported by the
+HSTU authors is only 176 million parameters — far smaller than
+the hundreds of billions (or even trillions) that are now common in
+language models.
+In this work, we present a recipe for training large transformer
+recommenders with up to one billion parameters. We show that
+autoregressive learning on user histories naturally decomposes
+into two subtasks, feedback prediction and next-item prediction,
+and demonstrate that this decomposition scales effectively across a
+wide range of transformer sizes. Furthermore, we report a success-
+ful deployment on a large-scale music platform serving millions
+of users. In online A/B tests, the proposed model increases total
+listening time by +2.26% and raises the likelihood of user likes by
++6.37%, constituting (to our knowledge) the largest improvement
+in recommendation quality reported for any deep learning-based
+system in the platform’s history.
+CCS Concepts
+• Information systems →Learning to rank; Personalization;
+Recommender systems; • Computing methodologies →Rank-
+ing; Learning from implicit feedback; Neural networks.
+Keywords
+recommender systems; user modeling; pre-training; transformers;
+large-scale models; music recommendation
+∗Work done while at Yandex.
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+KDD ’26, Jeju Island, Republic of Korea
+© 2026 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2258-5/2026/08
+https://doi.org/10.1145/3770854.3783916
+ACM Reference Format:
+Kirill Khrylchenko, Artem Matveev, Sergei Makeev, and Vladimir Baikalov.
+2026. Scaling Recommender Transformers to One Billion Parameters. In
+Proceedings of the 32nd ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining V.1 (KDD ’26), August 09–13, 2026, Jeju Island, Republic of Korea.
+ACM, New York, NY, USA, 11 pages. https://doi.org/10.1145/3770854.3783916
+1
+Introduction
+Recommender systems are an essential part of our daily lives. They
+help us find inspiration through relevant tracks, pins, and videos;
+connect with other people and stay informed about the world; and
+offer a wide range of options for our everyday needs. They also
+help creators, artists, and vendors find their audiences.
+To determine which content to show, recommender systems
+use machine learning to predict user feedback — such as whether
+the user will ignore, like, or dislike a given item. This task poses
+many challenges: the item catalog is vast and constantly changing,
+user preferences are dynamic, and user-item interactions are sparse.
+In such a scenario, complex methods like deep learning become
+essential.
+Deep learning has proven to be a powerful approach for prob-
+lems involving large amounts of unstructured data, such as text [25]
+or images [26]. While traditional methods rely heavily on manual
+feature engineering and domain knowledge, neural networks can
+automatically learn complex patterns from raw inputs. Moreover,
+the scaling hypothesis [25] claims that this capability grows signifi-
+cantly with increases in training dataset size and model capacity.
+Over the past decade, scaling has played a pivotal role in fields like
+computer vision, natural language processing, and speech process-
+ing.
+Because of extremely large item catalogs and strict latency con-
+straints, the recommendation task is typically approached in mul-
+tiple stages. The first stage, retrieval, uses lightweight models to
+filter possible options from the entire catalog. The second stage,
+ranking, applies more complex architectures to the reduced set of
+candidates.
+There are two predominant neural network archetypes for rec-
+ommender systems:
+• Early fusion rankers place emphasis on feature interac-
+tions across user, item, and user-item features. They typically
+include an embedding layer [8, 10, 31], followed by feature in-
+teraction layers [45] and a feedforward network. Multi-task
+learning is often employed to predict multiple components
+of user feedback. Submodules are used to build user and item
+arXiv:2507.15994v2  [cs.IR]  18 Feb 2026
+
+KDD ’26, August 09–13, 2026, Jeju Island, Republic of Korea
+Kirill Khrylchenko, Artem Matveev, Sergei Makeev, and Vladimir Baikalov
+embeddings, which can be trained either separately as up-
+stream models (e.g., SUM [54]) or jointly with a downstream
+model (e.g., TransAct [47], DIN [56]). Because these rankers
+rely on early fusion, they are impractical for retrieval.
+• Sequential recommenders treat users as sequences of
+events and are usually trained to predict future interac-
+tions (e.g., SASRec [24], PinnerFormer [32]). Due to the linear
+structure of the decoder layer that produces the next-item
+probability distribution, these models can be transformed
+into two-tower architectures with separate user and item en-
+coders, enabling approximate nearest neighbor search [29] at
+the retrieval stage. Moreover, they can also serve as powerful
+submodules in downstream rankers [32].
+Similarly to other deep learning domains, we aim to leverage the
+scaling hypothesis in recommender systems. There are four primary
+scaling options:
+• Embeddings. Recommender models include numerous cat-
+egorical features with cardinalities varying from 2 to bil-
+lions [10]. Consequently, increasing embedding dimensions
+for trainable ID-based embeddings rapidly leads to very large
+embedding matrices. Unfortunately, large embedding layers
+are crucial for achieving good performance because they
+represent an information bottleneck between the raw data
+and the model (see the golf analogy [10]). Meta’s embedding
+tables, for instance, range from 675B [52] to 13T [30] parame-
+ters, while Google has reported roughly a billion parameters
+since YouTubeDNN [11]. Even Pinterest, a long-time propo-
+nent of inductive PinSage embeddings [50], shifted toward
+large ID-based embedding matrices in their latest work [22].
+• Context length. In modern ranking systems, an extensive
+amount of feature engineering has gone into increasing the
+context length. The number of features in these systems
+ranges from hundreds [14, 52, 54] to thousands [51]. Mean-
+while, user history for sequential recommenders remains
+relatively short: the gold standard is around 100 interac-
+tions [4, 11, 35, 47] or 256 [27, 32].
+• Training dataset size. As Zhai et al. [51] note, recommender
+systems can produce training data at a remarkable rate,
+generating the equivalent of hundreds of GPT-3-scale [5]
+datasets per day. Industry standards have long involved bil-
+lions of samples: 2B [56], 2.1B [12], 3B [47], 60B [30], over
+100B [11, 45], 146B [52], and 500B [8].
+• Encoder capacity. In early fusion rankers, Google reports
+dense parts containing between 1M [55] and 68M [42] pa-
+rameters in simplified versions of its production models. For
+sequential recommenders, up to two transformer layers are
+commonly used [32, 35, 47], with four to five layers being
+a rarity (e.g., Kuaishou [27]). The hidden size typically re-
+mains in the low hundreds [32, 47], resulting in a few million
+parameters at most.
+Although embedding matrices and training datasets are already
+extremely large, context length and encoder capacity remain un-
+derexplored in terms of scaling. We hypothesize that the scaling
+potential of early fusion rankers is constrained by specialized net-
+work layers, such as DCN-v2 [45] or MaskNet [46], which impose
+a strong inductive bias. In contrast, sequential recommenders do
+not share these structural limitations, yet the encoders reported by
+both industry and academia remain relatively small.
+A significant step forward in scaling research is Meta’s Genera-
+tive Recommenders (GR) framework [51]. The authors bridge the
+gap between early fusion rankers and sequential recommenders
+with a unified generative approach to user modeling. They train
+a sequential model with a large context (8000 events), a massive
+dataset (100B samples), and embedding tables on the order of a
+trillion parameters. Nonetheless, the largest HSTU encoder config-
+uration briefly mentioned in the work (24 layers, 1024-dimensional
+embeddings) has only 176 million parameters.
+A language model with 176 million parameters would perform
+significantly worse than current largest alternatives. Can we achieve
+comparable gains when replacing natural language tokens with
+sequences of user-interaction events? Successfully scaling recom-
+mender transformer encoders could result in significant betterment
+of personalized services, benefiting billions of users worldwide
+through a more nuanced understanding of user interests. In this
+work, we focus on scaling recommender transformer encoders.
+The main contributions of the paper are as follows:
+• Unlike Monty Python’s King Arthur1, we do attain our goal:
+we scale recommender transformers to a billion parameters
+and observe a significant improvement in recommendation
+performance.
+• We propose a fundamental pre-training task that naturally
+decomposes into two complementary objectives: user feed-
+back prediction and next-item prediction, while scaling ef-
+fectively across a wide range of model sizes.
+• We introduce a computationally efficient fine-tuning stage
+that converts the large transformer encoder into a two-tower
+architecture, enabling offline inference and providing a pow-
+erful ranking feature for downstream models.
+• We deploy a 126M-parameter transformer model with con-
+text length 8192 on an industry-leading music platform with
+millions of users and items. To our knowledge, this deploy-
+ment yielded the greatest quality improvements among all
+neural-network-based recommender models at that plat-
+form.
+We dub our approach ARGUS (AutoRegressive Generative User
+Sequential framework).
+2
+Related work
+Scaling deep learning. AlexNet [26] was the first major success of
+deep learning and also a key milestone for scaling, as ImageNet was
+significantly larger than any previous dataset. Sun et al. [41] im-
+proved an ImageNet classifier by pre-training on the large-scale but
+noisy JFT dataset, demonstrating that performance scaled logarith-
+mically with dataset size. Hestness et al. [19] validated scaling laws
+across machine translation, language modeling, image processing,
+and speech recognition. Mahajan et al. [28] used large-scale weakly
+supervised data from Instagram to pre-train an ImageNet classifier.
+Goyal et al. [13] showed that limited model capacity reduces the
+gains from data scaling; they also highlighted the importance of
+self-supervised learning and the need to identify appropriate pre-
+training tasks. Kaplan et al. [25] formulated scaling as a compute
+1https://www.imdb.com/title/tt0071853/
+
+Scaling Recommender Transformers to One Billion Parameters
+KDD ’26, August 09–13, 2026, Jeju Island, Republic of Korea
+allocation problem, exploring trade-offs between model size and
+dataset size; they concluded that larger models are more sample-
+efficient and that increasing model size nearly always yields better
+performance. Hoffmann et al. [21] showed that, due to suboptimal
+training (including learning-rate scheduling), the models proposed
+by Kaplan et al. [25] were undertrained. Radford et al. [34] explored
+language modeling in depth, framing next-token prediction as an
+extreme multi-task learning problem that enables strong scaling
+behavior.
+Early fusion neural rankers. Wide&Deep [8] combines a deep
+neural network (DNN) with a linear model for ranking, whereas
+YouTubeDNN [11] discards the linear component entirely. There is
+substantial research on cross-feature and feature-interaction model-
+ing [15, 16, 31, 36, 39, 44, 45] for early fusion rankers. Such models
+often include extremely large embedding matrices with up to 12
+trillion parameters [30], while the dense encoder part typically con-
+tains only tens of millions of parameters at most. Another line of
+research examines scaling of neural rankers. Ardalani et al. [1]
+tested scaling DLRMs [31] for CTR prediction and concluded that
+“parameter scaling is out of steam for the model architecture under
+study, and until a higher-performing model architecture emerges, data
+scaling is the path forward”. Wukong [52] reintroduces the concept
+of stacked factorization machines and demonstrates scaling up to
+10B parameters. However, to our knowledge, subsequent work has
+not reproduced Wukong’s scaling results. Similarly to Borisyuk
+et al. [3], our own experiments with Wukong did not replicate the
+reported outcomes.
+Sequential modeling for ranking. YouTubeDNN [11] applies av-
+erage pooling over the last-watched videos and search queries to
+form user embeddings, which are then used in both ranking and re-
+trieval. DIN [56] employs pointwise target-aware attention on user
+history. BST [7], TransAct [47], and LiRank [4] incorporate a small
+target-aware transformer over recent user history as a submodule
+in the downstream ranker. HSTU [51] reframes impression-level
+ranking as a generative task by interleaving actions and items into
+a single sequence.
+Sequential modeling for retrieval. YouTubeDNN [11] formulates
+retrieval as the prediction of a user’s next video watch. CASER [43],
+GRU4Rec [20], and SASRec [24] represent the user as a sequence of
+positive user-item interactions, training CNNs, RNNs, and trans-
+formers, respectively, to predict the next positive interaction. Pin-
+nerFormer [32] additionally includes negative user-item interac-
+tions in the user history and trains to predict future positive interac-
+tions. HSTU [51] retrieval adopts a similar approach, predicting the
+next positive interaction based on the full interaction history. Beutel
+et al. [2] proposed an RNN-based retrieval model for YouTube, while
+Chen et al. [6] framed recommendation as a reinforcement learning
+problem and applied REINFORCE with off-policy correction to the
+same model [2].
+Scaling sequential recommenders. CLUE [37] trains a transformer
+encoder on user histories from multiple domains with contrastive
+learning, demonstrating scaling with respect to training data, con-
+text length, and model size. Shin et al. [38] represented the user as
+a sequence of textual item descriptions and trained a transformer
+encoder to predict the next item; they also reported benefits from
+Table 1: Notation
+Notation
+Description
+𝑐𝑡∈C
+Context (e.g., surface, device, location)
+𝑖𝑡∈I
+Item (e.g., music track)
+𝑓𝑡∈F
+Feedback (e.g., like, skip)
+(𝑐𝑡,𝑖𝑡, 𝑓𝑡)
+𝑡-th user-item interaction
+𝑆𝑇:= {(𝑐𝑡,𝑖𝑡, 𝑓𝑡)}𝑇
+𝑡=1
+Historical user interaction sequence
+ℎ𝑐
+𝑡,ℎ𝑖
+𝑡
+Encoder hidden states for 𝑐𝑡and 𝑖𝑡
+ℎ𝑡
+Hidden state of the simplified model
+𝜃∈R𝐷
+Trainable model parameters
+scaling model size. Chitlangia et al. [9] trained a transformer on
+next-event prediction, decomposing events into separate features,
+and scaled model size up to 85M parameters. Zhang et al. [53]
+trained a transformer on next-item prediction, reporting a scaling
+law even better than in NLP. Guo et al. [17] explored scaling for
+the HSTU architecture, which we discuss further. However, most of
+these studies use the well-known leave-one-out evaluation scheme
+without a proper temporal split [23, 40]. While this may be accept-
+able for small models, omitting a temporal split for large models
+is problematic due to their memorization capacity. HSTU [51] ad-
+dresses this issue by evaluating on a proprietary industrial dataset
+with an appropriate temporal protocol, and by reporting online
+metrics. The authors scaled their encoder to an 8k context and
+100B samples and introduced a new architecture. Still, the largest
+encoder mentioned contains just 176M parameters.
+3
+Model architecture
+3.1
+Pre-training
+Scaling deep learning is guaranteed to succeed if: a model (1) with
+sufficient capacity is (2) pre-trained on a fundamental task (3) with
+massive amounts of data. In recommender systems, user feedback
+generates immense amounts of training data, and transformers
+seem a natural fit for modeling user-history sequences. But a key
+question remains: what should the training task be? For almost
+a decade, the industry standard has been next-item prediction,
+where the model is trained to predict the next positive user-item
+interaction. Yet, it has not shown clear scaling benefits in practice.
+In this section, we propose a pre-training objective that scales across
+a wide range of model sizes.
+Consider large language models: despite being trained on noisy,
+large-scale internet data, they still produce reasonable responses.
+Prompting such a model often yields an average internet-style
+answer, which may be suboptimal or only partially accurate. How-
+ever, modifying the prompt — for instance, with a prefix such as
+“Let’s say you are very knowledgeable” — can shift the output dis-
+tribution toward objectively better responses [5]. This reflects the
+model’s ability to leverage both the prefix context and its internal
+world knowledge, acquired during pre-training, to refine its out-
+puts. In reinforcement learning terminology, the model improves
+the logging policy it imitates (internet answers) by incorporating its
+understanding of the environment (world knowledge and abstract
+patterns). Both imitation of the logging policy and world knowledge
+accumulation occur during pre-training.
+
+KDD ’26, August 09–13, 2026, Jeju Island, Republic of Korea
+Kirill Khrylchenko, Artem Matveev, Sergei Makeev, and Vladimir Baikalov
+Transformer
+Next Item Prediction
+(sampled softmax loss)
+Feedback Prediction
+(multi-output classification)
+context
+features
+Context
+Tower
+item
+features
+Item 
+Tower
+feedback 
+components
+Feedback
+Tower
+Figure 1: An overview of the pre-training architecture, which takes the user’s context-item-feedback history as input to a
+transformer. Two parallel heads produce next-item predictions and feedback predictions, respectively.
+Motivated by our analogy to large language models, we con-
+ceptually reframe recommendation as a reinforcement learning
+problem, similarly to Chen et al. [6]:
+• The recommender system is an agent.
+• A := I. The action space corresponds to items recom-
+mended to users; in the simplest case, an action consists of
+recommending a single item.
+• User interests, browsing habits, and interaction patterns
+define the environment, which exists independently of
+any single recommender.
+• S := Ð∞
+𝑇=1 (C × I × A)𝑇. The state captures user history
+and naturally satisfies the Markov property.
+• 𝜋𝜃(𝑎| 𝑠) := 𝜋𝜃(item | history, context). The model’s policy
+maps user states to item distributions.
+Within this formulation, the production recommender system
+that generated the training data acts as a logging policy — the
+behavior we can directly imitate. Concurrently, user behavior pro-
+vides world knowledge: insights about preferences that are not
+tied to any particular system, and are visible through user feed-
+back and organic2 transitions. Drawing on our language model
+analogy, we propose a pre-training task with dual objectives: (1)
+learning to imitate prior recommender systems and (2) learning
+user preferences from feedback and organic navigation patterns.
+Note that our training is fully offline and supervised; we do not
+perform online reinforcement learning. We use RL terminology as
+a conceptual lens: next-item prediction corresponds to policy imita-
+tion, while feedback prediction encourages learning user response
+regularities that can be interpreted as environment modeling.
+Next-item prediction. In our approach, the model sees a sequence
+of context-item-feedback triplets (𝑐𝑡,𝑖𝑡, 𝑓𝑡), where 𝑐𝑡includes con-
+textual features such as the surface3, 𝑖𝑡is the item that appears, and
+𝑓𝑡is user feedback. The next-item prediction task is:
+P(item = 𝑖𝑡| history = 𝑆𝑡−1, context = 𝑐𝑡).
+We train on all item interactions, including non-positive feed-
+back. Crucially, 𝑐𝑡identifies the interaction surface, which indicates
+2Organic user events are those not influenced by explicit system recommendations
+(e.g., search activity).
+3Surface refers to the interface or platform where a user is exposed to an item, e.g.,
+organic discovery (browsing, search) versus algorithmic recommendations.
+whether the exposure is recommended or organic and, for recom-
+mended impressions4, often identifies the serving policy specific
+to that surface. Conditioning on 𝑐𝑡therefore lets a single model
+separate these interaction types: it can reproduce surface-specific
+recommendation behavior while also learning organic navigation
+patterns that reflect user preferences.
+To optimize this task, we use logQ-corrected sampled softmax [49]
+with mixed negative sampling [48]:
+LNIP(𝑆𝑡−1,𝑐𝑡,𝑖𝑡;𝜃) = −log
+𝑒𝑓(ℎ𝑐
+𝑡,𝑖𝑡)
+𝑒𝑓(ℎ𝑐
+𝑡,𝑖𝑡) + Í
+𝑛∈𝑁
+𝑒𝑓(ℎ𝑐
+𝑡,𝑛)−log𝑄(𝑛) ,
+where:
+• 𝑓(ℎ𝑐
+𝑡,𝑖𝑡) := cos(ℎ𝑐
+𝑡,𝑖𝑡)/exp(𝜏) is a similarity measure be-
+tween the context-aware embedding ℎ𝑐
+𝑡and the item embed-
+ding 𝑖𝑡,
+• 𝑁= 𝑁in-batch ∪𝑁uni consists of |𝑁in-batch| = 8192 in-batch
+negatives and |𝑁uni| = 8192 uniformly sampled items,
+• 𝑄(𝑛) is an estimate of the negative sampling probability
+under our mixed sampler (maintained with a count-min
+sketch as in [49]),
+• exp(𝜏) is a learnable temperature, clipped to [0.01, 100].
+Feedback prediction. While next-item prediction captures log-
+ging policy behavior and organic user behavior patterns, modeling
+actual user preferences requires an additional feedback-prediction
+component:
+P(feedback = 𝑓𝑡| history = 𝑆𝑡−1, context = 𝑐𝑡, item = 𝑖𝑡).
+In practice, feedback is often multivariate (e.g., skip/like, listening
+duration) and can be decomposed into K factors: F = Î𝐾
+𝑘=1 F𝑘. To
+simplify, we assume these components to be conditionally indepen-
+dent given the state: P𝜃(𝑓𝑡| ℎ𝑖
+𝑡) = Î𝐾
+𝑘=1 P𝜃(𝑓𝑘
+𝑡
+| ℎ𝑖
+𝑡). This turns
+feedback prediction into a multi-task learning problem. The overall
+loss is:
+LFP = −log
+𝐾
+Ö
+𝑘=1
+P𝜃(𝑓𝑘
+𝑡| ℎ𝑖
+𝑡) =
+𝐾
+∑︁
+𝑘=1
+CrossEntropyLoss(𝑓𝑘
+𝑡,𝑙𝑘
+𝑡),
+4An impression is an item explicitly shown to the user by the recommendation system.
+
+Scaling Recommender Transformers to One Billion Parameters
+KDD ’26, August 09–13, 2026, Jeju Island, Republic of Korea
+Transformer
+Next Item Prediction
+(sampled softmax loss)
+Feedback Prediction
+(multi-output classification)
++
++
++
++
++
++
+MLP
+MLP
+Figure 2: Simplified pre-training architecture that merges
+each context-item-feedback triplet into a single embedding
+where 𝑙𝑘
+𝑡is the logit for the 𝑘-th feedback dimension. This objective
+complements next-item prediction by explicitly modeling how users
+react to items.
+We combine these two objectives into our final pre-training loss,
+Lpre-train = LNIP + LFP, as illustrated in Figure 1.
+Differences with SASRec. Traditional sequential models such as
+SASRec [24] also rely on next-item prediction, but typically con-
+sider only positive interactions. This conflates the likelihood of an
+item being shown with the likelihood of it receiving positive feed-
+back, and it overlooks many neutral interactions that are essential
+for modeling real-world behavior. In contrast, our model incorpo-
+rates both impressions resulting from system recommendations
+(regardless of user response) and user-driven (organic) events, and
+also explicitly models user feedback.
+Simplified architecture. Representing each user-item interaction
+as a triplet (𝑐𝑡,𝑖𝑡, 𝑓𝑡) leads to a sequence of length 3𝑛for 𝑛inter-
+actions, which becomes computationally expensive for long user
+histories. To reduce complexity, we merge each triplet into a single
+interaction embedding. Concretely, the encoder now outputs one
+hidden state ℎ𝑡per interaction instead of three (see Figure 2).
+This compression introduces trade-offs in how context and item
+information are represented and reused across tasks. For next-item
+prediction, we can no longer obtain a fully context-aware hidden
+state ℎ𝑐
+𝑡. Instead, we approximate it by concatenating the previous
+hidden state ℎ𝑡−1 with the current context embedding 𝑐𝑡, followed
+by an MLP projection:
+ˆℎ𝑐
+𝑡= MLP(Concat(ℎ𝑡−1,𝑐𝑡)).
+Similarly, for feedback prediction we lose direct access to the target
+item (target awareness [56]). We approximate the target-aware state
+Transformer
+Historical
+impressions
+Historical
+user states
+Figure 3: Impression-aware, one-pass, two-tower fine-tuning
+with a single causal-encoding transformer
+as:
+ˆℎ𝑖
+𝑡= MLP(Concat(ℎ𝑡−1,𝑐𝑡,𝑖𝑡)).
+3.2
+Fine-tuning
+There are multiple ways to adapt our pre-trained model to down-
+stream tasks. In this work, we focus on fine-tuning and leave other
+adaptation methods for future work.
+Our primary downstream objective is item reranking. A widely
+adopted training approach is impression-aware pointwise train-
+ing [51], defined as:
+Lranking(𝑢,𝑖, 𝑓) = CrossEntropyLoss(𝑓,𝜙𝜃(𝑢,𝑖)),
+where user 𝑢is shown item 𝑖and provides feedback 𝑓(e.g., a like),
+and 𝜙𝜃(𝑢,𝑖) is a ranking model that incorporates user, item, and
+user-item features [31].
+In practice, the pointwise loss can be replaced by pairwise or list-
+wise alternatives depending on the application. In our production
+setting, we use a pairwise ranking objective, which is discussed in
+more detail in Section 4.1.1.
+Conceptually, this ranking objective aligns with the pre-training
+goal of modeling feedback P(feedback | history, context, item).
+However, practical considerations and task-specific constraints
+motivate a separate fine-tuning procedure:
+• Domain shift. Our pre-training domain is broader than the
+final task domain: the model is initially exposed to feedback
+across all contexts (including purely organic ones), whereas
+the final ranking only needs to predict feedback for recom-
+mended items. During fine-tuning, we restrict training to
+items with recommendation-based contexts.
+• Daily inference. Pre-training assumes zero delay for data
+delivery and relies on resource-intensive real-time inference.
+Due to efficiency concerns, we prefer to offload computa-
+tion to offline batch workloads. A common approach [32]
+is to train a two-tower model with simulated data delivery
+delay: we compute user and item embeddings once per day,
+
+KDD ’26, August 09–13, 2026, Jeju Island, Republic of Korea
+Kirill Khrylchenko, Artem Matveev, Sergei Makeev, and Vladimir Baikalov
+store user embeddings in a key-value system, then use dot
+products at serving time.
+• Causal pre-training. Simulating 24-hour data delivery de-
+lay or adopting complex pairwise or listwise ranking losses
+during pre-training would require more complex attention
+masking schemes. In contrast, our fine-tuning procedure
+retains the simple causal masking used during pre-training.
+Figure 3 illustrates our impression-aware, one-pass, two-tower
+fine-tuning procedure, designed to address the challenges above.
+We run a single pass over the user’s history through a causal trans-
+former, forming a sequence of user representations. Impressions
+(recommended items) form a separate sequence and are matched
+to user hidden states by timestamp and simulated latency. We then
+compute dot products between each impression’s embedding and
+the corresponding user representation to obtain a ranking score,
+feeding the result into a suitable ranking loss (e.g., pointwise or
+listwise):
+𝜙𝜃(𝑢,𝑖𝑡) = ⟨ℎ𝑡,𝑖𝑡⟩,
+where 𝑖𝑡denotes the embedding of an impressed item and ℎ𝑡is the
+timestamp-aligned user representation.
+We present this configuration as a coherent scaling recipe rather
+than a set of independent heuristics. While individual components
+like feedback prediction or specific attention mechanisms could be
+further ablated, our results demonstrate that this specific combina-
+tion provides a stable and reproducible path to scaling recommender
+transformers to the billion-parameter regime.
+4
+Experiments
+We aim to answer the following research questions:
+• RQ1: Does ARGUS scale effectively?
+• RQ2: How does HSTU compare to a standard transformer
+encoder?
+• RQ3: Is our two-stage training pipeline necessary? Can we
+simplify it?
+• RQ4: Does context length scaling improve recommendation
+quality in the music domain?
+• RQ5: How does ARGUS perform on real-world recommen-
+dation scenarios?
+4.1
+Experimental Setup
+In this section, we describe our datasets, baselines, evaluation pro-
+tocol, and implementation details for the ARGUS framework.
+4.1.1
+Datasets. Dataset selection was based on the following crite-
+ria:
+• Scalability: The dataset must be sufficiently large to support
+training and evaluation of models with hundreds of millions
+or even billions of parameters. Small datasets would either
+lead to underfitting in a one-epoch regime or overfitting
+when trained for multiple epochs.
+• Content Coverage: To learn both next-item and feedback-
+prediction tasks as defined above, the dataset should include
+both impressed items and user feedback, as well as various
+contexts — recommendation-based and organic ones.
+• Applicability: The dataset should reflect real-world usage
+scenarios and be applicable for validating the model in a
+production environment. Ideally, leading to an A/B test.
+Since no public dataset met these requirements (to our knowledge)5,
+we constructed our own dataset by sampling one year of activity for
+tens of millions of users from our music-streaming platform. This
+dataset contains over 300B user-item interactions across millions
+of items, including ItemID, ArtistID, and other item features. It
+covers implicit signals such as listening duration and skips, explicit
+feedback such as likes, and contextual features including surface
+type, device, and recommendation settings.
+For pre-training, we split each user’s history into fixed-length
+chunks. Each chunk is treated as a separate training sample. For
+fine-tuning, we use a pairwise logistic loss, forming impression
+pairs from temporally adjacent interactions with different feedback
+outcomes.
+4.1.2
+Baselines. To evaluate the effect of model scaling and two-
+stage training, we primarily compare models within the same ar-
+chitecture family. We fix our modeling family to a standard trans-
+former applied over user interaction histories, which serves as a
+general and representative baseline for studying scaling behavior.
+In addition, we compare against a drop-in encoder replacement by
+swapping the transformer for HSTU [51], whose authors argue for
+improved scaling compared to transformers on recommendation
+tasks.
+Our main benchmark for downstream utility is against our pro-
+duction ranking model: a gradient-boosted decision tree ensem-
+ble trained with pairwise logistic loss on one thousand features.
+These features include standard heuristics (counters, ratios), hand-
+crafted signals, and outputs from earlier generations of transformer-
+based two-tower models. We describe these prior models in more
+detail in section 4.6.
+For downstream evaluation, we do not compare against tradi-
+tional sequential recommenders such as SASRec [24]. Such models
+are typically optimized for next-item prediction and are primar-
+ily used in retrieval-style settings, rather than impression-level
+ranking; consequently, they would be a poor fit and would substan-
+tially underperform in our ranking setup. We also do not compare
+against target-aware ranking formulations of HSTU [51]: they rely
+on real-time data and explicit target awareness (conditioning on the
+candidate item), which is computationally much more expensive
+than our two-tower setup with daily processing of user sequences
+and offline inference.
+4.1.3
+Evaluation Metrics. We evaluate models using a global tem-
+poral split, holding out the week following the training period as a
+test set. Unlike random splits often used in scaling studies, strict
+temporal evaluation is crucial for large-scale models. It prevents
+performance overestimation caused by data leakage (memorization
+of future interactions) and inherently tests the model’s robustness
+to distribution drift.
+To assess the pre-trained model, we focus on two core capabili-
+ties: next-item prediction and user feedback modeling:
+5Since the completion of this work, the Yambda dataset [33] has been published, which
+is quite similar to our production dataset. However, it contains fewer features, and is
+substantially smaller in scale.
+
+Scaling Recommender Transformers to One Billion Parameters
+KDD ’26, August 09–13, 2026, Jeju Island, Republic of Korea
+Table 2: Hyperparameter overview (pre-train vs. fine-tune)
+Hyperparameter
+Pre-train
+Fine-tune
+Effective batch size
+4096
+2048
+Dropout
+0.1
+Optimizer
+Adam
+Grad norm clipping
+1
+Number of warmup steps
+3000
+Backbone LR Schedule
+10−5 →10−4 →10−4
+Head LR Schedule
+10−3 →10−3 →10−4
+• Feedback prediction. We measure normalized entropy (as
+in [18]) with respect to a baseline feedback distribution esti-
+mated from empirical frequencies.
+• Next-item prediction. Normalized entropy is computed
+relative to a unigram item distribution computed from user-
+item interactions, using the same sampled softmax setup
+(8192 uniform and 8192 in-batch negatives) as in training.
+After pre-training, we evaluate the model’s ability to rank im-
+pressions in two scenarios:
+(1) Standalone ranking: the model directly ranks impressions.
+(2) Feature integration: the model’s output is provided as an
+additional feature to our production ranker.
+We measure pairwise accuracy, which compares the model’s order-
+ing against actual user preferences. Formally, let Ω be the set of
+temporally adjacent impression pairs 𝑖1,𝑖2 where 𝑖1 received more
+positive feedback than 𝑖2 (e.g., skipped track is worse than a track
+with completion rate above a certain threshold, which is worse than
+an explicit like). Then
+PA(model) =
+1
+|Ω|
+∑︁
+(𝑖1,𝑖2)∈Ω
+
+
+1,
+if score(𝑖1) > score(𝑖2),
+0.5,
+if score(𝑖1) = score(𝑖2),
+0,
+otherwise.
+We then define the pair accuracy uplift relative to our production
+ranker:
+PAU(model) = PA(model) −PA(prod)
+PA(prod)
+× 100%,
+where PA(prod) is the pairwise accuracy of the production ranker.
+Positive PAU indicates improvement over the baseline, while nega-
+tive values indicate a performance drop. Unlike standard ROC-AUC,
+which aggregates over all comparable pairs, our metric restricts
+comparisons to temporally adjacent impressions within a user se-
+quence.
+The negative uplift in standalone ranking (e.g., -4.78% for Large)
+should be interpreted in context: our model operates in an offline
+mode with a 24-hour data lag and uses only user history. In contrast,
+the production baseline is a complex ensemble that leverages hun-
+dreds of real-time features available at serving time. The fact that a
+single offline transformer can approach this level of performance
+underscores its representational power.
+Implementation Details. All experiments use PyTorch 2.x with
+Distributed Data Parallel (DDP) across 64–256 A100 80GB GPUs.
+Training duration ranges from 1 day to 1 week, depending on the
+Mini
+Small
+Medium
+Large
+Model Size (log scale)
+0.440
+0.445
+0.450
+0.455
+0.460
+0.465
+0.470
+0.475
+Normalized Next-Item Prediction Entropy
+1.4
+1.6
+1.8
+2.0
+2.2
+2.4
+2.6
+Ranking Accuracy Uplift (as feature)
+Figure 4: ARGUS model scaling: normalized next-item pre-
+diction entropy and ranking accuracy uplift. This plot is
+derived from Table 3. Note the linear trend on the log scale,
+suggesting that the scaling laws observed in LLMs hold for
+our proposed recommender architecture.
+model size. Following production practice [51], we train for a single
+epoch over the dataset. Unless otherwise specified, all models are
+trained with the following configuration:
+• ARGUS (simplified) — no context-item-feedback interleav-
+ing; each interaction is represented as a single embedding
+• Unified embeddings for categorical features [10] — we use
+a 3-way lookup for item ID. The same embedding matrix size
+is used across all experiments and contains 130M parameters
+(512k embeddings of size 256). Note that these are additional
+parameters that are not counted towards encoder size.
+• Absolute trainable positional embeddings
+• Output embedding size: 512 for both users and items
+• Sequence length: 512 (pre-training), 2048 (fine-tuning)
+• Encoder: medium transformer configuration (L10 H1024)
+• Latency simulation during fine-tuning: 24-hour delay
+for matching impressions to user states
+Table 2 summarizes the main hyperparameters. We schedule distinct
+learning rates for the backbone vs. the task-specific heads: backbone
+parameters use linear warmup followed by a constant rate, while
+head parameters use a larger learning rate with linear warmup
+followed by linear decay.
+4.2
+Scaling Hypothesis (RQ1)
+In Table 3, we compare four versions of ARGUS encoders ranging
+from 3.2M (Mini) to 1B (Large) parameters. We select model sizes on
+an approximately logarithmic parameter scale to enable a consistent
+evaluation of scaling laws.
+We evaluate both pre-training performance (via normalized en-
+tropy for feedback and next-item prediction) and downstream per-
+formance (via pairwise accuracy uplift on temporally adjacent item
+impressions).
+As model size increases, we observe consistent improvements
+across all metrics. Feedback prediction entropy improves by 3 – 7%,
+next-item entropy drops by over 10%, and pairwise accuracy uplift
+increases from +1.35% (Mini) to +2.66% (Large). These results, also
+
+KDD ’26, August 09–13, 2026, Jeju Island, Republic of Korea
+Kirill Khrylchenko, Artem Matveev, Sergei Makeev, and Vladimir Baikalov
+Table 3: ARGUS model scaling: from 3.2M to 1B parameters. Results are reported for pre-training and fine-tuning tasks.
+Parameter counts include encoder weights only.
+Encoder
+Pre-train
+Ranking Fine-tune
+(pair accuracy uplift)
+Model
+Configuration
+#Params
+Feedback Prediction
+(normalized entropy)
+Next-Item
+Prediction
+(normalized entropy)
+Standalone
+Feature
+Consumption
+Engagement
+Mini
+L4 H256
+3.2M
+0.5830 (-0.00%)
+0.5855 (-0.00%)
+0.4777 (-0.00%)
+-7.49%
++1.35%
+Small
+L6 H512
+18.9M
+0.5756 (-1.28%)
+0.5707 (-2.51%)
+0.4691 (-3.81%)
+-6.29%
++1.82%
+Medium
+L10 H1024
+126.0M
+0.5690 (-2.41%)
+0.5556 (-5.10%)
+0.4502 (-7.68%)
+-5.33%
++2.32%
+Large
+L20 H2048
+1.007B
+0.5631 (-3.43%)
+0.5436 (-7.15%)
+0.4372 (-10.36%)
+-4.78%
++2.66%
+HSTU
+L24 H1024
+176.0M
+0.5684 (-2.51%)
+0.5553 (-5.15%)
+0.4488 (-7.99%)
+-5.39%
++2.34%
+Table 4: Impact of pre-training and fine-tuning stages on pair
+accuracy uplift
+Pre-training
+Fine-tuning
+Standalone
+Feature
+×
+1 year
+-7.72%
++1.17%
+✓
+1 week
+-9.27%
++0.63%
+✓
+1 year
+-5.33%
++2.32%
+visualized in Figure 4, suggest clear scaling trends for transformer-
+based recommenders.
+4.3
+Encoder: Transformers vs. HSTU (RQ2)
+HSTU [51] is a recently proposed encoder architecture positioned
+as an alternative to transformers for recommendation. The au-
+thors argue that it better captures counting-style signals and report
+strong results and favorable scaling when replacing a transformer
+encoder on academic benchmarks. Since our work studies scaling
+in transformer-based recommenders, we include this comparison
+as a sanity check: if HSTU had a large scaling advantage, it could
+reduce the practical relevance of transformer scaling in our setting.
+We compare our medium transformer encoder to the largest
+HSTU configuration reported in Zhai et al. [51]. Although HSTU
+has roughly 1.5× more parameters, the transformer achieves com-
+parable results on both pre-training metrics and ranking uplift
+(Table 3). Overall, we do not observe a clear scaling-driven advan-
+tage of HSTU over a standard transformer in our setup.
+4.4
+Two-Stage Training Pipeline (RQ3)
+We assess the effectiveness of our two-stage approach by isolating
+the contributions of pre-training and fine-tuning. Results in Table 4
+show that both components are necessary for optimal performance.
+Without pre-training, even a full year of fine-tuning reaches only
++1.17% uplift in the feature setting, falling short of the pre-trained
++ fine-tuned model (+2.32%).
+Interestingly, the fine-tuning stage must remain large even after
+pre-training. With the same pre-trained backbone, extending fine-
+tuning from one week to one year boosts feature-based uplift from
++0.63% to +2.32% — a substantial gain. This suggests that, unlike
+common LLM pipelines where the fine-tuning set is tiny relative
+Table 5: Effect of context length on pair accuracy uplift
+Context Length
+Standalone
+Feature
+512
+-8.93%
++1.01%
+2048
+-5.33%
++2.32%
+8192
+-4.73%
++2.77%
+to pre-training, impression-level ranking in our setting requires
+fine-tuning at a comparable scale.
+Taken together, these results validate our pipeline design: pre-
+training provides a strong backbone, while large-scale fine-tuning
+aligns the model with the downstream ranking objective.
+4.5
+Context Length Scaling (RQ4)
+We examine whether increasing context length (number of past
+historical user interactions) improves recommendation quality. We
+fix pre-training context length at 512 and vary only fine-tuning
+context length.
+As shown in Table 5, longer histories yield consistent improve-
+ments in pairwise accuracy uplift. Increasing context length from
+512 to 2048 interactions results in a notable gain (+1.01% to +2.32%
+in feature-based ranking). Extending further to 8192 interactions
+brings additional uplift (+2.77%), comparable to scaling model size
+from 100M to 1B parameters.
+4.6
+Real-World Experiments (RQ5)
+Over the past several years, we deployed a series of transformer-
+based ranking models into our music recommendation pipeline. All
+prior models followed a two-tower architecture. They employed
+traditional next-item prediction pre-training (e.g., predicting the
+next like), followed by impression-level fine-tuning for ranking.
+Table 6 summarizes the A/B test gains from each deployment:
+• Offline V1: trained on the most recent 512 engagement-
+based feedback events (e.g., likes)
+• Offline V2: extended to consumption-based signals (e.g.,
+streams with provided completion rate information)
+• Offline V3: merged both signal types into a heterogeneous
+user sequence
+
+Scaling Recommender Transformers to One Billion Parameters
+KDD ’26, August 09–13, 2026, Jeju Island, Republic of Korea
+Table 6: Incremental online gains (A/B tests) from successive transformer-based models on our music streaming platform.
+“TLT” is total listening time, and “like likelihood” is the probability that a user presses “like” for a recommended item. Each
+row’s improvement is measured relative to the previous deployments, so gains are cumulative.
+Deployment
+Context Length
+Encoder
+TLT
+Like Likelihood
+Configuration
+#Params
+Offline V1
+512
+L6 H512
+18.9M
++0.52%
++1.11%
+Offline V2
+1024
+L6 H512
+18.9M
++1.00%
++0.73%
+Offline V3
+1024
+L6 H512
+18.9M
++0.73%
++5.00%
+Real-time V1
+1024
+L4 H256
+3.2M
++0.32%
++1.38%
+Offline V4 (ARGUS)
+8192
+L10 H1024
+126.0M
++2.26%
++6.37%
+• Real-time V1: optimized for low-latency inference by re-
+ducing encoder size 6×
+Each new generation provided measurable uplift in total listening
+time (TLT) and like likelihood, evaluated via A/B tests against the
+existing production stack. Since all deployments were cumulative,
+each improvement built upon prior transformer models and other
+non-deep-learning enhancements.
+Offline V4 (ARGUS) combines several advancements: a signif-
+icantly larger encoder (126M parameters), extended user context
+(up to 8192 events), and the proposed training pipeline described
+in this work. ARGUS achieved the strongest transformer-driven
+online gains to date: +2.26% in total listening time and +6.37% in
+like likelihood. While measuring online uplift for the largest 1B
+configuration would be ideal, it was out of scope due to the high
+computational cost of large-scale online experiments.
+Since the initial submission of this work, we have further inte-
+grated a smaller real-time variant of ARGUS directly into the pro-
+duction ranker, observing complementary gains when combined
+with the daily offline embeddings.
+5
+Discussion
+5.1
+Relation to HSTU
+In addition to the encoder comparison in Section 4.3, we highlight
+several practical differences between HSTU [51] and ARGUS that
+are important for interpreting results.
+Two pipelines vs. a unified formulation. The original HSTU paper
+employs two distinct procedures: a ranking task with interleaved
+item-action tokens and a retrieval task that incorporates negative
+interactions but limits predictions to positive events. In contrast,
+ARGUS utilizes a unified pre-training objective, combining feedback
+prediction (conceptually similar to HSTU’s ranking loss) with a
+second task that predicts all item interactions, including negative
+ones.
+Context modeling. HSTU represents context changes as separate
+events. ARGUS treats context as part of each interaction: either as
+an explicit token in the (𝑐𝑡,𝑖𝑡, 𝑓𝑡) stream (full version) or fused into
+a single interaction embedding (simplified version).
+Serving cost for ranking. ARGUS is designed to be inexpensive
+at serving time, especially in the offline setting: we fine-tune into
+a two-tower model with daily user embedding refresh and dot-
+product scoring (Section 3.2). This makes impression-level ranking
+substantially cheaper than real-time target-aware schemes that
+require encoding the user state jointly with each candidate item.
+5.2
+Practical Considerations
+Generalization across domains. Although this paper focuses on
+music recommendation, we have applied the same architecture in
+other large-scale domains, including an e-commerce marketplace,
+grocery delivery, and advertising, observing consistent gains.
+Cold start. ARGUS is not tied to an itemID lookup: item represen-
+tations can be formed from arbitrary content and metadata features,
+and the ItemID feature can be omitted altogether. In our deploy-
+ments across multiple domains, we experimented with different
+item-feature configurations and observed consistent performance,
+suggesting that the approach does not have fundamental cold-start
+limitations.
+Additional fine-tuning scenarios. Since the initial submission, we
+have explored additional fine-tuning scenarios beyond impression-
+level ranking. In particular, in several domains we have already de-
+ployed a candidate-generation model: using the same pre-training
+recipe, we fine-tune the backbone to predict future positive in-
+teractions. We also tested more challenging objectives, such as
+generating the user’s next session as a whole, and found that the
+same backbone can support these richer targets.
+6
+Conclusion
+We present a scalable framework for training large recommender
+transformers, successfully deployed in a real-world music recom-
+mendation system. Drawing inspiration from reinforcement learn-
+ing and advances in large language models, we introduce a novel
+autoregressive pre-training task that unifies next-item and feed-
+back prediction, encouraging the model both to imitate observed
+behavior and generalize beyond it.
+Acknowledgments
+We would like to thank the Yandex Music Recommendations team,
+led by Daniil Burlakov, for their continuous support throughout this
+work. Over the years, they have generously shared their expertise
+in the music domain and have provided invaluable assistance with
+deployments, including the ARGUS deployment. It has been a real
+pleasure collaborating with them.
+
+KDD ’26, August 09–13, 2026, Jeju Island, Republic of Korea
+Kirill Khrylchenko, Artem Matveev, Sergei Makeev, and Vladimir Baikalov
+References
+[1] Newsha Ardalani, Carole-Jean Wu, Zeliang Chen, Bhargav Bhushanam, and
+Adnan Aziz. 2022. Understanding Scaling Laws for Recommendation Models.
+arXiv:2208.08489 [cs.IR] https://arxiv.org/abs/2208.08489
+[2] Alex Beutel, Paul Covington, Sagar Jain, Can Xu, Jia Li, Vince Gatto, and Ed H.
+Chi. 2018. Latent Cross: Making Use of Context in Recurrent Recommender
+Systems. In Proceedings of the Eleventh ACM International Conference on Web
+Search and Data Mining (Marina Del Rey, CA, USA) (WSDM ’18). Association for
+Computing Machinery, New York, NY, USA, 46–54. doi:10.1145/3159652.3159727
+[3] Fedor Borisyuk, Lars Hertel, Ganesh Parameswaran, Gaurav Srivastava, Sudar-
+shan Srinivasa Ramanujam, Borja Ocejo, Peng Du, Andrei Akterskii, Neil Daftary,
+Shao Tang, Daqi Sun, Qiang Charles Xiao, Deepesh Nathani, Mohit Kothari, Yun
+Dai, and Aman Gupta. 2025. From Features to Transformers: Redefining Ranking
+for Scalable Impact. arXiv:2502.03417 [cs.LG] https://arxiv.org/abs/2502.03417
+[4] Fedor Borisyuk, Mingzhou Zhou, Qingquan Song, Siyu Zhu, Birjodh Tiwana,
+Ganesh Parameswaran, Siddharth Dangi, Lars Hertel, Qiang Charles Xiao, Xi-
+aochen Hou, Yunbo Ouyang, Aman Gupta, Sheallika Singh, Dan Liu, Hailing
+Cheng, Lei Le, Jonathan Hung, Sathiya Keerthi, Ruoyan Wang, Fengyu Zhang,
+Mohit Kothari, Chen Zhu, Daqi Sun, Yun Dai, Xun Luan, Sirou Zhu, Zhiwei
+Wang, Neil Daftary, Qianqi Shen, Chengming Jiang, Haichao Wei, Maneesh
+Varshney, Amol Ghoting, and Souvik Ghosh. 2024. LiRank: Industrial Large
+Scale Ranking Models at LinkedIn. In Proceedings of the 30th ACM SIGKDD
+Conference on Knowledge Discovery and Data Mining (Barcelona, Spain) (KDD
+’24). Association for Computing Machinery, New York, NY, USA, 4804–4815.
+doi:10.1145/3637528.3671561
+[5] Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan,
+Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan,
+Rewon Child, Aditya Ramesh, Daniel M. Ziegler, Jeffrey Wu, Clemens Winter,
+Christopher Hesse, Mark Chen, Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin
+Chess, Jack Clark, Christopher Berner, Sam McCandlish, Alec Radford, Ilya
+Sutskever, and Dario Amodei. 2020. Language models are few-shot learners. In
+Proceedings of the 34th International Conference on Neural Information Processing
+Systems (Vancouver, BC, Canada) (NIPS ’20). Curran Associates Inc., Red Hook,
+NY, USA, Article 159, 25 pages.
+[6] Minmin Chen, Alex Beutel, Paul Covington, Sagar Jain, Francois Belletti, and
+Ed Chi. 2019. Top-K Off-Policy Correction for a REINFORCE Recommender
+System. WSDM ’19: Proceedings of the Twelfth ACM International Conference on
+Web Search and Data Mining, 456–464. doi:10.1145/3289600.3290999
+[7] Qiwei Chen, Huan Zhao, Wei Li, Pipei Huang, and Wenwu Ou. 2019. Behavior
+sequence transformer for e-commerce recommendation in Alibaba. In Proceedings
+of the 1st International Workshop on Deep Learning Practice for High-Dimensional
+Sparse Data (Anchorage, Alaska) (DLP-KDD ’19). Association for Computing
+Machinery, New York, NY, USA, Article 12, 4 pages. doi:10.1145/3326937.3341261
+[8] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra,
+Hrishi Aradhye, Glen Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, Rohan
+Anil, Zakaria Haque, Lichan Hong, Vihan Jain, Xiaobing Liu, and Hemal Shah.
+2016. Wide & Deep Learning for Recommender Systems. In Proceedings of the
+1st Workshop on Deep Learning for Recommender Systems (Boston, MA, USA)
+(DLRS 2016). Association for Computing Machinery, New York, NY, USA, 7–10.
+doi:10.1145/2988450.2988454
+[9] Sharad
+Chitlangia,
+Krishna
+Reddy
+Kesari,
+and
+Rajat
+Agarwal.
+2023.
+Scaling generative pre-training for user ad activity sequences.
+(2023).
+https://www.amazon.science/publications/scaling-generative-pre-training-for-
+user-ad-activity-sequences
+[10] Benjamin Coleman, Wang-Cheng Kang, Matthew Fahrbach, Ruoxi Wang, Lichan
+Hong, Ed H. Chi, and Derek Zhiyuan Cheng. 2023. Unified embedding: battle-
+tested feature representations for web-scale ML systems. In Proceedings of the
+37th International Conference on Neural Information Processing Systems (New
+Orleans, LA, USA) (NIPS ’23). Curran Associates Inc., Red Hook, NY, USA, Article
+2453, 22 pages.
+[11] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep Neural Networks
+for YouTube Recommendations. In Proceedings of the 10th ACM Conference on
+Recommender Systems. New York, NY, USA.
+[12] Xiuqi Deng, Lu Xu, Xiyao Li, Jinkai Yu, Erpeng Xue, Zhongyuan Wang, Di Zhang,
+Zhaojie Liu, Guorui Zhou, Yang Song, Na Mou, Shen Jiang, and Han Li. 2024. End-
+to-end training of Multimodal Model and ranking Model. arXiv:2404.06078 [cs.IR]
+https://arxiv.org/abs/2404.06078
+[13] Priya Goyal, Dhruv Mahajan, Abhinav Gupta, and Ishan Misra. 2019. Scaling and
+Benchmarking Self-Supervised Visual Representation Learning. In 2019 IEEE/CVF
+International Conference on Computer Vision (ICCV). 6390–6399. doi:10.1109/ICCV.
+2019.00649
+[14] Yulong Gu, Zhuoye Ding, Shuaiqiang Wang, Lixin Zou, Yiding Liu, and Dawei
+Yin. 2020. Deep Multifaceted Transformers for Multi-objective Ranking in Large-
+Scale E-commerce Recommender Systems. In Proceedings of the 29th ACM In-
+ternational Conference on Information & Knowledge Management (Virtual Event,
+Ireland) (CIKM ’20). Association for Computing Machinery, New York, NY, USA,
+2493–2500. doi:10.1145/3340531.3412697
+[15] Huan Gui, Ruoxi Wang, Ke Yin, Long Jin, Maciej Kula, Taibai Xu, Lichan Hong,
+and Ed H. Chi. 2023. Hiformer: Heterogeneous Feature Interactions Learning
+with Transformers for Recommender Systems. arXiv:2311.05884 [cs.IR] https:
+//arxiv.org/abs/2311.05884
+[16] Huifeng Guo, Ruiming Tang, Yunming Ye, Zhenguo Li, and Xiuqiang He. 2017.
+DeepFM: a factorization-machine based neural network for CTR prediction. In
+Proceedings of the 26th International Joint Conference on Artificial Intelligence
+(Melbourne, Australia) (IJCAI’17). AAAI Press, 1725–1731.
+[17] Wei Guo, Hao Wang, Luankang Zhang, Jin Yao Chin, Zhongzhou Liu, Kai Cheng,
+Qiushi Pan, Yi Quan Lee, Wanqi Xue, Tingjia Shen, Kenan Song, Kefan Wang,
+Wenjia Xie, Yuyang Ye, Huifeng Guo, Yong Liu, Defu Lian, Ruiming Tang, and
+Enhong Chen. 2024. Scaling New Frontiers: Insights into Large Recommendation
+Models. arXiv:2412.00714 [cs.IR] https://arxiv.org/abs/2412.00714
+[18] Xinran He, Junfeng Pan, Ou Jin, Tianbing Xu, Bo Liu, Tao Xu, Yanxin Shi, Antoine
+Atallah, Ralf Herbrich, Stuart Bowers, and Joaquin Quiñonero Candela. 2014.
+Practical Lessons from Predicting Clicks on Ads at Facebook. In Proceedings of
+the Eighth International Workshop on Data Mining for Online Advertising (New
+York, NY, USA) (ADKDD’14). Association for Computing Machinery, New York,
+NY, USA, 1–9. doi:10.1145/2648584.2648589
+[19] Joel Hestness, Sharan Narang, Newsha Ardalani, Gregory Diamos, Heewoo Jun,
+Hassan Kianinejad, Md. Mostofa Ali Patwary, Yang Yang, and Yanqi Zhou. 2017.
+Deep Learning Scaling is Predictable, Empirically. arXiv:1712.00409 [cs.LG]
+https://arxiv.org/abs/1712.00409
+[20] Balázs Hidasi, Alexandros Karatzoglou, Linas Baltrunas, and Domonkos Tikk.
+2016. Session-based Recommendations with Recurrent Neural Networks. In 4th
+International Conference on Learning Representations, ICLR 2016, San Juan, Puerto
+Rico, May 2-4, 2016, Conference Track Proceedings, Yoshua Bengio and Yann LeCun
+(Eds.). http://arxiv.org/abs/1511.06939
+[21] Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya,
+Trevor Cai, Eliza Rutherford, Diego de Las Casas, Lisa Anne Hendricks, Johannes
+Welbl, Aidan Clark, Tom Hennigan, Eric Noland, Katie Millican, George van den
+Driessche, Bogdan Damoc, Aurelia Guy, Simon Osindero, Karen Simonyan, Erich
+Elsen, Oriol Vinyals, Jack W. Rae, and Laurent Sifre. 2022. Training compute-
+optimal large language models. In Proceedings of the 36th International Conference
+on Neural Information Processing Systems (New Orleans, LA, USA) (NIPS ’22).
+Curran Associates Inc., Red Hook, NY, USA, Article 2176, 15 pages.
+[22] Yi-Ping Hsu, Po-Wei Wang, Chantat Eksombatchai, and Jiajing Xu. 2024. Taming
+the One-Epoch Phenomenon in Online Recommendation System by Two-stage
+Contrastive ID Pre-training. In Proceedings of the 18th ACM Conference on Recom-
+mender Systems (Bari, Italy) (RecSys ’24). Association for Computing Machinery,
+New York, NY, USA, 838–840. doi:10.1145/3640457.3688053
+[23] Yitong Ji, Aixin Sun, Jie Zhang, and Chenliang Li. 2023. A Critical Study on Data
+Leakage in Recommender System Offline Evaluation. ACM Trans. Inf. Syst. 41, 3,
+Article 75 (Feb. 2023), 27 pages. doi:10.1145/3569930
+[24] Wang-Cheng Kang and Julian McAuley. 2018. Self-Attentive Sequential Rec-
+ommendation. In 2018 IEEE International Conference on Data Mining (ICDM).
+197–206. doi:10.1109/ICDM.2018.00035
+[25] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B. Brown, Benjamin Chess,
+Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. 2020.
+Scaling Laws for Neural Language Models. arXiv:2001.08361 [cs.LG] https:
+//arxiv.org/abs/2001.08361
+[26] Alex Krizhevsky, Ilya Sutskever, and Geoffrey E Hinton. 2012. ImageNet Clas-
+sification with Deep Convolutional Neural Networks. In Advances in Neural
+Information Processing Systems, F. Pereira, C.J. Burges, L. Bottou, and K.Q. Wein-
+berger (Eds.), Vol. 25. Curran Associates, Inc. https://proceedings.neurips.cc/
+paper_files/paper/2012/file/c399862d3b9d6b76c8436e924a68c45b-Paper.pdf
+[27] Chi Liu, Jiangxia Cao, Rui Huang, Kai Zheng, Qiang Luo, Kun Gai, and
+Guorui Zhou. 2024. KuaiFormer: Transformer-Based Retrieval at Kuaishou.
+arXiv:2411.10057 [cs.IR] https://arxiv.org/abs/2411.10057
+[28] Dhruv Mahajan, Ross Girshick, Vignesh Ramanathan, Kaiming He, Manohar
+Paluri, Yixuan Li, Ashwin Bharambe, and Laurens van der Maaten. 2018. Explor-
+ing the Limits of Weakly Supervised Pretraining. In Computer Vision – ECCV 2018,
+Vittorio Ferrari, Martial Hebert, Cristian Sminchisescu, and Yair Weiss (Eds.).
+Springer International Publishing, Cham, 185–201.
+[29] Yu A. Malkov and D. A. Yashunin. 2020. Efficient and Robust Approximate
+Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs.
+IEEE Trans. Pattern Anal. Mach. Intell. 42, 4 (April 2020), 824–836. doi:10.1109/
+TPAMI.2018.2889473
+[30] Dheevatsa Mudigere, Yuchen Hao, Jianyu Huang, Zhihao Jia, Andrew Tulloch,
+Srinivas Sridharan, Xing Liu, Mustafa Ozdal, Jade Nie, Jongsoo Park, Liang Luo,
+Jie (Amy) Yang, Leon Gao, Dmytro Ivchenko, Aarti Basant, Yuxi Hu, Jiyan Yang,
+Ehsan K. Ardestani, Xiaodong Wang, Rakesh Komuravelli, Ching-Hsiang Chu,
+Serhat Yilmaz, Huayu Li, Jiyuan Qian, Zhuobo Feng, Yinbin Ma, Junjie Yang, Ellie
+Wen, Hong Li, Lin Yang, Chonglin Sun, Whitney Zhao, Dimitry Melts, Krishna
+Dhulipala, KR Kishore, Tyler Graf, Assaf Eisenman, Kiran Kumar Matam, Adi
+Gangidi, Guoqiang Jerry Chen, Manoj Krishnan, Avinash Nayak, Krishnaku-
+mar Nair, Bharath Muthiah, Mahmoud khorashadi, Pallab Bhattacharya, Petr
+Lapukhov, Maxim Naumov, Ajit Mathews, Lin Qiao, Mikhail Smelyanskiy, Bill
+
+Scaling Recommender Transformers to One Billion Parameters
+KDD ’26, August 09–13, 2026, Jeju Island, Republic of Korea
+Jia, and Vijay Rao. 2022. Software-hardware co-design for fast and scalable
+training of deep learning recommendation models. In Proceedings of the 49th
+Annual International Symposium on Computer Architecture (New York, New York)
+(ISCA ’22). Association for Computing Machinery, New York, NY, USA, 993–1011.
+doi:10.1145/3470496.3533727
+[31] Maxim Naumov, Dheevatsa Mudigere, Hao-Jun Michael Shi, Jianyu Huang,
+Narayanan Sundaraman, Jongsoo Park, Xiaodong Wang, Udit Gupta, Carole-Jean
+Wu, Alisson G. Azzolini, Dmytro Dzhulgakov, Andrey Mallevich, Ilia Cherni-
+avskii, Yinghai Lu, Raghuraman Krishnamoorthi, Ansha Yu, Volodymyr Kon-
+dratenko, Stephanie Pereira, Xianjie Chen, Wenlin Chen, Vijay Rao, Bill Jia, Liang
+Xiong, and Misha Smelyanskiy. 2019. Deep Learning Recommendation Model
+for Personalization and Recommendation Systems. CoRR abs/1906.00091 (2019).
+https://arxiv.org/abs/1906.00091
+[32] Nikil Pancha, Andrew Zhai, Jure Leskovec, and Charles Rosenberg. 2022. Pinner-
+Former: Sequence Modeling for User Representation at Pinterest. In Proceedings
+of the 28th ACM SIGKDD Conference on Knowledge Discovery and Data Mining
+(Washington DC, USA) (KDD ’22). Association for Computing Machinery, New
+York, NY, USA, 3702–3712. doi:10.1145/3534678.3539156
+[33] Alexander Ploshkin, Vladislav Tytskiy, Alexey Pismenny, Vladimir Baikalov,
+Evgeny Taychinov, Artem Permiakov, Daniil Burlakov, and Eugene Krofto. 2025.
+Yambda-5B — A Large-Scale Multi-Modal Dataset for Ranking and Retrieval. In
+Proceedings of the Nineteenth ACM Conference on Recommender Systems (RecSys
+’25). Association for Computing Machinery, New York, NY, USA, 894–901. doi:10.
+1145/3705328.3748163
+[34] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, and Ilya
+Sutskever. 2019. Language Models are Unsupervised Multitask Learners. OpenAI
+(2019). https://cdn.openai.com/better-language-models/language_models_are_
+unsupervised_multitask_learners.pdf Accessed: 2024-11-15.
+[35] Kaushik Rangadurai, Yiqun Liu, Siddarth Malreddy, Xiaoyi Liu, Piyush Mahesh-
+wari, Vishwanath Sangale, and Fedor Borisyuk. 2022. NxtPost: User To Post
+Recommendations In Facebook Groups. In Proceedings of the 28th ACM SIGKDD
+Conference on Knowledge Discovery and Data Mining (Washington DC, USA)
+(KDD ’22). Association for Computing Machinery, New York, NY, USA, 3792–3800.
+doi:10.1145/3534678.3539042
+[36] Steffen Rendle. 2010. Factorization Machines. In Proceedings of the 2010 IEEE
+International Conference on Data Mining (ICDM ’10). IEEE Computer Society,
+USA, 995–1000. doi:10.1109/ICDM.2010.127
+[37] Kyuyong Shin, Hanock Kwak, Su Young Kim, Max Nihlén Ramström, Jisu Jeong,
+Jung-Woo Ha, and Kyung-Min Kim. 2023. Scaling law for recommendation mod-
+els: towards general-purpose user representations. In Proceedings of the Thirty-
+Seventh AAAI Conference on Artificial Intelligence and Thirty-Fifth Conference
+on Innovative Applications of Artificial Intelligence and Thirteenth Symposium on
+Educational Advances in Artificial Intelligence (AAAI’23/IAAI’23/EAAI’23). AAAI
+Press, Article 513, 9 pages. doi:10.1609/aaai.v37i4.25582
+[38] Kyuyong Shin, Hanock Kwak, Wonjae Kim, Jisu Jeong, Seungjae Jung, Kyungmin
+Kim, Jung-Woo Ha, and Sang-Woo Lee. 2023. Pivotal Role of Language Modeling
+in Recommender Systems: Enriching Task-specific and Task-agnostic Represen-
+tation Learning. In Proceedings of the 61st Annual Meeting of the Association for
+Computational Linguistics (Volume 1: Long Papers), Anna Rogers, Jordan Boyd-
+Graber, and Naoaki Okazaki (Eds.). Association for Computational Linguistics,
+Toronto, Canada, 1146–1161. doi:10.18653/v1/2023.acl-long.64
+[39] Weiping Song, Chence Shi, Zhiping Xiao, Zhijian Duan, Yewen Xu, Ming Zhang,
+and Jian Tang. 2019.
+AutoInt: Automatic Feature Interaction Learning via
+Self-Attentive Neural Networks. In Proceedings of the 28th ACM International
+Conference on Information and Knowledge Management (Beijing, China) (CIKM
+’19). Association for Computing Machinery, New York, NY, USA, 1161–1170.
+doi:10.1145/3357384.3357925
+[40] Aixin Sun. 2023. Take a Fresh Look at Recommender Systems from an Evaluation
+Standpoint. In Proceedings of the 46th International ACM SIGIR Conference on
+Research and Development in Information Retrieval (Taipei, Taiwan) (SIGIR ’23).
+Association for Computing Machinery, New York, NY, USA, 2629–2638. doi:10.
+1145/3539618.3591931
+[41] Chen Sun, Abhinav Shrivastava, Saurabh Singh, and Abhinav Gupta. 2017. Re-
+visiting Unreasonable Effectiveness of Data in Deep Learning Era . In 2017 IEEE
+International Conference on Computer Vision (ICCV). IEEE Computer Society, Los
+Alamitos, CA, USA, 843–852. doi:10.1109/ICCV.2017.97
+[42] Jiaxi Tang, Yoel Drori, Daryl Chang, Maheswaran Sathiamoorthy, Justin Gilmer,
+Li Wei, Xinyang Yi, Lichan Hong, and Ed H. Chi. 2023. Improving Training
+Stability for Multitask Ranking Models in Recommender Systems. In Proceedings
+of the 29th ACM SIGKDD Conference on Knowledge Discovery and Data Mining
+(Long Beach, CA, USA) (KDD ’23). Association for Computing Machinery, New
+York, NY, USA, 4882–4893. doi:10.1145/3580305.3599846
+[43] Jiaxi Tang and Ke Wang. 2018. Personalized Top-N Sequential Recommendation
+via Convolutional Sequence Embedding. In Proceedings of the Eleventh ACM
+International Conference on Web Search and Data Mining (Marina Del Rey, CA,
+USA) (WSDM ’18). Association for Computing Machinery, New York, NY, USA,
+565–573. doi:10.1145/3159652.3159656
+[44] Ruoxi Wang, Bin Fu, Gang Fu, and Mingliang Wang. 2017. Deep & Cross Network
+for Ad Click Predictions. In Proceedings of the ADKDD’17 (Halifax, NS, Canada)
+(ADKDD’17). Association for Computing Machinery, New York, NY, USA, Article
+12, 7 pages. doi:10.1145/3124749.3124754
+[45] Ruoxi Wang, Rakesh Shivanna, Derek Cheng, Sagar Jain, Dong Lin, Lichan Hong,
+and Ed Chi. 2021. DCN V2: Improved Deep & Cross Network and Practical
+Lessons for Web-scale Learning to Rank Systems. In Proceedings of the Web
+Conference 2021 (Ljubljana, Slovenia) (WWW ’21). Association for Computing
+Machinery, New York, NY, USA, 1785–1797. doi:10.1145/3442381.3450078
+[46] Zhiqiang Wang, Qingyun She, and Junlin Zhang. 2021. MaskNet: Introducing
+Feature-Wise Multiplication to CTR Ranking Models by Instance-Guided Mask.
+CoRR abs/2102.07619 (2021). arXiv:2102.07619 https://arxiv.org/abs/2102.07619
+[47] Xue Xia, Pong Eksombatchai, Nikil Pancha, Dhruvil Deven Badani, Po-Wei Wang,
+Neng Gu, Saurabh Vishwas Joshi, Nazanin Farahpour, Zhiyuan Zhang, and An-
+drew Zhai. 2023. TransAct: Transformer-based Realtime User Action Model for
+Recommendation at Pinterest. In Proceedings of the 29th ACM SIGKDD Confer-
+ence on Knowledge Discovery and Data Mining (Long Beach, CA, USA) (KDD
+’23). Association for Computing Machinery, New York, NY, USA, 5249–5259.
+doi:10.1145/3580305.3599918
+[48] Ji Yang, Xinyang Yi, Derek Zhiyuan Cheng, Lichan Hong, Yang Li, Simon Xiaom-
+ing Wang, Taibai Xu, and Ed H. Chi. 2020. Mixed Negative Sampling for Learning
+Two-tower Neural Networks in Recommendations. In Companion Proceedings of
+the Web Conference 2020 (Taipei, Taiwan) (WWW ’20). Association for Computing
+Machinery, New York, NY, USA, 441–447. doi:10.1145/3366424.3386195
+[49] Xinyang Yi, Ji Yang, Lichan Hong, Derek Zhiyuan Cheng, Lukasz Heldt, Aditee
+Kumthekar, Zhe Zhao, Li Wei, and Ed Chi. 2019. Sampling-bias-corrected neural
+modeling for large corpus item recommendations. In Proceedings of the 13th
+ACM Conference on Recommender Systems (Copenhagen, Denmark) (RecSys ’19).
+Association for Computing Machinery, New York, NY, USA, 269–277. doi:10.
+1145/3298689.3346996
+[50] Rex Ying, Ruining He, Kaifeng Chen, Pong Eksombatchai, William L. Hamilton,
+and Jure Leskovec. 2018. Graph Convolutional Neural Networks for Web-Scale
+Recommender Systems. In Proceedings of the 24th ACM SIGKDD International
+Conference on Knowledge Discovery & Data Mining (London, United Kingdom)
+(KDD ’18). Association for Computing Machinery, New York, NY, USA, 974–983.
+doi:10.1145/3219819.3219890
+[51] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Jiayuan He, Yinghai Lu, and Yu Shi. 2024. Actions
+Speak Louder than Words: Trillion-Parameter Sequential Transducers for Gen-
+erative Recommendations. In Proceedings of the 41st International Conference
+on Machine Learning (Proceedings of Machine Learning Research, Vol. 235), Rus-
+lan Salakhutdinov, Zico Kolter, Katherine Heller, Adrian Weller, Nuria Oliver,
+Jonathan Scarlett, and Felix Berkenkamp (Eds.). PMLR, 58484–58509.
+https:
+//proceedings.mlr.press/v235/zhai24a.html
+[52] Buyun Zhang, Liang Luo, Yuxin Chen, Jade Nie, Xi Liu, Shen Li, Yanli Zhao,
+Yuchen Hao, Yantao Yao, Ellie Dingqiao Wen, Jongsoo Park, Maxim Naumov, and
+Wenlin Chen. 2024. Wukong: Towards a Scaling Law for Large-Scale Recommen-
+dation. In Proceedings of the 41st International Conference on Machine Learning
+(Proceedings of Machine Learning Research, Vol. 235), Ruslan Salakhutdinov, Zico
+Kolter, Katherine Heller, Adrian Weller, Nuria Oliver, Jonathan Scarlett, and Felix
+Berkenkamp (Eds.). PMLR, 59421–59434. https://proceedings.mlr.press/v235/
+zhang24ao.html
+[53] Gaowei Zhang, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, and Ji-
+Rong Wen. 2024. Scaling Law of Large Sequential Recommendation Models. In
+Proceedings of the 18th ACM Conference on Recommender Systems (Bari, Italy)
+(RecSys ’24). Association for Computing Machinery, New York, NY, USA, 444–453.
+doi:10.1145/3640457.3688129
+[54] Wei Zhang, Dai Li, Chen Liang, Fang Zhou, Zhongke Zhang, Xuewei Wang, Ru
+Li, Yi Zhou, Yaning Huang, Dong Liang, Kai Wang, Zhangyuan Wang, Zhengxing
+Chen, Fenggang Wu, Minghai Chen, Huayu Li, Yunnan Wu, Zhan Shu, Mindi
+Yuan, and Sri Reddy. 2024. Scaling User Modeling: Large-scale Online User
+Representations for Ads Personalization in Meta. In Companion Proceedings of the
+ACM Web Conference 2024 (Singapore, Singapore) (WWW ’24). Association for
+Computing Machinery, New York, NY, USA, 47–55. doi:10.1145/3589335.3648301
+[55] Zhe Zhao, Lichan Hong, Li Wei, Jilin Chen, Aniruddh Nath, Shawn Andrews,
+Aditee Kumthekar, Maheswaran Sathiamoorthy, Xinyang Yi, and Ed Chi. 2019.
+Recommending what video to watch next: a multitask ranking system. In Pro-
+ceedings of the 13th ACM Conference on Recommender Systems (Copenhagen,
+Denmark) (RecSys ’19). Association for Computing Machinery, New York, NY,
+USA, 43–51. doi:10.1145/3298689.3346997
+[56] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep Interest Network for Click-
+Through Rate Prediction. In Proceedings of the 24th ACM SIGKDD International
+Conference on Knowledge Discovery & Data Mining (London, United Kingdom)
+(KDD ’18). Association for Computing Machinery, New York, NY, USA, 1059–1068.
+doi:10.1145/3219819.3219823

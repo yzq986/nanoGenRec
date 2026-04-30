@@ -1,0 +1,1604 @@
+MMQ: Multimodal Mixture-of-Quantization Tokenization for
+Semantic ID Generation and User Behavioral Adaptation
+Yi Xu
+Alibaba Group
+Beijing, China
+xy397404@alibaba-inc.com
+Moyu Zhang
+Alibaba Group
+Beijing, China
+zhangmoyu.zmy@alibaba-inc.com
+Chenxuan Li
+Peking University
+Beijing, China
+kongocat@stu.pku.edu.cn
+Zhihao Liao
+Beijing University of Aeronautics and
+Astronautics
+Beijing, China
+liaozhihao@buaa.edu.cn
+Haibo Xing
+Alibaba Group
+Beijing, China
+xinghaibo.xhb@alibaba-inc.com
+Hao Deng
+Alibaba Group
+Beijing, China
+denghao.deng@alibaba-inc.com
+Jinxin Hu∗
+Alibaba Group
+Beijing, China
+jinxin.hjx@alibaba-inc.com
+Yu Zhang
+Alibaba Group
+Beijing, China
+daoji@lazada.com
+Xiaoyi Zeng
+Alibaba Group
+Beijing, China
+yuanhan@taobao.com
+Jing Zhang
+Wuhan University, School of
+Computer Science
+Wuhan, China
+jingzhang.cv@gmail.com
+ABSTRACT
+Recommender systems traditionally represent items using unique
+identifiers (ItemIDs), but this approach struggles with large, dy-
+namic item corpora and sparse long-tail data, limiting scalability
+and generalization. Semantic IDs, derived from multimodal content
+such as text and images, offer a promising alternative by mapping
+items into a shared semantic space, enabling knowledge transfer
+and improving recommendations for new or rare items. However,
+existing methods face two key challenges: (1) balancing cross-modal
+synergy with modality-specific uniqueness, and (2) bridging the
+semantic-behavioral gap, where semantic representations may mis-
+align with actual user preferences. To address these challenges,
+we propose Multimodal Mixture-of-Quantization (MMQ), a two-
+stage framework that trains a novel multimodal tokenizer. First, a
+shared-specific tokenizer leverages a multi-expert architecture with
+modality-specific and modality-shared experts, using orthogonal
+regularization to capture comprehensive multimodal information.
+Second, behavior-aware fine-tuning dynamically adapts semantic
+IDs to downstream recommendation objectives while preserving
+modality information through a multimodal reconstruction loss.
+Extensive offline experiments and online A/B tests demonstrate
+that MMQ effectively unifies multimodal synergy, specificity, and
+behavioral adaptation, providing a scalable and versatile solution
+for both generative retrieval and discriminative ranking tasks.
+CCS CONCEPTS
+• Information systems →Recommender systems.
+∗Corresponding author
+1
+INTRODUCTION
+In recommender systems, a common approach represents items
+using their unique identifiers (ItemIDs) [24, 25]. However, this
+paradigm faces critical limitations in real-world scenarios with
+large, dynamic item corpora. First, high item turnover and shifting
+popularity trends challenge the stability and scalability of static ID-
+based embeddings [57, 58]. Second, data sparsity for long-tail items
+leads to poorly generalized representations [61, 63], collectively
+limiting model performance and scalability. These issues motivate
+exploring alternative item representations.
+Semantic IDs, generated from item content such as text and im-
+ages via multimodal tokenizers, provide a promising alternative
+[17, 24, 25]. By mapping items to a shared semantic space, they
+enable knowledge transfer among similar items, improving rec-
+ommendations for new or long-tail items. Moreover, representing
+items through a combination of tokens from a fixed-size semantic
+vocabulary enhances scalability and efficiency compared to one-to-
+one ID mappings [60]. These advantages have facilitated semantic
+IDs’ application across diverse recommendation frameworks, from
+generative retrival [26, 28, 54] to discriminative ranking tasks [53].
+Existing semantic tokenizers primarily leverage text and vision
+modalities, which provide complementary information. According
+to Partial Information Decomposition (PID) theory [42, 43], item
+information can be decomposed into modality-unique and syn-
+ergistic components. Capturing both is crucial: synergistic cross-
+modal interactions can reveal fine-grained item characteristics that
+single modalities cannot, while modality-unique details preserve
+unique signals essential for personalization. As illustrated in Figure
+arXiv:2508.15281v1  [cs.IR]  21 Aug 2025
+
+Yi Xu, Moyu Zhang, Chenxuan Li, Zhihao Liao, Haibo Xing, Hao Deng, Jinxin Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang
+1, cross-modal interactions between text and vision reveal finer-
+grained item characteristics: the left appeals to fashion-forward
+users, whereas the right attracts casual, vacation-oriented users.
+Properly modeling this synergy alongside modality-unique details
+enables more precise recommendations [44, 45, 47], such as sug-
+gesting fashion pants for the first user and beach sandals for the
+second.
+However, current methods struggle with a trade-off between cap-
+turing synergy and uniqueness. Approaches fall into two paradigms:
+(1) Modality Alignment (MA) merges modalities into a unified rep-
+resentation before tokenization, which may obscure modal-specific
+details due to dominance of one modality; (2) Modality Separa-
+tion (MS) maintains separate tokenizers per modality, preserving
+uniqueness but missing cross-modal synergy. Consequently, gen-
+erating high-quality semantic IDs that fully leverage multimodal
+information remains a challenge.
+Another key challenge is the semantic-behavioral gap: semantic
+IDs are trained in the semantic space, whereas recommendation
+relies on user behavior. Purely semantic representations can mis-
+represent behavioral preferences [28]. For example, semantically
+similar items may elicit distinct user interactions, leading to noisy
+recommendations. Thus, semantic tokenizers must adapt dynami-
+cally to downstream tasks rather than remain static.
+To address these challenges, we propose Multimodal Mixture-
+of-Quantization (MMQ), which is a two-stage framework. 1) Multi-
+modal Shared-Specific Tokenizer Training: We introduce a multi-
+expert architecture with modality-specific and modality-shared ex-
+perts to explicitly model both unique and synergistic information.
+In addition, we leverage orthogonal regularization to encourage
+expert diversity, preventing collapse and ensuring comprehensive
+representation. 2) Behavior-Aware Fine-Tuning: We adapt seman-
+tic ID clusters dynamically using downstream recommendation
+objectives, bridging the semantic-behavioral gap. A multimodal
+reconstruction loss is proposed to preserve modality information
+while fine-tuning. We conduct extensive offline experiments and
+online A/B tests to evaluate MMQ in both generative retrieval and
+discriminative ranking tasks.
+Our main contributions are summarized as follows:
+• We propose the first unified semantic ID framework that si-
+multaneously captures multimodal synergy and uniqueness
+while dynamically adapting to user behavior.
+• We design a multi-expert architecture with orthogonal reg-
+ularization to disentangle modality-shared and modality-
+specific information. We introduce a behavior-aware fine-
+tuning to align semantic IDs with downstream recommen-
+dation objectives, which effectively addressed the semantic-
+behavioral gap.
+• Extensive experiments across generative and discriminative
+tasks demonstrate MMQ’s effectiveness, scalability, and
+versatility.
+2
+RELATED WORK
+Recent efforts in item representation have centered on semantic in-
+dexing [19, 33, 36–38], which generates discrete item identifiers (i.e.,
+tokens) from content information. A dominant approach within
+this paradigm is to apply quantization or clustering techniques
+Original Information
+Sleeve 
+Fashionable 
+Creative Fun
+Synergistic
+Information 1
+Cool Fashion
+And Daily Dress
+Recommendation 1
+Summer 
+Casual 
+T-shirt
+Vacation Fashion
+And Beach Dress
+Fashion Pants for User 1
+Item Description: " Men’s 
+T-Shirt Fit Casual Youth
+Popular Half Sleeve 
+Fashionable Creative Fun 
+Non-Iron Treatment. Loose 
+Fit Short Sleeve Shirt 
+Casual Summer Casual T-
+shirt for Teenagers "
+Text + Vision Modality
+Printing Features
+Vacation Features
+Text + Vision Modality
+Synergistic
+Information 2
+Recommendation 2
+Beach Sandals for User 2
+Figure 1: Illustration of text and vision modal interaction.
+to pre-trained textual embeddings. In particular, TIGER [17] is a
+pioneering work that introduces Residual Quantization (RQ-VAE)
+to quantize items into semantic IDs, enabling new items to share
+knowledge through semantic similarity without the pre-trained em-
+beddings. SPM-SID [24] and PMA [25] explored the semantic IDs
+and subwords of Large Language Models (LLMs), using n-gram and
+SPM(SentencePiece Model) to combine the IDs. Existing works use
+different quantization methods for tokenization. RQ-Kmeans better
+addresses the collapse of RQVAE and is widely applied in many
+works [18]. Unlike the ordered tokenization of RQVAE, unordered
+tokenization [20] supports faster parallel generation. VQ-Rec [26]
+uses OPQ (Optimized Product Quantization) [59] to split and dis-
+orderly tokenize text vectors from BERT. ActionPiece [27] adopts
+unordered feature sets and context-aware token merging.
+Recognizing the limitations of the single content modality, recent
+research [15] explored the integration of collaborative information
+into the tokenization. A representative work is EAGER [28], which
+combines semantic information with collaborative signals to gen-
+erate more informative tokens. LC-Rec [29] designs multitask se-
+mantic alignment fine-tuning, including sequence item prediction,
+
+MMQ: Multimodal Mixture-of-Quantization Tokenization for Semantic ID Generation and User Behavioral Adaptation
+explicit index-language alignment, and implicit alignment tasks.
+ColaRec [30] utilizes a pre-trained collaborative filtering model to
+incorporate collaborative signals from user-item interactions into
+hierarchical K-means clustering [31]. IDGenRec [32] converts user
+behavior sequences into text descriptions and uses the LLMs to
+generate unique semantic IDs for target items.
+OneRec [18] and UTGRec [34] are modality-aligned paradigm
+that perform multimodal embedding alignment on the images and
+texts obtained from the video. Then, the unified embedding is input
+to RQ-Kmeans for tokenization. EGA [35] is a modality-separated
+paradigm that quantizes POI and image embeddings using RQ-VAE,
+respectively. Then it feeds them into the encoder-decoder for in-
+teraction. Consequently, the existing multimodal semantic tokens
+have the following problems: one must either capture synergy at
+the risk of losing uniqueness [39, 41], or preserve uniqueness at
+the cost of ignoring synergy [40]. Existing works that combine
+these strategies with RQ-VAE or PQ inevitably meet these limi-
+tations. To our knowledge, no prior work has proposed a unified
+tokenizer architecture that can explicitly and simultaneously model
+both the synergy and uniqueness of multimodal information while
+mitigating the foundational issues of quantization.
+3
+METHODOLOGY
+In this section, we introduce the proposed item tokenizer frame-
+work, termed MMQ, which generates a tuple of semantic IDs for
+multimodal representations of items, such as text and vision rep-
+resentations. Firstly, we formulate the task of item tokenizer in
+Section 3.1. Secondly, we introduce the multimodal shared-specific
+tokenizer, which uses shared and specific experts to explicitly dis-
+entangle and model both modality-unique and synergistic informa-
+tion. Thirdly, we introduce the behavior-aware fine-tuning, which
+guides the dynamic adjustment of cluster centroids using down-
+stream recommendation objectives to achieve alignment between
+item semantics and user behavioral patterns.
+3.1
+Problem Formulation
+The item tokenizer is designed to transform the multimodal content
+of each item into a sequence of discrete semantic IDs. Formally,
+for a given item, we first leverage powerful pretrained vision and
+text embedding models to encode its visual and textual information
+into continuous feature vectors, respectively, e = [e𝑡, e𝑣], where
+e𝑡is the pretrained text embedding, e𝑣is the pretrained vision
+embedding. The item tokenizer Titem maps these high-dimensional
+embeddings to a discrete sequence of semantic IDs:
+𝑆𝑒𝑚𝑎𝑛𝑡𝑖𝑐_𝐼𝐷𝑠= (𝑐1,𝑐2, . . . ,𝑐𝑙) = Titem([e𝑡, e𝑣])
+(1)
+where 𝑙is the length of the semantic IDs, {𝑐𝑖}𝑙
+𝑖is the i-th seman-
+tic ID. To ensure that these semantic IDs faithfully preserve the
+synergistic and unique information of the original text and vision
+modality, the modality-shared and modality-specifc experts are
+designed to explicitly disentangle and model both modality-unique
+and synergistic information.
+3.2
+Multimodal Shared-Specific Tokenizer
+Training Stage
+To balance the synergy and uniqueness of multimodal information,
+we designed a multimodal shared-specific tokenizer. Furthermore,
+we added an orthogonal regularization component to address redun-
+dancy and replaced the standard L2 distance with cosine similarity
+during codebook lookup to mitigate the impact of differences in
+the output value distribution of different modality sub-models.
+3.2.1
+modality-shared and modality-specificscalability Expert. We
+first introduce the multimodal shared-specific tokenizer, which
+consists of two core components: modality-specific experts and
+modality-shared experts. The former is designed to preserve unique,
+modality-specific properties, while the latter aims to capture syner-
+gistic information arising from multimodal interactions.
+Specifically, for the 𝑖-th modality-shared expert 𝐸𝑠,𝑖in {𝐸𝑠,𝑖}𝑁𝑠
+𝑖=1,
+the latent modality-shared representation is 𝑧𝑠,𝑖.
+z𝑠,𝑖= 𝐸𝑠,𝑖([e𝑡, e𝑣])
+(2)
+where 𝑖∈[1, 𝑁𝑠] is the 𝑖-th modality-shared encoders, 𝑁𝑠is the
+number of modality-shared experts.
+Conversely, the modality-specific experts operate on unimodal
+inputs, where each expert is dedicated to encoding the unique
+attributes inherent to a single modality. For the textual modality, a
+set of 𝑁𝑡dedicated experts, {𝐸𝑡,𝑖}𝑁𝑡
+𝑖=1, transforms the input vector e𝑡
+and e𝑣into a corresponding set of latent representations {z𝑡,𝑖}𝑁𝑡
+𝑖=1.
+Analogously, the visual modality is processed by the set of 𝑁𝑣vision
+experts to produce the representations {z𝑣,𝑖}𝑁𝑣
+𝑖=1.
+z𝑡,𝑖= 𝐸𝑡,𝑖(e𝑡), z𝑣,𝑖= 𝐸𝑣,𝑖(e𝑣)
+(3)
+In addition to learning synergistic information across modalities,
+modality-shared experts also serve a purpose: reducing redundancy
+between experts. Traditional strategies can cause different experts
+to learn overlapping information, leading to inefficient parameter
+usage and consequently redundant expert parameters. However, if
+shared experts are dedicated to capturing and integrating common
+knowledge across different modalities, parameter redundancy be-
+tween other specific experts is reduced. This reduced redundancy
+contributes to building a more parameter-efficient model with more
+specialized experts.
+For modality-shared experts, the inputs from each modality are
+deterministically assigned to them. modality-specificscalability ex-
+perts are dynamically weighted via a gating network that learns
+to assign an importance score to each expert based on the inputs.
+This fusion mechanism is formally defined as:
+z =
+𝑁𝑠
+∑︁
+𝑖=1
+z𝑠,𝑖+
+𝑁𝑣
+∑︁
+𝑖=1
+𝑔𝑣,𝑖z𝑣,𝑖+
+𝑁𝑡
+∑︁
+𝑖=1
+𝑔𝑡,𝑖z𝑡,𝑖
+(4)
+𝑔𝑡= 𝑠𝑜𝑓𝑡𝑚𝑎𝑥(𝑀𝐿𝑃𝑡(e𝑡) + 𝑏𝑡)
+(5)
+𝑔𝑣= 𝑠𝑜𝑓𝑡𝑚𝑎𝑥(𝑀𝐿𝑃𝑣(e𝑣) + 𝑏𝑣)
+(6)
+where z𝑠,𝑖, z𝑣,𝑖, and z𝑡,𝑖are the latent representations from the
+modality-shared, visual-specific, and text-specific experts, respec-
+tively. The terms 𝑔𝑣,𝑖and 𝑔𝑡,𝑖represent the learned gating weights.
+Cosine Distance for Semantic-Aware Quantizer To reduce
+scale mismatches across modality-specific encoders, we replace the
+standard 𝐿2 distance with cosine similarity in codebook lookup.
+
+Yi Xu, Moyu Zhang, Chenxuan Li, Zhihao Liao, Haibo Xing, Hao Deng, Jinxin Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang
+Expert
+Encoder
+Decoder
+0.4
+0.05
+0.1
+0.3
+0.15
+1
+0
+0
+0
+0
+soft_ind
+Argmax
+hard_ind
+Deep Cross Network
+PCTR
+Label
+Loss
+Softmax
+Discriminative
+Generative Retrieval
+Next-item prediction
+Generative
+𝑖𝑛𝑑= 𝑠𝑜𝑓𝑡_𝑖𝑛𝑑+ 𝑠𝑔(ℎ𝑎𝑟𝑑_𝑖𝑛𝑑−𝑠𝑜𝑓𝑡_𝑖𝑛𝑑)
+Non-differentiable
+Forward pass
+Backpropagation
+sg: Stop-Gradient
+Behavior-Aware Fine-tuning Stage
+Cosine Quantizer
+Cosine similarity 
+𝒁𝒊
+𝑻𝒁𝒒𝒋
+𝒁𝒊
+"  𝒁𝒒𝒋
+Loss
+Joypaw 1.5 
+kg Grain-Free 
+High-Protein 
+Cat Food (92 
+% Meat, 0 % 
+Legumes)
+Image
+Title
+Vision 
+Encoder
+Text 
+Encoder
+Text
+Gate
+×𝑵
+×𝑵
+Shared
+Expert
+ℒ!"#$! =
+𝑉%!"&𝑉%!"&
+'
+−𝐼(
+)
+Parameter orthogonality
+Multimodal Shared-Specific Tokenizer Training Stage
+Specific
+Expert
+Specific
+Expert
+Specific
+Expert
+Decoder
+Same
+modality
+Expert
+Same
+modality
+Expert
+Sum
+Dot product
+Data flow
+Vision
+Gate
+Figure 2: Our Proposed MMQ Framework. (1) Multimodal Shared-Specific Tokenizer Training Stage: We introduce a multi-expert
+architecture with modality-specific and modality-shared experts to explicitly model both unique and synergistic information.
+In addition, we leverage orthogonal regularization to encourage expert diversity, preventing expert collapse and ensuring
+comprehensive representation. (2) Behavior-Aware Fine-Tuning Stage: We adapt semantic ID clusters dynamically using
+downstream recommendation objectives, bridging the semantic-behavioral gap.
+This makes assignments depend on angle rather than magnitude,
+better matching the semantic geometry of multimodal embeddings
+and yielding more meaningful token selections. Concretely, for the
+set of modality-shared latent vectors {𝑧𝑠,𝑖}𝑁𝑠
+𝑖=1, the code index is:
+𝑐𝑠,𝑖= arg max
+𝑗∈{1,...,𝐾}
+z⊤
+𝑠,𝑖z𝑞,𝑗
+∥z𝑠,𝑖∥∥z𝑞,𝑗∥,
+𝑖= 1, . . . , 𝑁𝑠,
+(7)
+The cosine distance quantizer captures how well each codeword
+aligns with z𝑖in direction, independent of magnitude. The searched
+codeword is denoted as {z𝑞𝑠,𝑖}𝑁𝑠
+𝑖=1.
+Similarly, for the modality-specific latent vectors {z𝑡,𝑖}𝑁𝑡
+𝑖=1, {z𝑣,𝑖}𝑁𝑣
+𝑖=1,
+the corresponding codebook indexs are selected as {𝑐𝑡,𝑖}𝑁𝑡
+𝑖=1,{𝑐𝑣,𝑖}𝑁𝑣
+𝑖=1.
+Analogously, the fusion of the quantized representations 𝑧𝑞is for-
+mally defined as follows.
+z𝑞=
+𝑁𝑠
+∑︁
+𝑗=1
+z𝑞𝑠,𝑗+
+𝑁𝑣
+∑︁
+𝑗=1
+𝑔𝑣,𝑗z𝑞𝑣,𝑗+
+𝑁𝑡
+∑︁
+𝑗=1
+𝑔𝑡,𝑗z𝑞𝑡,𝑗
+(8)
+3.2.2
+Orthogonal-Constrained Vector-Qantized Code Learning. To
+ensure that the generated semantic IDs faithfully preserve both the
+synergistic and unique information from the original multimodal
+inputs, we design a dual training objective. First, we perform high-
+fidelity reconstruction of the original multimodal representations,
+encouraging the model to capture comprehensive, cross-modal
+semantics shared across modalities. Second, we add an orthogonal-
+ity regularizer on the modality-specific experts, which promotes
+disentanglement and reduces redundancy across experts, thereby
+preserving modality-unique cues.
+Multimodal Reconstruction Loss The L𝑟𝑒𝑐𝑜𝑛is designed
+to measure the fidelity of the original multimodal embeddings
+e = [e𝑡, e𝑣].
+L𝑟𝑒𝑐𝑜𝑛= ||e −𝑑𝑒𝑐𝑜𝑑𝑒𝑟(z + 𝑠𝑔(z𝑞−z))||2
+(9)
+To facilitate the learning process of the modality-specific latent
+representations, the auxiliary model-specific reconstruction loss is
+
+MMQ: Multimodal Mixture-of-Quantization Tokenization for Semantic ID Generation and User Behavioral Adaptation
+designed in Eq (10).
+L𝑎𝑢𝑥= ||e𝑡−𝑑𝑒𝑐𝑜𝑑𝑒𝑟𝑡(
+𝑁𝑡
+∑︁
+𝑗
+(z𝑡,𝑗+ 𝑠𝑔(zq𝑡,𝑗−z𝑞𝑡,𝑗)))||2
++ ||e𝑣−𝑑𝑒𝑐𝑜𝑑𝑒𝑟𝑣(
+𝑁𝑡
+∑︁
+𝑗
+(z𝑣,𝑗+ 𝑠𝑔(z𝑞𝑣,𝑗−z𝑣,𝑗))||2
+(10)
+Orthogonal Regularization for Multi Experts In addition to
+alleviating redundancy implicitly by using shared experts, we also
+explicitly introduce orthogonality constraints to solve this prob-
+lem. Formally, for a set of 𝑠modality-shared experts with learnable
+weight {W𝑖}𝑁
+𝑖=1, W𝑖∈R𝑑×𝑑denote the weight matrix of the 𝑖-th
+expert (𝑖= 1, . . . , 𝑁). We flatten each W𝑖into a vector v𝑖∈R𝑑2,
+forming a matrix V = [v1, . . . , v𝑁] ∈R𝑁×𝑑2. To ensure orthogo-
+nality, we normalize each row of V to unit length, yielding Vnorm.
+The orthogonal regularization loss of the group of modality-shared
+experts is then defined as:
+Lortho_shared =
+VnormV⊤
+norm −I
+2
+𝐹,
+(11)
+where I is the identity matrix and ∥· ∥2
+𝐹denotes the squared Frobe-
+nius norm. Similarly, the orthogonal regularization loss of the group
+of modality-specificscalability encoders is then defined as:
+Lortho_specific =
+V′normV′⊤
+norm −I
+2
+𝐹,
+(12)
+where V′ is the flattened weight matrix of modality-specific en-
+coders. The total orthogonal regularization loss is as follows.
+Lortho = Lortho_shared +
+𝑚
+∑︁
+𝑖
+Lortho_specific
+(13)
+This regularization encourages the expert projections to span dis-
+tinct directions in the latent space and ensures that multiple experts
+capture complementary aspects of the input, which is critical for
+generating compact and semantically rich semantic IDs.
+To sum up, the overall training objective is formulated as follows.
+L = 𝛼∗L𝑟𝑒𝑐𝑜𝑛+ 𝛽∗L𝑎𝑢𝑥+ 𝛾∗L𝑜𝑟𝑡ℎ𝑜
+(14)
+where 𝛼, 𝛽and 𝛾are loss weights, unless otherwise stated, we set
+𝛼=12, 𝛽=10, and 𝛾=0.005 in our experiments. The L𝑟𝑒𝑐𝑜𝑛is the
+reconstruction loss to rebuild the original multimodal embeddings
+e = [e𝑡, e𝑣], formally defined in Eq (9).
+3.3
+Behavior-aware Fine-tuning Stage
+Prevailing semantic ID-based recommenders, such as VQ-REC [26]
+and TIGER [17], operate on a two-stage training pipeline. They first
+pre-train an item tokenizer to map items into discrete semantic IDs,
+and then freeze this tokenizer while training downstream recom-
+mendation models using the generated IDs. However, this disjointed
+process creates a critical bottleneck: the discrete, non-differentiable
+nature of the codebook indices severs the gradient flow, leading to a
+fundamental misalignment between the tokenizer’s semantic space
+and the downstream model’s behavioral objective. To address this,
+we propose a novel behavior-aware fine-tuning framework that
+replaces the discrete index lookup with a differentiable, "soft" index-
+ing mechanism. This mechanism formulates item representations
+as a weighted combination of codebook vectors, thereby creating a
+continuous path for gradient propagation. This enables the joint
+optimization of the tokenizer and the recommendation model, ef-
+fectively aligning the semantic space with the behavioral task while
+simultaneously preserving the rich, pre-trained knowledge within
+the codebook.
+Soft Indices Bridges Item Tokenizer and Downstream tasks
+Inspired by Index Backpropagation Quantization (IBQ) [56], we
+adapt a soft quantization strategy that computes the cosine simi-
+larity logits between each latent embedding and the full codebook.
+For an item 𝑥with visual and textual features, the generated se-
+mantic IDs are deconted as {c𝑖}𝑙
+𝑖, the encoded latent representation
+is {z𝑖}𝑙
+𝑖. For each latent represebtation z𝑖, we compute its cosine
+similarity with all codewords C = {z𝑞𝑗}𝐾
+𝑗=1 in the codebook to form
+a similarity vector:
+p𝑖=
+"
+z⊤
+𝑖z𝑞1
+∥z𝑖∥· ∥z𝑞1 ∥, . . . ,
+z⊤
+𝑖z𝑞𝐾
+∥z𝑖∥· ∥z𝑞𝐾∥
+#
+∈R𝐾.
+(15)
+The soft indices is obtained by softmax as follows:
+𝑠𝑜𝑓𝑡_𝑖𝑛𝑑= softmax(p𝑖/𝜏) ∈R𝐾
+(16)
+ℎ𝑎𝑟𝑑_𝑖𝑛𝑑= arg max
+𝑗
+z⊤
+𝑖z𝑞𝑗
+∥z𝑖∥· ∥z𝑞𝑗∥∈R𝐾
+(17)
+𝑖𝑛𝑑= 𝑠𝑜𝑓𝑡_𝑖𝑛𝑑+ 𝑠𝑔(ℎ𝑎𝑟𝑑_𝑖𝑛𝑑−𝑠𝑜𝑓𝑡_𝑖𝑛𝑑)
+(18)
+where 𝑠𝑜𝑓𝑡_𝑖𝑛𝑑represents the probability distribution over the
+codebook for z𝑖, 𝜏is the temperature coefficient, 𝑠𝑔represents stop-
+ping gradient. The temperature coefficient 𝜏controls the sharpness
+of the soft indices during backpropagation, where a larger 𝜏results
+in smoother gradients and more stable training, and a smaller 𝜏
+encourages sharper, more discrete behavior.
+Joint Optimization Training Object. With the Straight-Through
+Estimator (STE) strategy, during forward propagation, the down-
+stream recommendation tasks use the discrete ℎ𝑎𝑟𝑑_𝑖𝑛𝑑to look
+up embeddings for semantic IDs for item representation. During
+backpropagation, gradients flow through 𝑠𝑜𝑓𝑡_𝑖𝑛𝑑, which are dif-
+ferentiable with respect to the item tokenizer’s parameters.
+This mechanism allows the item tokenizer to be jointly optimized
+with the downstream recommendation tasks. To preserve the se-
+mantic knowledge of the item tokenizer, the joint optimization
+training object is as follows:
+L𝑓𝑖𝑛𝑒𝑡𝑢𝑛𝑒= L𝑑𝑜𝑤𝑛𝑠𝑡𝑟𝑒𝑎𝑚𝑡𝑎𝑠𝑘+ 𝛼′ ∗L𝑟𝑒𝑐𝑜𝑛+ 𝛽′ ∗L𝑎𝑢𝑥
+(19)
+where ˆ𝑣𝑡+1 is the predicted next item vector, 𝛼′ and 𝛽′ are hy-
+perparameters to balance the downstream retrieval task and the
+reconstruction object of the item tokenizer, 𝛼′ = 0.5, 𝛽′ = 0.5 is set
+in experiments.
+4
+EXPERIMENTS
+In this paper, we conduct extensive experiments on both industrial
+and public datasets to evaluate the effectiveness of our proposed
+framework and address the following questions:
+• RQ1: How does MMQ compare to state-of-the-art item tokeniz-
+ers in terms of reconstruction accuracy and downstream perfor-
+mance in generative and discriminative recommendation?
+• RQ2: What is the contribution of each component in MMQ,
+including the modality shared-specific tokenizer and behavior-
+aware fine-tuning framework to overall performance?
+
+Yi Xu, Moyu Zhang, Chenxuan Li, Zhihao Liao, Haibo Xing, Hao Deng, Jinxin Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang
+• RQ3: How effective is our proposed MMQ in improving rec-
+ommendations for items with varying degrees of popularity,
+especially for those in the long-tail items?
+• RQ4: To what extent can the principle of behavior-aware fine-
+tuning be generalized to other vector quantization methods to
+enhance their recommendation performance?
+• RQ5: How does the performance of our proposed MMQ scale
+with an increasing number of semantic IDs?
+• RQ6: To what extent does the modality-shared expert contribute
+to building a more parameter-efficient model?
+4.1
+Experimental Setup
+4.1.1
+Dataset. We evaluate the proposed framework both on an
+industrial dataset and a public dataset.
+Industrial Dataset: This dataset was collected from a leading e-
+commerce advertising platform in Southeast Asia between October
+2024 and May 2025, encompassing 30 million users and 40 million
+advertisements. It contains user behavior sequences (impressions,
+clicks, conversions) with an average length of 128, alongside rich,
+multimodal item content (images, titles, descriptions, etc.). Its scale
+and complexity make it an ideal benchmark for evaluating real-
+world performance.
+Public Dataset: We conduct experiments on the subset “Beauty”
+of the Amazon Product Reviews [66] to evaluate our approach,
+including . All these datasets comprise user review data from May
+1996 to September 2014. For the evaluation in generative retrieval,
+we apply the 5-core filter to exclude unpopular users and items with
+fewer than five interaction records. Then, we construct user behav-
+ior sequences according to the chronological order and uniformly
+set the maximum item sequence length to 20. For the evaluation in
+discriminative ranking, we use the user-item rating dataset from
+Amazon Product Reviews. Following the standard practice, we treat
+ratings greater than 3 as positive labels and those less than or equal
+to 3 as negative labels. The dataset is sorted chronologically, and
+the first 90% of the data are used for training, while the remaining
+10% constitute the test set.
+4.1.2
+Evaluation Metrics. We employ the quantization metrics to
+evaluate the performance of the item tokenizer and the recom-
+mendation metrics to evaluate the performance of the generated
+semantic IDs incorporated with the generative retrieval and dis-
+criminative ranking task.
+Quantization Metrics: Reconstruction Loss [18] is utilized to
+evalute the reconstrction fidelity for the origin input vector. Code-
+book utilization [67] is employed to reflect the efficiency with which
+the model uses the codebook vectors. Token Distribution Entropy
+[68] is utilized to evaluate the diversity and balance of the distribu-
+tion across semantic codewords in codebooks.
+Recommendation Metrics: In generative retrieval, Recall@N
+and NDCG@N with N=5,10 are used to evaluate the performace.
+In discriminative ranking, AUC and GAUC are used to evaluate
+the performance. For the online experiments, the Adervertising
+Revenue, CVR (Conversion Rate), and Order are used to evaluate
+the online performace.
+4.1.3
+Baselines. To provide a comprehensive comparison and align
+with the existing literature, we structure our experiments around
+two dominant paradigms for multimodal semantic ID generation:
+Modality-Aligned (MA) and Modality-Separated (MS). Under
+the two paradigms, we experiment with the various quantization
+methods employed in semantic ID generation for recommendation
+tasks. We select the currently mainstream quantization methods
+based on semantic ID generation as our baseline.
+RQ-VAE: Residual-Quantized Variational AutoEncoder (RQ-VAE)
+[65] is a multi-level vector quantization model. It generates a coarse-
+to-fine sequence of semantic IDs by sequentially quantizing the
+residual of the input representation at each level. Due to its abil-
+ity to produce hierarchical semantic structures, RQ-VAE is widely
+adopted for large-scale generative retrieval and discriminative rank-
+ing tasks.
+RQ-Kmeans: Similar to RQ-VAE, RQ-Kmeans [36] also employs
+a residual quantization scheme to generate semantic IDs in a coarse-
+to-fine manner. Instead of learning the codebooks via backpropaga-
+tion, RQKmeans constructs them heuristically by applying K-means
+clustering directly to the representation residuals at each stage. This
+combination of residual quantization and K-means can lead to more
+stable training dynamics for semantic ID generation.
+OPQ: Optimized Product Quantization (OPQ) is an advanced
+variant of Product Quantization (PQ) [59]. It partitions the input
+representation into a set of disjoint sub-vectors and quantizes each
+one independently using a dedicated codebook. A key characteristic
+of OPQ is that it produces an unordered set of semantic IDs (one
+ID per sub-vector), which offers greater flexibility for downstream
+recommendation models[20, 26].
+4.1.4
+Experiment Setup. Recommendation Foundations: For
+the evaluation of the Generative Retrieval task, we adopt HeterRec
+[54], a strong multi-token prediction model, as our base frame-
+work. For the Discriminative Ranking task, we employ the well-
+established Parameter Personalized Network (PPNet) [55] as the
+backbone architecture.
+Implementation Details: For the item tokenizer training, in
+the industrial dataset, the codebook size is set to 3,000. IN public
+datasets, the codebook size is set to 100. The length of the semantic
+ID sequence is consistently set to 6 for all settings, specifically,
+𝑁𝑠= 2, 𝑁𝑡= 2 and 𝑁𝑣= 2 are set for MMQ. For both the industrial
+dataset and public dataset, the text embedding is obtained from the
+pre-trained Qwen3-Embedding 7B [69] with the dimension of 256,
+and the vision embedding is obtained from the pre-trained Pailitao
+v8 with the dimension of 256.
+4.2
+Overall Performance (RQ1)
+As presented in Table 1, we conduct a comprehensive evaluation on
+both Generative Retrieval and Discriminative Ranking tasks. We
+compare our proposed method, MMQ, against various quantization
+methods under two distinct multimodal fusion paradigms: Modality-
+Aligned and Modality-Separated. The analysis focuses on both
+the reconstruction fidelity and the downstream recommendation
+performance.
+Comparison with Modality-Separated(MS) and Modality-
+Aligned(MA) Fusion: The Modality-Separated approach consis-
+tently outperforms the Modality-Aligned approach on the large-
+scale industrial dataset across both ranking and retrieval tasks. On
+the smaller Amazon Beauty dataset, the performance gap between
+
+MMQ: Multimodal Mixture-of-Quantization Tokenization for Semantic ID Generation and User Behavioral Adaptation
+Table 1: Overall performance comparison on two datasets. We evaluate all methods on two downstream tasks: discriminative
+ranking and generative retrieval. Best results in each column are in bold. Our model, MMQ, is highlighted in gray. The last row
+(Improv.) denotes the relative improvement of MMQ over the best baseline.
+(a) Discriminative Ranking Evaluation
+Methods
+Industrial Dataset
+Amazon Beauty
+𝐿recon ↓
+Entropy↑
+Util.↑
+AUC↑
+GAUC↑
+𝐿recon ↓
+Entropy↑
+Util.↑
+AUC↑
+GAUC↑
+PPNet
+-
+-
+-
+0.7144
+0.6034
+-
+-
+-
+0.6455
+0.5897
+MA-RQ-VAE
+0.6165
+7.1178
+0.79
+0.7169
+0.6064
+0.6028
+3.4904
+0.99
+0.6466
+0.5952
+MA-RQ-kmeans
+0.6759
+7.7933
+1.00
+0.7170
+0.6056
+0.6240
+1.7100
+1.00
+0.6472
+0.5999
+MA-OPQ
+0.6730
+5.3092
+0.33
+0.7149
+0.6046
+0.9647
+3.3980
+0.96
+0.6469
+0.5998
+MS-RQ-VAE
+0.5547
+6.3389
+0.99
+0.7171
+0.6067
+1.1001
+3.8375
+1.00
+0.6473
+0.5971
+MS-RQ-kmeans
+0.6848
+7.5962
+1.00
+0.7181
+0.6076
+1.1547
+4.1603
+1.00
+0.6480
+0.6001
+MS-OPQ
+0.5678
+5.2789
+0.30
+0.7177
+0.6071
+0.9801
+3.3308
+0.95
+0.6481
+0.5995
+MMQ (Ours)
+0.5529
+7.9560
+1.00
+0.7184
+0.6081
+0.4470
+4.4206
+1.00
+0.6503
+0.6020
+Improv.
++0.32%
++2.08%
++0.00%
++0.04%
++0.07%
++25.84%
++6.25%
++0.00%
++0.33%
++0.31%
+(b) Generative Retrieval Evaluation
+Methods
+Industrial Dataset
+Amazon Beauty
+𝐿recon ↓
+Entropy↑
+Util.↑
+R@5↑
+R@10↑
+N@5↑
+N@10↑
+𝐿recon ↓
+Entropy↑
+Util.↑
+R@5↑
+R@10↑
+N@5↑
+N@10↑
+MA-RQ-VAE
+0.6165
+7.1178
+0.79
+0.0570
+0.0754
+0.1362
+0.1621
+0.6028
+3.4904
+0.99
+0.0343
+0.0477
+0.0236
+0.0292
+MA-RQ-kmeans
+0.6759
+7.7933
+1.00
+0.0488
+0.0522
+0.1339
+0.1388
+0.6240
+1.7100
+1.00
+0.0344
+0.0467
+0.0242
+0.0294
+MA-OPQ
+0.6730
+5.3092
+0.33
+0.0223
+0.0264
+0.0561
+0.0619
+0.9647
+3.3980
+0.96
+0.0324
+0.0407
+0.0218
+0.0250
+MS-RQ-VAE
+0.5547
+6.3389
+0.99
+0.0779
+0.0988
+0.1897
+0.2191
+1.1001
+3.8375
+1.00
+0.0274
+0.0399
+0.0188
+0.0241
+MS-RQ-kmeans
+0.6848
+7.5962
+1.00
+0.0497
+0.0534
+0.1359
+0.1411
+1.1547
+4.1603
+1.00
+0.0413
+0.0549
+0.0293
+0.0349
+MS-OPQ
+0.5678
+5.2789
+0.30
+0.0757
+0.0927
+0.1866
+0.2105
+0.9801
+3.3308
+0.95
+0.0411
+0.0517
+0.0280
+0.0322
+MMQ (Ours)
+0.5529
+7.9560
+1.00
+0.1034
+0.1192
+0.2661
+0.2883
+0.4470
+4.4206
+1.00
+0.0455
+0.0675
+0.0296
+0.0384
+Improv.
++0.32%
++2.08%
++0.00%
++32.73%
++20.64%
++40.27%
++31.58%
++25.84%
++6.25%
++0.00%
++10.16%
++22.95%
++1.02%
++10.02%
+Table 2: Ablation Experiments.
+Methods
+Generative Retrieval Evaluation
+L𝑟𝑒𝑐𝑜𝑛
+Entropy
+Utilization
+R@5
+R@10
+N@5
+N@10
+MMQ
+0.5529
+7.9560
+1.00
+0.1034
+0.1192
+0.2661
+0.2883
+w/o Cosine Quantizer
+0.5817
+4.9524
+0.59
+0.0786
+0.0965
+0.1936
+0.2188
+w/o Auxiliary Reconstruction Loss
+0.5879
+4.3854
+0.51
+0.0684
+0.0834
+0.1695
+0.1907
+w/o Orthogonal Regularization
+0.5816
+7.5640
+0.68
+0.0583
+0.0717
+0.1111
+0.1330
+w/o Behavior-Aware Fine-tuning
+0.5726
+7.6927
+0.99
+0.0792
+0.0997
+0.1606
+0.1931
+the two is less pronounced. This suggests that as the item vocabu-
+lary and data complexity grow, forcing different modalities into a
+single, shared embedding space significantly increases quantization
+difficulty. The encoder struggles to distill effective, generalized in-
+formation from the aligned representation, even if the codebook uti-
+lization appears high. Consequently, the downstream performance
+of modality-aligned methods can be constrained on large-scale
+data, highlighting the importance of preserving modality-specific
+characteristics, which is a core principle of our MMQ design.
+Effectiveness of the Proposed MMQ: MMQ consistently sur-
+passes both Modality-Aligned and Modality-Separated baseline
+strategies across all tasks and datasets. Specifically, MMQ achieves
+the lowest reconstruction loss and maintains high codebook uti-
+lization. More importantly, the semantic IDs generated by MMQ
+yield superior accuracy in both GR and Discriminative Ranking
+tasks. The reduced reconstruction error indicates that our multi-
+modal shared-specific expert architecture effectively captures both
+shared and distinct features, leading to more robust and stable rep-
+resentation learning. This structural advantage directly translates
+to higher-quality semantic IDs. The state-of-the-art downstream
+performance decisively validates the efficacy of our proposed multi-
+modal shared-specific Tokenizer and, crucially, the Behavior-aware
+Fine-tuning stage. This demonstrates that by explicitly modeling
+synergistic and unique information and then aligning it with down-
+stream objectives, we can generate semantic IDs that are not only
+representative but also highly effective for recommendations.
+Comparison Semantic IDs with Traditional Item IDs: In the
+discriminative ranking task, we observe a consistent trend across
+both industrial and public datasets: methods leveraging learned
+semantic IDs generally outperform the traditional item ID-based
+
+Yi Xu, Moyu Zhang, Chenxuan Li, Zhihao Liao, Haibo Xing, Hao Deng, Jinxin Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang
+backbone (PPNet). This foundational finding underscores the inher-
+ent advantage of using rich, multifaceted semantic representations
+over opaque, monolithic identifiers. It strongly motivates the core
+premise of our work, as learning a high-quality item tokenizer is a
+crucial step toward building more advanced and effective recom-
+mendation systems.
+4.3
+Ablation Study (RQ2)
+We conduct the ablation experiments in Table 2 to study how each
+module contributes to the overall performance of MMQ.
+The Impact of Orthogonal Regularization As shown in Table
+2, ablating the orthogonality constraint leads to a sharp decline
+in both codebook utilization and token distribution entropy. This
+phenomenon indicates that without the explicit pressure to learn
+distinct features, the multi-expert network is susceptible to expert
+collapse, where different experts fail to specialize and instead learn
+redundant, overlapping information. This lack of specialization
+introduces significant redundancy among the generated semantic
+IDs, which in turn degrades the performance on downstream rec-
+ommendation tasks. This finding underscores the criticality of the
+orthogonality constraint for ensuring representational diversity
+and overall model effectiveness.
+Long-tail Items
+Popular Items
+0.6900
+0.7000
+0.7100
+0.7200
+AUC
+PPNet
+MA-RQVAE
+MA-RQ-Kmeans
+MA-OPQ
+MMQ
+(a) Comparison on Modality-Separated (MS) paradigms.
+Long-tail Items
+Popular Items
+0.6900
+0.7000
+0.7100
+0.7200
+AUC
+PPNet
+MS-RQVAE
+MS-RQ-Kmeans
+MS-OPQ
+MMQ
+(b) Comparison on Modality-Aligned (MA) paradigms.
+Figure 3: Item Popularity Stratified Performance Compari-
+son.
+The Impact of Auxiliary Model-Specific Reconstruction
+Loss: When the modality-specific auxiliary loss is removed, both
+codebook utilization and reconstruction loss degrade significantly.
+This indicates that the auxiliary model-specific reconstruction loss
+plays a crucial role in guiding the model-specific encoders to learn
+more discriminative representations and promoting the modality-
+shared encoder to learn common characteristics.
+The Impact of Cosine Quantizer: Comparing the L2 distance
+and cosine distance in multimodal vector quantization, the cosine
+distance improves both codebook utilization and token distribu-
+tion entropy, which demonstrates that angular proximity-based
+quantizer brings a more uniform and diverse use of the codebook.
+The Impact of Behavior-aware Fine-tuning: Removing the
+behavior-aware fine-tuning strategy results in a consistent drop
+in both Recall and NDCG across all settings. This indicates an in-
+herent inconsistency between the semantic space and the behavior
+domain, which hinders the effective transfer of semantic infor-
+mation from the item space to the user behavior space, resulting
+in degraded downstream recommendation performance. Behavior-
+aware fine-tuning addresses this issue by aligning the item-semantic
+ID mapping with the downstream task objective, thereby enabling
+more effective semantic representation adaptation for behavioral
+prediction.
+4.4
+Item Popularity Stratified Performance
+Analysis (RQ3)
+A key hypothesis of our work is that semantic IDs enhance general-
+ization by enabling knowledge sharing among semantically similar
+items, a benefit particularly crucial for long-tail items suffering from
+data sparsity. To validate this, we stratify items from the industrial
+dataset based on their popularity (accumulated impressions) into
+Popular Items (Top 25%) and Long-tail Items (Bottom 25%). We then
+evaluate different semantic ID generation methods under both the
+Modality-Aligned and Modality-Separated paradigms. As depicted
+in Figure.3, a consistent trend emerges: all methods utilizing seman-
+tic IDs achieve significant improvements in AUC on long-tail items
+compared to what a traditional Item ID-based model would yield.
+This performance lift is observed across both MA and MS strate-
+gies. Notably, our proposed MMQ delivers the most substantial
+gains in this challenging scenario. The pronounced improvement
+in the long-tail cohort confirms that semantic IDs effectively mit-
+igate the data sparsity issue. The superior performance of MMQ
+further indicates that it learns a more meaningful item-to-semantic
+mapping relationship. This mapping relationship is more adept at
+capturing the nuanced semantic relationships that are vital for rec-
+ommending items with limited interaction data, thereby validating
+the effectiveness of our model design.
+4.5
+The Compatibility of the Behavior-aware
+Fine-tuning Framework (RQ4)
+To assess the generalizability and plug-and-play nature of our pro-
+posed Behavior-aware Fine-tuning, we integrate it into a widely-
+adopted baseline, RQ-VAE, under both the Modality-Aligned and
+Modality-Separated paradigms. As shown in Figure.4, applying BAF
+yields consistent and significant downstream performance gains
+for the RQ-VAE model, irrespective of the underlying fusion para-
+digm. This finding validates two critical points. First, it confirms
+that behavior-aware fine-tuning is a model-agnostic enhancement,
+demonstrating strong compatibility and portability across differ-
+ent vector quantization methods. Second, its consistent success
+highlights its core capability: effectively bridging the well-known
+
+MMQ: Multimodal Mixture-of-Quantization Tokenization for Semantic ID Generation and User Behavioral Adaptation
+MA-RQ-VAE
+MS-RQ-VAE
+MMQ
+0.020
+0.040
+0.060
+0.080
+0.100
+0.120
+0.140
+R@10
++1.45%
++1.30%
++1.95%
+Behavior-aware finetune improvement
+Figure 4: The Compatibility Experiments on Integrating
+Behavior-Aware Fine-tuning with RQ-VAE.
+6
+9
+12
+15
+18
+0.50
+0.55
+0.60
+0.65
+Recon. Loss
+6
+9
+12
+15
+18
+7.6
+7.8
+8.0
+8.2
+8.4
+Entropy
+6
+9
+12
+15
+18
+0.16
+0.17
+0.18
+0.19
+N@5
+6
+9
+12
+15
+18
+0.20
+0.21
+0.22
+N@10
+Figure 5: The scalability of the semantic ID length.
+content-behavior gap by dynamically adjusting cluster centroids us-
+ing downstream recommendation objectives to achieve alignment
+between item semantics and user behavioral patterns.
+4.6
+The Scalability of Semantic ID Length (RQ5)
+The length of the semantic ID sequence is a critical hyperparam-
+eter that determines the granularity of item representation. We
+investigate its impact by varying the length across the set of [6, 9,
+12, 15, 18]. As depicted in Figure.6, we observe a distinct positive
+correlation: downstream recommendation accuracy, measured by
+NDCG@5 and NDCG@10, consistently improves as the sequence
+length increases. Crucially, this performance gain is achieved with-
+out compromising representation quality; both the reconstruction
+loss and the token distribution entropy remain stable across all
+settings. This dual-faceted result—enhanced recommendation per-
+formance coupled with stable quantization fidelity—demonstrates
+that our MMQ framework scales effectively with an increasing
+number of semantic IDs. It can leverage longer semantic sequences
+to capture progressively richer item semantics without degrading
+training stability or representation quality.
+Specific=4 Specific=6 Specific=8 Specific=10
+0.00
+0.05
+0.10
+0.15
+0.1632
+0.20
+N@5
+Only Modality-specific Expert
+MMQ 6-Experts (Shared=2, Specific=4)
+Specific=4 Specific=6 Specific=8 Specific=10
+0.00
+0.05
+0.10
+0.15
+0.1872
+0.20
+N@10
+Only Modality-specific Expert
+MMQ 6-Experts (Shared=2, Specific=4)
+Figure 6: Experiment Analysis on the Contribution of
+Modality-Shared Experts
+4.7
+Experiment Analysis on the Contribution of
+Modality-Shared Experts (RQ6)
+In this experiment, we investigate whether the shared expert effec-
+tively mitigates redundancy and promotes to build a more parameter-
+efficient model with more specialized experts. We compare our pro-
+posed model, MMQ (Shared=2,Specific=4), against four "specific-
+only" variants that lack the shared component, where the num-
+ber of specific experts are set to [4,6,8,10]. As shown in Figure 6,
+the Specific-Only (4 experts) model performs substantially worse
+than the MMQ (Shared=2, Specific=4). More strikingly, even the
+Specific-Only (10 experts) variant, despite its significantly larger
+capacity, still fails to match the performance of the MMQ (Shared=2,
+Specific=4). This suggests that without a shared expert to handle
+common knowledge, specific experts are tent to learn redundant,
+overlapping information, leading to inefficient parameter utilization.
+This experiment has demonstrated the shared expert is crucial for
+building a more parameter-efficient model with highly specialized
+experts.
+5
+ONLINE EXPERIMENTS
+To conclusively validate the real-world efficacy of our proposed
+method, we deployed the generated semantic IDs into the gen-
+erative retrieval system of a large-scale e-commerce platform. A
+rigorous online A/B test was conducted over a 30-day period (July
+6–August 6, 2025). The experimental group, which received recom-
+mendations based on our semantic IDs, was allocated 10% of the
+platform’s random user traffic, while the control group continued
+to use the existing Item ID-based system. The online experiment
+yielded significant and consistent improvements across key busi-
+ness metrics: 0.90% increase in Advertising Revenue, +4.33%
+increase in Conversion Rate (CVR), 3.52% increase in Orders.
+These substantial online gains robustly confirm the practical value
+and effectiveness of our approach, demonstrating its readiness for
+deployment in production-scale recommendation systems.
+6
+CONCLUSION
+In this paper, we presented a multimodal mixture-of-quantization
+(MMQ) that integrates a multi-expert architecture with both modality-
+shared and modality-specific experts. Through a two-stage training
+framework: multimodal shared-specific pretraining followed by
+behavior-aware fine-tuning, MMQ fuses heterogeneous modalities
+into compact semantic IDs while explicitly aligning the semantic
+space with the behavioral space of recommendation tasks. This de-
+sign effectively resolves the mismatch between content-derived and
+
+Yi Xu, Moyu Zhang, Chenxuan Li, Zhihao Liao, Haibo Xing, Hao Deng, Jinxin Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang
+behavior-driven representations. Extensive evaluations on indus-
+trial datasets, public benchmarks, and online A/B tests demonstrate
+that MMQ consistently outperforms state-of-the-art baselines in
+both generative retrieval and discriminative ranking, delivering
+robust performance gains and strong generalization across do-
+mains. Beyond improving recommendation accuracy, MMQ offers
+a scalable and flexible approach to semantic ID generation, poten-
+tially benefiting other multimodal applications such as personalized
+search, advertising, and cross-domain content understanding.
+While promising, our approach has certain limitations. The two-
+stage framework introduces additional training complexity and
+may require substantial multimodal data to fully exploit modality-
+specific experts. Moreover, the behavior-aware fine-tuning stage
+is task-dependent, which may limit direct transferability to unre-
+lated downstream tasks. Future research could explore lightweight
+or continual-learning variants of MMQ to reduce computational
+overhead, extend the architecture to incorporate temporal or inter-
+active modalities (e.g., video, audio, user-session dynamics), and
+investigate self-supervised or few-shot adaptations for data-scarce
+settings. We believe that MMQ represents a meaningful step toward
+bridging the gap between semantic representation learning and
+user behavior modeling, and we expect it to inspire further research
+in multimodal recommendation and beyond.
+REFERENCES
+[1] R. Engelmore and A. Morgan, Eds., Blackboard Systems. Reading, Mass.: Addison-
+Wesley, 1986.
+[2] W. J. Clancey, “Communication, Simulation, and Intelligent Agents: Implications
+of Personal Intelligent Machines for Medical Education,” in Proceedings of the
+Eighth International Joint Conference on Artificial Intelligence (IJCAI-83).
+Menlo
+Park, Calif: IJCAI Organization, 1983, pp. 556–560.
+[3] ——, “Classification Problem Solving,” in Proceedings of the Fourth National Con-
+ference on Artificial Intelligence.
+Menlo Park, Calif.: AAAI Press, 1984, pp.
+45–54.
+[4] A. L. Robinson, “New ways to make microcircuits smaller,” Science, vol. 208, no.
+4447, pp. 1019–1022, 1980. [Online]. Available: https://science.sciencemag.org/
+content/208/4447/1019
+[5] ——, “New Ways to Make Microcircuits Smaller—Duplicate Entry,” Science, vol.
+208, pp. 1019–1026, 1980.
+[6] D. W. Hasling, W. J. Clancey, and G. Rennels, “Strategic explanations for a
+diagnostic consultation system,” International Journal of Man-Machine Studies,
+vol. 20, no. 1, pp. 3–19, 1984. [Online]. Available: https://www.sciencedirect.
+com/science/article/pii/S0020737384800036
+[7] D. W. Hasling, W. J. Clancey, G. R. Rennels, and T. Test, “Strategic Explanations
+in Consultation—Duplicate,” The International Journal of Man-Machine Studies,
+vol. 20, no. 1, pp. 3–19, 1983.
+[8] J. Rice, “Poligon: A System for Parallel Problem Solving,” Dept. of Computer
+Science, Stanford Univ., Technical Report KSL-86-19, 1986.
+[9] W. J. Clancey, “Transfer of Rule-Based Expertise through a Tutorial Dialogue,”
+Ph.D. diss., Dept. of Computer Science, Stanford Univ., Stanford, Calif., 1979.
+[10] ——, “The Engineering of Qualitative Models,” 2021, forthcoming.
+[11] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, L. Kaiser,
+and I. Polosukhin, “Attention is all you need,” 2017.
+[12] NASA, “Pluto: The ’other’ red planet,” https://www.nasa.gov/nh/pluto-the-other-
+red-planet, 2015, accessed: 2018-12-06.
+[13] J. Zhai, L. Liao, X. Liu, Y. Wang, R. Li, X. Cao, L. Gao, Z. Gong, F. Gu,
+M. He, Y. Lu, and Y. Shi, “Actions speak louder than words: Trillion-parameter
+sequential transducers for generative recommendations,” 2024. [Online].
+Available: https://arxiv.org/abs/2402.17152
+[14] J. Ji, Z. Li, S. Xu, W. Hua, Y. Ge, J. Tan, and Y. Zhang, “Genrec: Large
+language model for generative recommendation,” 2023. [Online]. Available:
+https://arxiv.org/abs/2307.00457
+[15] E. Liu, B. Zheng, C. Ling, L. Hu, H. Li, and W. X. Zhao, “Generative
+recommender with end-to-end learnable item tokenization,” 2025. [Online].
+Available: https://arxiv.org/abs/2409.05546
+[16] R. Han, B. Yin, S. Chen, H. Jiang, F. Jiang, X. Li, C. Ma, M. Huang, X. Li,
+C. Jing, Y. Han, M. Zhou, L. Yu, C. Liu, and W. Lin, “Mtgr: Industrial-scale
+generative recommendation framework in meituan,” 2025. [Online]. Available:
+https://arxiv.org/abs/2505.18654
+[17] S. Rajput, N. Mehta, A. Singh, R. H. Keshavan, T. Vu, L. Heldt, L. Hong,
+Y. Tay, V. Q. Tran, J. Samost, M. Kula, E. H. Chi, and M. Sathiamoorthy,
+“Recommender systems with generative retrieval,” 2023. [Online]. Available:
+https://arxiv.org/abs/2305.05065
+[18] J. Deng, S. Wang, K. Cai, L. Ren, Q. Hu, W. Ding, Q. Luo, and G. Zhou,
+“Onerec: Unifying retrieve and rank with generative recommender and iterative
+preference alignment,” 2025. [Online]. Available: https://arxiv.org/abs/2502.18965
+[19] Y. Yang, Z. Ji, Z. Li, Y. Li, Z. Mo, Y. Ding, K. Chen, Z. Zhang, J. Li,
+S. Li, and L. Liu, “Sparse meets dense: Unified generative recommendations
+with cascaded sparse-dense representations,” 2025. [Online]. Available:
+https://arxiv.org/abs/2503.02453
+[20] Y. Hou, J. Li, A. Shin, J. Jeon, A. Santhanam, W. Shao, K. Hassani, N. Yao, and
+J. McAuley, “Generating long semantic ids in parallel for recommendation,” 2025.
+[Online]. Available: https://arxiv.org/abs/2506.05781
+[21] Z. Tang, Z. Huan, Z. Li, X. Zhang, J. Hu, C. Fu, J. Zhou, L. Zou, and C. Li, “One
+model for all: Large language models are domain-agnostic recommendation
+systems,” 2025. [Online]. Available: https://arxiv.org/abs/2310.14304
+[22] W. Wang, H. Bao, X. Lin, J. Zhang, Y. Li, F. Feng, S.-K. Ng, and T.-S. Chua,
+“Learnable item tokenization for generative recommendation,” 2024. [Online].
+Available: https://arxiv.org/abs/2405.07314
+[23] H. Qu, W. Fan, Z. Zhao, and Q. Li, “Tokenrec: Learning to tokenize
+id for llm-based generative recommendation,” 2024. [Online]. Available:
+https://arxiv.org/abs/2406.10450
+[24] A. Singh, T. Vu, N. Mehta, R. Keshavan, M. Sathiamoorthy, Y. Zheng, L. Hong,
+L. Heldt, L. Wei, D. Tandon, E. H. Chi, and X. Yi, “Better generalization with
+semantic ids: A case study in ranking for recommendations,” 2024. [Online].
+Available: https://arxiv.org/abs/2306.08121
+[25] C. Zheng, M. Huang, D. Pedchenko, K. Rangadurai, S. Wang, G. Nahum,
+J. Lei, Y. Yang, T. Liu, Z. Luo, X. Wei, D. Ramasamy, J. Yang, Y. Han, L. Yang,
+H. Xu, R. Jin, and S. Yang, “Enhancing embedding representation stability
+in recommendation systems with semantic id,” 2025. [Online]. Available:
+https://arxiv.org/abs/2504.02137
+[26] Y. Hou, Z. He, J. McAuley, and W. X. Zhao, “Learning vector-quantized
+item representation for transferable sequential recommenders,” 2023. [Online].
+Available: https://arxiv.org/abs/2210.12316
+[27] Y. Hou, J. Ni, Z. He, N. Sachdeva, W.-C. Kang, E. H. Chi, J. McAuley, and D. Z.
+Cheng, “Actionpiece: Contextually tokenizing action sequences for generative
+recommendation,” 2025. [Online]. Available: https://arxiv.org/abs/2502.13581
+[28] Y. Wang, J. Xun, M. Hong, J. Zhu, T. Jin, W. Lin, H. Li, L. Li, Y. Xia, Z. Zhao, and
+Z. Dong, “Eager: Two-stream generative recommender with behavior-semantic
+collaboration,” 2024. [Online]. Available: https://arxiv.org/abs/2406.14017
+[29] B. Zheng, Y. Hou, H. Lu, Y. Chen, W. X. Zhao, M. Chen, and J.-R. Wen,
+“Adapting large language models by integrating collaborative semantics for
+recommendation,” 2024. [Online]. Available: https://arxiv.org/abs/2311.09049
+[30] Y. Wang, Z. Ren, W. Sun, J. Yang, Z. Liang, X. Chen, R. Xie, S. Yan, X. Zhang,
+P. Ren, Z. Chen, and X. Xin, “Content-based collaborative generation for
+recommender systems,” in Proceedings of the 33rd ACM International Conference
+on Information and Knowledge Management, ser. CIKM ’24.
+ACM, Oct. 2024, p.
+2420–2430. [Online]. Available: http://dx.doi.org/10.1145/3627673.3679692
+[31] W.-H. Huang, C.-W. Ke, W.-N. Chiu, Y.-X. Su, C.-C. Yang, C.-Y. Cheng, Y.-N.
+Chen, and P.-J. Cheng, “Augment or not? a comparative study of pure and
+augmented large language model recommenders,” 2025. [Online]. Available:
+https://arxiv.org/abs/2505.23053
+[32] J. Tan, S. Xu, W. Hua, Y. Ge, Z. Li, and Y. Zhang, “Idgenrec: Llm-
+recsys alignment with textual id learning,” 2024. [Online]. Available:
+https://arxiv.org/abs/2403.19021
+[33] B. Jin, H. Zeng, G. Wang, X. Chen, T. Wei, R. Li, Z. Wang, Z. Li, Y. Li, H. Lu,
+S. Wang, J. Han, and X. Tang, “Language models as semantic indexers,” 2024.
+[Online]. Available: https://arxiv.org/abs/2310.07815
+[34] B. Zheng, H. Lu, Y. Chen, W. X. Zhao, and J.-R. Wen, “Universal item
+tokenization for transferable generative recommendation,” 2025. [Online].
+Available: https://arxiv.org/abs/2504.04405
+[35] Z. Zheng, Z. Wang, F. Yang, J. Fan, T. Zhang, Y. Wang, and X. Wang, “Ega-v2:
+An end-to-end generative framework for industrial advertising,” 2025. [Online].
+Available: https://arxiv.org/abs/2505.17549
+[36] X. Luo, J. Cao, T. Sun, J. Yu, R. Huang, W. Yuan, H. Lin, Y. Zheng, S. Wang, Q. Hu,
+C. Qiu, J. Zhang, X. Zhang, Z. Yan, J. Zhang, S. Zhang, M. Wen, Z. Liu, K. Gai,
+and G. Zhou, “Qarm: Quantitative alignment multi-modal recommendation at
+kuaishou,” 2024. [Online]. Available: https://arxiv.org/abs/2411.11739
+[37] Z. Kuai, Z. Chen, H. Wang, M. Li, D. Miao, B. Wang, X. Chen, L. Kuang,
+Y. Han, J. Wang, G. Tang, L. Liu, S. Wang, and J. Zhuo, “Breaking the hourglass
+phenomenon of residual quantization: Enhancing the upper bound of generative
+retrieval,” 2024. [Online]. Available: https://arxiv.org/abs/2407.21488
+[38] B. Zheng, E. Liu, Z. Chen, Z. Ma, Y. Wang, W. X. Zhao, and J.-R. Wen,
+“Pre-training generative recommender with multi-identifier item tokenization,”
+2025. [Online]. Available: https://arxiv.org/abs/2504.04400
+
+MMQ: Multimodal Mixture-of-Quantization Tokenization for Semantic ID Generation and User Behavioral Adaptation
+[39] Y. Bai, R. Xiang, K. Li, Y. Tang, Y. Cheng, X. Liu, P. Jiang, and K. Gai, “Chime: A
+compressive framework for holistic interest modeling,” 2025. [Online]. Available:
+https://arxiv.org/abs/2504.06780
+[40] Z. Yuan, F. Yuan, Y. Song, Y. Li, J. Fu, F. Yang, Y. Pan, and Y. Ni, “Where to go
+next for recommender systems? id- vs. modality-based recommender models
+revisited,” 2023. [Online]. Available: https://arxiv.org/abs/2303.13835
+[41] Y. Liu, J. Cao, S. Wang, S. Wen, X. Chen, X. Wu, S. Yang, Z. Liu, K. Gai,
+and G. Zhou, “Llm-alignment live-streaming recommendation,” 2025. [Online].
+Available: https://arxiv.org/abs/2504.05217
+[42] P. Wollstadt, S. Schmitt, and M. Wibral, “A rigorous information-theoretic
+definition of redundancy and relevancy in feature selection based on (partial)
+information decomposition,” 2023. [Online]. Available: https://arxiv.org/abs/
+2105.04187
+[43] P. P. Liang, Y. Cheng, X. Fan, C. K. Ling, S. Nie, R. Chen, Z. Deng, N. Allen,
+R. Auerbach, F. Mahmood, R. Salakhutdinov, and L.-P. Morency, “Quantifying &
+modeling multimodal interactions: An information decomposition framework,”
+2023. [Online]. Available: https://arxiv.org/abs/2302.12247
+[44] Z. Liu, Y. Shen, V. B. Lakshminarasimhan, P. P. Liang, A. Zadeh, and L.-P.
+Morency, “Efficient low-rank multimodal fusion with modality-specific factors,”
+2018. [Online]. Available: https://arxiv.org/abs/1806.00064
+[45] J. Xin, S. Yun, J. Peng, I. Choi, J. L. Ballard, T. Chen, and Q. Long, “I2moe:
+Interpretable multimodal interaction-aware mixture-of-experts,” 2025. [Online].
+Available: https://arxiv.org/abs/2505.19190
+[46] Z. Xue and R. Marculescu, “Dynamic multimodal fusion,” 2023. [Online].
+Available: https://arxiv.org/abs/2204.00102
+[47] H. Yu, Z. Qi, L. Jang, R. Salakhutdinov, L.-P. Morency, and P. P. Liang, “Mmoe:
+Enhancing multimodal models with mixtures of multimodal interaction experts,”
+2024. [Online]. Available: https://arxiv.org/abs/2311.09580
+[48] B. Mustafa, C. Riquelme, J. Puigcerver, R. Jenatton, and N. Houlsby, “Multimodal
+contrastive learning with limoe: the language-image mixture of experts,” 2022.
+[Online]. Available: https://arxiv.org/abs/2206.02770
+[49] P. Jin, B. Zhu, L. Yuan, and S. Yan, “Moe++: Accelerating mixture-of-
+experts methods with zero-computation experts,” 2024. [Online]. Available:
+https://arxiv.org/abs/2410.07348
+[50] DeepSeek-AI, A. Liu, and a. Z. P. Bei Feng et a, ..., “Deepseek-v3 technical report,”
+2025. [Online]. Available: https://arxiv.org/abs/2412.19437
+[51] L. Wang, H. Gao, C. Zhao, X. Sun, and D. Dai, “Auxiliary-loss-free
+load balancing strategy for mixture-of-experts,” 2024. [Online]. Available:
+https://arxiv.org/abs/2408.15664
+[52] Y. Huang, Y. Chen, X. Cao, R. Yang, M. Qi, Y. Zhu, Q. Han, Y. Liu, Z. Liu, X. Yao,
+Y. Jia, L. Ma, Y. Zhang, T. Zhu, L. Zhang, L. Chen, W. Chen, M. Zhu, R. Xu, and
+L. Zhang, “Towards large-scale generative ranking,” 2025. [Online]. Available:
+https://arxiv.org/abs/2505.04180
+[53] C. Wang, B. Wu, Z. Chen, L. Shen, B. Wang, and X. Zeng, “Scaling transformers
+for discriminative recommendation via generative pretraining,” in Proceedings
+of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining
+V.2, ser. KDD ’25.
+ACM, Aug. 2025, p. 2893–2903. [Online]. Available:
+http://dx.doi.org/10.1145/3711896.3737117
+[54] H. Deng, H. Xing, K. Matsuyama, Y. Huang, J. Hu, H. Wen, J. Xu, Z. Chen,
+Y. Zhang, X. Zeng, and J. Zhang, “Heterrec: Heterogeneous information
+transformer for scalable sequential recommendation,” in Proceedings of the 48th
+International ACM SIGIR Conference on Research and Development in Information
+Retrieval, ser. SIGIR ’25.
+ACM, Jul. 2025, p. 3020–3024. [Online]. Available:
+http://dx.doi.org/10.1145/3726302.3730206
+[55] J. Chang, C. Zhang, Y. Hui, D. Leng, Y. Niu, Y. Song, and K. Gai, “Pepnet:
+Parameter and embedding personalized network for infusing with personalized
+prior information,” 2023. [Online]. Available: https://arxiv.org/abs/2302.01115
+[56] F. Shi, Z. Luo, Y. Ge, Y. Yang, Y. Shan, and L. Wang, “Scalable image
+tokenization with index backpropagation quantization,” 2025. [Online].
+Available: https://arxiv.org/abs/2412.02692
+[57] S. Milojević, “Power law distributions in information science: Making the case
+for logarithmic binning,” Journal of the American Society for Information Science
+and Technology, vol. 61, no. 12, p. 2417–2425, Dec. 2010. [Online]. Available:
+http://dx.doi.org/10.1002/asi.21426
+[58] J. a. Gama, I. Žliobaitundefined, A. Bifet, M. Pechenizkiy, and A. Bouchachia, “A
+survey on concept drift adaptation,” ACM Comput. Surv., vol. 46, no. 4, Mar. 2014.
+[Online]. Available: https://doi.org/10.1145/2523813
+[59] H. Jegou, M. Douze, and C. Schmid, “Product quantization for nearest neighbor
+search,” IEEE transactions on pattern analysis and machine intelligence, vol. 33,
+no. 1, pp. 117–128, 2010.
+[60] T. Kudo, “Subword regularization: Improving neural network translation
+models with multiple subword candidates,” 2018. [Online]. Available: https:
+//arxiv.org/abs/1804.10959
+[61] Y. Ni, Y. Cheng, X. Liu, J. Fu, Y. Li, X. He, Y. Zhang, and F. Yuan, “A
+content-driven micro-video recommendation dataset at scale,” 2023. [Online].
+Available: https://arxiv.org/abs/2309.15379
+[62] N. Pancha, A. Zhai, J. Leskovec, and C. Rosenberg, “Pinnerformer: Sequence
+modeling for user representation at pinterest,” 2022. [Online]. Available:
+https://arxiv.org/abs/2205.04507
+[63] S. Li, W. Lei, Q. Wu, X. He, P. Jiang, and T.-S. Chua, “Seamlessly unifying
+attributes and items: Conversational recommendation for cold-start users,” ACM
+Transactions on Information Systems, vol. 39, no. 4, p. 1–29, Aug. 2021. [Online].
+Available: http://dx.doi.org/10.1145/3446427
+[64] R. Ying, R. He, K. Chen, P. Eksombatchai, W. L. Hamilton, and J. Leskovec,
+“Graph convolutional neural networks for web-scale recommender systems,” in
+Proceedings of the 24th ACM SIGKDD International Conference on Knowledge
+Discovery amp; Data Mining, ser. KDD ’18.
+ACM, Jul. 2018, p. 974–983. [Online].
+Available: http://dx.doi.org/10.1145/3219819.3219890
+[65] N. Zeghidour, A. Luebs, A. Omran, J. Skoglund, and M. Tagliasacchi,
+“Soundstream: An end-to-end neural audio codec,” 2021. [Online]. Available:
+https://arxiv.org/abs/2107.03312
+[66] R. He and J. McAuley, “Ups and downs: Modeling the visual evolution of
+fashion trends with one-class collaborative filtering,” in Proceedings of the 25th
+International Conference on World Wide Web, ser. WWW ’16.
+International
+World Wide Web Conferences Steering Committee, Apr. 2016, p. 507–517.
+[Online]. Available: http://dx.doi.org/10.1145/2872427.2883037
+[67] L. Zhu, F. Wei, Y. Lu, and D. Chen, “Scaling the codebook size of
+vqgan to 100,000 with a utilization rate of 99%,” 2024. [Online]. Available:
+https://arxiv.org/abs/2406.11837
+[68] C. Bentz and D. Alikaniotis, “The word entropy of natural languages,” 2016.
+[Online]. Available: https://arxiv.org/abs/1606.06996
+[69] Y. Zhang, M. Li, D. Long, X. Zhang, H. Lin, B. Yang, P. Xie, A. Yang,
+D. Liu, J. Lin, F. Huang, and J. Zhou, “Qwen3 embedding: Advancing text
+embedding and reranking through foundation models,” 2025. [Online]. Available:
+https://arxiv.org/abs/2506.05176

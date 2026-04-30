@@ -1,0 +1,1815 @@
+Generative Recommendation for Large-Scale Advertising
+Ben Xue*, Dan Liu*, Lixiang Wang*, Mingjie Sun*, Peng Wang*, Pengfei Zhang*, Shaoyun Shi*,
+Tianyu Xu*, Yunhao Sha*, Zhiqiang Liu*, Bo Kong, Bo Wang, Hang Yang, Jieting Xue, Junhao Wang,
+Shengyu Wang, Shuping Hui, Wencai Ye, Xiao Lin, Yongzhi Li, Yuhang Chen, Zhihui Yin,
+Quan Chen, Shiyang Wen, Wenjin Wu, Han Li, Guorui Zhou, Changcheng Li, Peng Jiang†, Kun Gai
+Kuaishou Technology
+Beijing, China
+Abstract
+Generative recommendation has recently attracted widespread at-
+tention in industry due to its potential for scaling and stronger
+model capacity. However, deploying real-time generative recom-
+mendation in large-scale advertising requires designs beyond large-
+language-model (LLM)-style training and serving recipes. We present
+a production-oriented generative recommender co-designed across
+architecture, learning, and serving, named GR4AD (Generative
+Recommendation for ADdvertising). As for tokenization, GR4AD
+proposes UA-SID (Unified Advertisement Semantic ID) to capture
+complicated business information. Furthermore, GR4AD introduces
+LazyAR, a lazy autoregressive decoder that relaxes layer-wise de-
+pendencies for short, multi-candidate generation, preserving ef-
+fectiveness while reducing inference cost, which facilitates scaling
+under fixed serving budgets. To align optimization with business
+value, GR4AD employs VSL (Value-Aware Supervised Learning)
+and proposes RSPO (Ranking-Guided Softmax Preference Optimiza-
+tion), a ranking-aware, list-wise reinforcement learning algorithm
+that optimizes value-based rewards under list-level metrics for con-
+tinual online updates. For online inference, we further propose
+dynamic beam serving, which adapts beam width across generation
+levels and online load to control compute. Large-scale online A/B
+tests show up to 4.2% ad revenue improvement over an existing
+DLRM-based stack, with consistent gains from both model scal-
+ing and inference-time scaling. GR4AD has been fully deployed
+in Kuaishou advertising system with over 400 million users and
+achieves high-throughput real-time serving.
+Keywords
+Generative Recommendation, Advertising
+1
+Introduction
+Recent industrial efforts on recommender systems have started
+converting deep learning recommendation models (DLRMs) into
+generative recommenders, driven by their potential for scaling and
+stronger model capacity, with significant gains across a range of
+business scenarios [12, 34–36, 39, 40].
+Despite encouraging progress, deploying real-time generative
+recommendation models in large-scale advertising systems remains
+challenging. The unique characteristics of advertising recommen-
+dation make a direct reuse of LLM techniques insufficient in sev-
+eral aspects. (1) Advertisement Tokenization. Tokenization is
+fundamental to LLM generation and particularly challenging for
+* Authors contributed equally and are listed in alphabetical order.
+† Corresponding author.
+advertising, where short-video creatives fuse video attributes, prod-
+uct details, and B2B advertiser metadata. Prior work incorporates
+multimodal cues or pretrained MLLMs for content understanding,
+but no end-to-end, fine-tuned advertisement LLM embedding exists.
+Furthermore, platforms expose salient business signals (e.g., con-
+version type, ads account) that are not readily captured by semantic
+content, so jointly modeling multimodal, multi-granularity fea-
+tures for user interest and business value remains a core challenge.
+(2) Learning Paradigm. Advertising recommendation optimizes
+ranked lists under business objectives (e.g., eCPM) and list-wise
+metrics (e.g., NDCG), which are not well captured by per-item super-
+vision. Existing approaches, largely following LLM-style training
+recipes, lack a ranking-aware, list-wise learning design tailored to
+online advertising learning [3, 28, 38, 41]. (3) Real-Time Serving.
+Generative recommendation does not remove the stringent serving
+constraints of DLRM-based stacks: the system must produce mul-
+tiple high-quality candidates under high traffic and strict latency
+budgets. This setting differs fundamentally from interactive LLM
+usage, where decoding a single response can tolerate substantially
+longer latency. Beyond optimizations borrowed from LLM inference,
+serving-time efficiency for real-time multi-candidate generation in
+advertising remains under-explored in a systematic way.
+To address the above gaps, we present a production-oriented gen-
+erative recommender designed for real-time, large-scale advertising,
+named GR4AD (Generative Recommendation for ADdvertising).
+GR4AD adopts a recommendation-native co-design across repre-
+sentation, learning, and serving. (1) Unified Advertisement Se-
+mantic ID. We propose UA-SID, derived from a fine-tuned MLLM
+embedding trained on real-world advertisement creatives via in-
+struction tuning and co-occurrence learning to capture complicated
+information. Furthermore, we introduce MGMR (Multi-Granularity-
+Multi-Resolution) RQ-Kmeans quantization method to model non
+semantic information, substantially reduce SID collisions, and im-
+prove codebook utilization. (2) Value-Aware Online Learning.
+To align optimization with business value in non-stationary mar-
+kets, we design VSL (Value-Aware Supervised Learning) to learn
+the user-interest distribution, and propose RSPO (Ranking-Guided
+Softmax Preference Optimization), a ranking-guided, list-wise RL al-
+gorithm that explicitly optimizes list-level objectives. We further de-
+velop an online learning framework that tightly integrates VSL and
+RL for continual, frequent model updates. (3) Recommendation-
+Oriented Efficiency Optimizations. To satisfy strict real-time
+constraints, we systematically optimize decoding and serving. We
+propose a new LazyAR decoder architecture to relax layer-wise au-
+toregressive dependencies and boost decoding throughput without
+hurting effectiveness. Beyond LLM-style optimizations, we further
+arXiv:2602.22732v3  [cs.IR]  2 Apr 2026
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Peng Jiang et al.
+introduce recommendation-specific serving techniques, including
+Dynamic Beam Serving (DBS)—with Dynamic Beam Width (DBW)
+and Traffic-Aware Adaptive Beam Search (TABS)—as well as a short
+time-to-live (TTL) cache.
+Online A/B tests show that GR4AD delivers up to 4.2% ad rev-
+enue improvement compared to the existing DLRM-based stack,
+with consistent gains from both model scaling and inference-time
+scaling. With systematic efficiency optimizations in architecture
+and serving, GR4AD achieves <100ms latency and 500+ QPS per
+L20 under practical resource budgets, and has been fully deployed
+in Kuaishou advertising system serving over 400 million users.
+2
+Related Works
+2.1
+Generative Recommendation
+Recent advances in generative models [1, 10, 11, 14, 17], particularly
+Large Language Models (LLMs) [1], have catalyzed a new paradigm
+in recommendation systems based on end-to-end generation. A
+representative line of work is Semantic ID–based generative rec-
+ommendation [16], which encodes items as discrete semantic iden-
+tifiers (SIDs) and formulates recommendation as next-token pre-
+diction. TIGER [25] is a seminal work that introduces hierarchical
+SIDs via residual quantization of item features and models recom-
+mendation as a generative retrieval task using an encoder–decoder
+Transformer. Building on this foundation, subsequent studies such
+as LC-Rec [38], LETTER [28], and OpenOneRec [41] improve scal-
+ability and generalization by aligning item identifiers with col-
+laborative semantics through two-stage training. OneRec [39, 40]
+unifies retrieval and ranking within a single generative model and
+has shown strong performance in large-scale industrial recommen-
+dation, while GPR [36] and OneSearch [3] extend the generative
+paradigm to advertising and e-commerce search, respectively. To
+address the inference inefficiency of autoregressive generation,
+RPG [15] and NEZHA [31] propose parallel and hyperspeed de-
+coding mechanisms, and MMQ [32] further generalizes generative
+recommendation to multimodal settings via discrete quantization.
+Despite these advances, existing generative recommenders largely
+lack architectures and learning strategies specifically designed for
+advertising systems, particularly under online learning constraints.
+2.2
+Reinforcement Learning
+Reinforcement learning has become a central paradigm for LLM
+preference optimization. Early RLHF [22] formulates alignment as
+policy optimization over a learned reward model, but its instabil-
+ity and engineering cost have motivated simpler preference-based
+alternatives. DPO [24] removes explicit reward modeling by opti-
+mizing directly over preference pairs, followed by variants such as
+SimPO [21], GRPO [26], SAPO [9], and GDPO [18], which further
+improve stability or multi-objective learning. However, these meth-
+ods are largely offline, relying on static preference data or fixed
+rollouts, and mainly address distributional alignment rather than
+continual learning in non-stationary environments.
+In recommender, search, and advertising systems, reinforcement
+learning has been increasingly adopted to align large generative
+models with user behavior and business objectives. Works such as
+OneRec [39, 40], OneSearch [3], and GPR [36] adapt policy opti-
+mization via reward shaping, preference weighting, or hierarchical
+objectives, but often depend on multi-stage pipelines or naive com-
+binations of SFT and RL, limiting adaptability to streaming settings.
+To address this, recent studies including SRFT [8], CHORD [37],
+and the unified policy optimization framework in [20] propose
+principled joint SFT–RSPO optimization through dynamic weight-
+ing or shared objectives. Building on these ideas, we design an
+efficient SFT–RSPO integration framework tailored to streaming
+recommender scenarios.
+2.3
+Semantic IDs
+In traditional advertising systems, each item is assigned a sequen-
+tially increasing ID, which suffers from data sparsity and hampers
+cold-start. In contrast, Semantic IDs leverage LLMs to encode item
+content (text, video, etc.) into embeddings, which are then hierarchi-
+cally quantized into structured identifiers. Quantization methods
+fall into two main categories: RQ-VAE-based and clustering-based.
+TIGER [25] uses RQ-VAE to recursively quantize residuals for hi-
+erarchical IDs. FORCE [7] introduces a cross-entropy equalization
+loss for balanced codebook usage. PLUM [13] uses multi-resolution
+codebooks and progressive masking for clear hierarchical struc-
+ture. COST [42] proposes a contrastive learning framework to opti-
+mize the codebook for more discriminative IDs. QARM [19] adopts
+RQ-Kmeans with cardinality constraints to dynamically regulate
+codebook usage, improving balance and efficiency. Furthermore,
+methods like ColaRec [30], SEATER [27], and TokenRec [23] inte-
+grate collaborative filtering: they first derive collaborative signal-
+enriched embeddings from user-item interactions, then encode
+them into discrete semantic IDs, injecting collaborative inductive
+bias into the generative recommendation framework.
+3
+Methodology
+In this section, we detail the model architecture and training para-
+digm of GR4AD. Figure 1 provides an overview of the method.
+3.1
+Unified Advertisement Semantic ID
+In generative recommendation, Semantic IDs play a role analogous
+to tokens in large language models, where both representation
+granularity and quantization quality critically affect downstream
+performance. We therefore design Unified Advertisement Seman-
+tic IDs (UA-SID) which is derived from an end-to-end finetuned
+advertisement LLM embedding model, as illustrated in the Figure 2.
+3.1.1
+Unified Advertisement Embedding (UAE).
+Instruction Tuning (IT). To capture heterogeneous content for-
+mats in advertising (video, product and advertiser), we employ
+instruction-based fine-tuning of an LLM to instill ad-understanding
+capabilities across diverse aspects and scenarios. For example, for a
+live-stream host we prompt the model to analyze their profile and
+geographic information, while for ordinary off-platform advertisers
+we direct the model to focus on the product’s industry and brand
+information. We designed 6 instructions in total to comprehensively
+cover Kuaishou’s ad types (presented in the appendix).
+Co-occurrence Learning (CL). To incorporate collaborative signals
+from user behavior, we augment representation learning with a
+co-occurrence contrastive objective. Item co-occurrence strengths
+are estimated using the Swing method [33]. We further augment
+
+Generative Recommendation for Large-Scale Advertising
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Value-Aware Supervised Learning
+Unified Learning of VSL & RSPO
+Ranking-Guided SoftMax 
+Preference Optimization
+Lazy Autoregressive Decoder
+Cross Attention
+Causal Self Attention
+Feed-Forward Network
+Cross Attention
+Causal Self Attention
+Feed-Forward Network
+Parallel 
+×𝐾
+Autoregressive
+×(𝐿−𝐾)
+𝐩! 
+𝐦)!
+(#) 
+𝐬! 
+Logs
+eCPM
+Reference Model
+Generate List
+Ideal Rank
+List-Wise Reward
+SID
+eCPM Bin
+Parameter Sync
+Reward System
+SL Samples
+Structured
+Features
+Cross-Domain
+Sequence
+Linear
+Linear
+𝐗
+Context Processor
+Ad
+Sequence
+Linear
+Figure 1: Overview of our proposed GR4AD: model architecture and learning algorithm.
+-
+=
+-
+=
+Level 1
+Level 2
+Level 3
+Semantic SID (2,1,3)
+Hash
+Multi-Granularity-Multi-Resolution
+(MGMR) RQ-Kmeans
+Non-semantic 
+Business Info
+(Conversion Types, Account ID …)
+Please combine live-stream 
+visual screenshots with 
+streamer profile, geographic 
+attributes to perform 
+understanding.
+Prompt Template 1
+Please deeply fuse discrete 
+fields such as product name, 
+industry category, detailed 
+subcategory, and brand to 
+determine the vertical domain.
+Prompt Template 2
+Please deeply deconstruct 
+the situational 
+constructions and 
+psychological triggers used 
+to drive conversion. 
+Prompt Template 3 
+Unified Advertisement Embedding (UAE)
+MLLM
+Video
+(Visual frames, ASR,
+OCR, BGM…)
+Product
+(Price, Title, 
+Slogan…)
+Advertiser
+(Region, #Fans, Value…)
+Co-occurrence 
+Learning
+Instruction 
+Tuning
+Figure 2: Illustration of Unified Advertisement Semantic ID.
+postive samples P𝑖with respect to each item triplets (Video, Product,
+Advertiser), where the co-occurring pair is treated as positives,
+while other in-batch samples serve as negatives. We adopt the
+InfoNCE:
+LNCE(𝑖) = −log
+Í
+𝑗∈P𝑖
+exp z⊤
+𝑖z𝑗/𝜏
+Í
+𝑘≠𝑖
+exp z⊤
+𝑖z𝑘/𝜏 ,
+(1)
+where z represents the last hidden states of MLLM.
+3.1.2
+Multi-Granularity-Multi-Resolution (MGMR) RQ-Kmeans. The
+stability and balance of the UA-SID codebook are critical for effec-
+tive generative retrieval. Lower codebook utilization and higher
+SID collision ratio can degrade downstream performance.
+Standard RQ-Kmeans with fixed codebook size often suffers from
+low codebook utilization [19]. Inspired by [13], we adopt a Multi-
+Resolution (MR) RQ-Kmeans scheme. To better preserve semantic
+separability, lower levels use larger codebooks to capture dominant
+factors early, while higher levels model lower-entropy residuals.
+Balanced K-means clustering is applied at each level to improve
+codebook utilization.
+SID collisions are also acute in advertising, identical-content
+ads can exhibit entirely different delivery trajectories if advertis-
+ers target distinct conversion types. In fact, ad systems routinely
+expose such Multi-Granularity (MG), predominantly numeric sig-
+nals that lack conventional semantics. Therefore, we replace vector
+quantization at the final layer with a hash-based numeric mapping
+derived from non-semantic features (e.g., item/account IDs, conver-
+sion types), which markedly improves global balance and reduces
+collisions with negligible extra quantization error.
+Finally, each item is mapped to a discrete UA-SID sequence
+y = (𝑠1,𝑠2, . . . ,𝑠𝑇),
+𝑠𝑡∈V𝑡,
+(2)
+where𝑠𝑡denotes the token at level𝑡,𝑇is the UA-SID depth (typically
+small), and V𝑡is the vocabulary at level 𝑡.
+3.2
+Lazy Autoregressive Decoder
+For structured features and user interaction sequences, we follow
+LazyDecoder [40] and adopt a lightweight linear context processor
+to efficiently model these heterogeneous contexts, whose output is
+denoted as X = (x1, . . . , x𝑆) with x𝑖∈R𝑑, where 𝑆is the context
+length and 𝑑is the hidden size. The decoder then generates the
+target UA-SID y.
+Vanilla Autoregressive Decoding. Prior work commonly uses a
+standard autoregressive decoder that factorizes
+𝑝(y | X) =
+𝑇
+Ö
+𝑡=1
+𝑝(𝑠𝑡| 𝑠<𝑡, X) ,
+(3)
+and feeds the embedding of the previous-level UA-SID back to the
+first decoder layer at the next decoding step, as shown in Figure 3(a).
+Concretely, let s𝑡∈R𝑑be the embedding of 𝑠𝑡(and s0 = BOS) and
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Peng Jiang et al.
+p𝑡be the position embedding of step 𝑡. A naive decoder initializes
+the step-𝑡state with h(0)
+𝑡
+= s𝑡−1 + p𝑡and applies 𝐿decoder layers:
+h(ℓ)
+𝑡
+= Dec(ℓ) 
+h(ℓ−1)
+𝑡
+, X
+
+,
+ℓ= 1, . . . , 𝐿,
+(4)
+followed by a classifier 𝑝(𝑠𝑡| ·) = Softmax(W𝑡h(𝐿)
+𝑡
+).
+LazyAR: Late-Inject Autoregression. In the experiments, we ob-
+served that the first-level UA-SID (𝑠1) typically has the largest loss
+and is the most important to learn, yet contributes little to beam-
+search cost: decoding starts from BOS, so the effective beam for
+𝑠1 is 1, while beams become much larger for later levels (𝑡≫1).
+As a result, most decoding compute is spent on later levels, which
+are empirically easier. Motivated by this mismatch between learn-
+ing difficulty and inference cost, we ask whether we can reduce
+the decoding compute for later-level UA-SID without affecting the
+inference of the first level.
+A straightforward approach is to add extra shallow decoders for
+later UA-SID levels (e.g., DeepSeek MTP [5], shown in Figure 3(b)),
+but this (i) introduces additional parameters, (ii) prevents early
+decoder layers from directly participating in later-level inference
+and (iii) empirically decreases the recommendation performance.
+Instead, we propose LazyAR (Lazy AutoRegression), which delays
+the dependence on 𝑠𝑡−1 to an intermediate layer. Detailedly, given
+a chosen 𝐾(1 ≤𝐾< 𝐿), for each UA-SID level 𝑡, LazyAR computes
+the first 𝐾layers without conditioning on 𝑠𝑡−1:
+m(0)
+𝑡
+= p𝑡,
+(5)
+m(ℓ)
+𝑡
+= Dec(ℓ) 
+m(ℓ−1)
+𝑡
+, X
+
+,
+ℓ= 1, . . . , 𝐾,
+(6)
+then injects the previous-level UA-SID embedding at layer 𝐾via a
+fusion operator:
+˜m(𝐾)
+𝑡
+= Fuse
+
+m(𝐾)
+𝑡
+, s𝑡−1
+
+,
+(7)
+and applies the remaining 𝐿−𝐾layers autoregressively:
+h(ℓ)
+𝑡
+= Dec(ℓ) 
+h(ℓ−1)
+𝑡
+, X
+
+,
+ℓ= 𝐾+ 1, . . . , 𝐿,
+(8)
+with h(𝐾)
+𝑡
+≜˜m(𝐾)
+𝑡
+and
+𝑝(𝑠𝑡| 𝑠<𝑡, X) = Softmax
+
+W𝑡h(𝐿)
+𝑡
+
+.
+(9)
+We implement Fuse(·) as a lightweight gated projection:
+Fuse(m, s) = W𝑓[m ⊙(W𝑔s); s],
+(10)
+where [·; ·] is concatenation and ⊙is element-wise product. Each
+decoder layer Dec(ℓ) (·) follows OneRecV2 [40], consisting of a
+cross-attention between m(ℓ)
+𝑡
+/h(ℓ)
+𝑡
+and X, a self-attention module
+over decoder states, and a feed-forward network. All submodules
+are equipped with pre-layer normalization to stabilize training and
+facilitate deeper architectures.
+Why LazyAR is faster. m(𝐾)
+𝑡
+does not depend on 𝑠𝑡−1, so the first
+𝐾layers can be computed in parallel for all levels and reused across
+beams:
+{m(𝐾)
+𝑡
+}𝑇
+𝑡=1 = Dec(1:𝐾) 
+{p𝑡}𝑇
+𝑡=1, X
+
+.
+(11)
+Only the remaining 𝐿−𝐾layers (Eq. (8)) require autoregressive
+dependency, reducing sequential work per level during beam search.
+This is important because, at later UA-SID levels, decoding must
+(a) Vanilla AR
+(b) DeepSeek MTP
+(c) LazyAR
+Figure 3: Comparison of Vanilla AR, DeepSeek MTP, LazyAR.
+be performed for a large number of beam candidates in parallel,
+making the cost of the autoregressive component a major bottleneck
+in overall decoding efficiency.
+Why LazyAR preserves performance. (1) The decoding process
+for the first-level UA-SID remains unchanged: 𝑠1 is still generated
+from a initialized embedding through the full 𝐿decoder layers,
+ensuring no degradation on the hardest level. (2) For later steps,
+LazyAR directly leverages the representations produced by the first
+𝐾layers. These intermediate states are not arbitrary – they can
+reason in latent space and encode useful signals about plausible can-
+didates at level 𝑡. To encourage the first 𝐾layers to learn richer and
+more predictive latent representations, we introduce an MTP-style
+auxiliary loss. Concretely, we bypass the fusion projection and set
+h(𝐾)
+𝑡
+≜m(𝐾)
+𝑡
+, forcing the trunk to provide sufficient information
+for downstream decoding even without explicit dependence on the
+previous-level UA-SID. In DeepSeek-MTP, both inputs to the fusion
+layer contain only information from the previous token, and the
+earlier decoder layers are used solely to support decoding at the
+first step. (3) 𝐾is a tunable hyper-parameter that provides a flexi-
+ble accuracy-efficiency trade-off without changing the model size.
+When 𝐾= 1, LazyAR reduces to naive autoregression. This design
+differs substantially from DeepSeek-MTP, where adding decoder
+layers for subsequent steps results in a substantial growth in model
+parameters. In our experiments, 𝐾= 2
+3𝐿preserves recommenda-
+tion quality while doubling inference throughput. (4) Furthermore,
+because the first 𝐾layers are computed only once and shared across
+beams, their impact on beam-search inference cost is significantly
+reduced. It suggests that these 𝐾layers can potentially be extended
+to perform more inference steps and incorporate latent reasoning,
+opening up additional capacity for improving model effectiveness.
+We leave this exploration to future work.
+Discussion. This design is recommendation-specific and is less
+suitable for standard LLM decoding. In typical LLM serving, beam
+search is often not used (or uses a small beam), and the difficulty of
+predicting later tokens does not necessarily decrease, so deferring
+autoregressive dependency to later layers may yield limited speedup
+and offers no guarantee for long, variable-length generations.
+3.3
+Value-Aware Supervised Learning
+We train GR4AD using a Value-Aware Supervised Learning (VSL)
+objective tailored to advertising recommendation. Similar to lan-
+guage models, the core supervision signal is defined on discrete
+tokens and optimized via cross-entropy loss. Given the UA-SID se-
+quence y, we first define a standard autoregressive token prediction
+
+Generative Recommendation for Large-Scale Advertising
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+loss over SID tokens:
+LSID = −
+𝑇∑︁
+𝑡=1
+log𝑝(𝑠𝑡| 𝑠<𝑡, X).
+(12)
+ECPM-Aware Token Prediction. To better adapt the training objec-
+tive to advertising scenarios, we further incorporate business value
+information by introducing an eCPM token, which can be used to
+re-rank the generated SIDs. Specifically, we discretize the contin-
+uous eCPM values of training samples into equiprobable buckets
+and append the resulting eCPM token as an additional prediction
+step after the UA-SID sequence. The eCPM prediction is optimized
+using a cross-entropy loss:
+LeCPM = −log𝑝(𝑣| y, X),
+(13)
+where 𝑣denotes the discretized eCPM token. The combined next-
+token prediction loss is then
+LNTP = LSID + 𝜆𝑒LeCPM.
+(14)
+Value-Aware Sample Weighting. In advertising, training samples
+exhibit highly skewed value distributions. To reflect their heteroge-
+neous importance, we apply a value-aware weighting scheme to all
+loss terms. Each sample is assigned a weight 𝑤= 𝑤user · 𝑤behavior,
+where 𝑤user captures the long-term advertising value of the user,
+and 𝑤behavior reflects the depth of user interaction (e.g., purchase ac-
+tions receive higher weights than clicks). Samples from users with
+higher advertising value and deeper engagement thus contribute
+more strongly during training.
+Auxiliary MTP Loss. As discussed in Section 3.2, LazyAR com-
+putes the first 𝐾decoder layers without conditioning on the previ-
+ous token. To encourage these parallel layers to learn richer and
+more predictive representations, we introduce an auxiliary multi-
+token prediction (MTP) loss by setting h(𝐾)
+𝑡
+≜m(𝐾)
+𝑡
+. Concretely,
+we require the trunk states to directly predict target tokens without
+relying on late-injected autoregressive signals. This auxiliary loss
+is applied during training only and is denoted as LMTP.
+The final VSL objective is defined as
+LVSL = ED
+
+𝑤 LNTP + 𝜆mtpLMTP
+
+,
+(15)
+where 𝜆mtp controls the strength of the auxiliary MTP loss.
+3.4
+Ranking-Guided Reinforcement Learning
+VSL enables GR4AD to learn a distribution over UA-SIDs that re-
+flects historical user interests and advertising signals, but it mainly
+fits the logged data distribution and does not directly optimize
+downstream objectives. In particular, it does not explicitly favor
+UA-SIDs with higher advertising value or support exploration be-
+yond observed behaviors. We therefore introduce a ranking-guided
+RL stage on top of VSL to encourage value-aware, list-level optimiza-
+tion while enabling controlled exploration, remaining grounded in
+the learned distribution.
+3.4.1
+RSPO. Unlike LLMs, recommendation systems aim to gen-
+erate a ranked list rather than a single output, making per-item
+rewards insufficient to fully capture list-level optimization. More-
+over, training samples in our setting are not limited to log feedback
+generated by the generative model itself, but also include samples
+collected from other production pipelines.
+To address these challenges, we propose a list-wise RL method
+tailored to advertising recommendation, termed RSPO (Ranking-
+Guided Softmax Preference Optimization). Let Y = {y1, y2, . . . , y𝑛}
+denote the candidate list, and 𝑣𝑖denotes the associated reward
+(eCPM) of y𝑖. Inspired by Lambda framework [29] and SDPO [4],
+instead of constructing chosen–rejected pairs using heuristic rules,
+RSPO directly aligns the RL objective with the ranking NDCG:
+LRSPO = −E(𝑋,y𝑖,E𝑖)∼D
+"
+log2 𝜎
+ 
+−log
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗exp
+ 
+𝛽log
+𝑝𝜃(y𝑗| 𝑋)
+𝑝𝑟𝑒𝑓(y𝑗| 𝑋)𝐶𝑖𝑗−𝛽log
+𝑝𝜃(y𝑖| 𝑋)
+𝑝𝑟𝑒𝑓(y𝑖| 𝑋)𝐶𝑖𝑗
+!#
+.
+(16)
+Here, E𝑖= {y𝑗| 𝑣𝑗< 𝑣𝑖} ⊂Y denotes the set of candidates
+ranked below y𝑖. The coefficient M𝑖𝑗=
+
+1
+𝐷|𝑖−𝑗| −
+1
+𝐷|𝑖−𝑗|+1
+ |𝐺𝑖−𝐺𝑗|
+follows the standard Lambda formulation, where 𝐺𝑖= 2𝑣𝑖−1
+𝑍
+, 𝐷𝑖=
+log2(1+𝑖), and 𝑍is the ideal DCG. We show that LRSPO is an upper
+bound of NDCGcost (proof in Appendix A.1) with respect to the
+ranking induced by log
+𝑝𝜃(y𝑖|𝑋)
+𝑝𝑟𝑒𝑓(y𝑖|𝑋)𝐶𝑖𝑗:
+NDCGcost =
+𝑛
+∑︁
+𝑖=1
+𝐺𝑖−
+𝑛
+∑︁
+𝑖=1
+𝐺𝑖
+𝐷𝑖
+=
+𝑛
+∑︁
+𝑖=1
+𝐺𝑖−NDCG,
+(17)
+𝛽controls the preference strength and 𝐶𝑖𝑗is a binary gate for
+reference availability and reliability. In production, training samples
+come from heterogeneous sources. Some lists are generated by
+GR4AD, for which we can record historical online predictions as a
+reference distribution 𝑝𝑟𝑒𝑓; however, many samples are collected
+from other pipelines and thus have no reliable 𝑝𝑟𝑒𝑓. Moreover,
+even for GR4AD-generated samples, 𝑝𝑟𝑒𝑓may become stale due to
+distribution drift and training–serving inconsistencies. When the
+current model predictions deviate too much from 𝑝𝑟𝑒𝑓, enforcing
+the reference constraint can introduce noisy regularization and
+lead to unstable updates. We therefore enable 𝑝𝑟𝑒𝑓only when it is
+available and deemed reliable; otherwise, we drop the reference:
+𝐶𝑖𝑗=
+(
+1
+1
+| E𝑖∪{y𝑖}|
+Í
+y𝑡∈E𝑖∪{y𝑖}
+log 𝑝𝜃(y𝑡|𝑋)
+𝑝ref (y𝑡|𝑋)
+ < 𝛿
+0
+otherwise
+,
+(18)
+where 𝛿is a hyperparameter threshold.
+3.4.2
+Unified Learning of VSL and RSPO. In LLM training, pre-
+training, supervised fine-tuning, and reinforcement learning are
+typically conducted in separate stages. In our production setting,
+however, GR4AD is updated continuously via online learning, mak-
+ing it essential to jointly integrate VSL and RSPO in a single training
+stream. Inspired by HPT [20], we treat VSL as learning a stable base
+distribution over user-interest items, while RSPO refines this dis-
+tribution by biasing generation toward higher-value items without
+drifting away from user relevance.
+To balance imitation and exploration dynamically, we introduce
+a sample-level alignment score that measures the mismatch between
+the model’s current preference and the reward signal. For a can-
+didate list of size 𝑛, let 𝑟(𝑖)
+𝑝
+and 𝑟(𝑖)
+𝑣
+be the ranks of candidate 𝑖
+according to the model likelihood 𝑝𝜃(y𝑖| 𝑋) and its reward 𝑣𝑖
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Peng Jiang et al.
+Realtime Serving
+Infer Server
+DBS
+Online Learning
+Sampling System
+Training Platform
+VSL
+RSPO
+Reward System
+Infer Server
+Reward Model
+Log
+VSL Log
+Param Sync
+RL Log
+Req
+Ads
+Param Sync
+BOS
+Ad 
+Engine
+Off Peak
+Beam Width 
+On Peak
+Beam Width 
+Realtime Index
+Label Index
+Expand Index
+UA-SID 
+Generation
+New Ad
+Expand
+Result Cache
+Figure 4: System overview: training and serving of GR4AD.
+(eCPM), respectively. We define the normalized rank discrepancy:
+𝐴(𝑖) =
+|𝑟(𝑖)
+𝑝
+−𝑟(𝑖)
+𝑣|
+𝑛−1
+,
+𝐴(𝑖) ∈[0, 1].
+(19)
+When 𝐴(𝑖) is large, the model ranking deviates from the reward
+ranking, indicating insufficient imitation of the user-interest dis-
+tribution; thus we increase the weight of VSL. When 𝐴(𝑖) is small,
+the model is already broadly aligned, and we place more emphasis
+on RSPO to improve value-aware listwise optimization.
+We assign per-sample weights for the two objectives as:
+𝑤(𝑖)
+VSL = 𝑤0 · exp
+
+𝐴(𝑖) · log(1 + 𝑣𝑖)
+
+,
+(20)
+𝑤(𝑖)
+RL = 𝑤0 · 𝑍max(1 −𝐴(𝑖)),
+(21)
+where 𝑤0 is a base scaling factor and 𝑍max caps the RL weight. The
+final unified online training objective is
+L = E𝑖∼D
+h
+𝑤(𝑖)
+VSL L(𝑖)
+VSL + 𝑤(𝑖)
+RL L(𝑖)
+RSPO
+i
+.
+(22)
+4
+Deployment
+We have deployed GR4AD (0.16B) in Kuaishou’s advertising system,
+serving over 400 million users. The system employs a closed-loop
+architecture integrating reward estimation, online learning, and
+real-time indexing for continuous model evolution, while specific
+efficiency optimizations ensure high-throughput (500+ QPS per
+L20), low-latency (<100ms) inference under fluctuating traffic.
+4.1
+System Overview
+As shown in Figure 4, GR4AD operates as a closed-loop system with
+four components: a Realtime Serving engine for request handling
+and ranking, a Realtime Index module for Item-SID mapping, an
+Online Learning module for continual VSL/RL updates, and a Reward
+System that provides value-based feedback to close the loop.
+Reward System. The Reward System supplements online logs for
+RL training, since relying only on online exposed SL samples is (i)
+data-limited and insufficient to align optimization with revenue
+objectives (e.g., eCPM), and (ii) directly performing exploration in
+real-time serving can incur noticeable performance cost. We train a
+reward model on real exposure data and use it to score candidate sets
+generated by GR4AD. In the Reward System, latency constraints
+are relaxed, allowing GR4AD to generate more candidates with a
+larger beam and to introduce controlled random exploration. The
+resulting value estimates (e.g., eCPM) are streamed as RL logs to
+support ranking-aware RSPO updates.
+Online Learning module. The Online Learning Module processes
+real-time request and interaction streams to construct two distinct
+training signals: (i) it prioritizes positive engagement samples to
+generate VSL logs for modeling the user-interest distribution, and
+(ii) it samples a subset of high-value users—including cases where
+explicit interactions may be absent—and routes their contexts to the
+reward system for value estimation. The online learner performs
+continual mini-batch training for both VSL and RL, pushing updated
+parameters to the inference server in real time.
+Realtime Index module. The Realtime Index Module replaces the
+legacy embedding-based retrieval pipeline to enable generative
+recommendation. In traditional DLRM systems, retrieval relies on
+embedding indexes that must be frequently rebuilt as models update,
+making index refresh typically minute-level. In contrast, our SID-
+based indexing is driven by a relatively stable content-to-UA-SID
+mapping and does not require frequent global rebuilds. When a
+new item arrives, we simply compute its UA-SID from content
+and update a bidirectional index (UA-SID ↔Item ID) in seconds.
+This design substantially improves item freshness and cold-start
+coverage, while also ensuring training–serving consistency.
+Realtime Serving. Realtime Serving handles user requests by
+invoking the inference server to return ranked ad lists, while simul-
+taneously logging serving contexts and user feedback to close the
+loop. To maintain high-throughput, low-latency inference under
+traffic fluctuations, we apply Dynamic Beam Serving (DBS), result
+caching, and other concurrency optimizations.
+4.2
+Efficiency Optimization
+To reconcile the high computational demands of generative recom-
+mendation with strict production latency constraints, we introduce
+a suite of optimizations.
+4.2.1
+Dynamic Beam Serving (DBS). We propose Dynamic Beam
+Serving (DBS) to improve the efficiency–effectiveness trade-off of
+multi-step decoding in real-time advertising.
+Dynamic Beam Width (DBW). The number of returned candi-
+dates is determined by the beam width at the final step, while the
+overall decoding cost is dominated by the beam widths in earlier
+steps, since they control the number of hypotheses propagated to
+subsequent steps. Therefore, a fixed beam width across steps is
+often suboptimal under a constrained compute budget. Motivated
+by this, DBS adopts a progressively increasing beam schedule across
+steps, which reduces intermediate computation while preserving
+the final candidate quality.
+Traffic-Aware Adaptive Beam Search (TABS). Moreover, request
+traffic in recommendation systems exhibits strong peak–off-peak
+cycles, and serving constraints are dictated by peak load. DBS there-
+fore further adjusts the overall beam scale according to instanta-
+neous traffic. Let 𝑄𝑡denote the serving QPS at time 𝑡and 𝐵base be
+the baseline beam setting. We adapt the active beam scale based
+on traffic intensity and available computational slack Cavail by 𝐵𝑡=
+
+Generative Recommendation for Large-Scale Advertising
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 1: Overall performance and ablation of GR4AD.
+Model Settings
+ΔRevenue
+ΔQPS
+vs. Base
+vs. GR-Base
+Baselines
+DLRM (Base)
+–
+–
+OneRec-V2 [40] (GR-Base)
++1.68%
+–
+Tokenization Optimizations
++ UA-SID
++1.92%
+0%
+Learning Optimizations
++ VSL
++2.80%
+-25%
++ VSL + DPO [24]
++3.16%
+-25%
++ VSL + GRPO [26]
++3.21%
+-25%
++ VSL + RSPO
++3.86%
+-25%
++ Unified VSL & RSPO (UVR)
++4.01%
+-25%
+Serving Optimizations
++ UVR + DBS
++4.32%
++20%
++ UVR + DBS + DeepSeek-MTP [5]
++3.98%
++117%
+GR4AD (+ UVR + DBS + LazyAR)
++4.28%
++117%
+𝐵base · 𝑓(𝑄𝑡, Cavail). During off-peak periods (e.g., 𝑄𝑡< 𝑄threshold),
+we increase 𝐵𝑡to leverage otherwise idle compute, enabling broader
+hypothesis exploration and improving ranking quality, while keep-
+ing peak-time latency and throughput within budget.
+4.2.2
+Reco Result Cache. A single user may issue multiple ad re-
+quests within a short time window, during which both user intent
+and the candidate ad pool typically remain stable. As a result, infer-
+ence outcomes are expected to be largely consistent across these
+requests. By caching previously generated ad recommendations,
+subsequent requests within a bounded interval (e.g., one minute)
+can directly reuse cached results, significantly reducing inference
+resource consumption without degrading serving performance.
+4.2.3
+Other Optimizations. We propose Beam-Shared KV Caching
+to organize beams along the sequence dimension. This allows mul-
+tiple beams to share a single encoder KV cache, eliminating redun-
+dant memory accesses and reducing the per-step KV read complex-
+ity from O(𝐵· 𝐿) to O(𝐿). For beam search, we introduce TopK
+Pre-Cut. It first selects 𝑘candidates in parallel from each beam of
+the previous step, then performs a global top-𝑘selection over the ag-
+gregated candidates. This reduces the search space, improves GPU
+parallelism, and maintains search correctness. Further, we reduce
+numerical precision from FP32 to FP8 [6], significantly lowering
+both computational redundancy and memory access overhead.
+5
+Experiments
+5.1
+Overall Performance
+As shown in Table 1, GR4AD significantly outperforms these base-
+lines in both inference efficiency and revenue, demonstrating its
+effectiveness. Specifically, the baselines include previous DLRM-
+based Kuaishou advertising platform, and OneRec-V2[40], a state-
+of-the-art generative recommendation model. Note that GR models
+are typically served on more powerful GPUs and with higher de-
+vice utilization, whereas the DLRM-based production stack involves
+multiple models co-serving, making single-model QPS not directly
+comparable. Therefore, we report serving efficiency as relative QPS
+improvements over the GR-Base setting for fair comparison. More-
+over, we conduct several extensive ablation studies to assess the
+contribution of each component in GR4AD.
+Value-Aware Online Learning. (1) First, we find that introducing
+VSL significantly boosts online revenue, demonstrating the effec-
+tiveness of the VSL module. Specifically, VSL, incorporating user
+and behavior weighting as well as eCPM token prediction, better
+aligns with advertising scenario requirements by enabling differ-
+entiated user modeling and directly targeting business objectives
+to maximize revenue. (2) However, while VSL learns a fixed data
+distribution in a point-wise manner, it lacks strong generalization
+ability and fails to further explore user preferences. To address this
+limitation, incorporating RSPO aligns generation probabilities with
+the relative ranking order in a list-wise manner, resulting in the
+most significant improvement among all optimization components.
+This demonstrates that RSPO can more comprehensively capture
+user interest and preferences compared to DPO[24] or GRPO[26],
+leading to enhanced business revenue. (3) Finally, rather than simply
+combining VSL and RSPO, we unify them through a sample-level
+training indicator, effectively leveraging the strengths of both. This
+approach not only stabilizes training in an online learning setting
+but also results in additional revenue.
+Dynamic Beam Serving. As shown in Table 1, we implement the
+DBS mechanism to optimize inference efficiency and maximize
+revenue. First, DBW allows us to replace a fixed beam width across
+layers with a dynamic beam width (e.g., replacing 512-512-512 with
+128-256-512), which reduces the overall computational load, sig-
+nificantly improves inference efficiency, and does not compromise
+revenue. Then, with the help of TABS, we increase the beam width
+by 60% during off-peak periods to improve revenue, while keeping
+the beam width unchanged during peak periods. The collaboration
+of both mechanisms leads to an optimized balance between revenue
+and efficiency.
+Lazy Autoregressive Decoder. We observe that LazyAR results in
+a marginal performance decrease, yet it nearly doubles qps. This
+highlights the dual benefits of LazyAR: on the one hand, it improves
+inference efficiency by sharing the majority of decoder layers and
+enabling parallel computation to reduce the overall computational
+load, and on the other hand, it introduces an MTP-style auxiliary
+loss to enrich latent representations, ensuring that performance
+remains as unaffected as possible. In LazyAR, we configure the total
+number of decoder layers, L=9, with the first K = 6 layers shared
+across all beams. This favorable accuracy-efficiency trade-off allows
+GR4AD to effectively handle Kuaishou’s full advertising traffic.
+Business Indicators. Beyond revenue, there is a significant 17.5%
+increase in ad delivery for small and medium-sized advertisers,
+marking a remarkable achievement. Additionally, due to more pre-
+cise interest modeling, the generative ad system enhanced the user
+experience, leading to a 10.17% improvement in ad conversion rates.
+Among less active users, we still observed a 7.28% increase in con-
+version rates. We attribute these gains to improved generalization
+from content-based SIDs and a more real-time index that better
+supports cold-start items. Overall, GR4AD supports a healthier
+platform ecosystem, delivering a win-win-win outcome for the
+platform, advertisers, and users.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Peng Jiang et al.
+0.03B
+0.08B
+0.16B
+0.32B
+Model Size (Parameters)
+2.8
+3.0
+3.2
+3.4
+Loss
+3.359
+3.203
+3.015
+2.907
+Training Loss
+0.03B
+0.08B
+0.16B
+0.32B
+Model Size (Parameters)
+2%
+3%
+4%
+5%
+Ad Revenue Increase
++2.13%
++2.68%
++4.01%
++4.43%
+Ad Revenue Increase
+128
+256
+512
+1024
+Beam Search Width
+0%
+100%
+200%
+QPS
+200%
+100%
+55%
+30%
+Inference QPS
+128
+256
+512
+1024
+Beam Search Width
+2%
+3%
+4%
+Ad Revenue Increase
++2.33%
++3.27%
++4.01%+4.21%
+Ad Revenue Increase
+Figure 5: Scaling laws of model size and beam width.
+5.2
+Scaling Laws for GR4AD
+To validate the scalability of our approach, we further investigate
+scaling effects from both model parameters and inference beam.
+5.2.1
+Model Scaling. We conduct a controlled set of online A/B
+tests across four model sizes, containing 0.03B, 0.08B, 0.16B, and
+0.32B parameters, while keeping the inference beam width fixed
+at 512. We observe a clear and monotonic improvement in the
+revenue metric as model size increases. Larger models consistently
+achieve lower training loss, which is consistent with the observed
+online performance trend and suggests stronger representational
+power and generative modeling capacity. Specifically, the revenue
+lift steadily increases from +2.13% to +4.43%, demonstrating that
+scaling generative recommenders yields substantial and reliable
+gains in real-world advertising settings.
+5.2.2
+Inference Scaling. Beyond model size, we further investigate
+inference-time scaling by increasing the beam search width to
+enhance candidate exploration during generation. Online results
+show consistent gains with wider beams at a fixed model size of
+0.16B: the revenue lift increases from +2.33% at beam width 128
+to +4.21% at beam width 1024. These results indicate that stronger
+inference-time search can further unlock the potential of generative
+recommenders and translate into meaningful business impact. In
+production, we select the beam width based on latency and compute
+budgets to balance online gains against serving cost.
+Overall, we observe a clear Scaling Law in both model size and
+beam width, which provides valuable insights for balancing re-
+source consumption and performance gains.
+5.3
+Quality of UA-SID
+Embedding Optimizations. A high-quality underlying embedding
+should effectively capture both an advertisement’s distinctiveness
+and the relationships among advertisements. Therefore, we con-
+structed an offline test set to evaluate photo-to-photo recall: a re-
+trieval is considered successful if the two photos belong to the same
+advertised product. As illustrated in Table2, QARM[19] achieves
+the poorest performance because it summarizes only the video
+content without accounting for advertisement-specific information.
+Understanding these cues with Qwen3-VL-7B [2] yields a substan-
+tial recall improvement. Further, after applying instruction tuning
+Table 2: Ablation of UA-SID.
+Tokenization Settings
+Offline Metrics
+Embedding Optimizations
+R@1↑
+R@5↑
+R@10↑
+QARM [19]
+0.541
+0.812
+0.893
+Qwen3-VL-7B [2]
+0.769
+0.948
+0.977
+Qwen3-VL-7B + IT + CL (UAE)
+0.896
+0.985
+0.994
+Quantization Optimizations
+Cpr↓
+Col↓
+Util↑
+RQ-Kmeans [19, 39]
+3.54
+85.44%
+0.10‰
+(4096, 4096, 4096)
+RQ-Kmeans + MR
+1.78
+59.72%
+0.20‰
+(16384, 4096, 1024)
+RQ-Kmeans + MG + MR (UA-SID)
+1.07
+18.26%
+0.34‰
+(16384, 4096, 1024*)
+(IT) and co-occurrence learning (CL) to Qwen3-VL-7B, we obtain
+the best recall results, underscoring the importance of end-to-end
+fine-tuning of advertisement embedding models. More clustering
+visualization results are shown in Appendix.
+Quantization Optimizations. Under the same quantization space
+(i.e., the product of codebook sizes across all levels), we regard a
+SID scheme as better if it achieves a lower compression ratio and
+a lower collision rate, since this indicates higher code utilization
+and stronger item discriminability while still grouping semantically
+similar items. We report three metrics, compression ratio (Cpr),
+collision rate (Col) and codebook utilization (Util). The detailed
+computation is listed in Appendix. The ablation results are summa-
+rized in Table 2. We observe that, under a fixed quantization space,
+allocating larger codebooks to earlier levels and smaller ones to
+later levels (i.e., a multi-resolution design) improves codebook uti-
+lization and reduces collisions. Furthermore, applying a randomized
+hashing strategy at the final layer (denoted * in table) further low-
+ers the collision rate, and can also facilitate learning collaborative
+structure among items beyond pure semantic partitioning.
+In summary, optimization of the embeddings and quantization
+yielded a +0.24% increase in revenue, as illustrated in Table 1.
+6
+Conclusions
+In this paper, we presented GR4AD, a production-oriented genera-
+tive recommender for large-scale, real-time advertising with online
+learning. GR4AD is co-designed across tokenization, architecture,
+learning and serving: UA-SID facilitates accurate advertisement
+representation; LazyAR improves the efficiency of short, multi-
+candidate generation by relaxing layer-wise dependencies while
+preserving effectiveness; VSL and the proposed RSPO align contin-
+ual optimization with business value in non-stationary markets;
+and dynamic beam serving adapts decoding compute to traffic fluc-
+tuations and latency budgets. Large-scale online A/B tests show
+up to 4.2% ad revenue improvement over a strong DLRM base-
+line, with consistent gains from both model scaling and inference-
+time scaling, while achieving high-throughput real-time serving
+in a fully deployed system. These results highlight the promise
+of recommendation-native generative design for advertising and
+suggest future directions in more robust continual learning, cost-
+aware inference control, and broader constraint optimization in
+real-world deployments.
+
+Generative Recommendation for Large-Scale Advertising
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Acknowledgments
+We sincerely thank the following individuals (listed in alphabetical
+order) for their invaluable contributions: Caiyi Xu, Chen Yang, Chen
+Li, Fuxing Zhang, Haiping Xu, Hongtao Cheng, Jin Ouyang, Jinghui
+Jia, Jingshan Lv, Kang Sun, Lejian Ren, Qigen Hu, Xiang He, Xin
+Ku, Xinchen Luo, Yiyu Wang, Yongchuan Wang, Zhan Hu, Zhaojie
+Liu, Zhongteng Han
+References
+[1] Radford Alec, Narasimhan Karthik, Salimans Tim, and Sutskever Ilya. 2018. Im-
+proving language understanding by generative pre-training. (2018).
+[2] Shuai Bai, Yuxuan Cai, Ruizhe Chen, Keqin Chen, Xionghui Chen, Zesen Cheng,
+Lianghao Deng, Wei Ding, Chang Gao, Chunjiang Ge, Wenbin Ge, Zhifang Guo,
+Qidong Huang, Jie Huang, Fei Huang, Binyuan Hui, Shutong Jiang, Zhaohai Li,
+Mingsheng Li, Mei Li, Kaixin Li, Zicheng Lin, Junyang Lin, Xuejing Liu, Jiawei
+Liu, Chenglong Liu, Yang Liu, Dayiheng Liu, Shixuan Liu, Dunjie Lu, Ruilin
+Luo, Chenxu Lv, Rui Men, Lingchen Meng, Xuancheng Ren, Xingzhang Ren,
+Sibo Song, Yuchong Sun, Jun Tang, Jianhong Tu, Jianqiang Wan, Peng Wang,
+Pengfei Wang, Qiuyue Wang, Yuxuan Wang, Tianbao Xie, Yiheng Xu, Haiyang
+Xu, Jin Xu, Zhibo Yang, Mingkun Yang, Jianxin Yang, An Yang, Bowen Yu, Fei
+Zhang, Hang Zhang, Xi Zhang, Bo Zheng, Humen Zhong, Jingren Zhou, Fan
+Zhou, Jing Zhou, Yuanzhi Zhu, and Ke Zhu. 2025. Qwen3-VL Technical Report.
+CoRR abs/2511.21631 (2025).
+[3] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong
+Xiao, Bowen Xue, Xuxin Zhang, Ying Yang, Huangyu Dai, Xing Xu, Tong Zhao,
+Mingcan Peng, Xiaoyang Zheng, Chao Wang, Qihang Zhao, Zhixin Zhai, Yang
+Zhao, Bochao Liu, Jingshan Lv, Xiao Liang, Yuqing Ding, Jing Chen, Chenyi Lei,
+Wenwu Ou, Han Li, and Kun Gai. 2025. OneSearch: A Preliminary Exploration
+of the Unified End-to-End Generative Framework for E-commerce Search. CoRR
+abs/2509.03236 (2025).
+[4] Yuxin Chen, Junfei Tan, An Zhang, Zhengyi Yang, Leheng Sheng, Enzhi Zhang,
+Xiang Wang, and Tat-Seng Chua. 2024. On Softmax Direct Preference Optimiza-
+tion for Recommendation. In NeurIPS.
+[5] DeepSeek-AI. 2024. DeepSeek-V3 Technical Report. CoRR abs/2412.19437 (2024).
+[6] Maxim Fishman, Brian Chmiel, Ron Banner, and Daniel Soudry. 2025. Scaling
+FP8 training to trillion-token LLMs. In ICLR. OpenReview.net.
+[7] Kairui Fu, Tao Zhang, Shuwen Xiao, Ziyang Wang, Xinming Zhang, Chenchi
+Zhang, Yuliang Yan, Junjun Zheng, Yu Li, Zhihong Chen, Jian Wu, Xiangheng
+Kong, Shengyu Zhang, Kun Kuang, Yu-Gang Jiang, and Bo Zheng. 2025. FORGE:
+Forming Semantic Identifiers for Generative Retrieval in Industrial Datasets.
+CoRR abs/2509.20904 (2025).
+[8] Yuqian Fu, Tinghong Chen, Jiajun Chai, Xihuai Wang, Songjun Tu, Guojun Yin,
+Wei Lin, Qichao Zhang, Yuanheng Zhu, and Dongbin Zhao. 2025. SRFT: A Single-
+Stage Method with Supervised and Reinforcement Fine-Tuning for Reasoning.
+CoRR abs/2506.19767 (2025).
+[9] Chang Gao, Chujie Zheng, Xionghui Chen, Kai Dang, Shixuan Liu, Bowen Yu,
+An Yang, Shuai Bai, Jingren Zhou, and Junyang Lin. 2025. Soft Adaptive Policy
+Optimization. CoRR abs/2511.20347 (2025).
+[10] Gelfand and Alan E. 2000. Gibbs sampling. Journal of the American statistical
+Association 95, 452 (2000), 1300–1304.
+[11] Ian J. Goodfellow, Jean Pouget-Abadie, Mehdi Mirza, Bing Xu, David Warde-
+Farley, Sherjil Ozair, Aaron C. Courville, and Yoshua Bengio. 2014. Generative
+Adversarial Nets. In NIPS. 2672–2680.
+[12] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, Yueming Han, MengLei Zhou,
+Lei Yu, Chuan Liu, and Wei Lin. 2025. MTGR: Industrial-Scale Generative Rec-
+ommendation Framework in Meituan. In CIKM. ACM, 5731–5738.
+[13] Ruining He, Lukasz Heldt, Lichan Hong, Raghunandan H. Keshavan, Shifan
+Mao, Nikhil Mehta, Zhengyang Su, Alicia Tsai, Yueqi Wang, Shao-Chuan Wang,
+Xinyang Yi, Lexi Baugher, Baykal Cakici, Ed H. Chi, Cristos Goodrow, Ningren
+Han, He Ma, Rómer Rosales, Abby Van Soest, Devansh Tandon, Su-Lin Wu,
+Weilong Yang, and Yilin Zheng. 2025. PLUM: Adapting Pre-trained Language
+Models for Industrial-scale Generative Recommendations. CoRR abs/2510.07784
+(2025).
+[14] Jonathan Ho, Ajay Jain, and Pieter Abbeel. 2020. Denoising Diffusion Probabilistic
+Models. In NeurIPS.
+[15] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian J. McAuley. 2025. Generating Long
+Semantic IDs in Parallel for Recommendation. In KDD (2). ACM, 956–966.
+[16] Clark Mingxuan Ju, Liam Collins, Leonardo Neves, Bhuvesh Kumar, Louis Yufeng
+Wang, Tong Zhao, and Neil Shah. 2025. Generative Recommendation with
+Semantic IDs: A Practitioner’s Handbook. In CIKM. ACM, 6420–6425.
+[17] Diederik P. Kingma and Max Welling. 2019. An Introduction to Variational
+Autoencoders. Found. Trends Mach. Learn. 12, 4 (2019), 307–392.
+[18] Shih-Yang Liu, Ta-Chi Yen, Cheng-Yu Hsieh, Yueh-Ning Chen, Chin-Hsuan Lin,
+Yu-Wei Chao, Tsu-Jui Fu, Shou-De Lin, Wan-Ting Hsu, Hsiang-Sheng Chiu, Pei-Fu
+Guo, Chen-Hsiang Yu, and Wen-Hsuan Li. 2026. GDPO: Group reward-Decoupled
+Normalization Policy Optimization for Multi-reward RL Optimization. arXiv
+preprint arXiv:2601.05242 (2026).
+[19] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, Changqing Qiu, Jiaqi Zhang, Xu
+Zhang, Zhiheng Yan, Jingming Zhang, Simin Zhang, Mingxing Wen, Zhaojie Liu,
+and Guorui Zhou. 2025. QARM: Quantitative Alignment Multi-Modal Recom-
+mendation at Kuaishou. In CIKM. ACM, 5915–5922.
+[20] Xingtai Lv, Yuxin Zuo, Youbang Sun, Hongyi Liu, Yuntian Wei, Zhekai Chen,
+Lixuan He, Xuekai Zhu, Kaiyan Zhang, Bingning Wang, Ning Ding, and Bowen
+Zhou. 2025. Towards a Unified View of Large Language Model Post-Training.
+CoRR abs/2509.04419 (2025).
+[21] Yu Meng, Mengzhou Xia, and Danqi Chen. 2024. SimPO: Simple Preference
+Optimization with a Reference-Free Reward. In NeurIPS.
+[22] Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll L. Wainwright,
+Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray,
+John Schulman, Jacob Hilton, Fraser Kelton, Luke Miller, Maddie Simens, Amanda
+Askell, Peter Welinder, Paul F. Christiano, Jan Leike, and Ryan Lowe. 2022. Train-
+ing language models to follow instructions with human feedback. In NeurIPS.
+[23] Haohao Qu, Wenqi Fan, Zihuai Zhao, and Qing Li. 2025. TokenRec: Learning to
+Tokenize ID for LLM-Based Generative Recommendations. IEEE Trans. Knowl.
+Data Eng. 37, 10 (2025), 6216–6231.
+[24] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D. Manning, Stefano
+Ermon, and Chelsea Finn. 2023. Direct Preference Optimization: Your Language
+Model is Secretly a Reward Model. In NeurIPS.
+[25] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah Samost, Maciej
+Kula, Ed H. Chi, and Mahesh Sathiamoorthy. 2023. Recommender Systems with
+Generative Retrieval. In NeurIPS.
+[26] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Mingchuan
+Zhang, Y. K. Li, Y. Wu, and Daya Guo. 2024. DeepSeekMath: Pushing the Limits
+of Mathematical Reasoning in Open Language Models. CoRR abs/2402.03300
+(2024).
+[27] Zihua Si, Zhongxiang Sun, Jiale Chen, Guozhang Chen, Xiaoxue Zang, Kai Zheng,
+Yang Song, Xiao Zhang, Jun Xu, and Kun Gai. 2024. Generative Retrieval with
+Semantic Tree-Structured Identifiers and Contrastive Learning. In SIGIR-AP.
+ACM, 154–163.
+[28] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable Item Tokenization for Generative
+Recommendation. In CIKM. ACM, 2400–2409.
+[29] Xuanhui Wang, Cheng Li, Nadav Golbandi, Michael Bendersky, and Marc Najork.
+2018. The LambdaLoss Framework for Ranking Metric Optimization. In CIKM.
+ACM, 1313–1322.
+[30] Yidan Wang, Zhaochun Ren, Weiwei Sun, Jiyuan Yang, Zhixiang Liang, Xin Chen,
+Ruobing Xie, Su Yan, Xu Zhang, Pengjie Ren, Zhumin Chen, and Xin Xin. 2024.
+Content-Based Collaborative Generation for Recommender Systems. In CIKM.
+ACM, 2420–2430.
+[31] Yejing Wang, Shengyu Zhou, Jinyu Lu, Ziwei Liu, Langming Liu, Maolin Wang,
+Wenlin Zhang, Feng Li, Wenbo Su, Pengjie Wang, Jian Xu, and Xiangyu Zhao.
+2025. NEZHA: A Zero-sacrifice and Hyperspeed Decoding Architecture for
+Generative Recommendations. CoRR abs/2511.18793 (2025).
+[32] Yi Xu, Moyu Zhang, Chenxuan Li, Zhihao Liao, Haibo Xing, Hao Deng, Jinxin
+Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang. 2025. MMQ: Multimodal Mixture-
+of-Quantization Tokenization for Semantic ID Generation and User Behavioral
+Adaptation. CoRR abs/2508.15281 (2025).
+[33] Xiaoyong Yang, Yadong Zhu, Yi Zhang, Xiaobo Wang, and Quan Yuan. 2020.
+Large Scale Product Graph Construction for Recommendation in E-commerce.
+CoRR abs/2010.05525 (2020).
+[34] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Jiayuan He, Yinghai Lu, and Yu Shi. 2024. Actions Speak
+Louder than Words: Trillion-Parameter Sequential Transducers for Generative
+Recommendations. In ICML. OpenReview.net.
+[35] Gaowei Zhang, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, and Ji-Rong
+Wen. 2024. Scaling Law of Large Sequential Recommendation Models. In RecSys.
+ACM, 444–453.
+[36] Jun Zhang, Yi Li, Yue Liu, Changping Wang, Yuan Wang, Yuling Xiong, Xun Liu,
+Haiyang Wu, Qian Li, Enming Zhang, Jiawei Sun, Xin Xu, Zishuai Zhang, Ruoran
+Liu, Suyuan Huang, Zhaoxin Zhang, Zhengkai Guo, Shuojin Yang, Meng-Hao
+Guo, Huan Yu, Jie Jiang, and Shi-Min Hu. 2025. GPR: Towards a Generative
+Pre-trained One-Model Paradigm for Large-Scale Advertising Recommendation.
+CoRR abs/2511.10138 (2025).
+[37] Wenhao Zhang, Yuexiang Xie, Yuchang Sun, Yanxi Chen, Guoyin Wang, Yaliang
+Li, Bolin Ding, and Jingren Zhou. 2025. On-Policy RL Meets Off-Policy Experts:
+Harmonizing Supervised Fine-Tuning and Reinforcement Learning via Dynamic
+Weighting. CoRR abs/2508.11408 (2025).
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Peng Jiang et al.
+[38] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting Large Language Models by Integrating
+Collaborative Semantics for Recommendation. In ICDE. IEEE, 1435–1448.
+[39] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo,
+Qianqian Wang, Qigen Hu, Rui Huang, Shiyao Wang, Weifeng Ding, Wuchao Li,
+Xinchen Luo, Xingmei Wang, Zexuan Cheng, Zixing Zhang, Bin Zhang, Boxuan
+Wang, Chaoyi Ma, Chengru Song, Chenhui Wang, Di Wang, Dongxue Meng, Fan
+Yang, Fangyu Zhang, Feng Jiang, Fuxing Zhang, Gang Wang, Guowang Zhang,
+Han Li, Hengrui Hu, Hezheng Lin, Hongtao Cheng, Hongyang Cao, Huanjie
+Wang, Jiaming Huang, Jiapeng Chen, Jiaqiang Liu, Jinghui Jia, Kun Gai, Lantao
+Hu, Liang Zeng, Liao Yu, Qiang Wang, Qidong Zhou, Shengzhe Wang, Shihui He,
+Shuang Yang, Shujie Yang, Sui Huang, Tao Wu, Tiantian He, Tingting Gao, Wei
+Yuan, Xiao Liang, Xiaoxiao Xu, Xugang Liu, Yan Wang, Yi Wang, Yiwu Liu, Yue
+Song, Yufei Zhang, Yunfan Wu, Yunfeng Zhao, and Zhanyu Liu. 2025. OneRec
+Technical Report. CoRR abs/2506.13695 (2025).
+[40] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, Pengfei Zheng, Qiang Luo, Qianqian
+Wang, Qigen Hu, Rui Huang, Ruiming Tang, Shiyao Wang, Shujie Yang, Tao
+Wu, Wuchao Li, Xinchen Luo, Xingmei Wang, Yi Su, Yunfan Wu, Zexuan Cheng,
+Zhanyu Liu, Zixing Zhang, Bin Zhang, Boxuan Wang, Chaoyi Ma, Chengru Song,
+Chenhui Wang, Chenglong Chu, Di Wang, Dongxue Meng, Dunju Zang, Fan
+Yang, Fangyu Zhang, Feng Jiang, Fuxing Zhang, Gang Wang, Guowang Zhang,
+Han Li, Honghui Bao, Hongyang Cao, Jiaming Huang, Jiapeng Chen, Jiaqiang
+Liu, Jinghui Jia, Kun Gai, Lantao Hu, Liang Zeng, Qiang Wang, Qidong Zhou,
+Rongzhou Zhang, Shengzhe Wang, Shihui He, Shuang Yang, Siyang Mao, Sui
+Huang, Tiantian He, Tingting Gao, Wei Yuan, Xiao Liang, Xiaoxiao Xu, Xugang
+Liu, Yan Wang, Yang Zhou, Yi Wang, Yiwu Liu, Yue Song, Yufei Zhang, Yunfeng
+Zhao, Zhixin Ling, and Ziming Li. 2025. OneRec-V2 Technical Report. CoRR
+abs/2508.20900 (2025).
+[41] Guorui Zhou, Shiyao Wang, Shucheng Li, Jiaxing Song, Yujie Lu, Weijieying
+Ren, Hao Liu, Bo Chen, Mingzhou Zhou, Yu Wang, Yiyan Zhang, Tianshu Wu,
+Jinze Bai, Xiang Li, Xiangyu Zhao, Xiuqiang He, Zhenhua Dong, Jieming Zhu,
+Ruiming Tang, Rui Zhang, Xi Xiao, Jun Xu, Zhengyan Zhang, Xuemin Zhao,
+Shuo Li, Zhiyuan Zhang, Ji-Rong Wen, Weinan Zhang, Tingting Zhang, Jun
+Wang, Xinxuan Chen, Xin Zhao, Lin Liu, Yifan Liu, Ruihua Song, Jian-Yun Nie,
+Hongning Wang, Dawei Yin, Hengshu Zhu, Hui Xiong, Depeng Jin, Yong Li,
+Wenwu Ou, Jian Pei, Bin Cui, and Ping Li. 2025. OpenOneRec Technical Report.
+arXiv preprint arXiv:2512.24762 (2025).
+[42] Jieming Zhu, Mengqun Jin, Qijiong Liu, Zexuan Qiu, Zhenhua Dong, and Xiu Li.
+2024. CoST: Contrastive Quantization based Semantic Tokenization for Genera-
+tive Recommendation. In RecSys. ACM, 969–974.
+
+Generative Recommendation for Large-Scale Advertising
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+A
+Appendix
+A.1
+Connection Between RSPO and NDCGcost
+The definition of NDCG provided in the paper is restated as follows:
+NDCG = 1
+𝑍
+𝑛
+∑︁
+𝑖=1
+2𝑣𝑖−1
+log2(1 + 𝑖) =
+𝑛
+∑︁
+𝑖=1
+𝐺𝑖
+𝐷𝑖
+(23)
+where 𝑍is the ideal DCG, 𝑣𝑖denotes the associated reward
+(eCPM) for sample 𝑖, 𝐺𝑖= 2𝑣𝑖−1
+𝑍
+, 𝐷𝑖= log2(1 + 𝑖). For any sample
+pair (y𝑖, y𝑗) with 𝑒𝐶𝑃𝑀𝑖> 𝑒𝐶𝑃𝑀𝑗. In RSPO, let the ranking score
+based on NDCG be denoted as:
+(
+log𝑝𝜃(y𝑖| 𝑋)
+log𝑝𝑟𝑒𝑓(y𝑖| 𝑋)𝐶𝑖𝑗,
+log𝑝𝜃(y𝑗| 𝑋)
+log𝑝𝑟𝑒𝑓(y𝑗| 𝑋)𝐶𝑖𝑗
+)
+=
+
+𝑔𝑖,𝑔𝑗
+	
+(24)
+Following the LambdaLoss[29] framework, NDCGcost is defined
+as follows:
+NDCGcost =
+𝑛
+∑︁
+𝑖=1
+𝐺𝑖−
+𝑛
+∑︁
+𝑖=1
+𝐺𝑖
+𝐷𝑖
+=
+𝑛
+∑︁
+𝑖=1
+𝐺𝑖
+𝑛
+∑︁
+𝑗=1
+
+1
+𝐷|𝑖−𝑗|
+−
+1
+𝐷|𝑖−𝑗|+1
+ I𝑔𝑖<𝑔𝑗
+=
+𝑛
+∑︁
+𝑖=1
+∑︁
+y𝑗∈E𝑖
+
+1
+𝐷|𝑖−𝑗|
+−
+1
+𝐷|𝑖−𝑗|+1
+ |𝐺𝑖−𝐺𝑗|I𝑔𝑖<𝑔𝑗+ 𝐶𝑜𝑛𝑠𝑡
+=
+𝑛
+∑︁
+𝑖=1
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗I𝑔𝑖<𝑔𝑗+ 𝐶𝑜𝑛𝑠𝑡
+(25)
+Where M𝑖𝑗=
+
+1
+𝐷|𝑖−𝑗| −
+1
+𝐷|𝑖−𝑗|+1
+ |𝐺𝑖−𝐺𝑗|. I𝑔𝑖<𝑔𝑗is the zero-one
+indicator. 𝐶𝑜𝑛𝑠𝑡is a constant, which is only related to the current
+ranking. E𝑖denotes the set of negative samples corresponding to
+sample 𝑖, where 𝑣𝑗< 𝑣𝑖.
+Theorem A.1. Ignoring constant terms, LRSPO optimizes an upper
+bound of NDCGcost.
+NDCGcost =
+𝑛
+∑︁
+𝑖=1
+∑︁
+y𝑗∈E𝑖
+I𝑔𝑖<𝑔𝑗M𝑖𝑗≤
+𝑛
+∑︁
+𝑖=1
+∑︁
+y𝑗∈E𝑖
+−log2 𝜎 𝑔𝑖−𝑔𝑗
+ M𝑖𝑗
+≤
+𝑛
+∑︁
+𝑖=1
+−log2 𝜎
+ 
+−log
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗exp(𝑔𝑗−𝑔𝑖)
+!
+= LRSPO
+(26)
+Proof. For the proof of the first inequality, we directly follow the
+inequality proposed in Lambdaloss, that is I𝑔𝑖<𝑔𝑗≤−log2 𝜎 𝑔𝑖−𝑔𝑗
+.
+For the proof of the second inequality, we prove the inequality
+for each sample 𝑖individually. Let ℓ(1)
+𝑖
+and ℓ(2)
+𝑖
+denote the inner
+terms for sample 𝑖, respectively. Using the identity −log2 𝜎(𝑥) =
+log2(1 + 𝑒−𝑥), we rewrite ℓ(1)
+𝑖
+and ℓ(2)
+𝑖
+:
+ℓ(1)
+𝑖
+=
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗log2(1 + 𝑒−(𝑔𝑖−𝑔𝑗)) =
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗log2(1 + 𝑒𝑔𝑗−𝑔𝑖)
+(27)
+ℓ(2)
+𝑖
+= −log2 𝜎(−log
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗𝑒𝑔𝑗−𝑔𝑖) = log2
+©­
+«
+1 +
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗𝑒𝑔𝑗−𝑔𝑖ª®
+¬
+(28)
+To prove A.1, it is sufficient to demonstrate that ℓ(1)
+𝑖
+≤ℓ(2)
+𝑖
+.
+According to the definition of M𝑖𝑗, we have:
+∑︁
+y𝑗∈E𝑗
+M𝑖𝑗≤
+∑︁
+y𝑗∈E𝑗
+
+1
+𝐷|𝑖−𝑗|
+−
+1
+𝐷|𝑖−𝑗|+1
+
+=
+∑︁
+𝑘∈[𝑏1,𝑏2]
+
+1
+𝐷𝑘
+−
+1
+𝐷𝑘+1
+ =
+
+1
+𝐷𝑏1
+−
+1
+𝐷𝑏2
+
+=
+
+1
+log2(1 + 𝑏1) −
+1
+log2(1 + 𝑏2)
+ < 1
+(29)
+Let 𝑘be the distance between 𝑖and 𝑗, such that 𝑘∈[𝑏1,𝑏2] with
+𝑏1,𝑏2 ≥1. Introduce a dummy variable to normalize the weights.
+Let us define a complementary weight M𝑖0 such that:
+M𝑖0 = 1 −
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗.
+(30)
+Let 𝑥𝑗= 𝑒𝑔𝑗−𝑔𝑖. Define the function 𝑓(𝑥) = log2(1 +𝑥) for 𝑥≥0.
+Its second derivative is 𝑓′′(𝑥) = −
+1
+ln 2(1+𝑥)2 < 0, which implies that
+𝑓(𝑥) is strictly concave. We apply Jensen’s Inequality (where
+E[𝑓(𝑋)] ≤𝑓(E[𝑋])) to the set of values {𝑥𝑗}y𝑗∈E𝑖∪{𝑥0}, where
+we choose 𝑥0 = 0. The inequality becomes:
+M𝑖0 log2(1 + 𝑥0) +
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗log2(1 + 𝑥𝑗) ≤
+log2
+©­
+«
+1 + ©­
+«
+M𝑖0𝑥0 +
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗𝑥𝑗ª®
+¬
+ª®
+¬
+(31)
+Which is exactly:
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗log2(1 + 𝑥𝑗) ≤log2
+©­
+«
+1 +
+∑︁
+y𝑗∈E𝑖
+M𝑖𝑗𝑥𝑗ª®
+¬
+(32)
+This completes the proof.
+□
+A.2
+Efficiency Optimizations
+Table 3 presents the key practical optimization points and their
+corresponding improvements in QPS.
+Table 3: Practical Inference Efficiency Optimizations
+Key Optimization (vs. GR4AD)
+Δ QPS
+Beam-shared KV Cache
++212.5%
+TopK Pre-Cut
++184.8%
+Low-Precision Inference
++50.3%
+Reco Result Cache
++27.8%
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Peng Jiang et al.
+KV Cache. The KV Cache is a widely recognized technique used
+in the inference process of LLMs. During next-token prediction, it
+retains the keys and values of self/cross-attention from previous
+steps, significantly reducing redundant computation and memory
+access. This optimization is lossless with respect to model outputs
+and delivers a 2.5× throughput improvement over a non-cached
+baseline. Building on KV caching, our proposed Beam-shared KV
+Caching further increases queries per second (QPS) by an addi-
+tional 25%, yielding an overall inference speedup of more than 3×
+compared with the non-cached baseline.
+TopK Pre-Cut. : During beam search inference, at step 𝑖we se-
+lect 𝑏𝑖candidates from 𝑏𝑖−1 × |𝑉𝑖| possibilities. Instead of a direct
+global selection, we first select 𝑏𝑖candidates from |𝑉𝑖| in parallel for
+each of the 𝑏𝑖−1 beams, then choose the final 𝑏𝑖from the resulting
+𝑏𝑖−1 ×𝑏𝑖candidates. Since |𝑉𝑖| ≫𝑏𝑖in practice, this increases GPU
+parallelism for top-𝑘and reduces comparisons, yielding significant
+speedups without changing the results.
+Low-Precision Inference. During inference, we adopt FP8 preci-
+sion [6] to replace FP32 computation, introducing negligible loss
+in output quality. A/B testing shows a marginal revenue change
+of approximately -0.1%, while inference throughput improves by
+50.3%.
+Reco Result Cache. We implement the result caching mechanism
+and serve 27.8% of requests directly from the cache within the
+defined time window (one minute), thereby improving the overall
+performance of the inference service.
+Dynamic Beam Width. Our investigation into the effect of beam
+width across layers reveals that its influence on prediction per-
+formance escalates progressively. The model exhibits the highest
+prediction reliability at the initial layers, with later layers requiring
+wider beams for refined decision-making (Table 4). This insight
+directly motivates the design of our Dynamic Beam Width (DBW)
+mechanism, which allocates computational resources more effi-
+ciently across the model depth.
+Table 4: Comparison of Dynamic Beam Width Strategies
+DBW Strategy
+Beam Width
+ΔRevenue
+ΔQPS
+GR-Base
+[512,512,512]
+–
+–
+1st-level Reduction
+[128,512,512]
+−0.10%
++27%
+2nd-level Reduction
+[512,128,512]
+−0.23%
++27%
+3rd-level Reduction
+[512,512,128]
+−0.85%
++5%
+Progressive Increasing
+[128,256,512]
+−0.15%
++45%
+A.3
+Unified Advertisement SID
+A.3.1
+SID Evaluation Offline Metrics.
+Cpr = # Item
+# SID ,
+(33)
+Col = 1 −# one-on-one SID
+# SID
+,
+(34)
+Util =
+# Item
+# Codebook Space,
+(35)
+where ‘one-on-one SID’ represents the SID associated with only
+one item.
+A.3.2
+Intruction Tuning.
+Template 1. Please perform deep semantic analysis on the input
+structured text (covering physical products, virtual services, and
+general entertainment content). Thoroughly fuse discrete fields
+such as product name, industry classification, detailed category,
+and brand to accurately determine the vertical domain. Ignore mor-
+phological differences and focus on extracting the core category
+identity and key value attributes (e.g., functional characteristics for
+physical goods or thematic intent for virtual services), construct-
+ing a general semantic representation that precisely defines their
+essence.
+Template 2. Integrate livestream visual screenshots with multi-
+dimensional textual information (including streamer profile, re-
+gional attributes, livestream title, and user comments/interaction)
+for deep content understanding. Identify and extract the livestream’s
+core theme, the streamer’s persona/style, and the current interac-
+tion/engagement atmosphere, filtering out nonessential chatter
+and noise. Construct a semantic representation of the livestream
+scenario suitable for precise matching and retrieval.
+Template 3. Combine the provided image sequence with prod-
+uct text fields to accurately identify and extract the product’s key
+identity features. Ignore irrelevant marketing phrasing and focus
+on the product’s essential attributes (industry, category, brand, and
+core specifications), constructing high-quality product feature rep-
+resentations for precise matching.
+Template 4. Perform deep analysis of virtual products and content-
+service advertisements (including short dramas, games, apps, etc.).
+While accounting for differences in product form, focus uniformly
+on extracting two core feature types: the “core delivered value” and
+the “narrative marketing strategy.” Accurately identify whether the
+offering delivers emotional gratification, utilitarian functionality, or
+cognitive skill-building; and deeply decompose how conversion is
+driven through scenario construction (e.g., plot conflict, pain-point
+simulation) and psychological inducements (e.g., suspense hooks,
+vision framing). Filter out noise and construct a general seman-
+tic representation that precisely reflects its benefit attributes and
+marketing intent.
+Template 5. Analyze advertising video materials intended to
+drive traffic to livestreams or directly promote products. Integrate
+visual dynamics and speech interactions to deeply decompose
+their traffic-conversion logic and persona atmosphere. Identify the
+video’s core driving elements: the streamer’s persona appeal, prod-
+uct demonstrations and endorsements, the rhetoric or plot devices
+used to create suspense/expectation (e.g., teasing major offers, em-
+phasizing price advantages, creating urgency), and the livestream’s
+conveyed core value (premium assortment, cost-effectiveness, ex-
+pertise, entertainment interaction). Construct semantic feature rep-
+resentations that accurately reflect the marketing and livestream
+conversion intentions.
+
+Generative Recommendation for Large-Scale Advertising
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Qwen3-VL-7B
+UAE (Ours)
+QARM
+Beauty - Lipstick
+Beauty - Remover Wipes
+Women’s Wear - Jeans
+Women’s Wear - Sneakers
+Auto - Car Charger
+Auto - Engine Cleaner
+Jewelry - Necklace
+Jewelry - Earrings
+Semantic Pair Definitions (Same color indicates same interest group)
+Figure 6: t-SNE visualization of different item embeddings. ‘P*’ represents the clustering center of interest group.
+Template 6. Perform a multi-dimensional deep analysis of input
+physical-product advertisement videos by combining visual frames,
+scripted voiceover, and OCR-extracted marketing text. While iden-
+tifying core product attributes (brand, function, appearance), em-
+phasize analysis of content creativity and marketing techniques:
+determine the presentation format (e.g., narrative dramatization,
+stress testing, unboxing, factory-sourcing), extract key marketing
+hooks (e.g., time-limited discounts, pain-point reversals, buy-one-
+get-one offers), and characterize visual presentation style. Filter
+out irrelevant noise and construct a high-dimensional semantic
+representation that encompasses both product features and content-
+marketing strategy.
+A.3.3
+t-SNE Visualization. Since QARM [19] lacks ad-specific prod-
+uct information, it can only infer relevance from visual signals,
+which prevents linking videos with large visual differences that
+refer to the same product. Qwen3-VL-7B [2] can extract some in-
+formation but lacks fine-tuning on real-world application data and
+relational signals; after instruction tuning and co-occurrence learn-
+ing, the resulting UAE effectively differentiates relationships across
+interest groups and, within a single interest group, more finely
+discriminates specific product categories, as illusrated in Figure 6.

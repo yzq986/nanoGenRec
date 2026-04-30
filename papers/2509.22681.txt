@@ -1,0 +1,1145 @@
+FLAME: A Serving System Optimized for
+Large-Scale Generative Recommendation with
+Efficiency
+Xianwen Guo, Bin Huang, Xiaomeng Wu, Guanlin Wu*, Fangjian Li, Shijia Wang,
+Qiang Xiao, Chuanjiang Luo, Yong Li
+Netease Cloud Music, Hangzhou, China
+{guoxianwen, huangbin02, wuxiaomeng01, wuguanlin03, hzlifangjian, wangshijia1, hzxiaoqiang,
+luochuanjiang03, liyong02}@corp.netease.com
+Abstract:
+Generative recommendation (GR) models possess greater scaling power com-
+pared to traditional deep learning recommendation models (DLRMs), yet they also impose
+a tremendous increase in computational burden. Measured in FLOPs, a typical GR model’s
+workload sits in 109 ∼1011 range, roughly four orders of magnitude higher than traditional
+DLRMs. Delivering accurate results in a few tens of milliseconds while processing billions
+of such requests per day puts extreme demands on the performance of the online serving
+system. Therefore, for industry practitioners, the alluring gains of GR models are tempered
+by the formidable challenge of online deployment at scale in production services. In this
+work, we introduce a comprehensive solution of online serving system tailored For Large-
+scale Generative Recommendation with Efficiency (FLAME). Specifically, we leveraging
+CPU-GPU heterogeneous hardware to decouple feature pre-processing and model compu-
+tation. We encapsulated several memory optimization features as the Proximal Data Accel-
+erator (PDA) module to make full use of limited bandwidth and storage resources, which
+achieves a 1.9x throughput gain and a 1.7x latency reduction. We implement the Fused Ker-
+nel Engine (FKE) module based on the functionality and interface of NVIDIA TensorRT to
+boost model computation, delivering a speedup ratio of 4.6x-6.1x, throughput gain ratio of
+4.7x-6.3x one step further. In addition, we design the Dynamic Stream Orchestrator (DSO)
+module to coordinate concurrent requests, enhancing the system throughput performance
+with 1.3x improvement in throughput and 2.3x speed-up under non-uniform distribution of
+upstream candidates. Comprehensive evaluations demonstrate that our FLAME effectively
+supports large-scale online deployment of GR models and achieves remarkable improve-
+ments in system performance.
+1.
+Introduction
+With the continuous development and expansion of the Internet of Things (IoT), the scale of big data is still
+growing at an astonishing rate [1]. Identifying the suitable items from massive data instantaneously to match
+precisely with user preference is a challenge for recommendation systems. It’s also the key for major application
+manufacturers to enhance user experience and platform revenue. To cope with the challenges of multi-scenario
+and multi-task recommendation tasks, traditional deep learning recommendation models (DLRMs) rely heavily
+on cumbersome feature engineering and manually customized neural networks [2–7].
+Recently, large language models (LLMs) have demonstrated near-human intelligence in some specific scenarios,
+showing excellent performance in tasks such as logical reasoning in mathematics and coding [8–12]. The contin-
+uous emergence of new scaling laws in the research of LLMs [13–17] provide practical guides to improve model
+performance with affordable resource budgets . Scaling laws in the recommendation field have gradually emerged
+from obscurity to concreteness in recent studies [18–21]. Notably, the paradigm of generative recommendation
+(GR) [19] demonstrates greater scaling power compared to traditional DLRMs through its streamlined feature
+engineering and unified sequence model. Thanks to the network architecture dominated by attention mechanism
+with large amount of parameters, GR models have higher potential to capture the complex dynamics in user inter-
+action sequences. Recent studies have successfully implemented GR models in various application fields [22–26],
+providing solid cases for the conception of the next-generation recommendation systems.
+As one of the largest music streaming platforms and user communities in China, Netease Cloud Music recently
+launched the Climber GR model and achieved remarkable benefits in both offline experiments and online A/B
+arXiv:2509.22681v1  [cs.DC]  17 Sep 2025
+
+tests [22]. In line with typical production-environment settings, operating conditions and system requirements for
+an online serving system are demonstrated in Table 1. From this, it’s clear that deploying GR models on large-scale
+real-time online inference services faces tremendous challenges:
+• Low latency. Online recommendation services need to make accurate responses to users within an ex-
+tremely short period of time (i.e., dozens of milliseconds). Taking the ranking stage as an example, the
+time-consuming per request can be broken down into the processes of feature querying, feature assembly,
+model computation, and response packaging. Among these, model computation will pose a huge burden for
+GR models. A large number of attention modules are used to process long user interaction sequences, and
+the leading term of computational complexity is proportional to the square of the sequence length. Model
+computation measured by FLOPs for a single request reaches 109 ∼1011, which is roughly four orders
+of magnitude higher than that of traditional DLRMs. Therefore, how to complete user request instanta-
+neously poses higher challenges for the optimization of computing kernels and the utilization of computing
+resources.
+• High throughput. The current online recommendation service needs to handle 1010 ∼1012 requests from
+tens of millions of users every day. Such large-scale requests will compete for priority computing resources
+(data storage and data transfer bandwidth, etc.). If not handled properly, it will lead to system performance
+degradation and even affect user experience in serious cases.
+• Efficient utilization of heterogeneous resources. To meet the high computational complexity of GR mod-
+els, we have introduced clusters containing GPU hardware modules to accelerate model computation. Thus,
+the entire online serving system is built on a heterogeneous CPU-GPU hardware environment. Due to the
+inherent difference between CPU and GPU in terms of storage structure, data transfer, and instruction exe-
+cution, special considerations and designs are required to make the whole system work at its best.
+Table 1: Typical operating conditions and system requirements for an online serving system.
+Model FLOPs
+Hardware Peak Performance
+Overall Latency
+Requests per Day
+106 ∼107 (DLRMs)
+109 ∼1011 (GR)
+403.2×109 (CPU) 1
+19.5×1012 (GPU) 2
+< 50 ms
+1010 ∼1012
+To address these challenges, we introduce a comprehensive solution of online serving system optimized For
+Large-scale Generative Recommendation with Efficiency (FLAME). The overview of the whole system is demon-
+strated in Figure 1. The whole system adopts a decoupled architecture to take advantage of the distinct inherent
+characteristics of CPUs and GPUs.
+We construct the feature-processing engine on CPU to handle all the operations before model computation,
+such as feature querying from remote servers, customized feature extraction operations (e.g. type conversion,
+embedding look-up), and input assembly. Specifically, we encapsulated several memory optimization features as
+the proximal data accelerator (PDA) to make full use of limited bandwidth and storage resources. We introduce
+asynchronous feature querying and multi-level caching mechanisms to reduce the network transmission overhead
+between remote services and the local system. We apply the core binding techniques for modern CPU with NUMA
+(Non-Uniform Memory Access) architecture to improve the efficiency of CPU memory access. We utilize pinned
+memory to enhance the efficiency of data transfer from host to device.
+Based on the high performance parallel computing power of GPU, we build the fused-kernel engine (FKE) based
+on TensorRT library [27]. We implement forward computation of the whole model through TensorRT API for
+optimized performance instead of ONNX format model conversion by default. In addition, we replace the attention
+module and FFN (Feed-Forward Network) module by customized plug-ins to achieve kernel fusion. To cope with
+the demand of “single user, multiple items(SUMI)” paradigm per request during the inference phase, we adapt the
+prestigious Flash-Attention [28, 29] in a mask-aware style as a TensorRT plug-in to replace the default attention
+operator. For matrix multiplications within the above kernels, we implemented pipeline processing between data
+loading and general matrix multiplication (GEMM) via CUTLASS [30].
+Further, we design the dynamic stream orchestrator (DSO) module to coordinate concurrent requests, enhancing
+performance to the next level. DSO implements dynamic batch routing by exporting multiple TensorRT optimized
+1The CPU example here is Intel(R) Xeon(R) Gold 5220R 2.20 GHz. Detailed specifications can be found at https://cdrdv2-
+public.intel.com/840270/APP-for-Intel-Xeon-Processors.pdf
+2The
+GPU
+example
+here
+is
+NVIDIA
+A100
+Tensor
+Core
+GPU.
+Detailed
+specifications
+can
+be
+found
+at
+https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf
+
+profiles with specified batch shapes during engine construction. Each profile is equipped with preallocated in-
+put/output buffers (based on preset batch dimensions) and CUDA Graph-captured computation processes (for
+efficient kernel execution). These components form executor managed via an index queue. Upon upstream
+requests, tasks are dynamically split by batch size (in descending order), assigned to available executors, and
+returned to the queue post-computation, thereby enhancing system throughput.
+In summary, this paper makes the following contributions:
+1. We provide a comprehensive practical solution of large-scale online inference optimized for generative
+recommendation service under heterogeneous hardware environments.
+2. We innovatively implement the PDA, FKE, and DSO design modules. By organically integrating the advan-
+tageous characteristics of the hardware, these modules form a powerful link in accelerating the performance
+of the entire inference service, providing a solid reference case for similar industry applications.
+3. We conducted a series of performance tests and analyzed the overall performance impact of each module.
+These supported the deployment of GR model in achieving excellent performance in real online application
+scenarios.
+Host Buffer #1
+Host Buffer #2
+X
+V
+Mask
+Y
+MLP
+ReLU
+MLP
+Layer Norm
+H
+Matmul
+Matmul
+Add
+Add
+Plug-in #1:
+Fused FFN
+Plug-in #2:
+Mask-Aware
+Flash Attention
+Softmax
+S
+P
+Q
+K
+O
+Fused Kernel Engine
+(FKE)
+Dynamic Stream Orchestrator
+(DSO)
+Profile #1
+Graph #1
+Stream #1
+Input Shape #1
+Device Buffer #1
+Profile #2
+Graph #2
+Stream #2
+Input Shape #2
+Device Buffer #2
+Proximal Data Accelerator
+(PDA)
+Local
+Cache
+CPU 0
+Core 1
+Core 2
+Core 3
+Core 0
+Pinned 
+Data 
+Transfer
+Async Update
+NUMA Affinity Memory
+Parallel
+Task
+Splitting
+Feature Query 
+& Extraction
+Input Assembly
+& Result Parsing
+Challenge #1
+High Throughput
+Challenge #2
+Efficiency for Heterogeneous Resources
+Challenge #3
+Low Latency
+CPU
+GPU
+CPU 1 
+Core 1
+Core 2
+Core 3
+Core 0
+Fig. 1: System Overview. FLAME adopts a decoupled architecture to separate feature processing with model
+computation on heterogeneous hardware.
+2.
+Background
+2.1.
+A Brief Review on GR model in Netease Cloud Music
+Before introducing the inference system, let’s first briefly review our GR model, Climber [22]. Overall, the model
+adopts a Transformer-dominated [31] architecture to make predictions based on the sequence of items related to
+user’s historical behaviors. To alleviate the computational overhead of self-attention brought by excessive length,
+user sequences are reorganized into several sub-sequences which are processed by different independent Trans-
+former blocks. The number of blocks can be denoted as Nb. In this design, the computational complexity related
+to attention is reduced from O(n2d) to O(n2d/Nb), where n and d denote the total length of original user be-
+havior sequence and the hidden dimension. Within each block, an adaptive temperature coefficient is introduced
+before softmax activation to adapt to different segmentation strategies and the multi-scenario nature of recommen-
+dations. The target items will be concatenated as the last element with user’s behavior sequence of each block,
+and the output results of each block will then be fused through the bit-wise gating fusion module. Finally, the
+probability scores across multiple tasks can be obtained through the expert module of the top-level multi-layer
+perceptron (MLP). The overall architecture of model is demonstrated in Figure 2. The above model achieves per-
+formance scalability with increasing computational FLOPs in both offline training metrics and online business
+
+metrics through low-traffic A/B online experiments. This also motivated a series of engineering optimization ef-
+forts in the serving system, supporting the GR model from low-traffic validation to large-scale online deployment.
+Add & Norm
+Bit-wise Gating Fusion
+Adaptive Transformer Layer
+Adaptive Transformer Layer 1
+...
+S1: Subsequence 1
+Target Item
+Bit-wise Gating Fusion
+Output
+...
+   : User Lifecycle Sequence
+                                    MLP
+homogeneous 
+block
+adjust 
+attention
+interest 
+fusion
+Multi-Scale Sequence Extraction
+Multi-Scale Sequences
+parallel block 
+computing
+Block 1
+Block 2
+...
+...
+Block 
+...
+...
+Adaptive Transformer Layer 2
+...
+Adaptive Transformer Layer 
+Fig. 2: Network architecture of the Climber GR model [22].
+2.2.
+Hardware Environment
+CPU has been a popular choice for DLRM inference due to its relatively economical cost and ease of availability
+[32–37]. However, the dramatic increase in computational load of the GR model might exceed the upper limit of
+hardware computing performance that pure CPUs can provide for large-scale serving systems, necessitating a shift
+to CPU-GPU heterogeneous hardware architectures. In this setup, the core function of the inference system is to
+achieve efficient data flow to handle high-concurrency requests. Therefore, it is vital for systematic optimization
+to understand the bandwidth performance of each hardware component involved in the entire data flow process.
+The entry point of the serving system is the receipt of a network request uniquely identified by the user ID,
+with common network bandwidth typically being 1.25 GB/s. After obtaining the user identifier, the candidate
+item identifier, and context information from the request, a remote feature query service is usually invoked to
+prepare the input for the model computation. Results from feature query are stored in CPU memory for further
+operation like array concatenation, type casting, etc. After the model input is ready, these data will be copied
+to the GPU’s global memory via the PCIe bus for subsequent parallel computing. We take the NVIDIA A100
+Tensor Core GPU as an example. Inside the GPU, there is also a multilevel hierarchical storage architecture,
+ranging from the global memory to the shared memory of each SM (Streaming Multiprocessor), and finally to
+the register file closest to the computing cores. A common parallel computing strategy is to break down large-
+scale computing tasks into independent small-scale tasks. By progressively distributing the data to the on-chip
+register files closest to the computing units, high-performance computing can be achieved using CUDA cores or
+tensor cores. After completing the computing tasks and data synchronization, the results are copied from the GPU
+back to the CPU, where the response body is packaged to complete the entire data flow. The entire data flow and
+bandwidth corresponding to the hardware component are shown in Figure 3.
+2.3.
+System Overview
+Finally, in conjunction with the hardware setup, let’s take a look at the overall architecture of the FLAME serving
+system. To fully exploit the advantage of hardware modules, we adopted a decoupling architecture to separate
+feature processing from model computation. The part of CPU handles all feature processing operations for input
+assembly, embedding look-up and result parsing. The GPU part is only responsible for the remaining model
+computation.
+
+Feature Server
+CPU
+SRAM
+DRAM
+(512 GB, 600 GB/s)
+SSD
+(3.84 TB, 7 GB/s)
+Register File
+Share Memory
+(192 KB/SM, 18 TB/s)
+Globel Memory (HBM)
+(40 GB, 1.5 TB/s)
+GPU
+PCIe
+64 GB/s
+Capacity
+Latency
+Capacity
+Latency
+TB
+GB
+MB
+Network
+1.25 GB/s
+KB
+< 1 ns
+10 ns
+100 ns
+100 μs
+GB
+KB
+KB
+KB
+< 1 ns
+< 1 ns
+15 ns
+100 ns
+Fig. 3: Data flow and typical bandwidth between heterogeneous hardware components. The specification of the
+GPU part referred to NVIDIA A100 [38].
+Firstly, we designed the proximal data accelerator module (PDA) to improve the efficiency and throughput of
+data pre-processing. The PDA module contains three core mechanisms: asynchronous feature query with cache,
+NUMA affinity core binding, and pinned data transfer. Secondly, to fully utilize the GPU computing power for
+our GR model, we implemented the fused kernel engine (FKE) based on the TensorRT interface. We rebuild the
+forward network through TensorRT API as the inference engine. With the aid of the TensorRT plug-in mechanism,
+we adapt the prestigious Flash-Attention [28,29] in a mask-aware style to replace the default attention module to
+form a fused kernel. We also fused layer normalization and linear projection into another plug-in. Furthermore,
+we design the dynamic stream orchestrator (DSO) module to coordinate the overall utilization of resources. The
+CUDA stream mechanism is employed to interleave the processing efficiency of multiple requests and to overlap
+the data transfer with model computation. To address the uncertainty in the number of candidate items requested
+by upstream services, we utilized the explicit shape mode during the building stage of the TensorRT inference
+engine. We exported profiles containing multiple shapes and preallocated memory buffers. With batch routing
+algorithm, requests under various number of candidates can be delivered to proper executors. In summary, the key
+technical elements of the entire inference system are shown in Figure 4.
+TensorRT Customized Plug-in
+Proximal Data Accelerator (PDA)
+Asynchronous Scheduler
+GPU
+Feature Cache
+NUMA Affinity Binding
+Pinned Memory
+CUDA Stream
+Pre-allocate Buffer
+Profile Optimization
+Dynamic Batch Router
+Pipelined GEMM via CUTLASS
+Fused FFN + LayerNorm
+Mask-Aware Flash Attention
+Dynamic Stream Orchestrator (DSO)
+Fused-Kernel Engine (FKE)
+CPU
+Fig. 4: System Overview
+
+3.
+Methodology
+3.1.
+Proximal Data Accelerator
+As we mentioned above, the bandwidth for data transfer in local memory is hundreds times higher than that of
+network transmission bandwidth. To avoid network bandwidth becoming a bottleneck for overall performance, the
+first key design of the PDA module is a feature query engine with caching mechanism. Considering the charac-
+teristics of the music platform recommendation business, introducing a caching mechanism for feature queries on
+the core hot items side offers greater benefits compared to caching feature on the user side. When a query request
+for an item is triggered, the object cache within the process is first queried. If an unexpired cache hit occurs, the
+result is returned directly. If a cache hit occurs but the cache is expired, the expired result is returned directly,
+while an asynchronous query task is initiated. This task runs in the background and does not block waiting for
+the query result to return. Once the asynchronous query task is completed, the local cache is updated. If no cache
+hits occur, an empty result is returned, and the same asynchronous query task is initiated. The aforementioned
+asynchronous caching can provide high query performance, but in cases where the query does not hit the cache, it
+can lead to missing features, which in turn affects the accuracy of the recommendation results. Therefore, we have
+also implemented a synchronous query mechanism with caching. Compared to asynchronous querying, when a
+cache miss occurs or the cached result is expired, a synchronous query request will be initiated, waiting for the
+result to return and updating the local cache. Figure 5 demonstrates feature query with cache in asynchronous and
+synchronous settings. This synchronous query mechanism ensures the accuracy of the results. The cache object
+adopts an LRU (Least Recently Used) design, and in terms of storage structure, it can be divided into multiple
+buckets to reduce write lock collisions and further enhance query performance.
+Remote Server
+Local Cache
+Feature Query
+Case 1: 
+Hit valid cache
+Case 2: 
+Cache invalid or expired
+Update cache asynchronously
+Update Cache
+Request
+Update Cache
+Request
+Return immediately
+Return immediately
+with null or history
+Return right value
+Case 3: 
+Cache invalid or expired
+Update cache synchronously
+Fig. 5: Feature query with cache
+The second key setting of the PDA module is NUMA core binding. The computing power of single-core proces-
+sors can no longer meet the growing computational demands, leading processor manufacturers to develop multi-
+core processors. The architecture of single-machine servers has evolved from Uniform Memory Access (UMA) to
+Non-Uniform Memory Access (NUMA). In Uniform Memory Access (UMA) architectures, all processors share
+a single, centralized memory pool interconnected via a common bus or switch fabric. This design ensures that
+memory access latency remains consistent across all processing units, as every request traverses the same shared
+pathway to the unified memory resource. However, this uniformity comes at the cost of scalability: the shared in-
+terconnect becomes a critical bottleneck as the number of processors increases. In contrast, Non-Uniform Memory
+Access (NUMA) architectures address scalability limitations by partitioning memory into discrete “nodes,” each
+collocated with a subset of processors and connected via high-speed inter-node links [39]. This topology intro-
+duces inherent latency asymmetry: processors access ”local” memory within their node with significantly lower
+latency than ”remote” memory in other nodes, which must traverse inter-node interconnects. By distributing mem-
+ory and processing resources, NUMA mitigates the bottlenecks of shared buses, enabling support for large-scale
+systems with dozens to hundreds of cores – common in high-performance computing (HPC) clusters and cloud
+infrastructure. However, this advantage necessitates NUMA-aware optimizations in both operating systems (e.g.
+
+affinity-based scheduling) and applications (e.g., localized memory allocation) to minimize performance penalties
+associated with frequent remote memory accesses. We can use the numactl tool to bind processes to specific
+nodes, or directly bind threads using the C++ pthread_attr_setaffinity_np interface. By effectively
+utilizing NUMA core binding technology, we can significantly enhance the performance of servers under high-
+load scenarios. Figure 6 shows the difference in memory access between UMA and NUMA architecture.
+Uniform Memory Access
+CPU 0
+Core 0
+Core 1
+Core 2
+Core 3
+CPU 1
+Core 0
+Core 1
+Core 2
+Core 3
+Memory Controller
+Memory
+CPU 0
+Core 0
+Core 1
+Core 2
+Core 3
+CPU 1
+Core 0
+Core 1
+Core 2
+Core 3
+Memory Controller
+Memory Controller
+Memory
+Memory
+Non-Uniform Memory Access
+Interconnect
+Local Access
+Remote Access
+Fig. 6: Demonstration of UMA and NUMA architecture
+The last key point of the PDA module is the use of pinned memory. When performing CUDA programming
+under a heterogeneous hardware architecture, memory space is first allocated on the host side (CPU) to store
+model input variables, and then the data are transferred to the device side (GPU) via the PCIe bus, as shown in
+Figure 3. However, host data allocations are pageable by default and cannot be directly accessed by the GPU.
+So when a data transfer from pageable host memory to device memory is invoked, the CUDA driver must first
+allocate a temporary page-locked, or “pinned”, host array, copy the host data to the pinned array, and then transfer
+the data from the pinned array to device memory, as illustrated in Figure 7. To avoid additional memory usage and
+data copying, we use the cudaMallocHost or cudaHostAlloc function offered by CUDA C++ interface to
+directly allocate pinned host memory [40]. Further, model input variables can be packaged as a whole to batch
+many small transfers together into a single transfer.
+Pageable Data Transfer
+Pinned Data Transfer
+Host (CPU)
+Pageable
+Memory
+Pinned
+Memory
+Device (GPU)
+DRAM
+Host (CPU)
+Pinned
+Memory
+Device (GPU)
+DRAM
+Fig. 7: Demonstration of pageable data transfer and pinned data transfer [40].
+3.2.
+Fused-Kernel Engine
+We developed the Fused Kernel Engine (FKE) core computing module based on the functionality and interface of
+NVIDIA TensorRT, which is an SDK for high-performance deep learning inference on NVIDIA GPUs [27]. The
+basic workflow typically involves converting models in the ONNX format to a singular TensorRT inference Engine
+file, where the ONNX format enables computational compatibility independent of the training framework. This of-
+fers a convenient and largely automated route for translating trained deep-learning models into TensorRT engines.
+However, this convenience comes at the cost of certain structural constraints. Specifically, the ONNX–TensorRT
+bridge demands that every operation present in the source graph be either natively supported by TensorRT or ex-
+plicitly re-implemented through custom plug-ins; any deviation aborts the conversion. Furthermore, the sequence
+
+of graph-level optimizations executed by the ONNX parser remains opaque to the practitioner, occasionally yield-
+ing fusions whose efficiency falls short of what could be achieved through deliberate design. In architectures of
+exceptional depth or unconventional topology the like GR models, the exported ONNX representation may be-
+come gratuitously verbose, impeding TensorRT’s ability to compress memory footprints or to expose maximal
+parallelism.
+X
+V
+Mask
+Y
+MLP
+ReLU
+MLP
+Layer Norm
+H
+Matmul
+Matmul
+Add
+Add
+Fused FFN
+Mask-aware
+Flash Attention
+Softmax
+S
+P
+Q
+K
+O
+query
+key
+user behaviour sequence
+(all-ones)
+candidate items
+(diagonal)
+Fig. 8: Kernel fusion for attention module and FFN module. We implemented mask-aware flash attention kernel
+for parallel prediction of candidate items.
+Global
+Shared
+Register
+copy
+g -> s
+copy
+s -> r
+gemm
+copy
+g -> s
+Timeline
+fence()
+fence()
+wait<0>()
+copy
+s -> r
+gemm
+copy
+g -> s
+fence()
+wait<0>()
+Prefetch
+k_tile=0
+k_tile=1
+k_tile=2
+......
+write = 0
+write = 1
+write = 0
+copy
+s -> r
+gemm
+copy
+g -> s
+fence()
+wait<0>()
+write = 1
+......
+read = 0
+read = 1
+read = 0
+......
+......
+......
+Fig. 9: Pipeline matrix multiplication overlapping data transfer across GPU’s hierarchical memory architecture
+and GEMM operations.
+Consequently, the TensorRT network definition API retains its relevance as a complementary avenue. By con-
+structing the network layer-by-layer, the developer gains explicit jurisdiction over operator selection, tensor layout,
+precision calibration, and fusion strategy. Thus, to achieve the best performance, we constructed the GR model
+based on the TensorRT API layer by layer and implemented the fused operators for attention computation and
+the subsequent fusion of the feed-forward network (FFN) and layer normalization modules in the form of plug-
+ins, as shown in Figure 8. Specifically, we refer to the implementation of Flash-Attention to fuse the attention
+module [28, 29]. On this basis, we added processing for customized mask matrices to achieve parallel computa-
+tion of the prediction scores for candidate items like HSTU [19]. We refer to the implementation of customized
+
+masks in the HSTU kernel from NVIDIA’s RecSys Example [41]. By using the interfaces provided by CUT-
+LASS [30], we located the two-dimensional coordinates of each thread’s corresponding values in the result matrix
+during the QK matrix multiplication. By determining whether these coordinates fall within the mask boundary, we
+can decide whether local elements need to be masked. During the matrix multiplication process, we utilized the
+asynchronous copy instruction cp_async of the NVIDIA Ampere architecture to achieve pipeline processing
+between data loading and general matrix multiplication (GEMM) as shown in Figure 9.
+3.3.
+Dynamic Stream Orchestrator
+We proposed the Dynamic Stream Orchestrator (DSO) module, which leverages the TensorRT profile optimization
+mechanism and the CUDA stream scheduling mechanism to further enhance the system’s throughput performance
+in cases where the distribution of candidate items from upstream services is nonuniform. A common practice
+is to set certain dimensions to -1 for cases where the dimensions of input variables cannot be predetermined.
+This allows for dimension inference at runtime while also triggering temporary dynamic memory allocation.
+However, this approach leads to frequent memory allocation and de-allocation, significantly increasing the overall
+processing time. Moreover, the varying sizes of each allocation inevitably lead to memory fragmentation. The
+uncertainty in computational dimensions also prevents the use of CUDA Graph to package and optimize kernels
+and other operations. For the reasons mentioned above, we propose the DSO to implement the functionality of
+dynamic batch routing. Firstly, when building the TensorRT engine, multiple optimized profiles with specified
+batch shapes can be exported. Each profile can be equipped with multiple CUDA streams, and the corresponding
+storage buffers for holding input and output variables can be pre-allocated based on the pre-set batch dimensions.
+Another advantage of fixing batch dimension is that the model computing process can be captured into a CUDA
+graph during initialization. Subsequent requests can then directly invoke the execution of the CUDA graph to
+benefit from the efficient merging of kernel launches and other operations. Each corresponding buffer, stream, and
+graph form a set of core components, which we define as an executor, and we maintain an executor index
+queue. When an upstream request arrives, we dynamically split the task based on batch size in descending order,
+assign it to the corresponding executor in the queue, and push the index back to the queue after the computation is
+completed. Figure 10 illustrates the schematic diagram of the DSO module.
+CUDA Stream
+1 x 128
+2 x 128
+3 x 128
+Profile 1
+Profile 2
+Profile 3
+ Buffer 1
+ Buffer 2
+ Buffer 3
+ Buffer 4
+ Buffer 5
+ Buffer 6
+Pre-allocate Memory
+Graph 1
+Stream 1
+Graph 2
+Stream 2
+Graph 3
+Stream 3
+Graph 4
+Stream 4
+Graph 5
+Stream 5
+Graph 6
+Stream 6
+Executor Queue
+Batch Size
+Parallel Task
+Splitting
+Candidate Items
+Fig. 10: The schematic diagram of the DSO module.
+4.
+Experiments
+4.1.
+Experimental Setups
+In this section, we conduct a series of performance tests to demonstrate the effectiveness of each module in our
+serving system. The experiment configurations for ablation study are shown in Fig 11. The optimizations are
+based on the Climber GR model [22], but the fundamental ideas of these optimizations are equally applicable to
+other sequence recommendation models dominated by the Transformer architecture. In addition to the real-world
+online model configuration, we also tested two different scenarios with varying historical sequence lengths and
+numbers of candidate items to approximate the situations that might be encountered online, which we respectively
+denoted by base and long according to their different computational loads. The relevant statistics are detailed in the
+Table 2. Due to its powerful sequence modeling capabilities, the Climber model requires significantly less feature
+
+engineering. Compared to the hundreds or even thousands of features required by the DLRM model, the GR model
+in this test primarily focuses on historical interaction sequences on the user side along with only a dozen pieces of
+side information related to user and item side. The system is deployed on containerized CPU-GPU heterogeneous
+instances, each compromising a CPU with 16 cores and 64GB of memory, and a single NVIDIA 4090D GPU
+card with 24GB of HBM. The latency is measured in milliseconds and is categorized into two calculation scopes:
+end-to-end request processing latency (overall latency) and pure model computation latency. The former measures
+the overall scheduling performance of the system, while the latter specifically reflects the performance of the
+computational kernels. Throughput is calculated as the number of user-item pairs processed per second. Resource
+utilization corresponds to the computational load and memory usage of the CPU and GPU.
+No Cache, No Mem Opt
++Cache, No Mem Opt
++Cache, +Mem Opt (Full PDA)
+ONNX Model Conversion
+Implicit Shape
+TensorRT API Impl.
+TensorRT API + Kernel Fusion (Full FKE)
+Dynamic Stream Orchestrator (DSO)
+ONNX Model Conversion
+ONNX Model Conversion
+Implicit Shape
+Implicit Shape
+Implicit Shape
++Cache, +Mem Opt (Full PDA)
++Cache, +Mem Opt (Full PDA)
+Implicit Shape
+TensorRT API + Kernel Fusion (Full FKE)
++Cache, +Mem Opt (Full PDA)
+Config #6
+Config #4
+Config #5
+Config #3
+Config #2
+Config #1
+Effectiveness of PDA
+Effectiveness of FKE
+Effectiveness of DSO
+Online Bypass Traffic
+Traffic 
+Setting
+Simulated Traffic (base & long)
+Simulated Traffic 
+(non-uniform distribution of candidates)
+Metric &
+Ablation
+Setting
+Throughput and overall latency between 
+Config #1/#2/#3 under fixed CPU workload
+Throughput and compute latency between
+Config #3/#4/#5 under fixed GPU workload
+Throughput and overall latency between 
+Config #5/#6 under fixed GPU workload
+Fig. 11: Experiment configurations for ablation study.
+Table 2: Model details corresponding to the two test scenarios
+Scenarios
+User Sequence Length
+#Candidate Items
+#Blocks
+#Layers per Block
+FLOPS
+base
+512
+128
+2
+12
+3.72×109
+long
+1024
+512
+2
+12
+1.64×1010
+4.2.
+Evaluation Results
+4.2.1.
+Effectiveness of PDA
+In this part, we focus on the ablation study on the effectiveness of PDA module. We conducted performance tests
+using a bypass stream of real online traffic to evaluate the effectiveness of the caching mechanism during feature
+querying. To ensure a fair comparison across versions, we kept CPU utilization at the same level, approximately
+16%. The key metrics assessed include throughput, overall latency, P99 latency, and network utilization with CPU
+load held at the same level, providing a comprehensive view of how each configuration influences the module’s
+operation. The results are presented in Table 3. “Mem Opt” is short for NUMA affinity binding and pinned data
+transfer. Throughput is reported in “k”, denoting thousands of user-item pairs processed per second.
+Compared to the “–Cache, –Mem Opt” baseline, the “+Cache, –Mem Opt” achieves remarkably positive im-
+provements: throughput surges by 57.9% (from 67.4 k to 106.4 k), a substantial leap that greatly enhances process-
+ing efficiency; overall latency plummets by 18.1 % (from 22.6 ms to 18.5 ms), a dramatic reduction that makes the
+system far more responsive; P99 latency decreases by 12.5% (from 60 ms to 52.5 ms), ensuring more stable per-
+formance for the vast majority of users; and network utilization drops by 38.2% (from 46.3 MB/s to 28.6 MB/s),
+a welcome decrease that eases network pressure. These results fully demonstrate that the caching mechanism
+reduces network overhead and boosts overall data flow throughput.
+
+Against the “+Cache, –Mem Opt” version, the “Full PDA” also shows significant and beneficial enhancements:
+throughput increases by 19.0% (from 106.4 k to 126.6 k), further boosting the system’s processing capacity;
+overall latency reduces by 28.6% (from 18.5 ms to 13.2 ms), a notable improvement in speed; P99 latency falls
+by 12.4% (from 52.5 ms to 46 ms), making the system more reliable. Meanwhile, network utilization rises by
+18.9% (from 28.6 MB/s to 34 MB/s), but this minor increase is a negligible trade-off given the substantial gains in
+other key metrics. These results confirm that the Full PDA, as the optimized version, outperforms both baselines
+comprehensively in a highly favorable manner, highlighting the excellent synergistic effect of integrating Cache
+and Mem Opt.
+Table 3: Ablation study on PDA module. “Mem Opt” is short for the combination of NUMA affinity binding and
+pinned data transfer. Throughput is reported in “k”, denoting thousands of user-item pairs processed per second.
+Ablation Study
+Throughput
+Overall Latency
+P99 Overall Latency
+Network Utilization
+–Cache, –Mem Opt
+67.4 k
+22.6 ms
+60 ms
+46.3 MB/s
++Cache, –Mem Opt
+106.4 k
+18.5 ms
+52.5 ms
+28.6 MB/s
++Cache, +Mem Opt (Full PDA)
+126.6 k
+13.2 ms
+46 ms
+34 MB/s
+4.2.2.
+Effectiveness of FKE
+In this part, we focus on the evaluation of performance induced by optimization for model computation under
+the two scenarios (base and long) as mentioned above. We compare three configurations when building infer-
+ence engine: ONNX model conversion as the baseline, network re-building via TensorRT API as the advanced
+version, and replace Transformer implementation with fused-kernel plug-ins as the final optimized version. The
+quantitative results of our ablation study (Table 4) demonstrate progressive performance improvements across
+optimization stages.
+In the base condition, the basic implementation (ONNX Model Conversion) achieves a throughput of 180.5
+k, with a compute latency of 5.69 ms and a P99 latency of 8.16 ms, performance that is functional but far from
+optimal. The advanced implementation (TensorRT API Impl.) demonstrates significantly better performance, with
+throughput increasing by 226.2% to 588.8 k, compute latency decreasing by 73.5% to 1.51 ms, and P99 latency
+dropping by 81.1% to 1.54 ms, which marks a substantial leap in efficiency and responsiveness. The final opti-
+mized version (TensorRT API Impl. with the kernel fusion plugin) further enhances performance, with throughput
+rising by 43.3% to 843.8 k compared to the advanced implementation, compute latency reducing by 17.9% to 1.24
+ms, and P99 latency falling by 16.9% to 1.28 ms, which solidifies its superiority in handling the base workload.
+Under the long condition, the basic implementation (ONNX Model Conversion) yields a throughput of 220.2 k,
+accompanied by a compute latency of 18.57 ms and a P99 latency of 18.94 ms, results that are noticeably sluggish
+for larger input sizes. The advanced implementation (TensorRT API Impl.) shows substantial improvements, with
+throughput surging by 243.6% to 756.7 k, compute latency cutting by 70.4% to 5.49 ms, and P99 latency lowering
+by 70.6% to 5.56 ms, making it far more viable for extended workloads. The final optimized version (TensorRT
+API Impl. with the kernel fusion plugin) achieves even greater gains, with throughput jumping by 82.6% to 1381.4
+k relative to the advanced implementation, compute latency dropping by 44.8% to 3.03 ms, and P99 latency falling
+by 43.9% to 3.12 ms, an impressive performance boost that makes it exceptionally well-suited for the demanding
+long condition.
+Table 4: Ablation study on FKE module. “Kernel Fusion” stands for the combination of mask-aware flash-attention
+plug-in and fused-FFN plug-in. Throughput is reported in “k”, denoting thousands of user-item pairs processed
+per second.
+Scenario
+Ablation Study
+Throughput
+Compute Latency
+P99 Compute Latency
+base
+(512+128)
+ONNX Model Conversion
+180.5 k
+5.69ms
+8.16ms
+TensorRT API Impl.
+588.8 k
+1.51ms
+1.54ms
+TensorRT API Impl. + Kernel Fusion
+843.8 k
+1.24ms
+1.28ms
+long
+(1024+512)
+ONNX Model Conversion
+220.2 k
+18.57ms
+18.94ms
+TensorRT API Impl.
+756.7 k
+5.49ms
+5.56ms
+TensorRT API Impl. + Kernel Fusion
+1381.4 k
+3.03ms
+3.12ms
+Overall, the “TensorRT API Impl.” outperforms the “ONNX Model Conversion” significantly across both op-
+
+erating conditions, effectively addressing the latter’s shortcomings. The integration of the fused-kernel plug-ins in
+the final optimized version further enhances performance, with particularly notable improvements observed in the
+long condition, highlighting the value of the fused-kernel plug-ins in handling more complex workloads. Another
+noteworthy point is that, regardless of the implementation, throughput under the long condition consistently ex-
+ceeds that of the base condition. Qualitatively, when the length of user-history sequence is fixed, simply adding
+more candidates lowers the average compute overhead per item. Longer user sequences further increase computa-
+tional intensity. Because we count throughput as user–item pairs per second, this amortization directly improves
+the measured throughput.
+base
+long
+0
+1
+2
+3
+4
+5
+6
+7
+Throughput Gain
+1.00x
+1.00x
+3.26x
+3.44x
+4.67x
+6.27x
+ONNX Model Conversion
+TensorRT API Impl.
+TensorRT API Impl. + Fused Kernel
+(a) Throughput
+base
+long
+0
+1
+2
+3
+4
+5
+6
+7
+SpeedUp
+1.00x
+1.00x
+3.77x
+3.38x
+4.59x
+6.13x
+ONNX Model Conversion
+TensorRT API Impl.
+TensorRT API Impl. + Fused Kernel
+(b) SpeedUp
+Fig. 12: Performance comparison among different inference engine building
+4.2.3.
+Effectiveness of DSO
+In this part, we simulate model-computation performance under uneven candidate item distributions from up-
+stream services to evaluate the performance gains of the DSO module in memory optimization and compute
+scheduling. We simulated mixed-traffic workloads in which the number of items was uniformly distributed across
+128, 256, 512, and 1024. The length of user behavior sequence is fixed as 1024.
+Table 5 presents the results of the ablation study on the DSO module under simulated mixed-traffic workloads,
+comparing two configurations: Default (Implicit Shape) and DSO (Explicit Shape), with key metrics including
+throughput, compute latency, and P99 latency. The Default (Implicit Shape) configuration serves as a baseline,
+achieving a throughput of 912 k user-item pairs per second. It exhibits an overall latency of 13.6 ms and a P99
+latency of 49 ms, performance that, while operational, leaves significant room for improvement in handling mixed-
+traffic workloads. In contrast, the DSO (Explicit Shape) configuration delivers remarkable enhancements across all
+metrics. Its throughput surges to 1190.4 k, representing a substantial increase of 30.5% compared to the baseline.
+This boost in throughput indicates a far more efficient processing capability, making it highly effective for handling
+the demands of mixed-traffic scenarios. Additionally, the overall latency is reduced by 42.6% to 7.8 ms, and the
+P99 latency decreases by 28.6% to 35 ms, reflecting improved responsiveness and stability even under varying
+workload conditions. Overall, the DSO (Explicit Shape) configuration clearly outperforms the Default (Implicit
+Shape) setup, demonstrating the significant value of adopting explicit shape in optimizing the performance of the
+DSO module for simulated mixed-traffic workloads.
+Table 5: Ablation study on DSO module under simulated mixed-traffic workloads. Throughput is reported in “k”,
+denoting thousands of user-item pairs processed per second.
+Ablation Study
+Throughput
+Overall Latency
+P99 Latency
+Default (Implicit Shape)
+912 k
+13.6 ms
+49 ms
+DSO (Explicit Shape)
+1190.4 k
+7.8 ms
+35 ms
+4.3.
+Summary
+Overall, through a step-by-step experimental design, we progressively demonstrate the performance of the three
+proposed modules under their respective traffic scenarios, as illustrated in Fig 13. To evaluate the effectiveness
+
+of cached query and memory optimization, we choose online bypass traffic to conduct performance tests. Results
+show that the PDA module can achieve a 1.9x throughput gain and a 1.7x end-to-end request time speed-up
+comparing to the baseline. Building on these results, we further validated the critical role of the FKE module
+in boosting performance under the more demanding long workload. Results show that the FKE module delivers
+a 6.3× throughput gain and a 6.1× reduction in latency compared with the default engine-building approach of
+ONNX-to-TensorRT conversion. What’s more, we evaluated the DSO module under simulated traffic with non-
+uniform upstream candidates, building on the previous findings. Under this traffic pattern which is closer to real-
+world conditions, the DSO module delivers 1.3× higher throughput and 2.3× lower latency than the implicit-shape
+mode that infers batch size at runtime.
+1.9x
+1.0x
+1.0x
+6.3x
+1.0x
+1.3x
+Online Bypass Traffic
+Simulated Traffic long
+Simulated Non-uniform Traffic
+Base
+PDA
+PDA
+FKE
++
+PDA
+FKE
++
+PDA
+DSO
++
+FKE
++
+PDA
+(a) Throughput
+1.7x
+1.0x
+1.0x
+6.1x
+1.0x
+2.3x
+Online Bypass Traffic
+Simulated Traffic long
+Simulated Non-uniform Traffic
+Base
+PDA
+PDA
+FKE
++
+PDA
+FKE
++
+PDA
+DSO
++
+FKE
++
+PDA
+(b) SpeedUp
+Fig. 13: Overall performance comparison under different traffic scenarios
+5.
+Conclusion, Limitation and Future Work
+In this work, we present a comprehensive solution of online serving system tailored For Large-scale Generative
+Recommendation with Efficiency (FLAME), leveraging heterogeneous CPU-GPU hardware. The core innovation
+lies in the proposed architecture that decouples feature processing from model computation: the CPU handles
+feature querying, feature extraction and embedding lookup, while the GPU focuses exclusively on model compu-
+tation, thereby optimizing the division of labor between heterogeneous hardware. To enhance system throughput,
+the PDA module is implemented, which encapsulated several memory optimization features. The integration of
+asynchronous caching mechanism and the utilization of NUMA affinity core binding and pinned data transfer
+collectively reduce data transmission latency by 1.7x and improve throughput by 1.9x. For maximizing GPU com-
+putational performance, the Fused-kernel Engine is developed, constructing the main body of the neural network
+using TensorRT APIs. Specifically, aiming at the prediction paradigm in recommendation tasks, we implemented
+mask-aware flash attention and perform kernel fusion on the remaining modules of the Transformer to build high-
+performance plug-ins. Compared with building TensorRT inference engine from ONNX model conversion as de-
+fault, our FKE achieved a speedup ratio of 4.6x-6.1x, throughput gain ratio of 4.7x-6.3x. Furthermore, to improve
+the overall utilization of heterogeneous resources, the DSO module is introduced, which leverages TensorRT’s
+multi-profile optimization and explicit shape mechanisms, employing CUDA streams to achieve dynamic batch
+routing. The DSO module outperforms the default setting (Implicit Shape) with 1.3x improvement in throughput
+and 2.3x reduction in latency under non-uniform distribution of upstream candidates. In summary, comprehensive
+evaluations demonstrate that FLAME effectively supports large-scale online deployment of generative recommen-
+dation models, achieving remarkable improvements in throughput and latency performance.
+In this work, we didn’t adopt the key/value cache mechanism at user level to achieve a two-stage prediction
+paradigm like M-FALCON [19]. This choice rests on two considerations. First, our measurements showed that
+user-level caching achieved only a modest hit-rate considering the characteristics of music platform recommenda-
+tion business. Thus, introducing a caching mechanism for feature queries on the core hot items side offers greater
+
+benefits compared to the caching feature on the user side. Second, with our model settings and workload, the
+computation saved by the two-stage strategy was roughly canceled out by the additional data transfers needed
+for the intermediate tensors. Nevertheless, for long-context inference and larger model sizes, the incorporation of
+KV-cache may still yield further performance gains. Accordingly, the design of a distributed KV-cache on GPU
+along with dynamic eviction/offloading strategies is reserved for future work. In addition, we will explore more in-
+terpretable paradigms for generative recommendation, leveraging the reasoning power of LLMs to unlock greater
+potential in interactive application scenarios.
+References
+1. Maggi Bansal, Inderveer Chana, and Siobh´an Clarke. A survey on iot big data: Current status, 13 v’s challenges, and
+future directions. ACM Comput. Surv., 53(6), December 2020. doi:10.1145/3419634.
+2. Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra, Hrishi Aradhye, Glen Anderson, Greg
+Corrado, Wei Chai, Mustafa Ispir, et al. Wide & deep learning for recommender systems. In Proceedings of the 1st
+workshop on deep learning for recommender systems, pages 7–10, 2016.
+3. Huifeng Guo, Ruiming Tang, Yunming Ye, Zhenguo Li, and Xiuqiang He. Deepfm: a factorization-machine based
+neural network for ctr prediction. arXiv preprint arXiv:1703.04247, 2017.
+4. Ruoxi Wang, Bin Fu, Gang Fu, and Mingliang Wang. Deep & cross network for ad click predictions. In Proceedings of
+the ADKDD’17, ADKDD’17, New York, NY, USA, 2017. Association for Computing Machinery. doi:10.1145/
+3124749.3124754.
+5. Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui Yan, Junqi Jin, Han Li, and Kun
+Gai. Deep interest network for click-through rate prediction. In Proceedings of the 24th ACM SIGKDD international
+conference on knowledge discovery & data mining, pages 1059–1068, 2018.
+6. Guorui Zhou, Na Mou, Ying Fan, Qi Pi, Weijie Bian, Chang Zhou, Xiaoqiang Zhu, and Kun Gai. Deep interest evolution
+network for click-through rate prediction. In Proceedings of the AAAI conference on artificial intelligence, volume 33,
+pages 5941–5948, 2019.
+7. Hongyan Tang, Junning Liu, Ming Zhao, and Xudong Gong. Progressive layered extraction (ple): A novel multi-task
+learning (mtl) model for personalized recommendations. In Proceedings of the 14th ACM conference on recommender
+systems, pages 269–278, 2020.
+8. OpenAI. Introducing gpt-4.5, 2025. URL: https://openai.com/index/introducing-gpt-4-5.
+9. Gheorghe Comanici, Eric Bieber, Mike Schaekermann, Ice Pasupat, Noveen Sachdeva, Inderjit Dhillon, Marcel Blis-
+tein, Ori Ram, Dan Zhang, Evan Rosen, et al. Gemini 2.5: Pushing the frontier with advanced reasoning, multimodality,
+long context, and next generation agentic capabilities. arXiv preprint arXiv:2507.06261, 2025.
+10. Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang,
+Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint
+arXiv:2501.12948, 2025.
+11. An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang,
+Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388, 2025.
+12. Kimi Team, Yifan Bai, Yiping Bao, Guanduo Chen, Jiahao Chen, Ningxin Chen, Ruijue Chen, Yanru Chen, Yuankun
+Chen, Yutian Chen, et al. Kimi k2: Open agentic intelligence. arXiv preprint arXiv:2507.20534, 2025.
+13. Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec
+Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for neural language models. arXiv preprint arXiv:2001.08361,
+2020.
+14. Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza Rutherford, Diego de Las
+Casas, Lisa Anne Hendricks, Johannes Welbl, Aidan Clark, et al. Training compute-optimal large language models.
+arXiv preprint arXiv:2203.15556, 2022.
+15. Yangzhen Wu, Zhiqing Sun, Shanda Li, Sean Welleck, and Yiming Yang. Inference scaling laws: An empirical analysis
+of compute-optimal inference for problem-solving with language models. arXiv preprint arXiv:2408.00724, 2024.
+16. Rulin Shao, Jacqueline He, Akari Asai, Weijia Shi, Tim Dettmers, Sewon Min, Luke Zettlemoyer, and Pang Wei W Koh.
+Scaling retrieval-based language models with a trillion-token datastore. Advances in Neural Information Processing
+Systems, 37:91260–91299, 2024.
+17. Dan Busbridge, Amitis Shidani, Floris Weers, Jason Ramapuram, Etai Littwin, and Russ Webb. Distillation scaling
+laws. arXiv preprint arXiv:2502.08606, 2025.
+18. Buyun Zhang, Liang Luo, Yuxin Chen, Jade Nie, Xi Liu, Daifeng Guo, Yanli Zhao, Shen Li, Yuchen Hao, Yantao Yao,
+et al. Wukong: Towards a scaling law for large-scale recommendation. arXiv preprint arXiv:2403.02545, 2024.
+19. Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhaojie Gong, Fangda Gu, Michael
+He, et al. Actions speak louder than words: Trillion-parameter sequential transducers for generative recommendations.
+arXiv preprint arXiv:2402.17152, 2024.
+20. Yunli Wang, Zixuan Yang, Zhen Zhang, Zhiqiang Wang, Jian Yang, Shiyang Wen, Peng Jiang, and Kun Gai. Scaling
+laws for online advertisement retrieval. arXiv preprint arXiv:2411.13322, 2024.
+21. Xiao Lv, Jiangxia Cao, Shijie Guan, Xiaoyou Zhou, Zhiguang Qi, Yaqiang Zang, Ming Li, Ben Wang, Kun Gai, and
+Guorui Zhou. Marm: Unlocking the future of recommendation systems through memory augmentation and scalable
+
+complexity. arXiv preprint arXiv:2411.09425, 2024.
+22. Songpei Xu, Shijia Wang, Da Guo, Xianwen Guo, Qiang Xiao, Fangjian Li, and Chuanjiang Luo. Climber: Toward
+efficient scaling laws for large recommendation models. arXiv preprint arXiv:2502.09888, 2025.
+23. Yanhua Huang, Yuqi Chen, Xiong Cao, Rui Yang, Mingliang Qi, Yinghao Zhu, Qingchang Han, Yaowei Liu, Zhaoyu
+Liu, Xuefeng Yao, et al. Towards large-scale generative ranking. arXiv preprint arXiv:2505.04180, 2025.
+24. Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma, Mincong Huang, Xiaoguang Li,
+Chunzhen Jing, et al.
+Mtgr: Industrial-scale generative recommendation framework in meituan.
+arXiv preprint
+arXiv:2505.18654, 2025.
+25. Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang Luo, and Guorui Zhou. Onerec:
+Unifying retrieve and rank with generative recommender and iterative preference alignment.
+arXiv preprint
+arXiv:2502.18965, 2025.
+26. Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qianqian Wang, Qigen Hu, Rui Huang,
+Shiyao Wang, et al. Onerec technical report. arXiv preprint arXiv:2506.13695, 2025.
+27. NVIDIA. Nvidia tensorrt, 2025. URL: https://developer.nvidia.com/tensorrt.
+28. Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher R´e. Flashattention: Fast and memory-efficient exact
+attention with io-awareness. Advances in neural information processing systems, 35:16344–16359, 2022.
+29. Tri Dao.
+Flashattention-2: Faster attention with better parallelism and work partitioning.
+arXiv preprint
+arXiv:2307.08691, 2023.
+30. Vijay Thakkar, Pradeep Ramani, Cris Cecka, Aniket Shivam, Honghao Lu, Ethan Yan, Jack Kosaian, Mark Hoemmen,
+Haicheng Wu, Andrew Kerr, Matt Nicely, Duane Merrill, Dustyn Blasig, Fengqi Qiao, Piotr Majcher, Paul Springer,
+Markus Hohnerbach, Jin Wang, and Manish Gupta. CUTLASS, January 2023. URL: https://github.com/
+NVIDIA/cutlass.
+31. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia
+Polosukhin. Attention is all you need. Advances in neural information processing systems, 30, 2017.
+32. Udit Gupta, Samuel Hsia, Vikram Saraph, Xiaodong Wang, Brandon Reagen, Gu-Yeon Wei, Hsien-Hsin S. Lee, David
+Brooks, and Carole-Jean Wu. Deeprecsys: A system for optimizing end-to-end at-scale neural recommendation infer-
+ence. In 2020 ACM/IEEE 47th Annual International Symposium on Computer Architecture (ISCA), pages 982–995,
+2020. doi:10.1109/ISCA45697.2020.00084.
+33. Udit Gupta, Carole-Jean Wu, Xiaodong Wang, Maxim Naumov, Brandon Reagen, David Brooks, Bradford Cottel, Kim
+Hazelwood, Mark Hempstead, Bill Jia, Hsien-Hsin S. Lee, Andrey Malevich, Dheevatsa Mudigere, Mikhail Smelyan-
+skiy, Liang Xiong, and Xuan Zhang. The architectural implications of facebook’s dnn-based personalized recommen-
+dation. In 2020 IEEE International Symposium on High Performance Computer Architecture (HPCA), pages 488–501,
+2020. doi:10.1109/HPCA47549.2020.00047.
+34. Liu Ke, Udit Gupta, Mark Hempstead, Carole-Jean Wu, Hsien-Hsin S. Lee, and Xuan Zhang. Hercules: Heterogeneity-
+aware inference serving for at-scale personalized recommendation. In 2022 IEEE International Symposium on High-
+Performance Computer Architecture (HPCA), pages 141–154, 2022. doi:10.1109/HPCA53966.2022.00019.
+35. Michael Lui, Yavuz Yetim, ¨Ozg¨ur ¨Ozkan, Zhuoran Zhao, Shin-Yeh Tsai, Carole-Jean Wu, and Mark Hempstead. Un-
+derstanding capacity-driven scale-out neural recommendation inference. In 2021 IEEE International Symposium on
+Performance Analysis of Systems and Software (ISPASS), pages 162–171, 2021. doi:10.1109/ISPASS51385.
+2021.00033.
+36. Hao Liu, Qian Gao, Jiang Li, Xiaochao Liao, Hao Xiong, Guangxing Chen, Wenlin Wang, Guobao Yang, Zhiwei Zha,
+Daxiang Dong, et al. Jizhi: A fast and cost-effective model-as-a-service system for web-scale online inference at baidu.
+In Proceedings of the 27th ACM SIGKDD Conference on Knowledge Discovery & Data Mining, pages 3289–3298,
+2021.
+37. Rishabh Jain, Scott Cheng, Vishwas Kalagi, Vrushabh Sanghavi, Samvit Kaul, Meena Arunachalam, Kiwan Maeng,
+Adwait Jog, Anand Sivasubramaniam, Mahmut Taylan Kandemir, and Chita R. Das. Optimizing cpu performance for
+recommendation systems at-scale. In Proceedings of the 50th Annual International Symposium on Computer Archi-
+tecture, ISCA ’23, New York, NY, USA, 2023. Association for Computing Machinery. doi:10.1145/3579371.
+3589112.
+38. Zhe Jia Peter Van Sandt. Dissecting the ampere gpu architecture through microbenchmarking, 2021. URL: https:
+//www.nvidia.com/en-us/on-demand/session/gtcspring21-s33322/.
+39. Frank Denneman. Numa deep dive part 1: From uma to numa, 2016. URL: https://frankdenneman.nl/
+2016/07/07/numa-deep-dive-part-1-uma-numa/.
+40. Mark Harris. How to optimize data transfers in cuda c/c++, 2012. URL: https://developer.nvidia.com/
+blog/how-optimize-data-transfers-cuda-cc/.
+41. NVIDIA Corporation. RecSys Examples: A collection of recommender system implementations, 2024. URL: https:
+//github.com/NVIDIA/recsys-examples.

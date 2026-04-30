@@ -22,6 +22,39 @@ pip install pymupdf 2>/dev/null
 
 This is needed for PDF → text conversion.
 
+### Step 0.5: Backfill missing PDFs
+
+Older `ideas/*.md` entries were filed before PDF download was required. Before searching for new papers, reconcile:
+
+```bash
+python3 -c "
+import re, os, glob, subprocess, sys, time
+try: import fitz
+except ImportError: subprocess.run(['pip','install','-q','pymupdf']); import fitz
+ids = set()
+for f in glob.glob('ideas/*.md'):
+    for m in re.findall(r'\b(\d{4}\.\d{4,5})\b', open(f).read()):
+        ids.add(m)
+on_disk = {os.path.splitext(os.path.basename(f))[0] for f in glob.glob('papers/*.pdf')} | {os.path.splitext(os.path.basename(f))[0] for f in glob.glob('papers/*.txt')}
+missing = sorted(ids - on_disk)
+print(f'Missing: {len(missing)}')
+for i, aid in enumerate(missing, 1):
+    pdf, txt = f'papers/{aid}.pdf', f'papers/{aid}.txt'
+    if not os.path.exists(pdf):
+        r = subprocess.run(['curl','-L','-s','-f','--max-time','60','-o',pdf,f'https://arxiv.org/pdf/{aid}'], capture_output=True)
+        if r.returncode != 0 or os.path.getsize(pdf) < 10000:
+            print(f'[{i}] {aid} DL FAIL'); os.path.exists(pdf) and os.remove(pdf); continue
+    try:
+        d = fitz.open(pdf); open(txt,'w').write('\n'.join(p.get_text() for p in d))
+        print(f'[{i}] {aid} ok ({len(d)}p)')
+    except Exception as e:
+        print(f'[{i}] {aid} PARSE FAIL: {e}')
+    time.sleep(1.5)
+"
+```
+
+Any paper referenced in `ideas/*.md` must exist as `papers/{arxid}.pdf` + `.txt`. Run this whenever in doubt — it's idempotent.
+
 ### Step 1: Search arxiv
 
 Use WebSearch to find recent papers on generative recommendation from major industrial labs:

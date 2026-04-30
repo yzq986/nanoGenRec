@@ -1,0 +1,1952 @@
+Kunlun: Establishing Scaling Laws for Massive-Scale
+Recommendation Systems through Unified
+Architecture Design
+Bojian Hou∗,1, Xiaolong Liu∗,1, Xiaoyi Liu∗,†,1, Jiaqi Xu∗,†,1, Yasmine Badr∗,1, Mengyue Hang∗,1, Sudhanshu
+Chanpuriya1, Junqing Zhou1, Yuhang Yang1, Han Xu1, Qiuling Suo1, Laming Chen1, Yuxi Hu1, Jiasheng Zhang1,
+Huaqing Xiong1, Yuzhen Huang1, Chao Chen1, Yue Dong1, Yi Yang1, Shuo Chang1, Xiaorui Gan1, Wenlin Chen1,
+Santanu Kolay1, Darren Liu1, Jade Nie‡,2, Chunzhi Yang‡,2, Ellie Wen1, Jiyan Yang1, Huayu Li1
+1Meta Platforms, Inc., Menlo Park, CA, USA., 2OpenAI, San Francisco, CA, USA.
+∗Equal contribution, †Corresponding author, ‡Work done while at Meta
+Deriving predictable scaling laws that govern the relationship between model performance and compu-
+tational investment is crucial for designing and allocating resources in massive-scale recommendation
+systems. While such laws are established for large language models, they remain challenging for rec-
+ommendation systems, especially those processing both user history and context features. We identify
+poor scaling efficiency as the main barrier to predictable power-law scaling, stemming from inefficient
+modules with low Model FLOPs Utilization (MFU) and suboptimal resource allocation. We introduce
+Kunlun, a scalable architecture that systematically improves model efficiency and resource allocation. Our
+low-level optimizations include Generalized Dot-Product Attention (GDPA), Hierarchical Seed Pooling
+(HSP), and Sliding Window Attention. Our high-level innovations feature Computation Skip (CompSkip)
+and Event-level Personalization. These advances increase MFU from 17% to 37% on NVIDIA B200 GPUsa
+and double scaling efficiency over state-of-the-art methods. Kunlun is now deployed in major Meta Ads
+models, delivering significant production impact.
+Correspondence: {xiaoyliu, jackiexu0313}@meta.com
+Keywords: Recommendation Systems, Scaling Laws, CTR Prediction, Model Efficiency
+ahttps://www.nvidia.com/en-us/data-center/b200/
+1
+Introduction
+Click-through rate (CTR) prediction serves as the cor-
+nerstone of modern recommender systems, directly influ-
+encing both company revenue and user experience (Guo
+et al., 2017; Cheng et al., 2016; Zhou et al., 2018). As
+these systems grow in scale and complexity, establishing
+predictable scaling laws—mathematical relationships
+describing how model performance improves with com-
+putational resources—has become increasingly critical
+for guiding architectural decisions and resource alloca-
+tion (Kaplan et al., 2020; Hoffmann et al., 2022). While
+scaling laws are well-established for large language mod-
+els (Kaplan et al., 2020; Brown et al., 2020) and have
+been explored for non-sequential recommendation mod-
+els (Zhang et al., 2024), they remain an open challenge
+for systems that jointly model both sequential user be-
+haviors and non-sequential context features—a critical
+requirement for modern production recommendation
+systems at massive scale.
+The success of scaling laws in language models suggests
+a natural approach: focus exclusively on sequential
+user behaviors. However, modern production recom-
+mender systems cannot adopt this simplified architec-
+ture. Non-sequential context features—including user
+demographics, ad metadata, and contextual signals—
+remain essential due to business requirements and deep
+infrastructure dependencies (Han et al., 2025). Any scal-
+able architecture must therefore efficiently handle both
+feature types simultaneously, yet existing systems that
+attempt this joint modeling fail to achieve predictable
+power-law scaling behaviors.
+We identify poor scaling efficiency—the rate at which
+performance improves per unit of computational
+investment—as the primary barrier preventing pre-
+dictable scaling laws.
+Specifically, scaling efficiency
+requires simultaneously optimizing both algorithmic
+effectiveness (performance gain per FLOP) and compu-
+tational efficiency (hardware utilization). When exam-
+ining state-of-the-art model paradigms that incorporate
+both sequence and non-sequence context features (Zeng
+et al., 2024), we observe limited scaling efficiency due to
+1
+arXiv:2602.10016v2  [cs.IR]  13 Feb 2026
+
+two critical bottlenecks: (1) Inefficient modules: Mod-
+els achieve only 3-15% Model FLOPs Utilization (MFU),
+compared to 40-60% for LLMs, due to heterogeneous
+feature spaces resulting in small embedding dimensions,
+irregular tensor shapes, and memory-bound operations.
+(2) Inefficient computation resource allocation: Naively
+scaling all components equally leads to diminishing re-
+turns, as different layers and event types benefit from
+different computational patterns.
+Our Approach: Model-Efficiency Codesign. We propose
+Kunlun (named after the Kunlun Mountains, symboliz-
+ing a foundational peak that unifies diverse elements),
+a unified architecture that tackles these challenges
+through systematic codesign at two levels. As illus-
+trated in Figure 1, Kunlun adopts a multi-layer archi-
+tecture where each layer processes both sequence and
+non-sequence features through two main components:
+(1) a Kunlun Transformer Block for context-aware se-
+quence modeling via GDPA-enhanced personalized feed-
+forward networks and multi-head self-attention, and (2)
+a Kunlun Interaction Block for bidirectional informa-
+tion exchange through personalized weight generation,
+hierarchical sequence summarization, and global feature
+interaction.
+Low-level module optimization improves computational
+efficiency of fundamental building blocks. We intro-
+duce Generalized Dot-Product Attention (GDPA) for
+efficient personalized sequence transformation, Hierar-
+chical Seed Pooling (HSP) for effective sequence sum-
+marization, and Sliding Window Attention for linear-
+complexity sequence modeling.
+High-level computation reallocation enables adaptive re-
+source distribution.
+We propose Computation Skip
+(CompSkip) for layer-wise component selection and
+Event-level Personalization for importance-based re-
+source allocation across heterogeneous event types.
+Through this codesign approach, Kunlun improves MFU
+from 17% to 37% on NVIDIA B200 GPUs and achieves
+2× scaling efficiency improvement over state-of-the-art
+approaches, enabling the first predictable scaling laws
+for joint sequence-nonsequence modeling in recommen-
+dation systems.
+Contributions. We summarize our main contributions
+as:
+1. Problem Formulation: We identify and formalize
+the scaling efficiency challenge in massive-scale rec-
+ommendation systems, highlighting two key bot-
+tlenecks: inefficient modules and inefficient compu-
+tation resource allocation.
+2. Architecture Design: We propose Kunlun, featur-
+ing systematic model-efficiency codesign with low-
+level optimizations (GDPA, HSP, Sliding Window
+Attention) and high-level innovations (CompSkip,
+Event-level personalization).
+3. Scaling Laws: We demonstrate predictable scaling
+behavior, achieving 2× scaling efficiency improve-
+ment over state-of-the-art and establishing the first
+scaling laws for joint sequence-nonsequence model-
+ing at massive scale.
+4. Deployment Impact: Kunlun has been deployed at
+major Meta Ads models, achieving 1.2% improve-
+ment in topline metrics and significant online im-
+pact.
+2
+Related Work
+2.1
+Recommendation System Architectures
+Non-Sequential Methods.
+Traditional recommenda-
+tion models focus on learning interactions among non-
+sequential features via various mechanisms.
+Factor-
+ization Machines (FM) (Rendle, 2010) model pair-
+wise feature interactions, while deep learning ap-
+proaches combine FMs with neural networks (Lian
+et al., 2018; Wang et al., 2021) for higher-order in-
+teractions. Wukong (Zhang et al., 2024) demonstrates
+scaling properties through the stacking of interaction
+modules; however, sequence modeling is not a central
+aspect of this architecture (Zhu et al., 2025).
+Sequential Methods. Sequential recommendation mod-
+els (Zhou et al., 2018, 2019) leverage RNNs or at-
+tention mechanisms to capture temporal dynamics in
+user behaviors.
+HSTU (Zhai et al., 2024) employs
+transformer-style architectures for sequential recommen-
+dation, but primarily focuses on sequence-only model-
+ing and does not effectively handle scenarios where rich
+non-sequential context features are present and pow-
+erful (Zhang et al., 2025; Chai et al., 2025; Xu et al.,
+2025). Recently, Interformer (Zeng et al., 2024) pro-
+posed an interleaving structure to address the limitation
+of unidirectional information flow through learning of
+bidirectional interactions between sequences and non-
+sequence context features. Although it demonstrates
+strong performance, its scaling efficiency at massive
+scales is limited by computational bottlenecks, which
+our work addresses.
+2.2
+Scaling Laws in Machine Learning
+Scaling laws describe how model performance improves
+with increased computation, data, or parameters (Ka-
+plan et al., 2020). While well-established for language
+models, scaling laws for recommendation systems re-
+main underexplored, particularly for models jointly
+learning sequential and non-sequential context features.
+Recent work (Zhang et al., 2024) demonstrates promis-
+ing scaling trends but does not address computational
+2
+
+Kunlun Interaction
+Global 
+Interaction
+Sequence
+Features
+Set
+Features
+Kunlun Transformer
+Multi-Head 
+Self-Attention
+(MHA)
+HSP
+GDPA-
+enhanced 
+PFFN
+Weight
+Generation 
+(MLP)
+Set
+Features
+Sequence
+Features
+Kunlun Layer 0
+Wukong
+Wukong
+Wukong
+Multi-expert Wukong
+Add & Norm
+Advanced
+Factorization
+Machine
+Linear
+Compression
+...
+Generated Linear
+Generated Linear
+Compression
+Seed 
+Pooling 
+(SP)
+Activation
+Kunlun Layers 1 t o L-1
+Figure 1
+Overview of the Kunlun architecture. The model is composed of multiple stacked layers, and each layer includes
+two main components: (1) a Kunlun Transformer block, which incorporates GDPA-enhanced PFFN and Multi-Head
+Self-Attention (MHA) to enable context-aware sequence modeling; and (2) a Kunlun Interaction block, which contains a
+Weight Generation module (to derive personalized weights for the PFFN from non-sequential features), a HSP module
+(to efficiently summarize sequential information for subsequent global interaction), and a Global Interaction module that
+facilitates interactions between sequential and non-sequential inputs, as well as interactions within the non-sequential
+features themselves.
+efficiency or establish predictable scaling behaviors at
+massive scales.
+2.3
+Model-Efficiency Co-design
+Efficient model design has gained increasing atten-
+tion (Dao et al., 2022; Kitaev et al., 2020). Approaches
+include architectural innovations (e.g., sparse attention,
+efficient transformers), system optimizations (e.g., oper-
+ator fusion, mixed precision (Micikevicius et al., 2018)),
+and training techniques (e.g., gradient checkpointing).
+Our work stands out by systematically enhancing ef-
+ficiency at both the low-level module and high-level
+computation allocation stages, specifically tailored to
+the unique characteristics and massive scale of recom-
+mendation systems.
+3
+Preliminaries
+Notation. We use bold uppercase letters for matrices
+(e.g., X), bold lowercase letters for vectors (e.g., x), and
+lowercase letters for scalars (e.g., n). We use superscript
+u to denote users, subscripts i and t to denote item
+and timestamp, respectively (e.g., yu
+it). We use x(l)
+j
+to
+denote the j-th non-sequence feature at the l-th layer,
+and s(l)
+t
+to denote the sequence feature at the l-th layer
+and timestamp t. We consider scenarios with m dense
+features, n sparse features, and k sequences of length T.
+We use d to denote the embedding dimension. Super-
+script (l) denotes layer index, where (0) represents raw
+input and (1) represents the output after preprocessing.
+3.1
+Problem Formulation: CTR Prediction with
+Heterogeneous Features
+Click-through rate (CTR) prediction estimates the prob-
+ability of a user clicking on an item given heterogeneous
+information from multiple modalities. This heterogene-
+ity is fundamental to modern recommendation systems,
+as user interests are depicted from different aspects:
+static context provides explicit preferences while behav-
+ior sequences reveal implicit dynamics.
+Formally, given a user set U and an item set I, the
+interaction sequence of user u ∈U is defined as
+Su = [iu
+1, iu
+2, . . . , iu
+T ], where iu
+t ∈I is the item inter-
+acted at time step t by user u. Our goal is to esti-
+mate the probability of user u clicking on a new item
+iT +1, denoted as yu
+iT +1, given the historical interaction
+sequence Su. Formally, we seek to learn a function
+f : U × I × S →[0, 1], where S is the set of all possible
+sequences, such that:
+P(yu
+iT +1 = 1|u, iT +1, Su; θ) = f(u, iT +1, Su; θ).
+(1)
+3.2
+Evaluation Metrics
+We adopt Normalized Entropy (NE) (He et al., 2014) as
+our primary performance metric, defined as the ratio
+3
+
+of model cross-entropy loss to background entropy (see
+Appendix A for detailed derivation). Lower NE indi-
+cates better performance, with ∆NE < 0 meaning the
+model outperforms baseline prediction. We use NE over
+AUC because NE directly reflects calibration quality
+critical for production ranking systems. For efficiency
+evaluation, we measure:
+• Model FLOPs Utilization (MFU) (Chowdhery et al.,
+2022): The ratio of achieved FLOPs to peak hardware
+FLOPs, indicating how effectively the implementa-
+tion utilizes GPU compute resources.
+• Query Per Second (QPS): Training throughput that
+measures how many samples can be processed per
+second across the distributed training system.
+• GFLOPs: Giga floating-point operations, where 1
+GFLOPs = 109 FLOPs. We report per-sample for-
+ward pass FLOPs to characterize model computa-
+tional cost.
+3.3
+Scaling Laws and Efficiency
+Scaling Laws. A scaling law describes the predictable
+mathematical relationship between model performance
+and computational resources.
+Following the neural
+scaling law literature (Kaplan et al., 2020), we model
+this relationship as a power law in the logarithmic
+domain:
+NE(C) = NE0 −η · log(C/C0)
+(2)
+where C represents the total compute investment (mea-
+sured in FLOPs), C0 is a baseline compute budget, NE0
+is the baseline performance, and η > 0 is the scaling
+coefficient that determines the rate of NE improvement
+per unit of log-scaled compute. Larger η indicates faster
+improvement—the NE decreases more rapidly as com-
+pute increases (i.e., steeper scaling curves). The validity
+of a scaling law requires two properties: (1) consistency
+across different scales, meaning the functional form
+holds as we increase compute, and (2) predictability,
+enabling reliable extrapolation to larger budgets.
+Scaling Efficiency. While scaling laws describe whether
+performance improves with compute, scaling efficiency
+quantifies how effectively this improvement occurs. Tak-
+ing the derivative of Equation 2, we see that η =
+−d(NE)/d(log C) represents the slope of the NE vs.
+log(Compute) curve. We define scaling efficiency as
+this slope normalized by a historical baseline:
+Scaling Efficiency =
+η
+ηbaseline
+= ∆NE/ log(C/C0)
+ηbaseline
+(3)
+where ηbaseline is the scaling coefficient of a baseline sys-
+tem (corresponding to 1X efficiency). For example, 2X
+scaling efficiency means the model achieves 2× the NE
+improvement per unit of log-scaled compute compared
+to baseline—visualized as a 2× steeper slope in the NE
+vs. log(Compute) curve.
+Critically, scaling efficiency decomposes into two factors:
+1. Algorithmic effectiveness: How much performance
+gain (NE improvement) each FLOP provides. This
+depends on model architecture, training algorithms,
+and how well they exploit available compute for
+learning.
+2. Computational efficiency: What fraction of theoret-
+ical peak FLOPs are actually utilized by hardware,
+measured by Model FLOPs Utilization (MFU).
+Low MFU means the hardware idles while waiting
+for memory transfers or synchronization, wasting
+compute capacity.
+Therefore, achieving high scaling efficiency requires si-
+multaneous optimization of both dimensions: designing
+algorithms that extract maximum learning signal per
+FLOP and implementing them to maximize hardware
+utilization.
+4
+Method
+In this section, we present Kunlun’s architecture and
+its co-design in detail.
+We build upon the Inter-
+former (Zeng et al., 2024) framework by introducing
+systematic model-efficiency co-design across two lev-
+els: low-level module optimization for computational
+efficiency (Section 4.3) and high-level computation real-
+location for optimal resource distribution (Section 4.4).
+4.1
+Architecture Overview
+Kunlun adopts a multi-layer architecture where each
+layer processes both sequence and non-sequence fea-
+tures through systematic interaction. As illustrated in
+Figure 1, each layer is composed of two main compo-
+nents:
+(1) Kunlun Transformer Block performs context-aware
+sequence modeling through two key mechanisms: (i)
+GDPA-enhanced Personalized FeedForward Networks
+(PFFN) that transform sequence embeddings using non-
+sequential context as personalized guidance, and (ii)
+Multi-Head Self-Attention (MHA) that captures depen-
+dencies within the sequential data itself.
+(2)KunlunInteractionBlock facilitates bidirectional infor-
+mation exchange between sequences and non-sequences
+through three integrated modules: (i) a Weight Gener-
+ation module that derives personalized weights for the
+PFFN from non-sequential features, (ii) a HSP (Hierar-
+chical Seed Pooling) module that efficiently summarizes
+sequential information into compact representations for
+4
+
+subsequent global interaction, and (iii) a Global Inter-
+action module that models feature interactions between
+the sequence summaries and non-sequential features, as
+well as interactions within the non-sequential features
+themselves.
+The model stacks L such layers, where layer l takes
+as input the outputs from layer l −1, enabling hierar-
+chical feature learning at progressively higher levels of
+abstraction. This design enables Kunlun to generate NE
+gains through both vertical stacking (depth-wise feature
+refinement across multiple layers) and horizontal stack-
+ing (width-wise capacity expansion within each layer).
+Throughout all layers, we maintain the bidirectional
+information flow that enables mutually beneficial learn-
+ing between different data modalities—non-sequential
+context guides sequence modeling, while sequence sum-
+marization informs non-sequence interaction.
+4.2
+Feature Preprocessing
+Before the first layer, raw features are converted to
+unified embedding representations. The feature prepro-
+cessing follows standard pipelines (Zeng et al., 2024),
+detailed in Appendix B, and we briefly summarize the
+key notations here.
+Non-Sequence Features. Dense features are concate-
+nated and projected: x(1)
+dense = Wdensex(0)
+dense ∈Rd.
+Sparse features are embedded via lookup: x(1)
+sparsei =
+Wsparseix(0)
+sparsei ∈Rd. All features are concatenated
+into the unified representation X(1) ∈R(n+1)×d.
+Sequence Features. Multiple sequences from different
+event types are concatenated along the embedding di-
+mension and fused via MLP into S(0) ∈RT ×d.
+Rotary Temporal Embeddings (ROTE). We extend Rotary
+Position Embeddings (RoPE) (Su et al., 2024) to in-
+corporate temporal information. Unlike LLMs where
+token position is the primary signal, recommendation
+sequences exhibit patterns where the temporal gap be-
+tween events carries crucial information—a click from
+yesterday differs fundamentally from one last month,
+even at adjacent positions. ROTE computes log-scaled
+timestamp gaps τt = log(1 + ∆t/τscale) and incorpo-
+rates them into the rotary embeddings via Rt,τtx, where
+the rotation matrix elements combine both positional
+frequencies θi and temporal frequencies ϕi. This en-
+ables the model to capture both sequential order and
+temporal proximity. See Appendix B for detailed for-
+mulations.
+4.3
+Low-Level Module Optimization
+To address computational inefficiency stemming from
+heterogeneous feature spaces, we redesign core modules
+to be compute-bound rather than memory-bound to
+improve MFU.
+4.3.1
+Multi-Head PFFN with Generalized Dot-Product
+Attention (GDPA)
+The Personalized FeedForward Network (PFFN) trans-
+forms sequence embeddings based on non-sequence con-
+text. Prior formulations (Zeng et al., 2024) express
+PFFN as:
+PFFN(X(l)
+sum, S(l)) = f(X(l)
+sum)S(l),
+(4)
+where f(X(l)
+sum) is a two-layer MLP that generates trans-
+formation weights based on summarized non-sequence
+features X(l)
+sum ∈Rnsum×d, and S(l) ∈RT ×d are the
+sequence embeddings at layer l.
+Computational Bottleneck.
+This formulation suffers
+from low MFU due to small, memory-bound matrix
+operations with irregular shapes. Moreover, per-layer
+heavyweight activations and non-fusible back-to-back
+matrix multiplications further limit GPU utilization.
+GDPA Reformulation. To address these inefficiencies, we
+redesign PFFN as a multi-head attention-style operator,
+termed Generalized Dot-Product Attention (GDPA), en-
+abling the entire PFFN to be fused into a single kernel
+in a FlashAttention-like (Dao et al., 2022; Shah et al.,
+2024) manner. The key insight is that the transfor-
+mation f(Xsum)S can be viewed as a form of cross-
+attention where the input sequence serves as the query,
+while the two weight matrices from the personalized
+two-layer MLP f(X(l)
+sum) function as the key and value,
+as depicted in the left-hand side of Figure 1. Specifically,
+for each attention head h ∈{1, . . . , H}, we compute:
+GDPAh(Q, K, V) = Activationh
+QK⊤
+τ
+
+V,
+(5)
+where Q = S(l) are the sequence tokens serving as
+queries, K = w(h)
+1 (X(l)
+sum) and V = w(h)
+2 (X(l)
+sum) are
+learnable projections from non-sequence context for
+head h, τ = maxlen(seq) is a temperature parameter
+for scaling (maxlen(seq) works better than embedding
+dimension d or
+√
+d empirically), and Activationh is
+the activation function for head h. The outputs from
+all heads are then concatenated and projected through
+WO to produce the final output. A comparison between
+PFFN, and GDPA is shown in Figure 2.
+Efficient Attention-Style Implementation.
+Following
+Flash Attention style designs (Dao et al., 2022; Tillet
+et al., 2019), we employ a memory-efficient, block-wise
+execution strategy that avoids materializing large inter-
+mediate tensors in the backward pass. The fused kernel
+is further optimized for PFFN workloads with small
+key/value shapes and jagged, variable-length inputs as
+5
+
+Linear?
+Activation?
+Linear?
+Activation?
+Sequential
+Dependency
+Activation
+Output
+Parallel
+Computation
+(a) Original PFFN
+(b) GDPA-enhanced PFFN (Ours)
+Figure 2 Comparison between (a) the original PFFN, and
+(b) our GDPA-enhanced PFFN. Note: Both are one-block
+demos.
+discussed in Appendix F, resulting in up to a 6× MFU
+improvement for the PFFN block.
+Residual Connection and PFFN Stacking. Unlike prior
+PFFN formulations, GDPA incorporates a residual con-
+nection that enables stable PFFN stacking across multi-
+ple layers. This design allows the model to progressively
+refine sequence representations through deeper trans-
+formations, yielding additional NE gains that were not
+achievable with the original non-stackable PFFN design.
+4.3.2
+Hierarchical Seed Pooling (HSP): Sequence Sum-
+marization
+Sequence summarization condenses long sequences (T >
+1000) into compact representations for efficient non-
+sequence interaction. Traditional Pooling by Multihead
+Attention (PMA), as used in prior approaches (Zeng
+et al., 2024), employs random learnable queries:
+PMA(S) = MHA(Qlearnable, S, S),
+(6)
+where Qlearnable ∈Rntokens×d are randomly initialized
+learnable queries and MHA refers to Multihead Atten-
+tion (Vaswani et al., 2017).
+HSP Design. We introduce Hierarchical Seed Pooling
+(HSP), which improves upon PMA through hierarchical
+compression using learnable seed embeddings. The key
+insight is that hierarchical summarization that first
+learns seed-level representations, then compresses them
+into final tokens provides better initialization and more
+stable training than direct random queries. Given input
+sequence S ∈RB×T ×d, the HSP operation proceeds in
+three stages:
+Stage 1: Seed Embedding Initialization. Define learn-
+able seed embeddings Eseed ∈Rnseeds×d where nseeds >
+ntokens provides overcomplete representation. These
+seeds are shared across all samples in the batch.
+Stage 2: Seed-level Attention. Compute attention from
+seeds to sequence, producing seed-level representations:
+Hseed = MHA(Norm(Eseed), S, S) ∈RB×nseeds×d, (7)
+where Norm(·) applies LayerNorm or RMSNorm to the
+seed embeddings. Each batch sample now has nseeds
+seed-level representations aggregated from the sequence.
+Stage
+3:
+Parameter-Efficient
+Seed
+Compression
+(SumKronLinear). The third stage compresses the S
+pooled seed vectors to T output tokens. This is the
+critical bottleneck where compression quality directly
+impacts downstream model performance.
+We introduce SumKronLinear, a Kronecker product-
+based compression layer that achieves parameter-
+efficient
+joint
+sequence-embedding
+transformation.
+Given input X ∈RB×S×D, the compression to Y ∈
+RB×T ×D is computed as:
+Yb =
+k
+X
+i=1
+Z⊤
+i XbWi,
+where Zi ∈RS×T , Wi ∈RD×D
+(8)
+This formulation provides two key advantages. First,
+parameter efficiency: the decomposition reduces param-
+eters from O(S·D·T ·D) to O(k·(S·T +D2)). For typical
+configurations (S=256, T=32, D=384, k=8), this yields
+a 14× reduction. Second, cross-dimensional expressive-
+ness: unlike separable factorizations Y = P⊤
+seqXPemb
+that assume independence between sequence and em-
+bedding dimensions (rank-1 structure), SumKronLinear
+captures joint correlations through rank-k Kronecker
+structure. As k increases, the representational capacity
+approaches that of a full linear transformation while
+maintaining sublinear parameter growth.
+Scaling Properties. The parameter efficiency of SumKro-
+nLinear enables scaling the compression capacity with-
+out proportionally increasing model size. As embedding
+dimension D increases, the relative parameter savings
+grow, making this approach increasingly favorable at
+massive scale. This enables flexible capacity allocation
+that can be tailored to match the characteristics of
+different workloads and event types.
+4.3.3
+Sliding Window Attention
+Full self-attention in sequence modeling has quadratic
+complexity O(T 2) where T is sequence length.
+For
+sequences with T > 1000, this becomes prohibitive.
+Locality Bias in Recommendation. Consistent with prior
+observations in sequential recommendation (Zhou et al.,
+2018, 2019), recent interactions exhibit significantly
+higher predictive value than distant historical ones.
+This temporal decay in relevance motivates restricting
+attention to local windows.
+6
+
+Windowed Pattern. We apply sliding window attention
+with window size w:
+Attention(Qt, K, V ) = softmax
+ 
+QtK⊤
+[t−w:t+w]
+√
+d
+!
+V[t−w:t+w],
+(9)
+where
+Qt
+is
+the
+query
+at
+position
+t,
+and
+K[t−w:t+w], V[t−w:t+w] are keys and values within the
+window [t −w, t + w] at position t.
+This reduces complexity from O(T 2) to O(Tw), achiev-
+ing 31.1% QPS improvement while preserving local
+dependencies critical for sequence modeling when T >
+1000. The window size w is configurable per event type
+through event-level personalization (Section 4.4.2).
+4.4
+High-Level Computation Reallocation
+Beyond local efficiency, achieving high scaling efficiency
+requires intelligent resource distribution across layers
+and event types.
+4.4.1
+Computation Skip (CompSkip)
+CompSkip selectively skips modules within layers via
+skip connections. Similar to layer interleaving strate-
+gies explored in recent LLMs (Team et al., 2024) and
+findings on layer redundancy (Men et al., 2024), we
+alternate computational patterns across layers in rec-
+ommendation models.
+Every-Other-Layer Pattern. We implement an alternat-
+ing pattern where:
+• Even layers (0, 2, 4, ...): Skip self-attention; compute
+fresh HSP summaries
+• Odd layers (1, 3, 5, ...): Skip HSP (reuse previous
+summaries) and PFFN; compute self-attention
+This ensures each layer contributes either local refine-
+ment (self-attention) or global summarization (HSP),
+maintaining expressiveness while reducing computation.
+The detailed configuration algorithm is provided in
+Appendix C.
+Efficiency Gains. The every-other-layer pattern reduces
+FLOPs by ∼43.1% and improves QPS by ∼35% on aver-
+age, maintaining model quality through complementary
+updates that preserve local and global sequence under-
+standing.
+4.4.2
+Event-Level Personalization
+Different event sequences have varying importance and
+characteristics. Clicks provide stronger signals than
+impressions, and long sequences may contain more noise
+than short ones. Event-level personalization allocates
+computational resources proportional to each sequence
+type’s importance.
+Per-Event Configuration.
+For each event type e ∈
+{e1, . . . , eK}, we configure:
+• d(e)
+model: Model dimension, controlling capacity
+• n(e)
+heads: Number of attention heads, controlling multi-
+faceted learning
+• n(e)
+tokens: Number of summarization tokens passed to
+non-sequence interaction
+• L(e): Number of processing layers, controlling depth
+• w(e): Sliding window size for self-attention, control-
+ling receptive field
+Importance-Based Allocation. High-value events (e.g.,
+purchase conversions) receive larger dmodel, more heads,
+more tokens, and more layers, while lower-value events
+(e.g., ad impressions) use smaller configurations. This
+enables efficient scaling across diverse behavior signals—
+allocating more compute to critical events while main-
+taining coverage of peripheral signals.
+Example Configuration. For a system with click and
+impression sequences:
+Click :
+dmodel = 256, nheads = 8, ntokens = 32,
+L = 3, w = 100
+Impression :
+dmodel = 128, nheads = 4, ntokens = 16,
+L = 2, w = 50
+4.4.3
+Global Interaction Module with Mixture of Wukong
+Experts
+The Global Interaction module is a core component of
+the Kunlun Interaction Block that processes both sum-
+marized non-sequence features and sequence summaries
+from HSP to model complex feature interactions. Given
+non-sequence feature summaries X(l)
+sum ∈RB×nsum×d
+and sequence summaries H(l)
+summary ∈RB×ntokens×d at
+layer l, the Global Interaction module combines these
+representations and learns rich cross-modal interactions
+between sequential and non-sequential information.
+Mixture of Wukong Experts Architecture. The Global
+Interaction module employs a mixture-of-experts archi-
+tecture where multiple Wukong modules (Zhang et al.,
+2024) operate concurrently. Each Wukong module is a
+complete feature interaction model containing multiple
+complementary interaction functions: DOT product
+captures linear interactions and deep interaction net-
+works learn hierarchical interactions. These functions
+within each Wukong module work together as an in-
+tegrated unit to capture different interaction patterns
+7
+
+(linear and hierarchical) rather than executing as inde-
+pendent parallel operations.
+Horizontal Scaling through Expert Parallelism. Within
+each layer,
+the model employs
+M
+Wukong ex-
+perts that process different feature subsets concur-
+rently.
+The combined input features X(l)
+global
+=
+Concat(X(l)
+sum, H(l)
+summary)
+∈
+RB×(nsum+ntokens)×d are
+partitioned across experts. Each expert i ∈{1, . . . , M}
+processes a designated feature partition:
+H(l)
+i
+= Wukongi(X(l)
+global,i),
+(10)
+where X(l)
+global,i represents the feature subset assigned
+to expert i. The expert outputs are then aggregated
+to produce the layer output. This expert parallelism
+enables horizontal scaling by distributing computation
+across multiple experts within a single layer, allowing
+the model to process wider feature representations effi-
+ciently.
+VerticalScalingthroughLayerStacking. The model stacks
+L layers vertically, where each layer refines representa-
+tions learned from the previous layer:
+X(l+1)
+global = f (l)(X(l)
+global), l ∈{0, . . . , L −1},
+(11)
+where f (l) represents the transformation at layer l com-
+bining outputs from all M experts. This vertical stack-
+ing enables the model to learn increasingly abstract
+feature representations through hierarchical refinement,
+with each layer building upon the interactions captured
+by previous layers.
+Together, horizontal expert parallelism and vertical
+layer stacking enable Kunlun to generate NE gains
+through both width-wise capacity expansion (more ex-
+perts per layer) and depth-wise feature refinement (more
+layers), providing flexible scaling along both dimensions
+to achieve optimal performance-efficiency trade-offs.
+4.5
+Multi-Layer Architecture
+Kunlun stacks L layers, each containing a Kunlun Trans-
+former Block (GDPA-enhanced PFFN + Multi-Head
+Self-Attention for sequence modeling) and a Kunlun
+Interaction Block (Weight Generation + HSP + Global
+Interaction for cross-modal learning).
+The architecture maintains bidirectional information
+flow (Zeng et al., 2024): non-sequence features guide
+sequence modeling through personalized GDPA weights,
+while sequence summaries inform non-sequence inter-
+action through the Global Interaction module. This
+enables mutually beneficial learning where both modal-
+ities progressively refine each other across layers.
+Vertical stacking enables hierarchical learning—early lay-
+ers capture basic patterns while deeper layers model
+high-order dependencies.
+The architecture demon-
+strates predictable scaling properties: NE improvement
+follows ∆NEl ≈c/ log(l + 1), validating power-law scal-
+ing along both depth and width dimensions.
+After L layers, the final non-sequence representation
+X(L) from the Global Interaction module is fed to task-
+specific heads: ˆy = σ(MLP(X(L))). See Appendix D
+for detailed equations and information flow.
+5
+Experiments
+We conduct comprehensive experiments to evaluate Kun-
+lun on large-scale internal datasets. Our experiments
+aim to answer the following research questions:
+• RQ1:
+Does Kunlun achieve predictable and supe-
+rior scalability for massive-scale recommendation sys-
+tems?
+• RQ2: How do the low-level module optimizations
+(GDPA, HSP, Sliding Window Attention) contribute
+to efficiency improvements?
+• RQ3: How do the high-level computation reallocation
+strategies (CompSkip, Event-level Personalization)
+improve the model quality and efficiency?
+• RQ4: How does Kunlun perform in production deploy-
+ment?
+5.1
+Experimental Setup
+Datasets. We evaluate on large-scale internal datasets
+from Meta Ads: 70B+ samples with hundreds and
+thousands of non-sequence features and 10+ sequence
+features of length from hundreds to thousands, spanning
+multiple event types (clicks, conversions, impressions)
+Baseline Selection and Rationale. We compare against
+two representative production-grade baselines that re-
+flect fundamentally different architectural philosophies:
+• Wukong (Zhang et al., 2024):
+Establishes princi-
+pled scaling laws for cross-feature modeling through
+stacked factorization-machine based interaction mod-
+ules, providing foundational insights for scalable non-
+sequential recommendation.
+• InterFormer (Zeng et al., 2024): Bridges sequence and
+feature modeling through learnable interaction tokens
+with bidirectional information flow, representing the
+current production state-of-the-art for joint sequence-
+nonsequence modeling.
+Our baselines are chosen for production readiness (both
+serve billions of daily requests at Meta), scale equiv-
+alence (identical datasets, feature vocabularies, and
+8
+
+computational budgets), and paradigm coverage (repre-
+senting complementary architectural approaches—pure
+feature interaction vs. joint modeling).
+We did not include HSTU (Zhai et al., 2024) in our com-
+parison because it is specifically designed for sequence-
+centric and request-level optimization scenarios.
+In
+contrast, our experiments operate at the impression
+level, utilizing hundreds to thousands of non-sequential
+contextual features that are critical for CTR prediction
+in production systems. Additionally, non-sequential
+context features continue to play a very important role
+in performance. If we do not handle and model them
+appropriately, it could result in significant performance
+regressions. This fundamental mismatch in design as-
+sumptions (i.e., HSTU’s focus on behavior-dominated
+scenarios vs. our heterogeneous feature setting) makes a
+direct comparison less meaningful. While HSTU demon-
+strates strong scaling in its target scenarios, our work
+addresses the challenge of scaling in settings where both
+sequential and non-sequential features are present.
+Evaluation Metrics. We use the following metrics:
+• NE: Primary offline metric for CTR prediction quality,
+lower is better (Equation 12)
+• MFU: Ratio of achieved FLOPs to peak hardware
+FLOPs, indicating computational efficiency
+• QPS: Training throughput across the distributed sys-
+tem
+• Scaling Efficiency: NE gain per unit of Total Com-
+pute, measuring the rate of performance improvement
+(Equation 3)
+Implementation Details. Kunlun is implemented in Py-
+Torch with custom Triton kernels for performance-
+critical operations (GDPA, HSP). The model supports
+training on a variety of hardware setups, including
+NVIDIA H100, B200, and GB200 GPUs. For fair com-
+parisons in our experiments, we use B200, consistent
+global batch sizes, and optimizer configurations across
+all runs, unless otherwise specified. All experiments are
+trained for a single epoch.
+5.2
+Main Results: Architecture Comparison at
+Different Scales (RQ1)
+Figure 3 presents the comparison of different architec-
+tures at three computational scales (6 GFLOPs, 60
+GFLOPs, and 180 GFLOPs), showing the NE gains
+over Wukong baseline.
+Kunlun consistently achieves
+the largest NE gains across all scales. Notably, while
+Kunlun and InterFormer show comparable performance
+at the 6 GFLOPs scale (both achieving 0.31% NE
+gains), the performance gap widens significantly at
+larger scales. As computational budget increases from
+6
+60
+180
+Computational Scale (GFLOPs)
+0.0
+0.2
+0.4
+0.6
+0.8
+NE Gains (%)
+Wukong as baseline
+0.16
+0.11
+0.20
+0.31
+0.36
+0.50
+0.31
+0.66
+0.79
+Wukong+PMA
+InterFormer
+Kunlun (Ours)
+Figure 3 NE gains of different architectures compared to
+Wukong baseline across computational scales (6, 60, and
+180 GFLOPs). The y-axis shows the absolute NE gains,
+where lower NE indicates better model performance. Larger
+values represent greater improvement over Wukong. Kunlun
+achieves the largest NE gains at all scales (0.31%, 0.66%,
+0.79%), with the performance gap widening as computa-
+tional budget increases, demonstrating superior scaling ef-
+ficiency. Note: NEs are not comparable across scales due
+to different feature configurations; within-scale results use
+identical setups.
+6 to 180 GFLOPs, Kunlun’s NE gains grow from 0.31%
+to 0.79% (2.5×), while InterFormer only improves from
+0.31% to 0.50% (1.6×). This superior scaling efficiency
+validates our hypothesis that addressing both inefficient
+modules (low-level) and inefficient computation alloca-
+tion (high-level) is necessary for achieving predictable
+scaling laws.
+5.3
+Ablation Study: Component Analysis (RQ2
+& RQ3)
+Table 1 presents the ablation study analyzing the con-
+tribution of each component in Kunlun.
+Low-Level Module Optimizations (RQ2).
+The GDPA
+reformulation contributes to overall MFU improve-
+ment: removing GDPA reduces MFU from 37.0% to
+34.0% and causes 8% QPS degradation, validating that
+the attention-style reformulation enables more efficient
+GPU utilization.
+Without GDPA, NE degrades by
+0.04%, confirming its contribution to both efficiency
+and model quality. HSP improves model quality over
+traditional PMA, achieving 0.08% NE gain.
+While
+PMA offers 8.8% higher QPS due to its simpler design,
+HSP’s superior sequence summarization quality justifies
+the trade-off for production systems where NE gains
+directly impact business metrics. SumKronLinear con-
+tributes 0.03% NE improvement through its expressive
+cross-dimensional compression while maintaining QPS
+neutrality. Sliding Window Attention provides substan-
+tial efficiency gains, including 31.1% QPS improvement
+and 29.5% FLOPs reduction, while preserving model
+quality. This confirms the strong locality bias in recom-
+mendation sequences.
+9
+
+Table 1 Ablation study on Kunlun components. We report the impact of removing each component on MFU, QPS, NE, and
+GFLOPs. ∆QPS (negative means worse), ∆NE (positive means worse), and ∆GFLOPs are relative to full Kunlun model .
+Category
+Configuration
+MFU (%)
+∆QPS (%)
+∆NE (%)
+∆GFLOPs
+Low-Level (RQ2)
+w/o GDPA
+34.0%
+-8%
++0.04%
+Neutral
+w/o HSP (use PMA)
+30.21%
++8.8%
++0.08%
+-25%
+w/o SumKronLinear
+34.55%
+Neutral
++0.03%
+-7.5%
+w/o Sliding Window
+32.90%
+-31.1%
+Neutral
++29.5%
+High-Level (RQ3)
+w/o CompSkip
+34.50%
+-35%
+Neutral
++43.1%
+w/o Event Personalization
+35.7%
+-13%
+-0.02%
++11%
+w/o Expert Parallelism
+35.5%
+-4%
+Neutral
+Neutral
+Full Model
+Kunlun (Full)
+37.0%
+Baseline
+Baseline
+154.9
+MFU measured on NVIDIA B200 GPUs. All experiments use identical hardware and training configurations.
+High-Level Computation Reallocation (RQ3). CompSkip
+delivers the largest efficiency gains, achieving 43.1%
+FLOPs reduction and 35% QPS improvement through
+the every-other-layer pattern while maintaining NE
+neutrality. This validates layer redundancy in deep
+recommendation models. Event-level Personalization
+provides 13% QPS improvement and 11% FLOPs re-
+duction by allocating resources proportional to event
+importance. Expert Parallelism contributes 4% QPS
+improvement through distributed computation while
+maintaining both NE and FLOPs neutrality, demon-
+strating effective communication-computation overlap.
+5.4
+Scaling Law Analysis
+Scaling Efficiency Comparison. Kunlun achieves 2× scal-
+ingefficiencyoverstate-of-the-artapproaches—doubling
+the rate at which performance improves with additional
+compute compared to InterFormer.
+Scaling Law Curves. Figure 4 (left) shows NE improve-
+ment as a function of Total Compute (GFLOPs) for dif-
+ferent architectures. Kunlun exhibits predictable power-
+law scaling behavior consistent with Equation 2, with
+the scaling coefficient approximately 2× larger than In-
+terFormer. This predictability enables reliable extrapo-
+lation for resource planning and architectural decisions.
+Model Scaling. We evaluate vertical scaling by vary-
+ing the number of layers from 1 to 6.
+Each addi-
+tional layer provides consistent NE gains following
+the logarithmic pattern in Equation 2, validating our
+multi-layer architecture design. Specifically, we observe
+that NE improvement from layer l to l + 1 follows
+∆NEl ≈c/ log(l + 1), confirming diminishing but pre-
+dictable returns (see Figure 4 (right)).
+5.5
+Production Deployment Results (RQ4)
+Kunlun has been deployed across major Meta Ads mod-
+els, delivering a 1.2% improvement in topline metrics
+50
+100
+150
+200
+GFLOPs
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+1.2
+NE Gains (%)
+baseline
++0.30%
++0.45%
++0.61%
++0.80%
++0.16%
++0.25%
++0.33%
++0.44%
+Kunlun
+InterFormer
+1L
+2L
+3L
+4L
+5L
+6L
+Number of Layers
+0.0
+0.1
+0.2
+0.3
+0.4
+NE Gains (%)
+0%
+45 GFLOPs
+0.10%
+59
+0.16%
+99
+0.24%
+114
+0.31%
+154.9
+0.37%
+169
+Kunlun
+Baseline
+Figure 4 (Left) Scaling law curves showing NE improvement
+vs. Total Compute. Kunlun achieves steeper scaling (2×
+efficiency over state-of-the-art) with predictable power-law
+behavior. (Right) NE improvement as a function of number
+of layers (1-6). Each additional layer provides diminishing
+but predictable returns following logarithmic scaling.
+and demonstrating superior ROI at scale compared to
+state-of-the-art architectures.
+6
+Conclusion
+We present Kunlun, a unified architecture that estab-
+lishes predictable scaling laws for massive-scale recom-
+mendation systems through systematic model-efficiency
+codesign.
+By addressing computational inefficiency
+through low-level module optimization (GDPA, HSP,
+Sliding Window Attention) and suboptimal computa-
+tion allocation through high-level reallocation (Comp-
+Skip, Event Personalization, Expert Parallelism), Kun-
+lun achieves superior NE gains and 2X scaling effi-
+ciency over state-of-the-art approaches. The architec-
+ture demonstrates strong generalization across diverse
+recommendation scenarios and has been successfully
+deployed at major Meta Ads models with significant on-
+line impact. Our work provides a principled framework
+for scaling recommendation systems to unprecedented
+scales while maintaining computational efficiency, open-
+ing new possibilities for future exploration in unified
+modeling of heterogeneous features.
+10
+
+References
+Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah,
+Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan,
+Pranav Shyam, Girish Sastry, Amanda Askell, et al. Lan-
+guage models are few-shot learners. Advances in Neural
+Information Processing Systems, 33:1877–1901, 2020.
+Zheng Chai, Qin Ren, Xijun Xiao, Huizhi Yang, Bo Han,
+Sijun Zhang, Di Chen, Hui Lu, Wenlin Zhao, Lele Yu, et al.
+Longer: Scaling up long sequence modeling in industrial
+recommenders. In Proceedings of the Nineteenth ACM
+Conference on Recommender Systems, pages 247–256,
+2025.
+Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal
+Shaked, Tushar Chandra, Hrishi Aradhye, Glen Anderson,
+Greg Corrado, Wei Chai, Mustafa Ispir, et al. Wide &
+deep learning for recommender systems. In Proceedings
+of the 1st Workshop on Deep Learning for Recommender
+Systems, pages 7–10, 2016.
+Aakanksha Chowdhery, Sharan Narang, Jacob Devlin,
+Maarten Bosma, Gaurav Mishra, Adam Roberts, Paul
+Barham, Hyung Won Chung, Charles Sutton, Sebas-
+tian Gehrmann, Parker Schuh, Kensen Shi, Sasha
+Tsvyashchenko, Joshua Maynez, Abhishek Rao, Parker
+Barnes, Yi Tay, Noam Shazeer, Vinodkumar Prabhakaran,
+Emily Reif, Nan Du, Ben Hutchinson, Reiner Pope, James
+Bradbury, Jacob Austin, Michael Isard, Guy Gur-Ari,
+Pengcheng Yin, Toju Duke, Anselm Levskaya, Sanjay
+Ghemawat, Sunipa Dev, Henryk Michalewski, Xavier
+Garcia, Vedant Misra, Kevin Robinson, Liam Fedus,
+Denny Zhou, Daphne Ippolito, David Luan, Hyeontaek
+Lim, Barret Zoph, Alexander Spiridonov, Ryan Sepassi,
+David Dohan, Shivani Agrawal, Mark Omernick, An-
+drew M. Dai, Thanumalayan Sankaranarayana Pillai,
+Marie Pellat, Aitor Lewkowycz, Erica Moreira, Rewon
+Child, Oleksandr Polozov, Katherine Lee, Zongwei Zhou,
+Xuezhi Wang, Brennan Saeta, Mark Diaz, Orhan Fi-
+rat, Michele Catasta, Jason Wei, Kathy Meier-Hellstern,
+Douglas Eck, Jeff Dean, Slav Petrov, and Noah Fiedel.
+Palm: Scaling language modeling with pathways. CoRR,
+abs/2204.02311, 2022. doi: 10.48550/ARXIV.2204.02311.
+https://doi.org/10.48550/arXiv.2204.02311.
+Tri Dao, Daniel Y Fu, Stefano Ermon, Atri Rudra, and
+Christopher Ré.
+Flashattention:
+Fast and memory-
+efficient exact attention with io-awareness. In Advances
+in Neural Information Processing Systems, volume 35,
+pages 16344–16359, 2022.
+Huifeng Guo, Ruiming Tang, Yunming Ye, Zhenguo Li, and
+Xiuqiang He. Deepfm: A factorization-machine based
+neural network for ctr prediction. In Proceedings of the
+Twenty-Sixth International Joint Conference on Artificial
+Intelligence (IJCAI-17), pages 1725–1731, 2017.
+Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang,
+Xiang Li, Chi Ma, Mincong Huang, Xiaoguang Li, Chun-
+zhen Jing, et al. Mtgr: Industrial-scale generative recom-
+mendation framework in meituan. In Proceedings of the
+34th ACM International Conference on Information and
+Knowledge Management, pages 5731–5738, 2025.
+Xinran He, Junfeng Pan, Ou Jin, Tianbing Xu, Bo Liu, Tao
+Xu, Yanxin Shi, Antoine Atallah, Ralf Herbrich, Stuart
+Bowers, et al. Practical lessons from predicting clicks on
+ads at facebook. In Proceedings of the eighth international
+workshop on data mining for online advertising, pages
+1–9, 2014.
+Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch,
+Elena Buchatskaya, Trevor Cai, Eliza Rutherford, Diego
+de Las Casas, Lisa Anne Hendricks, Johannes Welbl,
+Aidan Clark, et al. Training compute-optimal large lan-
+guage models. arXiv preprint arXiv:2203.15556, 2022.
+Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B
+Brown, Benjamin Chess, Rewon Child, Scott Gray, Alec
+Radford, Jeffrey Wu, and Dario Amodei. Scaling laws for
+neural language models. arXiv preprint arXiv:2001.08361,
+2020.
+Nikita Kitaev, Łukasz Kaiser, and Anselm Levskaya. Re-
+former: The efficient transformer. In International Con-
+ference on Learning Representations, 2020.
+Jianxun Lian, Xiaohuan Zhou, Fuzheng Zhang, Zhongxia
+Chen, Xing Xie, and Guangzhong Sun. xdeepfm: Com-
+bining explicit and implicit feature interactions for rec-
+ommender systems.
+In Proceedings of the 24th ACM
+SIGKDD International Conference on Knowledge Discov-
+ery & Data Mining, pages 1754–1763, 2018.
+Xin Men, Mingyu Xu, Qingyu Zhang, Bingning Wang,
+Hongyu Lin, Yaojie Lu, Xianpei Han, and Weipeng Chen.
+Shortgpt: Layers in large language models are more redun-
+dant than you expect. arXiv preprint arXiv:2406.15786,
+2024.
+Paulius Micikevicius, Sharan Narang, Jonah Alben, Gre-
+gory Diamos, Erich Elsen, David Garcia, Boris Ginsburg,
+Michael Houston, Oleksii Kuchaiev, Ganesh Venkatesh,
+et al. Mixed precision training. In International Confer-
+ence on Learning Representations, 2018.
+Steffen Rendle. Factorization machines. 2010 IEEE In-
+ternational Conference on Data Mining, pages 995–1000,
+2010.
+Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar,
+Pradeep Ramani, and Tri Dao. Flashattention-3: Fast
+and accurate attention with asynchrony and low-precision.
+Advances in Neural Information Processing Systems, 37:
+68658–68685, 2024.
+Jianlin Su, Yu Lu, Shengfeng Pan, Ahmed Murtadha,
+Bo Wen, and Yunfeng Liu. Roformer: Enhanced trans-
+former with rotary position embedding. Neurocomputing,
+568:127063, 2024.
+Gemma
+Team,
+Morgane
+Riviere,
+Shreya
+Pathak,
+Pier Giuseppe Sber,
+James Bber,
+Alexandre Cha-
+bal, Diego Baldassarre, et al.
+Gemma 2: Improving
+open language models at a practical size. arXiv preprint
+arXiv:2408.00118, 2024.
+11
+
+Philippe Tillet, Hsiang-Tsung Kung, and David Cox. Triton:
+An intermediate language and compiler for tiled neural
+network computations. In Proceedings of the 3rd ACM
+SIGPLAN International Workshop on Machine Learning
+and Programming Languages, 2019.
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszko-
+reit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and
+Illia Polosukhin. Attention is all you need. Advances in
+Neural Information Processing Systems, 30, 2017.
+Ruoxi Wang, Rakesh Shivanna, Derek Cheng, Sagar Jain,
+Dong Lin, Lichan Hong, and Ed Chi. Dcn v2: Improved
+deep & cross network and practical lessons for web-scale
+learning to rank systems. Proceedings of the Web Confer-
+ence 2021, pages 1785–1797, 2021.
+Songpei Xu, Shijia Wang, Da Guo, Xianwen Guo, Qiang
+Xiao, Bin Huang, Guanlin Wu, and Chuanjiang Luo.
+Climber: Toward efficient scaling laws for large recom-
+mendation models.
+In Proceedings of the 34th ACM
+International Conference on Information and Knowledge
+Management, pages 6193–6200, 2025.
+Zhichen Zeng, Xiaolong Liu, Mengyue Hang, Xiaoyi Liu,
+Qinghai Zhou, Chaofei Yang, Yiqun Liu, Yichen Ruan,
+Laming Chen, Yuxin Chen, et al.
+Interformer:
+To-
+wards effective heterogeneous interaction learning for click-
+through rate prediction. arXiv preprint arXiv:2411.09852,
+2024.
+Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Tong, Wen Ke,
+Yinghai Ma, Ming Zhang, Jingya Zha, Jian Sun, Shuo
+Wang, Chi Zhang, Wei Xu, Tingting Wang, Yu Feng,
+Yang Ye, Jie Chen, Shuanglong Xie, Xunhong Wang,
+Jiliang Chen, Tianlei Zhu, Jiefu Li, Yutong Hu, Jianping
+Xiong, Yanmin Zhang, Yiting Zhao, Qinghua Liu, Yuejia
+Xie, and Zezhong Wu. Actions speak louder than words:
+Trillion-parameter sequential transducers for generative
+recommendations. In Proceedings of the 41st International
+Conference on Machine Learning (ICML), 2024.
+Buyun Zhang, Liang Luo, Xing Liu, Jiayi Li, Yihu Chen,
+Wenlin Zhang, Chi Zhang, Liang Chen, Jinchen Wang,
+Yongkang Yang, et al. Wukong: Towards a scaling law for
+large-scale recommendation. In Proceedings of the 31st
+ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining, 2024.
+Zhaoqi Zhang, Haolei Pei, Jun Guo, Tianyu Wang, Yufei
+Feng, Hui Sun, Shaowei Liu, and Aixin Sun.
+One-
+trans: Unified feature interaction and sequence modeling
+with one transformer in industrial recommender. arXiv
+preprint arXiv:2510.26104, 2025.
+Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han
+Zhu, Xiao Ma, Yanghui Yan, Junqi Jin, Han Li, and
+Kun Gai. Deep interest network for click-through rate
+prediction. In Proceedings of the 24th ACM SIGKDD
+International Conference on Knowledge Discovery & Data
+Mining, pages 1059–1068, 2018.
+Guorui Zhou, Na Mou, Ying Fan, Qi Pi, Weijie Bian, Chang
+Zhou, Xiaoqiang Zhu, and Kun Gai. Deep interest evolu-
+tion network for click-through rate prediction. In Proceed-
+ings of the AAAI Conference on Artificial Intelligence,
+volume 33, pages 5941–5948, 2019.
+Jie Zhu, Zhifang Fan, Xiaoxie Zhu, Yuchen Jiang, Hangyu
+Wang, Xintian Han, Haoran Ding, Xinmin Wang, Wenlin
+Zhao, Zhen Gong, et al. Rankmixer: Scaling up ranking
+models in industrial recommenders. In Proceedings of the
+34th ACM International Conference on Information and
+Knowledge Management, pages 6309–6316, 2025.
+12
+
+Appendix
+A
+Evaluation Metrics Details
+A.1
+Normalized Entropy (NE)
+NE is defined as the ratio of model cross-entropy loss
+to background entropy:
+NE = L(y, ˆy)
+H(p)
+(12)
+where the cross-entropy loss is:
+L(y, ˆy) = −1
+N
+N
+X
+i=1
+[yi log(ˆyi) + (1 −yi) log(1 −ˆyi)]
+(13)
+and the background entropy H(p) = −p log(p) −(1 −
+p) log(1 −p) represents the entropy of predicting using
+only the empirical CTR p = 1
+N
+PN
+i=1 yi.
+Properties. (1) Range: NE ∈[0, +∞), with perfect
+models achieving NE = 0 and baseline models achieving
+NE = 1. (2) Data-Insensitivity: Normalization by H(p)
+enables comparison across datasets with different CTR
+distributions. (3) Calibration Sensitivity: Unlike AUC,
+NE penalizes miscalibrated predictions.
+Why NE over AUC? In production systems, calibration is
+critical because predicted probabilities are used directly
+in auction mechanisms, budget pacing, and revenue
+optimization.
+A.2
+Model FLOPs Utilization (MFU)
+MFU measures hardware utilization efficiency:
+MFU =
+Model FLOPs × Throughput
+GPU Peak TFLOPS × Num GPUs
+(14)
+Low MFU (<20%) indicates memory-bound operations;
+high MFU (>40%) indicates compute-bound opera-
+tions that effectively utilize GPU resources. In this
+paper, MFU is measured on a single GPU and re-
+flects only the model architecture’s intrinsic GPU effi-
+ciency,independent of system-level overheads.
+B
+Feature Preprocessing Details
+Before entering the first layer, the raw features are
+transformed into unified embeddings that the model
+can process.
+B.1
+Non-Sequence Feature Preprocessing
+Non-sequence features consist of two types:
+Dense Features (x(0)
+dense): Continuous values such as
+user age, item price, and temporal context (time-
+of-day, day-of-week).
+Raw dense features x(0)
+densei
+are concatenated to form a dense vector x(0)
+dense =
+h
+x(0)
+dense1, . . . , x(0)
+densem
+i⊤
+∈Rm, which is transformed
+into a d-dimensional embedding via linear projection:
+x(1)
+dense = Wdensex(0)
+dense ∈Rd,
+(15)
+where Wdense ∈Rd×m is a learnable projection ma-
+trix and the superscript (1) denotes the output after
+preprocessing (layer 1 input).
+Sparse Features (x(0)
+sparsei): Categorical values such as
+user id, item category, and location. Each sparse fea-
+ture is first encoded as a one-hot vector x(0)
+sparsei ∈Rnvi ,
+where nvi is the vocabulary size of the i-th sparse fea-
+ture, then embedded via:
+x(1)
+sparsei = Wsparseix(0)
+sparsei ∈Rd,
+(16)
+where Wsparsei ∈Rd×nvi is a learnable embedding ma-
+trix.
+By concatenating the dense and sparse embeddings, we
+obtain the unified non-sequence representation:
+X(1) =
+h
+x(1)
+dense; x(1)
+sparse1; . . . ; x(1)
+sparsen
+i
+∈R(n+1)×d,
+(17)
+where ; denotes concatenation along the feature di-
+mension. This unified representation contains (n + 1)
+features, each represented as a d-dimensional vector.
+B.2
+Sequence Feature Preprocessing
+Sequence features capture dynamic user interests
+through interaction history. Each interacted item in the
+sequence is embedded as a d-dimensional vector s(0)
+t ,
+and sequences are represented as:
+S(0) =
+h
+s(0)
+1 ; . . . ; s(0)
+T
+i
+∈RT ×d,
+(18)
+where T is the sequence length.
+Multi-Sequence Integration. Real-world systems often
+contain multiple sequences from different event types
+(clicks, conversions, impressions) or platforms. To unify
+these heterogeneous sequences and filter internal noise,
+we employ an MLP. Given k sequences S(0)
+1 , · · · , S(0)
+k ,
+they are first concatenated along the embedding dimen-
+sion to form
+h
+S(0)
+1 ; · · · ; S(0)
+k
+i
+∈RT ×kd, then processed
+via:
+MLPlce(S),
+(19)
+where MLPlce : RT ×kd →RT ×d linearly combines
+multiple sequences into a single unified representation
+matching the dimensionality of non-sequence features.
+13
+
+Algorithm 1 Kunlun Layer Forward
+Require: X(l), S(l), Hprev, layer config
+Ensure: X(l+1), S(l+1), Hcurr
+1: // Kunlun Interaction Block
+2: W(l) ←WeightGen(Summarize(X(l)))
+3: if not skip_hsp then
+4:
+Hcurr ←HSP(S(l)) {Alg. 2}
+5: else
+6:
+Hcurr ←Hprev
+7: end if
+8: X(l+1) ←GlobalInteraction([X(l)|Hcurr])
+9: // Kunlun Transformer Block
+10: if not skip_pffn then
+11:
+˜S ←GDPA(S(l), W(l)) + S(l) {Alg. 3}
+12: else
+13:
+˜S ←S(l)
+14: end if
+15: if not skip_self_attention then
+16:
+S(l+1) ←SlidingWindowMHA(˜S) + ˜S
+17: else
+18:
+S(l+1) ←˜S
+19: end if
+20: return X(l+1), S(l+1), Hcurr
+Algorithm 2 Hierarchical Seed Pooling (HSP)
+Require: S ∈RB×T ×d, seeds ns, tokens nt
+Ensure: H ∈RB×nt×d
+1: E ←LearnableSeeds(ns, d)
+2: Hs ←MHA(Norm(E), S, S) {Seed attention}
+3: H ←Pk
+i=1 Z⊤
+i HsWi {SumKronLinear}
+4: return H
+Rotary Temporal Embeddings (ROTE). A key innovation
+in Kunlun is extending Rotary Position Embeddings
+(RoPE) (Su et al., 2024) to Rotary Temporal Embed-
+dings (ROTE) for recommendation sequences. Unlike
+LLMs where token position is the primary ordering
+signal, recommendation sequences exhibit temporal pat-
+terns where the time gap between events carries crucial
+information—a click from yesterday is fundamentally
+different from a click from last month, even if they
+occupy adjacent positions. ROTE computes timestamp
+gaps between consecutive events and applies log-scale
+encoding to handle the wide range of temporal inter-
+vals (from seconds to months). These log-transformed
+timestamp gaps are incorporated into the rotary embed-
+dings, enabling the model to distinguish not only the
+sequential order of interactions but also their temporal
+proximity—critical for understanding whether behav-
+iors represent recent interests or historical patterns.
+Specifically, for position t with timestamp gap ∆t, we
+apply log-scale encoding τt = log(1 + ∆t/τscale) and
+incorporate it into rotary embeddings:
+ROTE(x, t, τt) = Rt,τtx
+(20)
+where Rt,τt is a block-diagonal rotation matrix with
+elements cos(tθi +τtϕi) and sin(tθi +τtϕi) for frequency
+parameters θi, ϕi.
+C
+Algorithm Details
+C.1
+Overview
+This section provides the complete algorithmic descrip-
+tions of the key components in Kunlun. We present four
+algorithms: (1) the main layer forward pass, (2) Hierar-
+chical Seed Pooling (HSP), (3) Generalized Dot-Product
+Attention (GDPA), and (4) CompSkip configuration
+generation.
+C.2
+Kunlun Forward Pass
+Algorithm 1 describes the forward pass for a single
+Kunlun layer. Each layer processes both non-sequence
+features X(l) and sequence features S(l), producing re-
+fined representations for the next layer. The algorithm
+incorporates CompSkip logic, which conditionally skips
+certain computations (HSP, PFFN, or self-attention)
+based on the layer configuration to reduce computa-
+tional cost while maintaining model quality.
+C.3
+Hierarchical Seed Pooling (HSP)
+Algorithm 2 describes the Hierarchical Seed Pooling
+mechanism for sequence summarization.
+HSP com-
+presses long sequences into compact representations
+through three stages: (1) initializing learnable seed
+embeddings that are shared across the batch, (2) com-
+puting seed-level attention where seeds attend to the
+full sequence, and (3) applying SumKronLinear com-
+pression to reduce seeds to the final output tokens. This
+hierarchical approach provides better initialization and
+more stable training compared to traditional random
+query-based pooling methods.
+C.4
+Generalized
+Dot-Product
+Attention
+(GDPA)
+Algorithm 3 presents the GDPA mechanism that re-
+formulates the traditional Personalized FeedForward
+Network (PFFN) as an attention-like operation. The
+key insight is that sequence transformation guided by
+non-sequence context can be viewed as cross-attention,
+where sequence tokens serve as queries and the non-
+sequence context generates keys and values through
+learnable projections. Each head can use a different
+14
+
+Table 2 Time complexity per layer. T: sequence length, N:
+non-sequence features, d: embedding dim, w: window size,
+M: experts.
+Component
+Complexity
+GDPA
+O(T · N · d)
+Sliding Window Attention
+O(T · w · d)
+Full Self-Attention
+O(T 2 · d)
+HSP
+O(ns · T · d)
+Global Interaction
+O(M · (N + nt)2 · d)
+activation function (Acth), providing ensemble diver-
+sity. This reformulation converts memory-bound op-
+erations into compute-bound matrix multiplications,
+significantly improving MFU.
+Algorithm 3 Generalized Dot-Product Attention
+(GDPA)
+Require: S ∈RB×T ×d, Xsum ∈RB×n×d
+Ensure: S′ ∈RB×T ×d
+1: for h = 1 to H do
+2:
+Kh, Vh ←w(h)
+1 (Xsum), w(h)
+2 (Xsum)
+3:
+Qh ←WQ
+h S
+4:
+Oh ←Acth(QhK⊤
+h /τ)Vh
+5: end for
+6: S′ ←WO[O1| . . . |OH]
+7: return S′
+C.5
+CompSkip Configuration
+Algorithm 4 generates the CompSkip configuration for
+a model with L layers. The every-other-layer pattern
+alternates between two configurations: even layers (0, 2,
+4, ...) skip self-attention but compute fresh HSP sum-
+maries, while odd layers (1, 3, 5, ...) skip HSP (reusing
+summaries from the previous layer) and PFFN but
+compute self-attention. This design ensures that each
+layer contributes either local refinement (self-attention)
+or global summarization (HSP), maintaining model ex-
+pressiveness while significantly reducing computation.
+Algorithm 4 CompSkip Configuration
+Require: Number of layers L
+Ensure: Layer configurations
+1: for l = 0 to L −1 do
+2:
+if l is even then
+3:
+skip_self_attention ←True
+4:
+skip_hsp ←False
+5:
+else
+6:
+skip_self_attention ←False
+7:
+skip_hsp ←True
+8:
+skip_pffn ←True
+9:
+end if
+10: end for
+C.6
+Complexity Analysis
+Table 2 summarizes the computational complexity of
+each component.
+CompSkip Savings. The every-other-layer pattern re-
+duces self-attention, HSP, and PFFN FLOPs each by
+∼50%, achieving 43.1% total FLOPs reduction.
+D
+Multi-Layer Architecture and Infor-
+mation Flow Details
+Layer Stacking. Kunlun stacks L layers, where each layer
+l ∈{0, . . . , L −1} consists of two main blocks that
+process sequential and non-sequential features through
+systematic interaction:
+Kunlun Transformer Block. Context-aware sequence
+modeling:
+S(l+1) = MHA(GDPA(W(l), S(l))),
+(21)
+where GDPA-enhanced PFFN first performs personal-
+ized sequence transformation using personalized weights
+W(l) generated from non-sequence features, followed
+by Multi-Head Self-Attention (MHA) to capture depen-
+dencies within the sequence itself. This block outputs
+refined sequence representations S(l+1).
+Kunlun Interaction Block.
+Cross-modal interaction
+learning through three modules:
+First, the Weight Generation module derives personal-
+ized transformation weights from non-sequence features
+for the next layer’s GDPA:
+W(l+1) = WeightGen(X(l)
+sum),
+(22)
+where X(l)
+sum are summarized non-sequence features.
+While this module feeds into the Kunlun Transformer
+Block, it is conceptually part of the Kunlun Interac-
+tion Block as it represents information flow from non-
+sequence to sequence features—a key bidirectional in-
+teraction mechanism.
+Second, the HSP module produces compact sequence
+summaries:
+[S(l+1)
+CLS , S(l+1)
+HSP , S(l+1)
+recent] = HSP(S(l+1)),
+(23)
+where three types of summaries are produced: CLS
+tokens learned through attention, HSP tokens through
+hierarchical seed-based compression, and recent tokens
+capturing immediate temporal context.
+15
+
+Third, the Global Interaction module processes both
+non-sequence features and sequence summaries through
+a mixture of Wukong experts:
+X(l+1) = GlobalInteraction([X(l)|S(l+1)
+CLS |S(l+1)
+HSP |S(l+1)
+recent]),
+(24)
+where sequence summaries are concatenated with non-
+sequence features, and multiple Wukong experts pro-
+cess different feature partitions concurrently to learn
+rich cross-modal interactions. The summarized non-
+sequence output X(l+1)
+sum
+is then used by the Weight
+Generation module for the next layer.
+Bidirectional Information Flow. The architecture main-
+tains bidirectional information exchange between se-
+quential and non-sequential modalities, extending the
+interaction paradigm established in prior joint model-
+ing work (Zeng et al., 2024): (1) non-sequence features
+guide sequence modeling through the Weight Gener-
+ation module that produces personalized weights for
+GDPA in the Kunlun Transformer Block (Eq.22 and
+21), and (2) sequence summaries inform non-sequence
+interaction through concatenation in the Global Interac-
+tion module (Eq.24). This enables mutually beneficial
+learning where both modalities progressively refine each
+other across layers. Kunlun maintains these bidirectional
+properties while amplifying their effectiveness through
+the efficiency optimizations described in Sections 4.3
+and 4.4.
+Hierarchical Learning. Vertical layer stacking enables
+hierarchical feature learning at progressively higher lev-
+els of abstraction, a property also observed in prior
+work (Zeng et al., 2024) that Kunlun preserves and ex-
+tends: Layer 0 learns basic patterns (e.g., single feature
+importance and local sequence dependencies), Layer
+1 captures pairwise interactions (e.g., user-item affin-
+ity conditioned on recent behavior), and deeper layers
+model high-order dependencies (e.g., complex sequen-
+tial patterns conditioned on global user context and
+multi-feature interactions). Each layer operates on in-
+creasingly refined representations from the previous
+layer, with the Kunlun Transformer Block extracting
+richer sequence representations and the Kunlun Inter-
+action Block learning more sophisticated cross-modal
+interactions.
+Scaling Properties. The architecture demonstrates pre-
+dictable scaling behavior along both vertical (depth)
+and horizontal (width) dimensions. Adding more lay-
+ers consistently improves NE with diminishing returns
+following a logarithmic pattern, enabling optimal layer
+depth selection based on compute budget. Specifically,
+we observe that NE improvement from layer l to l + 1
+follows ∆NEl ≈c/ log(l + 1) where c is a constant,
+validating the power-law relationship described in Sec-
+tion 3.3. Similarly, increasing the number of Wukong
+experts within each Global Interaction module (hori-
+zontal scaling) provides predictable performance gains
+that follow power-law scaling.
+Final Prediction. After L layers, the final non-sequence
+representation X(L) from the Global Interaction module
+is fed into task-specific heads for CTR prediction:
+ˆy = σ(MLP(X(L))),
+(25)
+where MLP is a multi-layer perceptron and σ is the sig-
+moid function producing click probability. The stacked
+architecture ensures that X(L) encodes both rich feature
+interactions learned through the mixture of Wukong
+experts and comprehensive sequential patterns cap-
+tured through bidirectional interaction with the Kunlun
+Transformer Blocks.
+E
+Architecture Comparison Details
+Table 3 provides detailed numerical results for the archi-
+tecture comparison experiments described in Section 5.
+We evaluate four architectures at three computational
+scales (approximately 6, 60, and 180 GFLOPs per sam-
+ple) to assess scaling behavior. All experiments use
+identical training configurations, including the same
+dataset, batch size, and optimizer settings.
+Baselines. Wukong (Zhang et al., 2024) serves as the
+baseline, representing scalable non-sequential feature
+interaction. Wukong + PMA extends Wukong with
+Pooling by Multihead Attention for basic sequence sum-
+marization. InterFormer (Zeng et al., 2024) represents
+the state-of-the-art for joint sequence-nonsequence mod-
+eling with bidirectional information flow.
+Key Observations. At small scale (6 GFLOPs), Kunlun
+and InterFormer achieve comparable NE gains (0.31%)
+over Wukong, both significantly outperforming Wukong
++ PMA (0.16%). However, as computational budget
+increases, Kunlun demonstrates superior scaling: at 180
+GFLOPs, Kunlun achieves 0.79% NE gain compared to
+InterFormer’s 0.50%, representing a 1.58× advantage.
+Notably, Kunlun achieves this superior performance with
+lower FLOPs (154.9 vs.
+172.3 GFLOPs at the 180
+GFLOPs scale), demonstrating both better algorithmic
+effectiveness and computational efficiency.
+F
+GDPA and Fused PFFN Kernel
+The GDPA reformulation exposes a unified attention-
+style computation pattern shared by multiple interac-
+tion modules used in production recommender systems,
+including self-attention, PMA, and PFFN. This uni-
+fied view enables the design of a single, fully fused
+kernel that replaces the fragmented two-layer MLP and
+16
+
+Table 3 Comparison of different architectures at various computational scales (6 GFLOPs, 60 GFLOPs, 180 GFLOPs
+baseline compute) with Wukong as the baseline. We report NE Gains (%) as the absolute NE improvement compared to
+Wukong, where lower NE indicates better model performance. Larger values indicate greater improvement. Kunlun achieves
+consistently larger NE gains across all scales with superior scaling efficiency.
+Method
+6 GFLOPs Scale
+60 GFLOPs Scale
+180 GFLOPs Scale
+NE Gains (%)
+GFLOPs
+NE Gains (%)
+GFLOPs
+NE Gains (%)
+GFLOPs
+Wukong (Zhang et al., 2024)
+Baseline
+7.3
+Baseline
+57
+Baseline
+174.5
+Wukong + PMA
+0.16%
+6.1
+0.11%
+59.1
+0.20%
+187.1
+InterFormer (Zeng et al., 2024)
+0.31%
+5.7
+0.36%
+57
+0.50%
+172.3
+Kunlun (Ours)
+0.31%
+5.8
+0.66%
+59.6
+0.79%
+154.9
+intermediate activations in PFFN. Inspired by recent
+FlashAttention kernels, our implementation adopts a
+memory-efficient, block-wise execution strategy that
+avoids materializing large intermediate attention ten-
+sors in both the forward and backward passes.
+Unlike LLM-oriented attention kernels, which are typ-
+ically optimized for long and dense sequences, GDPA
+kernels must efficiently handle real-world recommender
+workloads characterized by short and asymmetric key/-
+value dimensions, large batch sizes, and jagged inputs
+with variable sequence lengths. These properties signif-
+icantly reduce pipeline occupancy and limit compute–
+memory overlap when using existing attention ker-
+nels. To address this mismatch, we redesign the kernel
+pipeline by removing softmax-specific stages, simplify-
+ing warp specialization, and folding epilogue operations
+into the activation stage, thereby reducing warp count
+and freeing register resources for computation-critical
+warps.
+Short K/V sequences pose an additional challenge
+for persistent attention kernels, as inner-loop software
+pipelining becomes ineffective when the loop executes
+only a few iterations.
+We therefore restructure the
+loop nest and apply software pipelining at the outer-
+loop level, enabling overlap across iterations even when
+K/V lengths are small. For jagged inputs, we further
+introduce software-level tile scheduling based on pre-
+computed sequence-length metadata, eliminating empty
+tiles and mitigating persistent SM imbalance caused
+by highly variable workloads. This scheduling strategy
+is applied consistently to both forward and backward
+passes, with appropriate adaptations to their respective
+loop structures.
+Finally, we optimize activation computation to better
+match GPU execution characteristics. Since GDPA
+replaces softmax with element-wise activations, kernels
+can become SFU-bound under production workloads.
+We alleviate this bottleneck by rebalancing transcen-
+dental computation toward ALU-dominated approxima-
+tions and by tightly integrating activation evaluation
+into the fused kernel pipeline. Together, these design
+choices enable a fully fused GDPA-based PFFN kernel
+that sustains high utilization under irregular, real-world
+training workloads.
+17

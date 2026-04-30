@@ -1,0 +1,1774 @@
+Vectorizing the Trie: Efficient Constrained Decoding for
+LLM-based Generative Retrieval on Accelerators
+Zhengyang Su∗
+YouTube
+Mountain View, CA, USA
+susteven@google.com
+Isay Katsman∗†
+Yale University
+New Haven, CT, USA
+isay.katsman@yale.edu
+Yueqi Wang∗
+YouTube
+New York, NY, USA
+yueqiw@google.com
+Ruining He
+Google DeepMind
+Mountain View, CA, USA
+ruininghe@google.com
+Lukasz Heldt
+YouTube
+Mountain View, CA, USA
+heldt@google.com
+Raghunandan
+Keshavan
+YouTube
+Mountain View, CA, USA
+hkraghunandan@google.com
+Shao-Chuan Wang
+Google DeepMind
+Mountain View, CA, USA
+scwang@google.com
+Xinyang Yi
+Google DeepMind
+Mountain View, CA, USA
+xinyang@google.com
+Mingyan Gao
+YouTube
+Mountain View, CA, USA
+mingyan@google.com
+Onkar Dalal
+YouTube
+Mountain View, CA, USA
+onkardalal@google.com
+Lichan Hong
+Google DeepMind
+Mountain View, CA, USA
+lichan@google.com
+Ed H. Chi
+Google DeepMind
+Mountain View, CA, USA
+edchi@google.com
+Ningren Han
+YouTube
+Mountain View, CA, USA
+peterhan@google.com
+Abstract
+Generative retrieval has emerged as a powerful paradigm for LLM-
+based recommendation. However, industrial recommender systems
+often benefit from restricting the output space to a constrained sub-
+set of items based on business logic (e.g. enforcing content freshness
+or product category), which standard autoregressive decoding can-
+not natively support. Moreover, existing constrained decoding meth-
+ods that make use of prefix trees (Tries) incur severe latency penal-
+ties on hardware accelerators (TPUs/GPUs). In this work, we intro-
+duce STATIC (Sparse Transition Matrix-Accelerated Trie Index for
+Constrained Decoding), an efficient and scalable constrained decod-
+ing technique designed specifically for high-throughput LLM-based
+generative retrieval on TPUs/GPUs. By flattening the prefix tree
+into a static Compressed Sparse Row (CSR) matrix, we transform
+irregular tree traversals into fully vectorized sparse matrix opera-
+tions, unlocking massive efficiency gains on hardware accelerators.
+We deploy STATIC on a large-scale industrial video recommenda-
+tion platform serving billions of users. STATIC produces significant
+product metric impact with minimal latency overhead (0.033 ms
+per step and 0.25% of inference time), achieving a 948× speedup
+over a CPU trie implementation and a 47–1033× speedup over a
+hardware-accelerated binary-search baseline. Furthermore, the run-
+time overhead of STATIC remains extremely low across a wide
+range of practical configurations. To the best of our knowledge,
+STATIC enables the first production-scale deployment of strictly
+∗These authors contributed equally to this work.
+†This work was performed while the author was participating in the Google Student
+Researcher Program at Google.
+constrained generative retrieval. In addition, evaluation on aca-
+demic benchmarks demonstrates that STATIC can considerably im-
+prove cold-start performance for generative retrieval. Our code is
+available at https://github.com/youtube/static-constraint-decoding.
+CCS Concepts
+• Computing methodologies →Machine learning approaches.
+Keywords
+Generative Retrieval, Constrained Decoding, Semantic ID, Trie,
+Sparse Matrix, TPU, GPU, Recommender Systems, Large Language
+Models.
+1
+Introduction
+Recommender systems have long served as the core discovery en-
+gines powering massive online platforms like YouTube and Ama-
+zon [3, 20]. While neural network techniques continue to improve
+these engines, this domain is undergoing a paradigm shift whereby
+embedding-based neural retrieval models that recommend candi-
+dates through approximate nearest neighbor search such as ScaNN
+[7, 27] are being superseded with LLM-based generative retrieval
+[5, 8, 24, 26, 31, 33]. By representing each item as a sequence of
+discrete tokens (called Semantic IDs or SIDs) and training Trans-
+formers [29] to autoregressively decode the Semantic ID tokens
+of the target items [24], generative retrieval bypasses key limita-
+tions of traditional dual (user, item)-encoders [30] to capture deeper
+semantic relationships. Additionally, it obviates the need for an ex-
+ternal nearest-neighbor indexing infrastructure [24] and allows one
+to adapt pre-trained LLMs for recommendation tasks [8, 21, 33].
+arXiv:2602.22647v1  [cs.IR]  26 Feb 2026
+
+Su et al.
+However, generative retrieval models as they were originally
+designed lack a critical feature: control over the generated output
+space, as required to enforce business logic across a variety of in-
+dustry applications. The absence of this feature has not stopped
+these next generation recommendation models from becoming
+widespread in large-scale industry settings [5, 8, 34, 35], but more
+fine-grained output space control would enable practitioners to
+restrict the output space based on business logic, such as enforcing
+freshness constraints (e.g. “uploaded within the last day”), locality
+(e.g. regional recommendations), product categories (e.g. “recom-
+mend summer clothes”), or inventory availability (e.g. “in stock”
+only). This makes it possible to train a single large model and deploy
+it across multiple use cases.
+In a traditional recommendation setting, business logic is en-
+forced by filtering items post-retrieval or constraining the search
+space a priori (e.g. by running a restricted ScaNN search [7]). If a
+system requires items to be “in stock” or “uploaded within 7 days,” a
+boolean filter simply drops invalid candidates from the retrieved set
+or the ScaNN index. In generative retrieval, however, the “retriever”
+is a probabilistic autoregressive model that synthesizes Semantic
+IDs [24]. Without intervention, an LLM will confidently generate
+SIDs for items that are out-of-stock, stale, or legally restricted. Re-
+lying on post-generation filtering is computationally wasteful; the
+model may spend its entire inference budget generating invalid
+items, resulting in zero valid recommendations.
+To address this issue, constraints must be enforced during the
+LLM decoding process. The standard algorithmic solution is to
+implement constrained decoding with a prefix tree (trie), which
+masks invalid tokens at each step [32]. While conceptually sound,
+we observe that naive pointer-chasing trie-based constraints are
+fundamentally hostile to hardware accelerators for two reasons:
+(1) Memory Latency Pointer-based structures result in non-
+contiguous, random memory access patterns. This prevents
+memory coalescing, failing to utilize the High-Bandwidth
+Memory (HBM) burst capabilities of modern TPUs/GPUs
+[13]. Furthermore, these irregular patterns nullify hardware
+prefetchers designed for linear streaming, leading to severe
+memory-bound latency and stalled execution units.
+(2) Compilation Incompatibility Modern accelerator archi-
+tectures (e.g. Google’s XLA-reliant [25] TPUs) require static
+computation graphs for ML compilation [18]. Naive trie im-
+plementations rely on data-dependent control flow and
+irregular linked structures, which are fundamentally in-
+compatible with this paradigm. While accelerators support
+dynamic indexing into fixed-size buffers (e.g. vectorized
+gather), the irregular memory access and recursive branch-
+ing of pointer-chasing preclude end-to-end ML compilation.
+In our preliminary experiments, a CPU-offloaded trie implemen-
+tation increased inference time by 2×, rendering it unusable for our
+target per-decoding-step latency of ≤10 ms. More sophisticated ex-
+isting approaches utilizing binary search also exhibited significant
+latency penalties [32]. While alternative methods like Finite State
+Transducers (FSTs) are standard in natural language processing,
+they suffer from state explosion when applied to production-scale
+SID vocabularies (e.g. on the order of millions of items) and lack
+native TPU support [17].
+In this work, we introduce STATIC (Sparse Transition Matrix-
+Accelerated Trie Index for Constrained Decoding), a framework
+that recasts constrained decoding from a graph traversal problem
+into a series of vectorized sparse matrix operations. STATIC is de-
+signed to resolve the aforementioned issues and enable extremely
+fast and scalable constrained decoding for generative retrieval. No-
+tably, our I/O complexity1 is 𝑂(1) with respect to constraint set
+size, in contrast with the logarithmic scaling from existing binary
+search-based methods.
+Our contributions are as follows:
+(i) We propose a method to flatten prefix tree-specified con-
+straints into static Compressed Sparse Row (CSR) matrices,
+enabling 𝑂(1) memory access overhead via coalesced reads
+for fast decoding constraint extraction.
+(ii) We design a branch-free decoding algorithm using dynamic
+slicing and mask arithmetic. This makes constrained de-
+coding fully accelerator-native and eliminates host-device
+round-trips, thereby enabling massive efficiency gain.
+(iii) We deploy this system on an ultra-large-scale video rec-
+ommendation platform (YouTube) for multiple product use
+cases. We present one specific setting in which we constrain
+an generative retrieval LLM to a pre-specified vocabulary of
+20 million fresh items, improving key online metrics with
+minimal latency overhead compared to baseline methods.
+(iv) We evaluate the scalability of STATIC and find that its
+latency remains extremely low across a wide range of con-
+straint set and Semantic ID vocabulary sizes.
+(v) We demonstrate how one can use constrained decoding
+to improve cold-start recommendation performance in a
+principled setting using Amazon Reviews [9] datasets.
+2
+Related Work
+In the recommender systems field, the shift from embedding-based
+retrieval [7] to generative retrieval [24] has necessitated the design
+of novel Transformer decoding strategies. Our work lies at the inter-
+section of large-scale generative recommendation [24], constrained
+token generation, and hardware-aware system optimization.
+2.1
+Generative Retrieval and Semantic Indexing
+Generative retrieval (GR) represents a paradigm shift wherein the
+item corpus is internalized within the model parameters, replacing
+the traditional large-scale embedding and nearest neighbor search
+pipeline with a direct sequence generation task [28].
+Recent approaches in this area, specifically TIGER [24], SEATER
+[26], and LIGER [31], utilize Semantic IDs—hierarchical, discrete
+token-based item representations, where semantically similar items
+are optimized to share the same prefix. These generative retrieval
+techniques produce improved results and have been deployed in
+multiple online recommendation platforms, as seen in PLUM [8]
+and OneRec [5, 21, 34, 35]. However, a critical limitation of these
+autoregressive retrieval models is the “validity gap.” Unlike nat-
+ural language generation, where the output space is open-ended,
+retrieval requires the generated string to map perfectly to a valid
+1Unlike traditional time or space complexity, I/O complexity [11] on a TPU evaluates
+algorithmic efficiency by counting the number of costly data block transfers between
+off-chip High Bandwidth Memory (HBM) and on-chip SRAM.
+
+Vectorizing the Trie: Efficient Constrained Decoding for LLM-based Generative Retrieval on Accelerators
+item index. As noted by Rajput et al. [24], without constraints, the
+model effectively “hallucinates” non-existent inventory, leading to
+retrieval failures. This issue is especially pertinent in industry set-
+tings where practitioners deploy the same pre-trained model across
+multiple product environments, each having its own valid corpus,
+with some requiring candidates to fall within a certain regional
+locality or meet certain “freshness” requirements. While previous
+work focuses on improving recall metrics [5, 8, 14, 26, 34], it largely
+ignores the latency costs of enforcing validity constraints in a high-
+throughput production environment; we explicitly address this in
+our paper.
+Additionally, existing generative retrieval papers [31] have noted
+that generative retrieval models struggle with cold-start item rec-
+ommendation: the setting in which a model must recommend items
+it has never before seen during training. We demonstrate in Section
+6 that by implementing constrained decoding with a cold-start item
+set, one can improve cold-start performance significantly.
+2.2
+Constrained Decoding in NLP
+Constrained decoding (CD) has a rich history in NLP. For example,
+NeuroLogic [22] uses search-based heuristics to satisfy complex
+logical predicates, and Synchromesh [23] enforces Context-Free
+Grammars (CFGs) to ensure syntactic correctness in code gener-
+ation. An approach related to our use case is that of Finite State
+Transducers (FSTs), which have long been the standard for con-
+strained speech recognition [17]. However, FSTs suffer from state
+explosion when applied to the unstructured, high-cardinality vo-
+cabularies found in recommendation systems (often 107+ items).
+As observed by Koo et al. [17], while FSTs are powerful, their irreg-
+ularity makes them difficult to parallelize on TPUs/GPUs compared
+to dense matrix operation-based methods.
+2.3
+Hardware-Aware Inference and Acceleration
+The “Memory Wall” remains the primary bottleneck for Large
+Language Model inference. Because autoregressive decoding is
+memory-bandwidth bound, performance is dictated by how fast
+data moves to the chip’s arithmetic units [4].
+Pointer Chasing vs. Coalesced Access. Standard trie imple-
+mentations used in various constrained decoding approaches rely
+on pointer chasing [19]. On modern accelerators (TPUs/GPUs),
+pointer chasing induces random memory access patterns that lead
+to uncoalesced loads and cache thrashing. This is antithetical to the
+design of accelerators, which thrive on static, contiguous memory
+access (as seen in optimizations like FlashAttention [4]).
+Accelerator-Compatible Decoding. The recent paper DISC-
+PPV [32] represents the state-of-the-art in adapting constrained
+decoding to hardware accelerators. The authors implement an on-
+chip validity check using a flattened sorted array and parallelized
+binary search, a method they call Parallel Prefix-Verification (PPV).
+While PPV eliminates the CPU-GPU communication overhead,
+its reliance on binary search introduces an I/O complexity scal-
+ing factor of 𝑂(log |C|) with respect to the constrained item set
+size |C|. In ultra-large vocabularies (e.g. 20 million items), even
+logarithmic scaling becomes an I/O bottleneck. Our introduced
+STATIC approach advances this line of research by replacing the
+𝑂(log |C|) dependent block transfers of PPV with 𝑂(1) vectorized
+sparse matrix operations, fetching all required working sets in a
+single coalesced phase.
+2.4
+Linearized Tree Structures
+The concept of flattening tree structures into array-based repre-
+sentations dates back to the Double-Array Trie [12], originally
+designed to improve memory efficiency for string matching. Simi-
+larly, the GraphBLAS standard [16] posits that graph algorithms
+can be expressed as linear algebra operations over sparse semirings.
+While these concepts are established in theoretical computer
+science, their application to LLM constrained decoding is novel. We
+bridge the gap between these classical data structures and mod-
+ern deep learning compilers (XLA/Inductor). By reformulating trie
+traversal via sparse matrix operations, we enable the use of high-
+performance, ML-compiler-accelerated kernels that maintain the
+parallelism required for real-time recommendation at scale.
+3
+Background
+In this section, we provide the background necessary to understand
+our paper and define the technical terminology central to generative
+retrieval and constrained decoding.
+3.1
+Generative Retrieval and Semantic IDs
+Generative retrieval is a recommendation paradigm wherein a
+model directly predicts target candidate identifiers token-by-token
+rather than through nearest-neighbor search in an embedding space.
+Central to this approach is the concept of the Semantic ID: a dis-
+crete, token-based identifier that captures the semantic properties
+of an item.
+In the TIGER framework [24], Semantic IDs are created using
+a Residual-Quantized Variational AutoEncoder (RQ-VAE). An RQ-
+VAE first encodes item features into a latent vector z, which is
+then iteratively quantized across 𝐿levels. The first-level residual
+is defined as: r1 := z. At each level 𝑑, the residual r𝑑is identified
+with the nearest embedding e𝑦𝑑in a level-specific codebook E𝑑.
+The index 𝑦𝑑becomes the 𝑑-th codeword in the Semantic ID. The
+next-level residual is computed as: r𝑑+1 := r𝑑−e𝑦𝑑.
+This recursive approach allows semantically similar items to
+share prefix tokens, enabling the model to effectively generalize
+across the item space. The final resulting Semantic ID is simply the
+tuple comprised of the embedding indices, i.e. (𝑦1, . . . ,𝑦𝐿).
+3.2
+Autoregressive Decoding via Beam Search
+During inference, the retrieval model autoregressively decodes
+the token sequences of Semantic IDs. To generate target items
+we typically employ beam search [6] over the Semantic ID space
+(although our approach is also compatible with other decoding
+methods). Let V be the vocabulary of semantic tokens and let 𝐿
+be the fixed length of a Semantic ID. At each step 𝑡, the algorithm
+maintains a beam search state S𝑡which tracks the 𝑀most probable
+sequences across a batch of size 𝐵. We formally define S𝑡as a
+structure with the following members and accessors:
+• S𝑡.tokens ∈V𝐵×𝑀×𝑡: The token buffer containing the de-
+coded prefixes for each beam.
+• S𝑡.scores ∈R𝐵×𝑀: The cumulative log-probability scores
+for the sequences.
+
+Su et al.
+1
+2
+3
+4
+5
+6
+7
+3
+4
+Terminal
+5
+6
+7
+7
+7
+2
+1
+1
+2
+3
+0
+3
+4
+5
+7
+Terminal
+Terminal
+Node 1 (prefix [A1])
+Node 2 (prefix [A3])
+Node 3 (prefix [A1, B2])
+Node 4 (prefix [A3, B1])
+Node 0 (Root: <BOS>)
+Node 5 ([A1, B2, C1])
+Node 6 ([A3, B1, C2])
+Node 7 ([A3, B1, C3])
+Token 1
+(A1/B1/C1)
+Token 2
+(A2/B2/C2)
+Token 3
+(A3/B3/C3)
+Node States
+Semantic ID Token Choices
+Columns
+(valid token IDs)
+Values 
+(children node IDs)
+Row Pointers
+(to valid children)
+3
+2
+1
+1
+2
+B3
+B1
+C2
+C3
+C1
+A2
+B2
+B3
+C2
+C3
+C1
+<BOS>
+A1
+B2
+A3
+B1
+Full Semantic ID space:
+{A1, A2, A3} x {B1, B2, B3} x {C1, C2, C3} 
+Restricted Vocabulary
+item 1 = [A1, B2, C1]
+item 2 = [A3, B1, C2]
+item 3 = [A3, B1, C3]
+Generative Retrieval LLM
+<BOS>
+?
+Node IDs
+...
+Input Tokens
+-0.69
+-1.20
+-1.61
+C2
+C3
++
+0.5
+0.3
+0.2
+False
+True
+True
+-inf
+-1.20
+-1.61
+Log Prob
+Probability
+Valid 
+Tokens Mask
+Masked
+Log Prob
+A3
+B1
+A3
+B1
+(b) Trie Construction 
+      (on CPU)
+(d) Sparse Matrix Representation
+      (on TPU / GPU)
+(c) Full Transition Matrix
+(a) Restricted Vocab Example
+(e) Constrained Decoding on Restricted Vocab
+C1
+✅
+✅
+0
+1
+2
+3
+4
+5
+6
+7
+Compressed Sparse Row (CSR) Matrix
+SID Generation
+Figure 1: This figure showcases the full STATIC pipeline. Figures 1a and 1b present the prefix tree construction for the case
+V = {1, 2, 3}, 𝐿= 3, and restricted vocabulary C = {(1, 2, 1), (3, 1, 2), (3, 1, 3)}. We prepend the letters 𝐴, 𝐵,𝐶to the semantic tokens
+to denote first, second, and third levels, respectively. The corresponding transition matrix is then shown in Figure 1c, with
+explicit labels and color-coding. Figure 1d presents the sparse matrix (CSR) representation of the full transition matrix. Figure
+1e shows how the sparse matrix is applied to constrain the vocabulary at decoding time.
+At step 𝑡, the model generates logits L𝑡∈R𝐵×𝑀×|V| which are
+normalized into log-probabilities before selecting the next set of
+candidates. The cumulative log-probability score is updated by
+adding the model’s predicted log-probabilities for the next token to
+the current prefix scores. The top 𝑀candidates with the highest
+cumulative scores are retained, while others are pruned.
+3.3
+Prefix Trees and Constrained Decoding
+Standard generative models can “hallucinate” identifiers that either
+(1) do not map to valid items in the corpus or (2) do not map
+to desirable items (e.g. too old, in the context of freshness). To
+prevent this, constrained decoding restricts the output to a restricted
+vocabulary set C containing only desirable Semantic IDs.
+Because Semantic IDs are structured as sequences, the restricted
+vocabulary inherently forms a prefix tree (i.e. trie). Constraints are
+enforced at each step 𝑡, that is, if appending the current token to
+the prefix results in a invalid path in the trie, the path is pruned. In
+practice, the log-probabilities of invalid tokens are set to −∞, ensur-
+ing that beam search only selects valid sequences. The challenge
+addressed in this work is that naive pointer-chasing implementa-
+tions of trie constraints incur severe latency penalties on hardware
+accelerators like TPUs/GPUs, making them infeasible in practice.
+4
+Methodology
+We propose an accelerator-native constrained decoding technique
+designed for LLM-based generative retrieval. Our approach replaces
+dynamic pointer-chasing CPU-based prefix tree traversals with a
+static sparse matrix lookup, enabling purely on-device execution
+(TPU/GPU) compatible with XLA/Inductor compilation.
+4.1
+Problem Formulation
+Recall that V represents the set of semantic tokens (i.e. indices) in
+our context, and 𝐿, the fixed length of a Semantic ID. Note that the
+space of all Semantic IDs is simply the product space V𝐿. Although
+the vocabulary of indices is the same across all levels, the codewords
+are different, with a different codebook E𝑑trained for each level.
+The retrieval model generates a sequence (i.e. a Semantic ID)
+y = (𝑦1, . . . ,𝑦𝐿) auto-regressively, where 𝑦𝑖∈V. In standard beam
+search, the validity of a sequence is determined solely by the model’s
+
+Vectorizing the Trie: Efficient Constrained Decoding for LLM-based Generative Retrieval on Accelerators
+learned probability distribution 𝑃𝜃. However, in constrained decod-
+ing we require the generated output to belong to a strictly defined
+subset C ⊂V𝐿(e.g. a “Freshness” corpus or “Inventory” list). An
+example of a restricted subset is given in Figure 1a.
+We formally define constraint functions 𝐹𝑡: V𝑡−1 × V →{0, 1}
+for 1 ≤𝑡< 𝐿by: 𝐹𝑡(𝑦<𝑡,𝑦𝑡) = I(∃𝑐∈Cs.t.(𝑦<𝑡,𝑦𝑡) ⊑𝑐), where I(·)
+is the indicator function and ⊑denotes prefix inclusion. 𝐹𝑡(𝑦<𝑡,𝑦𝑡)
+is an indicator function that returns 1 if and only if appending 𝑦𝑡to
+the prefix 𝑦<𝑡results in a valid prefix in C. Our goal is to enforce
+this constraint only during inference, such that 𝑃(𝑦𝑡|𝑦<𝑡) = 0 if
+𝐹𝑡(𝑦<𝑡,𝑦𝑡) = 0, with minimal latency overhead.
+4.2
+Sparse Transition Matrix (STM)-based Trie
+Conversion
+Standard implementations of prefix trees rely on pointer-chasing
+operations that have a huge CPU callback bottleneck and are poorly
+supported on accelerators. To resolve this, we flatten the prefix tree
+into a Compressed Sparse Row (CSR) transition matrix.
+Let the number of total prefix nodes in the trie be 𝑆. We map
+every unique prefix node in the tree to a state integer 𝑠∈[𝑆]. We
+then define a sparse matrix T ∈Z𝑆×|V| where:
+T𝑠,𝑣=
+(
+𝑠next
+𝑠
+𝑣−→𝑠𝑛𝑒𝑥𝑡exists
+0
+otherwise
+Conceptually, 0 denotes a terminal state where no more transitions
+are possible (think of it as a “sink”). To better illustrate the idea, we
+give the conceptual transition matrix for the restricted vocabulary
+from Figure 1a in Figure 1c (corresponding to the trie in Figure 1b).
+4.2.1
+Matrix Construction. The construction of T is performed
+offline. Given the high sparsity of the vocabulary constraints (often
+≤0.01% of valid paths), the CSR representation is highly memory
+efficient. In our case, we fill the three parts of the CSR representation
+as follows:
+• Row Pointers (P): Stores indices for the allowed transitions
+for current state 𝑠, i.e. these are effectively node pointers.
+• Column Indices (C): Stores the valid token IDs (𝑣) that
+trigger transitions.
+• Values Array (V): Stores the target state node IDs (𝑠𝑛𝑒𝑥𝑡).
+This static structure allows us to utilize hardware-optimized sparse
+matrix operations rather than dynamic control flow. To illustrate,
+for the transition matrix in Figure 1c we provide the CSR arrays in
+Figure 1d. Notice, for example, to extract the transitions from Node
+4 in Figure 1c, we would first extract row_start = P[4] = 5 and
+row_end = P[4 + 1] = 7. Then we form the slices:
+C[row_start:row_end] = C[5:7] = [2, 3]
+V[row_start:row_end] = V[5:7] = [6, 7]
+to observe that taking “Token 2” from Node 4 leads to Node 6, and
+taking “Token 3” from Node 4 leads to Node 7. One can confirm that
+this is indeed correct by noting the transitions present in Figure 1c.
+4.3
+Accelerator-Native Decoding Algorithm
+To achieve high throughput on hardware accelerators, we reformu-
+late the validity check as a vectorized lookup. Critically, we maintain
+a transition state vector n𝑡∈Z𝐵×𝑀that tracks the current node
+index in the prefix tree for each beam. Additionally, we employ
+the following optimization. For a number of layers 0 ≤𝑑< 𝐿, we
+maintain a dense tensor mask D ∈R
+𝑑times
+z              }|              {
+|V| × · · · × |V| that indicates
+precisely which 𝑑-length prefixes exist in the restricted vocabulary
+C. Lookups in this tensor are extremely fast and the construction of
+D is a one-time fixed cost; however, D becomes prohibitively expen-
+sive to construct for 𝑑≥3 in most cases due to the fact that |V|𝑑
+grows exponentially in 𝑑. Hence, we have 𝑑≤2 for most real-world
+use cases and rely on the sparse CSR transition matrix for deeper
+layers. The full sequential constrained decoding process is given in
+Algorithm 1. Our approach relies on several hardware-accelerated
+operations:
+• LogSoftmax(x): Converts raw logits into normalized log-
+probabilities according to the following transformation:
+LogSoftmax(x)𝑖= 𝑥𝑖−log Í|V|
+𝑗=1 exp(𝑥𝑗).
+• DenseLookup(n𝑡−1, D,𝑡−1): This primitive performs a
+high-performance lookup on the dense tensor mask D to
+identify valid semantic extensions for each beam.
+• VNTK(n𝑡−1, T,𝑡−1): The Vectorized Node Transition Kernel
+(Algorithm 2). It performs a high-performance lookup on
+the sparse transition matrix T to identify valid semantic
+extensions for each beam. It encapsulates the speculative
+slicing and projection logic required to return the next-node
+IDs n𝑛𝑒𝑥𝑡and the dense log probability mask m in a single
+vectorized pass. See Section 4.4 for more detail.
+Algorithm 1: Hardware-Accelerated Constrained Decod-
+ing Step
+Input: Logits L𝑡∈R𝐵×𝑀×|V|, Beam State S𝑡−1, Step 𝑡
+Input: Dense Count 𝑑, Dense Restrict Tensor D ∈R
+𝑑times
+z                }|                {
+|V| × · · · × |V|
+Input: Constraints: Trans. Matrix T, Node Indices n𝑡−1 ∈Z𝐵×𝑀
+Output: Updated State S𝑡, New Node Indices n𝑡
+1 Phase 1: Log-Space Projection
+2 P𝑡←LogSoftmax(L𝑡)
+// Convert logits to log-probs
+3 Phase 2: Constraint Masking
+// For earlier layers, we employ dense lookups
+4 if 𝑡−1 < 𝑑then
+5
+(n𝑛𝑒𝑥𝑡, m) ←DenseLookup(n𝑡−1, D,𝑡−1)
+6 else
+7
+(n𝑛𝑒𝑥𝑡, m) ←VNTK(n𝑡−1, T,𝑡−1)
+// Execute Algorithm 2
+8 end
+9 P′
+𝑡←Where(m, P𝑡, −∞)
+// Mask invalid transitions
+10 Phase 3: Beam Search Optimization
+11 (S𝑏𝑒𝑠𝑡, I𝑏𝑒𝑠𝑡) ←BeamSearch(P′
+𝑡, S𝑡−1.scores, 𝑀)
+12 Phase 4: State Update
+13 S𝑡.tokens ←Gather(S𝑡−1.tokens, indices = I𝑏𝑒𝑠𝑡)
+14 S𝑡.scores ←S𝑏𝑒𝑠𝑡
+15 n𝑡←Gather(n𝑛𝑒𝑥𝑡, indices = I𝑏𝑒𝑠𝑡)
+// Advance constraint
+state
+16 return S𝑡, n𝑡
+
+Su et al.
+• Where(mask, x, value): This conditional operator enforces
+validity constraints in log-probability space. It prunes in-
+valid paths by setting their scores to −∞where the mask
+m is false.
+• BeamSearch(P′
+𝑡, S𝑠𝑐𝑜𝑟𝑒𝑠, 𝑀): A selection framework that
+identifies 𝑀most probable valid sequences across the batch.
+It computes cumulative scores by combining the new masked
+log-probabilities P′
+𝑡with existing prefix scores S𝑠𝑐𝑜𝑟𝑒𝑠and
+retains the top candidates for the next step.
+• Gather(x, indices): A vectorized selection operator used
+in the state update phase (Phase 4). It extracts the specific
+tokens, scores, and constraint states from the candidate
+pool that correspond to the top-performing beams (I𝑏𝑒𝑠𝑡).
+4.4
+Implementation and Hardware
+Optimization
+While the theoretical formulation of STATIC guarantees correct-
+ness, achieving negligible latency overhead on modern accelerators
+requires rigorous alignment with the underlying hardware charac-
+teristics. In this section, we detail the vectorized kernel design that
+makes our approach portable across both TPUs and GPUs.
+The core engineering challenge in constrained decoding is han-
+dling the dynamic nature of the prefix tree (where nodes possess a
+varying number of children) within the static execution model of
+hardware accelerators. Standard pointer-chasing traversals are in-
+efficient: on TPUs (XLA), dynamic branching triggers costly graph
+recompilation or forces the use of serial ‘while’ loops that prevent
+hardware pipelining; on GPUs, processing beams with mismatched
+child counts leads to GPU warp divergence, where threads must
+wait for the longest path to finish, destroying SIMT parallelism.
+Algorithm 2: Vectorized Node Transition Kernel (VNTK)
+Input: Curr. Node 𝑛𝑐𝑢𝑟𝑟, Trans. Matrix T (Row Pointers P,
+Columns C, Values V), Step 𝑡
+Input: (Constant) Token Cardinality |V|, Max Branch Factors B
+Output: Next Nodes n𝑛𝑒𝑥𝑡, Logit Mask m
+1 Phase 1: Boundary Lookup
+2 𝑖𝑑𝑥𝑠𝑡𝑎𝑟𝑡←P[𝑛𝑐𝑢𝑟𝑟]
+3 𝑁𝑐ℎ𝑖𝑙𝑑←P[𝑛𝑐𝑢𝑟𝑟+ 1] −𝑖𝑑𝑥𝑠𝑡𝑎𝑟𝑡
+// Compute # of children
+4 Phase 2: Speculative Slicing
+// Slice fixed size B𝑡regardless of actual child count
+5 d𝑐𝑜𝑙←DynamicSlice(C, start = 𝑖𝑑𝑥𝑠𝑡𝑎𝑟𝑡, len = B𝑡)
+6 d𝑣𝑎𝑙←DynamicSlice(V, start = 𝑖𝑑𝑥𝑠𝑡𝑎𝑟𝑡, len = B𝑡)
+7 Phase 3: Sanitization (Branch-Free)
+8 𝐽←Range(B𝑡)
+// Generate vector [0, . . . , B𝑡−1]
+9 m𝑣𝑎𝑙𝑖𝑑←(𝐽< 𝑁𝑐ℎ𝑖𝑙𝑑)
+// Identify valid slots
+10 t𝑣𝑎𝑙𝑖𝑑←Where(m𝑣𝑎𝑙𝑖𝑑, d𝑐𝑜𝑙, {})
+11 n𝑛𝑒𝑥𝑡←Where(m𝑣𝑎𝑙𝑖𝑑, d𝑣𝑎𝑙, 0)
+12 Phase 4: Projection
+// Create dense boolean mask for Softmax
+13 m ←Scatter(indices = t𝑣𝑎𝑙𝑖𝑑, values = m𝑣𝑎𝑙𝑖𝑑)
+14 return n𝑛𝑒𝑥𝑡, m
+To overcome these bottlenecks, we implement a branch-free
+transition kernel (Algorithm 2). For efficient slicing, it becomes
+critical to introduce some new definitions. Consider the prefix tree
+corresponding to a sparse transition matrix T. For a node 𝑛in the
+tree at level ℓ, let the number of children be 𝑏ℓ
+𝑛. Given that the
+tree has 𝐿levels, let the set of all nodes at level ℓ∈[𝐿] be 𝑁ℓand
+define the vector B ∈R𝐿such that Bℓ= max𝑛∈𝑁ℓ𝑏ℓ
+𝑛. That is, B is
+the level-indexed vector of max branch factors exhibited by the
+tree. Note that computing this vector is a one-time fixed cost per
+transition matrix T. Our algorithm takes this vector as an input.
+Moreover, Algorithm 2 relies on the following vectorized primitive
+operations:
+• DynamicSlice(M, start, len): Extracts a contiguous sub-
+tensor of fixed length 𝑙𝑒𝑛= B𝑡from the data matrix M
+starting at a dynamic offset (𝑠𝑡𝑎𝑟𝑡). Recall decoding step 𝑡
+is synonymous with level ℓin the underlying prefix tree.
+• Range(𝑐): Generates a constant sequence vector [0, . . . ,𝑐−
+1] used for index-based masking and sanitization of the
+speculatively sliced children.
+• Scatter(indices, values): A projection operator that con-
+verts the sparse list of valid tokens into a dense boolean
+mask m of size |V|. This mask is applied directly to the
+model’s log-probabilities in the main decoding step to en-
+force the prefix-tree constraints.
+As shown in Phase 2, the kernel always slices a fixed number of
+entries B𝑡for any given level 𝑡regardless of the actual child count.
+If a node has fewer than B𝑡children, we use a Range-generated
+vector to create a boolean mask m𝑣𝑎𝑙𝑖𝑑and the Where operator
+to sanitize the result. This ensures that the arithmetic units of the
+GPU/TPU remain fully saturated and that the entire decoding step
+remains a single, static computation graph. We discuss additional
+relevant hardware considerations of our method in Appendix A. We
+also benchmark our method for high maximum branch factors in
+Appendix D and demonstrate linear scaling on this axis. Importantly,
+we note that for sufficiently large |V| and practical ranges of |C|,
+the max branch factor will actually remain quite low for later layers,
+since the number of children |V|ℓgrows exponentially with level ℓ
+and quickly exceeds the constraint set size |C|.
+5
+Large-scale Deployment on YouTube
+By testing STATIC at YouTube scale, we seek to evaluate the STATIC
+algorithm along three dimensions critical for industrial deployment:
+(1) System Efficiency: We measure latency and throughput
+on TPU accelerators compared to baselines.
+(2) Scalability: We analyze the storage footprint and runtime
+as both constraint set size and vocabulary size increase.
+(3) Online Product Impact: We quantify the improvement of
+recommendation quality and user satisfaction from apply-
+ing constrained decoding in a live production environment.
+5.1
+Experimental Setup
+We conduct our evaluation on a large-scale video recommendation
+corpus from YouTube. The videos are tokenized into Semantic IDs
+(SIDs) [24] with 𝐿= 8 discrete tokens and token cardinality |V| =
+2048. The total recommendable corpus is on the order of 100 million
+to 1 billion items, and the unconstrained model can recommend
+
+Vectorizing the Trie: Efficient Constrained Decoding for LLM-based Generative Retrieval on Accelerators
+any item from this set. We fix 𝑑= 2 as an input to Algorithm 1 and
+maintain the dense tensor mask D ∈R2048×2048 for early lookups;
+we use the CSR sparse matrix representation for later levels.
+The model is a Gemini-based generative retrieval model similar
+to PLUM [8], served with a batch size of 2 (per chip) and a beam
+size of 𝑀= 70. The model is based on a non-Mixture-of-Experts
+(MoE) architecture with 3 billion dense parameters. All benchmark
+experiments are conducted on Google TPU v6e accelerators.
+5.2
+System Efficiency Analysis
+We limit our attention to a constrained vocabulary (target set)
+consisting of a “fresh video” subset containing approximately 20
+million high-quality items uploaded in the last 7 days (relative to the
+experiment date). This setup represents a restrictive environment
+for constrained decoding: the valid subset is sparse, yet large enough
+(20 million items) to make naive enumeration infeasible.
+We compare our STATIC approach against several distinct imple-
+mentations commonly found in academic literature and production
+systems:
+(1) Unconstrained: Standard beam search with no validity
+checks. This represents the lower bound on latency.
+(2) CPU Trie: A standard prefix tree stored in CPU memory
+using JAX’s PyTree data structure (Python dictionary). At
+every decoding step, the TPU halts, sends partial beams to
+the CPU, waits for the validity mask, and resumes.
+(3) PPV Exact [32]: Following Ye et al. [32], we store valid
+SIDs in a sorted flat array on TPU and perform binary
+search to verify every candidate extension. In the origi-
+nal paper, the authors consider only the top 50 logits of
+the vocabulary per decoding step. This is suboptimal for
+beam search with larger fan-out since constrained set items
+frequently fall outside of the top 50 logits. Thus, in this
+baseline, we consider the PPV method using all 2048 logits.
+This yields an exact solution but is significantly slower than
+PPV Approximate below, due to PPV’s linear scaling with
+the number of logits.
+(4) PPV Approximate [32]: Just as above, we perform binary
+search on a sorted flat SID array for every candidate exten-
+sion; however, as in the original paper, this baseline only
+verifies the top 50 logits per decoding step. This gives only
+Table 1: Latency Overhead per Decoding Step on a Large-scale
+Video Recommendation Corpus with 20 Million Constrained
+Vocabulary Items. STATIC (Ours) achieves minimal latency
+overhead relative to baselines.
+Method
+Latency (ms)
+% of Inference
+Unconstrained
++0.0
+–
+PPV Exact [32]
++34.1
+260%
+CPU Trie
++31.3
+239%
+Hash Bitmap
++12.3
+94.0%
+PPV Approximate [32]
++1.56
+11.9%
+STATIC (Ours)
++0.033
+0.25%
+approximate solutions for the reasons mentioned above,
+and is not directly comparable to STATIC.
+(5) Hash Bitmap: A Bloom-filter [1] style approach where
+valid prefixes are hashed. This method introduces false
+positives (with a non-negligible 2.1% false positive rate in
+our Table 1 evaluation), so it is not directly comparable to
+STATIC, but useful as a reference.
+We measured the latency of the constraint enforcement logic
+per decoding step, and summarized the results in Table 1, where
+we give the means over 100 trials. Our STATIC approach achieves
+a latency overhead of +0.033 ms per decoding step, only taking
+0.25% of the inference time for a 3 billion parameter model. In
+contrast, the “CPU Trie” method incurs a massive penalty (31.3 ms,
+948× higher than STATIC) due to the PCIe transfer overhead and
+synchronization locks between the TPU and CPU. Crucially, we
+outperform the “PPV Exact” baseline by a factor of 1033× (34.1 ms
+vs. 0.033 ms) and even the “PPV Approximate” baseline by factor of
+47× (1.56 ms vs. 0.033 ms). While PPV’s binary search is technically
+“on-device” and vectorized, it suffers from logarithmic scaling of
+I/O complexity with respect to the constraint set size |C| (on top of
+linear scaling with respect to number of logits considered), whereas
+STATIC reduces the I/O complexity to 𝑂(1) using the single-pass
+VNTK kernel (Algorithm 2).
+5.3
+Scalability
+While a naive boolean mask of the entire Semantic ID space would
+be petabytes in size, our STATIC approach requires only approxi-
+mately 90 MB of memory for every 1 million restricted vocabulary
+items in this setting. That is, for our tested restricted vocabulary
+of 20 million items, we expect a maximal HBM usage of ≈1.8 GB,
+which we can further tighten to ≈1.5 GB via the analysis in Ap-
+pendix B. In practice, the required memory is usually ≤75% of this
+upper limit. We elaborate on the derivations and why this is the
+case in Appendix B. The crucial takeaway is that the memory usage
+is tied directly to the storage of the dense tensor mask D and the
+sparse CSR matrix, which is tied to the number of nodes in the
+underlying trie. Given a vocabulary size |V|, Semantic ID length
+𝐿, dense layer count 𝑑, number of constraints |C|, storage cost per
+node of 𝐾1 bytes, and storage cost per dense state of 𝐾2 bytes, the
+upper bound on memory usage (in bytes) is given by:
+𝑈max(𝐾1, 𝐾2, |V|, |C|, 𝐿,𝑑) =
+ 1
+8 + 𝐾2
+
+|V|𝑑+𝐾1·
+𝐿
+∑︁
+ℓ=𝑑+1
+min(|V|ℓ, |C|)
+Additionally, STATIC’s time complexity scales logarithmically
+with respect to constraint set size and maintains low latency rela-
+tive to all measured baselines across a wide range of |C|. A direct
+comparison with the Table 1 baselines is given in Figure 2, where
+we generate constraint sets uniformly at random, fixing |V| = 2048,
+𝐿= 8 and vary only |C| from 105 to 108. The means over 100 trials
+are plotted and the shaded region indicates one standard deviation
+above and below the mean2.
+Furthermore, STATIC exhibits almost constant latency with re-
+spect to the SID vocabulary size |V|, as shown in Figure 3, where
+we generate constraint sets uniformly at random just as above, fix-
+ing |C| = 107, 𝐿= 8, and vary only |V| from 256 to 32k. In theory,
+2The | C| = 108 data point for CPU Trie is missing due to an Out-Of-Memory error.
+
+Su et al.
+105
+106
+107
+108
+Number of Constraints (||)
+0.1
+1
+10
+Latency (ms)
+STATIC
+Hash Bitmap
+PPV Approximate
+PPV Exact
+CPU Trie
+Figure 2: Scaling of different constraint decoding methods
+relative to constraint set size (log-log scale), fixing |V| = 2048.
+STATIC considerably outperforms existing methods.
+256
+512
+1024
+2048
+4096
+8192
+16384
+32768
+SID Vocab Size (||)
+0.1
+1
+10
+100
+Latency (ms)
+STATIC
+Hash Bitmap
+PPV Approximate
+PPV Exact
+CPU Trie
+Figure 3: Scaling of different constraint decoding methods
+relative to SID vocabulary size |V| (log-log scale) at |C| = 107.
+STATIC compares favorably for all tested SID vocab sizes.
+the pure sparse matrix look-ups scale with maximum branch factor
+(as shown in Algorithm 2), whose average (under mild assump-
+tions) scales linearly with |V|. However, since we employ a dense
+mask with 𝑂(1) look-up for the highly saturated first 𝑑= 2 layers,
+the sparse look-ups happen for later layers with small constant
+maximum branch factors. As such, STATIC exhibits near constant
+scaling with |V|. In almost all production systems [8, 34] as of 2025,
+|V| ≤8192, meaning STATIC exhibits consistently low latency
+across all current real-world settings. Exact numbers for Figures 2
+and 3 are given in Appendix C.
+5.4
+Online A/B Testing
+We deployed a STATIC-enabled PLUM-based generative retrieval
+model across multiple use cases in the YouTube ecosystem. In one
+setting, we used it as an additional candidate source to a short-
+form video product’s “Home Feed” with a “Last 7 Days” freshness
+constraint, and conducted A/B experiments to measure the impact.
+The results are shown in Table 2.
+Table 2: Online A/B Test Results for “Home Feed” Impact
+with the “Last 7 Days” Freshness Constraint.
+Metric
+Impact
+95% Confidence Interval
+7 Day Fresh Views
++5.1%
+[5.0%, 5.2%]
+3 Day Fresh Views
++2.9%
+[2.8%, 3.0%]
+Click-Through Rate
++0.15%
+[0.01%, 0.29%]
+Strategic User Segment Satisfaction
++0.15%
+[0.03%, 0.27%]
+As expected, STATIC achieved 100% compliance with the speci-
+fied constraint. A standard generative retrieval model without this
+constraint would frequently generate SIDs for older videos, whereas
+the STATIC model strictly produced valid 7-day fresh videos.
+We observed a significant increase in the consumption of fresh
+content: as given in Table 2, we note a +5.1% increase in 7-day fresh
+video views and a +2.9% increase in 3-day fresh video views.
+Moreover, we observed a positive impact on user experience
+metrics: the click-through rate (CTR) increased by +0.15% and user
+satisfaction of a strategic user segment increased by +0.15%. This
+is a significant improvement and shows the positive impact of
+recommending more high-quality fresh videos.
+6
+Cold-Start Retrieval on Amazon Reviews
+Datasets
+A long-standing drawback of generative retrieval is its inability
+to generalize to cold-start items [31]. Here, we show how one can
+use constrained decoding on the cold-start item set to considerably
+improve cold-start performance. We use the Amazon Reviews [9]
+datasets to showcase a viable set-up and the associated benefits.
+6.1
+Experimental Setup
+The Amazon items are tokenized into Semantic IDs (SIDs) by train-
+ing separate RQ-VAE [24] models to quantize the items of each
+Amazon Reviews subdataset separately, with 𝐿= 4 discrete tokens
+and token cardinality |V| = 256. Each subdataset’s valid item cor-
+pus consists of anywhere from 10 to 20 thousand items, and the
+unconstrained model can recommend any item from this corpus.
+We train a separate generative retrieval model on the sequences
+from each Amazon subdataset based on the Gemma [15] architec-
+ture with 1 billion dense parameters, served with a batch size of
+16 and a beam size of 𝑀= 20. All experiments are conducted on a
+Google TPU v6e.
+6.2
+Cold-Start Results
+We perform cold-start experiments in the following way. For a
+given Amazon item, we define its “age” by the age of its oldest
+review. Thereafter, for each Amazon subdataset, we isolate the
+newest 2% (and separately, 5%) of the items into a cold-start set. We
+filter out all item sequences that do not contain any items from this
+set, and train the models on these “no cold-start train sequences.”
+We evaluate the models on the “cold-start test sequence” set which
+contains sequences that have cold-start items as targets. We tested
+the following approaches for retrieval:
+(1) Unconstrained: Beam search with no validity checks.
+
+Vectorizing the Trie: Efficient Constrained Decoding for LLM-based Generative Retrieval on Accelerators
+(2) Constrained Random Guessing: A baseline that guesses
+items uniformly at random from the constraint set.
+(3) STATIC (Ours): Our proposed method, where the model
+decodes from the Transformer while restricting to the cold-
+start item set at every step.
+Table 3 shows Recall@1 metrics for the “cold-start test sequences.”
+In both the 2% and 5% cold-start settings, STATIC improves over
+the unconstrained and constrained random guessing approaches
+considerably, showing that one can attain nontrivial cold-start per-
+formance with generative retrieval using constrained decoding
+alone.
+Table 3: Comparison of Unconstrained and Constrained De-
+coding Performance on Amazon Cold-start Items. All values
+given are Recall@1 percentages.
+Subdataset
+Method
+2% Cold-start
+5% Cold-start
+Beauty
+Unconstrained
+0.00%
+0.00%
+Const. Random
+0.42%
+0.17%
+STATIC
+4.29%
+1.60%
+Sports & Outdoors
+Unconstrained
+0.00%
+0.00%
+Const. Random
+0.27%
+0.11%
+STATIC
+1.24%
+1.17%
+Toys & Games
+Unconstrained
+0.00%
+0.00%
+Const. Random
+0.42%
+0.17%
+STATIC
+4.39%
+2.25%
+7
+Conclusion
+Generative retrieval holds the promise of leveraging LLMs for next-
+generation recommendations in myriad real-world settings, but its
+adoption in industry has been hindered by the lack of a control-
+lable output space. In this work, we bridged the gap between prefix
+tree-based constraints and vector-based hardware (TPUs/GPUs).
+Regarding trie-constrained decoding, the authors of Ye et al. [32]
+claim: “whether an efficient GPU trie algorithm exists remains to be
+[seen].” This is a hypothesis that we answer in the affirmative with
+the contribution in our paper. The STATIC framework transforms
+pointer-chasing trie lookups into vectorized sparse matrix oper-
+ations, achieving a 47–1033× speedup over alternative on-device
+methods. We demonstrated the effectiveness of this approach in
+production environments serving billions of users, showing that
+strict constraints can be enforced at scale without compromising
+serving latency. Moreover, we demonstrated the viability of improv-
+ing cold-start performance through constrained-decoding alone on
+the Amazon Reviews [9] datasets.
+Future Work. Currently the sparse transition matrix construc-
+tion is an offline process. An important future extension is to de-
+velop dynamic sparse updates, which would allow for real-time
+inventory changes without full model recompilation.
+References
+[1] Burton H. Bloom. 1970. Space/time trade-offs in hash coding with allowable
+errors. Commun. ACM 13 (1970), 422–426.
+https://api.semanticscholar.org/
+CorpusID:7931252
+[2] James Bradbury, Roy Frostig, Peter Hawkins, Matthew James Johnson, Chris
+Leary, Dougal Maclaurin, George Necula, Adam Paszke, Jake VanderPlas, Skye
+Wanderman-Milne, and Qiao Zhang. 2018. JAX: composable transformations of
+Python+NumPy programs. http://github.com/jax-ml/jax
+[3] Paul Covington, Jay K. Adams, and Emre Sargin. 2016. Deep Neural Networks
+for YouTube Recommendations. Proceedings of the 10th ACM Conference on Rec-
+ommender Systems (2016). https://api.semanticscholar.org/CorpusID:207240067
+[4] Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, and Christopher Ré.
+2022.
+FlashAttention: Fast and Memory-Efficient Exact Attention with IO-
+Awareness.
+ArXiv abs/2205.14135 (2022).
+https://api.semanticscholar.org/
+CorpusID:249151871
+[5] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. OneRec: Unifying Retrieve and Rank with Genera-
+tive Recommender and Iterative Preference Alignment. ArXiv abs/2502.18965
+(2025). https://api.semanticscholar.org/CorpusID:276617997
+[6] Markus Freitag and Yaser Al-Onaizan. 2017. Beam Search Strategies for Neural
+Machine Translation. In NMT@ACL. https://api.semanticscholar.org/CorpusID:
+2229477
+[7] Ruiqi Guo, Philip Sun, Erik M. Lindgren, Quan Geng, David Simcha, Felix Chern,
+and Sanjiv Kumar. 2019. Accelerating Large-Scale Inference with Anisotropic
+Vector Quantization. In International Conference on Machine Learning. https:
+//api.semanticscholar.org/CorpusID:218614141
+[8] Ruining He, Lukasz Heldt, Lichan Hong, Raghu Keshavan, Shifan Mao, Nikhil
+Mehta, Zhengyang Su, Alicia Y. Tsai, Yueqi Wang, Shao-Chuan Wang, Xinyang
+Yi, Lexi Baugher, Baykal Cakici, Ed Huai hsin Chi, Cristos Goodrow, Ningren
+Han, He Ma, Romer Rosales, Abby Van Soest, Devansh Tandon, Su-Lin Wu,
+Weilong Yang, and Yilin Zheng. 2025. PLUM: Adapting Pre-trained Language
+Models for Industrial-scale Generative Recommendations. ArXiv abs/2510.07784
+(2025). https://api.semanticscholar.org/CorpusID:281950827
+[9] Ruining He and Julian McAuley. 2016. Ups and Downs: Modeling the Visual
+Evolution of Fashion Trends with One-Class Collaborative Filtering. Proceedings
+of the 25th International Conference on World Wide Web (2016).
+https://api.
+semanticscholar.org/CorpusID:1964279
+[10] Jonathan Heek, Anselm Levskaya, Avital Oliver, Marvin Ritter, Bertrand Ronde-
+pierre, Andreas Steiner, and Marc van Zee. 2024. Flax: A neural network library
+and ecosystem for JAX. http://github.com/google/flax
+[11] Jia-Wei Hong and H. T. Kung. 1981. I/O complexity: The red-blue pebble game.
+In Symposium on the Theory of Computing.
+https://api.semanticscholar.org/
+CorpusID:8410593
+[12] Jun ichi Aoe. 1989. An Efficient Digital Search Algorithm by Using a Double-
+Array Structure. IEEE Trans. Software Eng. 15 (1989), 1066–1077. https://api.
+semanticscholar.org/CorpusID:267894119
+[13] Norman P. Jouppi, Cliff Young, Nishant Patil, David A. Patterson, Gaurav Agrawal,
+Raminder Bajwa, Sarah Bates, Suresh Bhatia, Nan Boden, Al Borchers, Rick
+Boyle, Pierre luc Cantin, Clifford Chao, Chris Clark, Jeremy Coriell, Mike Daley,
+Matt Dau, Jeffrey Dean, Ben Gelb, Taraneh Ghaemmaghami, Rajendra Gottipati,
+William Gulland, Robert Hagmann, C. Richard Ho, Doug Hogberg, John Hu,
+Robert Hundt, Dan Hurt, Julian Ibarz, Aaron Jaffey, Alek Jaworski, Alexander
+Kaplan, Harshit Khaitan, Daniel Killebrew, Andy Koch, Naveen Kumar, Steve
+Lacy, James Laudon, James Law, Diemthu Le, Chris Leary, Zhuyuan Liu, Kyle
+Lucke, Alan Lundin, Gordon MacKean, Adriana Maggiore, Maire Mahony, Kieran
+Miller, Rahul Nagarajan, Ravi Narayanaswami, Ray Ni, Kathy Nix, Thomas Norrie,
+Mark Omernick, Narayana Penukonda, Andy Phelps, Jonathan Ross, Matt Ross,
+Amir Salek, Emad Samadiani, Chris Severn, Gregory Sizikov, Matthew Snelham,
+Jed Souter, Dan Steinberg, Andy Swing, Mercedes Tan, Gregory Thorson, Bo
+Tian, Horia Toma, Erick Tuttle, Vijay Vasudevan, Richard Walter, Walter Wang,
+Eric Wilcox, and Doe Hyun Yoon. 2017. In-datacenter performance analysis of a
+tensor processing unit. 2017 ACM/IEEE 44th Annual International Symposium
+on Computer Architecture (ISCA) (2017), 1–12. https://api.semanticscholar.org/
+CorpusID:4202768
+[14] Clark Mingxuan Ju, Liam Collins, Leonardo Neves, Bhuvesh Kumar, Louis Yufeng
+Wang, Tong Zhao, and Neil Shah. 2025. Generative Recommendation with Seman-
+tic IDs: A Practitioner’s Handbook. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management (CIKM ’25). 6420–6425.
+doi:10.1145/3746252.3761612
+[15] Gemma Team Aishwarya Kamath, Johan Ferret, Shreya Pathak, Nino Vieillard,
+Ramona Merhej, Sarah Perrin, Tatiana Matejovicova, Alexandre Ram’e, Mor-
+gane Rivière, Louis Rouillard, Thomas Mesnard, Geoffrey Cideron, Jean-Bastien
+Grill, Sabela Ramos, Edouard Yvinec, Michelle Casbon, Etienne Pot, Ivo Penchev,
+Gael Liu, Francesco Visin, Kathleen Kenealy, Lucas Beyer, Xiaohai Zhai, Anton
+Tsitsulin, Róbert Istvan Busa-Fekete, Alex Feng, Noveen Sachdeva, Benjamin
+Coleman, Yi Gao, Basil Mustafa, Iain Barr, Emilio Parisotto, David Tian, Matan
+Eyal, Colin Cherry, Jan-Thorsten Peter, Danila Sinopalnikov, Surya Bhupatiraju,
+Rishabh Agarwal, Mehran Kazemi, Dan Malkin, Ravin Kumar, David Vilar, Idan
+Brusilovsky, Jiaming Luo, Andreas Steiner, Abe Friesen, Abhanshu Sharma,
+Abheesht Sharma, Adi Mayrav Gilady, Adrian Goedeckemeyer, Alaa Saade,
+Alexander Kolesnikov, Alexei Bendebury, Alvin Abdagic, Amit Vadi, Andr’as
+Gyorgy, André Susano Pinto, Anil Das, Ankur Bapna, Antoine Miech, Antoine
+Yang, Antonia Paterson, Ashish Shenoy, Ayan Chakrabarti, Bilal Piot, Boxi Wu,
+Bobak Shahriari, Bryce Petrini, Charlie Chen, Charline Le Lan, Christopher A.
+
+Su et al.
+Choquette-Choo, Cj Carey, Cormac Brick, Daniel Deutsch, Danielle Eisenbud,
+Dee Cattle, Derek Cheng, Dimitris Paparas, Divyashree Shivakumar Sreepathi-
+halli, Doug Reid, Dustin Tran, Dustin Zelle, Eric Noland, Erwin Huizenga, Eugene
+Kharitonov, Frederick Liu, Gagik Amirkhanyan, Glenn Cameron, Hadi Hashemi,
+Hanna Klimczak-Pluci’nska, Harman Singh, Harsh Mehta, Harshal Tushar Lehri,
+Hussein Hazimeh, Ian Ballantyne, Idan Szpektor, Ivan Nardini, Jean Pouget-
+Abadie, Jetha Chan, Joe Stanton, J. Michael Wieting, Jonathan Lai, Jordi Orbay,
+Joe Fernandez, Joshua Newlan, Junsong Ji, Jyotinder Singh, Kat Black, Kathy Yu,
+Kevin Hui, Kiran Vodrahalli, Klaus Greff, Linhai Qiu, Marcella Valentine, Marina
+Coelho, Marvin Ritter, Matt Hoffman, Matthew Watson, Mayank Chaturvedi,
+Michael Moynihan, Min Ma, Nabila Babar, Natasha Noy, Nathan Byrd, Nick
+Roy, Nikola Momchev, Nilay Chauhan, Oskar Bunyan, Pankil Botarda, Paul
+Caron, Paul Kishan Rubenstein, Phil Culliton, Philipp Schmid, Pier Giuseppe
+Sessa, Pingmei Xu, Piotr Stańczyk, Pouya Dehghani Tafti, Rakesh Shivanna,
+Renjie Wu, Renke Pan, Reza Ardeshir Rokni, Rob Willoughby, Rohith Vallu,
+Ryan Mullins, Sammy Jerome, Sara Smoot, Sertan Girgin, Shariq Iqbal, Shashir
+Reddy, Shruti Sheth, Siim Põder, Sijal Bhatnagar, Sindhu Raghuram Panyam,
+Sivan Eiger, Susan Zhang, Tianqi Liu, Trevor Yacovone, Tyler Liechty, Uday
+Kalra, Utku Evci, Vedant Misra, Vincent Roseberry, Vladimir Feinberg, Vlad
+Kolesnikov, Woohyun Han, Woosuk Kwon, Xi Chen, Yinlam Chow, Yuvein Zhu,
+Zichuan Wei, Zoltan Egyed, Victor Cotruta, Minh Giang, Phoebe Kirk, Anand
+Rao, Jessica Lo, Erica Moreira, Luiz Gustavo Martins, Omar Sanseviero, Lu-
+cas Gonzalez, Zach Gleicher, Tris Warkentin, Vahab S. Mirrokni, Evan Senter,
+Eli Collins, Joelle Barral, Zoubin Ghahramani, Raia Hadsell, Yossi Matias, D.
+Sculley, Slav Petrov, Noah Fiedel, Noam Shazeer, Oriol Vinyals, Jeffrey Dean,
+Demis Hassabis, Koray Kavukcuoglu, Clément Farabet, Elena Buchatskaya, Jean-
+Baptiste Alayrac, Rohan Anil, Dmitry Lepikhin, Sebastian Borgeaud, Olivier
+Bachem, Armand Joulin, Alek Andreev, Cassidy Hardin, Robert Dadashi, and
+L’eonard Hussenot. 2025. Gemma 3 Technical Report. ArXiv abs/2503.19786
+(2025). https://api.semanticscholar.org/CorpusID:277313563
+[16] Jeremy Kepner, Peter Aaltonen, David A. Bader, Aydın Buluç, Franz Franchetti,
+John R. Gilbert, Dylan Hutchison, Manoj Kumar, Andrew Lumsdaine, Henning
+Meyerhenke, Scott McMillan, Carl Yang, John Douglas Owens, Marcin Zalewski,
+Timothy G. Mattson, and José E. Moreira. 2016. Mathematical foundations of the
+GraphBLAS. 2016 IEEE High Performance Extreme Computing Conference (HPEC)
+(2016), 1–9. https://api.semanticscholar.org/CorpusID:3654505
+[17] Terry Koo, Frederick Liu, and Luheng He. 2024. Automata-based constraints
+for language model decoding.
+ArXiv abs/2407.08103 (2024).
+https://api.
+semanticscholar.org/CorpusID:271097802
+[18] Mingzhen Li, Yi Liu, Xiaoyan Liu, Qingxiao Sun, Xin You, Hailong Yang, Zhongzhi
+Luan, and Depei Qian. 2020. The Deep Learning Compiler: A Comprehensive
+Survey. IEEE Transactions on Parallel and Distributed Systems 32 (2020), 708–727.
+https://api.semanticscholar.org/CorpusID:211069666
+[19] Hao Liao, Jiwei Zhang, Jianxun Lian, Wensheng Lu, Mingqi Wu, Shuo Wang,
+Yong Zhang, Yitian Huang, Mingyang Zhou, and Rui Mao. 2025. Eliminating Out-
+of-Domain Recommendations in LLM-based Recommender Systems: A Unified
+View. https://api.semanticscholar.org/CorpusID:278339501
+[20] Greg Linden, Brent Smith, and Jeremy York. 2003. Amazon.com Recommenda-
+tions: Item-to-Item Collaborative Filtering. IEEE Internet Comput. 7 (2003), 76–80.
+https://api.semanticscholar.org/CorpusID:263872610
+[21] Zhanyun Liu, Shiyao Wang, Xing-Yao Wang, Rong-Qing Zhang, Jiaxin Deng,
+Honghui Bao, Jinghao Zhang, Wuchao Li, Pengfei Zheng, Xiangyu Wu, Yifei
+Hu, Qigen Hu, Xinchen Luo, Lejian Ren, Zixing Zhang, Qianqian Wang, Kuo
+Cai, Yun-Jie Wu, Hongtao Cheng, Zexuan Cheng, Lu Ren, Huanjie Wang, Yi
+Su, Ruiming Tang, Kun Gai, and Guorui Zhou. 2025. OneRec-Think: In-Text
+Reasoning for Generative Recommendation. ArXiv abs/2510.11639 (2025). https:
+//api.semanticscholar.org/CorpusID:282058058
+[22] Ximing Lu, Sean Welleck, Peter West, Liwei Jiang, Jungo Kasai, Daniel Khashabi,
+Ronan Le Bras, Lianhui Qin, Youngjae Yu, Rowan Zellers, Noah A. Smith, and
+Yejin Choi. 2021. NeuroLogic A*esque Decoding: Constrained Text Generation
+with Lookahead Heuristics. In North American Chapter of the Association for
+Computational Linguistics. https://api.semanticscholar.org/CorpusID:245218671
+[23] Gabriel Poesia, Oleksandr Polozov, Vu Le, Ashish Tiwari, Gustavo Soares,
+Christopher Meek, and Sumit Gulwani. 2022.
+Synchromesh: Reliable code
+generation from pre-trained language models. ArXiv abs/2201.11227 (2022).
+https://api.semanticscholar.org/CorpusID:246294475
+[24] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan H. Keshavan,
+Trung Hieu Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah
+Samost, Maciej Kula, Ed H. Chi, and Maheswaran Sathiamoorthy. 2023. Rec-
+ommender Systems with Generative Retrieval. ArXiv abs/2305.05065 (2023).
+https://api.semanticscholar.org/CorpusID:258564854
+[25] Amit Sabne. 2020. Xla: Compiling machine learning for peak performance.
+[26] Zihua Si, ZhongXiang Sun, Jiale Chen, Guozhang Chen, Xiaoxue Zang, Kai
+Zheng, Yang Song, Xiao Zhang, and Jun Xu. 2023. Generative Retrieval with
+Semantic Tree-Structured Identifiers and Contrastive Learning. Proceedings of the
+2024 Annual International ACM SIGIR Conference on Research and Development in
+Information Retrieval in the Asia Pacific Region (2023). https://api.semanticscholar.
+org/CorpusID:262466132
+[27] Philip Sun, David Simcha, Dave Dopson, Ruiqi Guo, and Sanjiv Kumar. 2024.
+SOAR: Improved Indexing for Approximate Nearest Neighbor Search. ArXiv
+abs/2404.00774 (2024). https://api.semanticscholar.org/CorpusID:268030651
+[28] Yi Tay, Vinh Q. Tran, Mostafa Dehghani, Jianmo Ni, Dara Bahri, Harsh Mehta,
+Zhen Qin, Kai Hui, Zhe Zhao, Jai Gupta, Tal Schuster, William W. Cohen, and Don-
+ald Metzler. 2022. Transformer Memory as a Differentiable Search Index. ArXiv
+abs/2202.06991 (2022). https://api.semanticscholar.org/CorpusID:246863488
+[29] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. 2017. Attention is All
+you Need. In Neural Information Processing Systems. https://api.semanticscholar.
+org/CorpusID:13756489
+[30] Orion Weller, Michael Boratko, Iftekhar Naim, and Jinhyuk Lee. 2026. On the
+Theoretical Limitations of Embedding-Based Retrieval. In The Fourteenth Inter-
+national Conference on Learning Representations. https://openreview.net/forum?
+id=k9CzIvzfaA
+[31] Liu Yang, Fabian Paischer, Kaveh Hassani, Jiacheng Li, Shuai Shao, Zhang Gabriel
+Li, Yun He, Xue Feng, Nima Noorshams, Sem Park, Bo Long, Robert Nowak,
+Xiaoli Gao, and Hamid Eghbalzadeh. 2024. Unifying Generative and Dense
+Retrieval for Sequential Recommendation. Trans. Mach. Learn. Res. 2025 (2024).
+https://api.semanticscholar.org/CorpusID:274423313
+[32] Haotian Ye, Himanshu Jain, Chong You, Ananda Theertha Suresh, Haowei Lin,
+James Zou, and Felix X. Yu. 2025. Efficient and Asymptotically Unbiased Con-
+strained Decoding for Large Language Models. ArXiv abs/2504.09135 (2025).
+https://api.semanticscholar.org/CorpusID:277781124
+[33] Guorui Zhou, Honghui Bao, Jiaming Huang, Jiaxin Deng, Jinghao Zhang, Junda
+She, Kuo Cai, Lejian Ren, Lu Ren, Qiang Luo, Qianqian Wang, Qigen Hu,
+Rongzhou Zhang, Ruiming Tang, Shiyao Wang, Wuchao Li, Xiangyu Wu,
+Xinchen Luo, Xingmei Wang, Yifei Hu, Yunfan Wu, Zhanyu Liu, Zhiyang
+Zhang, Zixing Zhang, Bo Chen, Bin Wen, Chaoyi Ma, Chengru Song, Chen-
+glong Chu, Defu Lian, Fan Yang, Feng Jiang, Hongtao Cheng, Huanjie Wang,
+Kun Gai, Pengfei Zheng, Qiang Wang, Rui Huang, Siyang Mao, Tingting Gao,
+Wei Yuan, Yan Wang, Yang Zhou, Yi Su, Zexuan Cheng, Zhixin Ling, and
+Ziming Li. 2026.
+OpenOneRec Technical Report.
+arXiv:2512.24762 [cs.IR]
+https://arxiv.org/abs/2512.24762
+[34] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo,
+Qianqian Wang, Qigen Hu, Rui Huang, Shiyao Wang, Weifeng Ding, Wuchao
+Li, Xinchen Luo, Xing-Yao Wang, Zexuan Cheng, Zixing Zhang, Bin Zhang,
+Bo-Wen Wang, Chao Ma, Cheng bin Song, Chenhui Wang, Di Wang, Dongxue
+Meng, Fan Yang, Fang-Peng Zhang, Feng Jiang, Fuxing Zhang, Gang Wang,
+Guowang Zhang, Han Li, Hengrui Hu, Hezheng Lin, Hongtao Cheng, Hong
+Cao, Huanjie Wang, Jiaming Huang, Jiapeng Chen, Jiaqian Liu, Jinghui Jia, Kun
+Gai, Lantao Hu, Liang Zeng, Liao Yu, Qiang Wang, Qidong Zhou, Shengzhe
+Wang, Shi He, Shuang Yang, Shu-Jun Yang, Sui Huang, Tao Wu, TIAN-CHEN
+He, Tingting Gao, Wei Yuan, Xiaoyan Liang, Xiao-Xue Xu, Xugang Liu, Yan
+Wang, Yi Wang, Yiwu Liu, Yue Song, Yufei Zhang, Yun-Hong Wu, Yunfeng Zhao,
+and Zhanyun Liu. 2025. OneRec Technical Report. ArXiv abs/2506.13695 (2025).
+https://api.semanticscholar.org/CorpusID:279410085
+[35] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, Pengfei Zheng, Qiang Luo, Qianqian
+Wang, Qigen Hu, Rui Huang, Ruiming Tang, Shiyao Wang, Shu-Jun Yang, Tao
+Wu, Wuchao Li, Xin-Jing LuO, Xing-Yao Wang, Yi Su, Yun-Jie Wu, Zexuan
+Cheng, Zhanyun Liu, Zixing Zhang, Bin Zhang, Bo-Long Wang, Chao Ma, Cheng
+bin Song, Chenhui Wang, Chenglong Chu, Di Wang, Dongxue Meng, Dunju
+Zang, Fan Yang, Fang-Peng Zhang, Fengqing Jiang, Fuxing Zhang, Gang Wang,
+Guowang Zhang, Han Li, Honghui Bao, Hong Cao, Jiaming Huang, Jiapeng Chen,
+Jiaqian Liu, Jinghui Jia, Kun Gai, Lantao Hu, Liang Zeng, Qiang Wang, Qidong
+Zhou, Rong-Qing Zhang, Shengzhe Wang, Shi He, Shuang Yang, Si-Yuan Mao,
+Sui Huang, TIAN-CHEN He, Tingting Gao, Wei Yuan, Xiaofeng Liang, Xiao-Xue
+Xu, Xugang Liu, Yan Wang, Yang Zhou, Yi Wang, Yiwu Liu, Yuexin Song, Yufei
+Zhang, Yunfeng Zhao, Zhixin Ling, and Zi-Yue Li. 2025. OneRec-V2 Technical
+Report. ArXiv abs/2508.20900 (2025). https://api.semanticscholar.org/CorpusID:
+280949827
+
+Vectorizing the Trie: Efficient Constrained Decoding for LLM-based Generative Retrieval on Accelerators
+Appendix
+A
+Hardware Optimization: A Detailed
+Discussion
+We shall now discuss some of the additional hardware-related de-
+tails of our constrained decoding implementation.
+A.1
+The JIT Compilation Challenge and Data
+Structures
+A unique constraint of XLA (Accelerated Linear Algebra) compilers
+used for TPUs is the static shape requirement for tensors. The
+compiler must know the exact dimensions of all tensors at compile
+time to generate optimized fusion kernels. Standard trie traversals
+are inherently dynamic: node 𝐴may have 2 children, while node 𝐵
+may have 1000. In a CPU environment, one would simply allocate
+dynamic vectors. Chasing pointers with dynamic vectors, in XLA,
+would trigger the compilation error “ConcretizationTypeError”,
+indicating that an abstract tracer value was encountered where a
+concrete value was expected.
+Our Vectorized Node Transition Kernel (VNTK) (Algorithm 2)
+addresses this by converting the dynamic traversal into a static
+gather operation. Instead of processing a variable number of chil-
+dren, we process precisely 𝐵ℓ, where this value is the maximum
+branch factor at level ℓ(as defined in Section 4). We then use a
+vectorized Gather operation (e.g., jnp.take with mode=‘fill’)
+to fetch exactly Bℓpotential transitions for every beam in parallel.
+To handle nodes with 𝑁𝑐ℎ𝑖𝑙𝑑< Bℓchildren, we compute a validity
+mask on the fly:
+𝑚𝑣𝑎𝑙𝑖𝑑= Range(Bℓ) < 𝑁𝑐ℎ𝑖𝑙𝑑
+We then use this boolean mask to zero out invalid entries in
+the score calculation. This transformation converts a dynamic con-
+trol flow problem (“loop 𝑁times”) into a static data flow problem
+(“gather fixed Bℓelements and mask”). This ensures the entire de-
+coding step remains a single, static XLA graph, enabling full loop
+unrolling and pipelining on TPU systolic arrays.
+A.1.1
+Stacked CSR Layout. To further minimize memory access
+latency within the VNTK, we employ a stacked CSR memory layout.
+In a standard Compressed Sparse Row (CSR) format, column indices
+and data values (next-state pointers) are stored in separate arrays,
+typically requiring two distinct memory fetches per transition. In
+STATIC, we interleave these into a single (𝑁𝑒𝑑𝑔𝑒𝑠, 2) tensor. This
+alignment allows the accelerator to coalesce reads, retrieving both
+the candidate token ID and the pointer to the next node in a sin-
+gle memory transaction. This optimization effectively halves the
+number of random memory accesses.
+A.1.2
+Dense Mask Optimization. While sparse traversal is efficient
+for deep levels of the trie, the initial layers exhibit an extremely
+high branching factor due to the congestion of common prefixes.
+As analyzed in the memory usage model (Appendix B), the number
+of unique nodes at a shallow level ℓgrows as |V|ℓ, making sparse
+gathers computationally inefficient.
+To address this, we introduce a dense layer cutoff parameter,
+𝑑. For the first 𝑑decoding steps (where 0 ≤𝑑< 𝐿), we bypass
+the VNTK and utilize a dense tensor mask optimization. We pre-
+compute a dense boolean tensor of shape
+𝑑times
+z              }|              {
+|V| × · · · × |V| (bit-
+packed for storage efficiency) that represents all valid prefixes of
+length 𝑑. During the first 𝑑steps, validity is checked via direct index
+lookups into this dense tensor. This hybrid approach allows us to
+trade a small amount of static memory (for 𝑑≤2) for a significant
+throughput gain in the most computationally expensive layers of
+the retrieval process. In our experiments for YouTube in Section 5,
+we set 𝑑= 2, effectively densifying the first two layers of the trie.
+A.2
+Cross-Platform Portability (JAX & PyTorch)
+While our primary implementation utilizes JAX for XLA compi-
+lation, the STATIC design is inherently portable to PyTorch and
+CUDA environments. The shift to a Gather-based kernel unifies
+the implementation strategy across frameworks:
+• JAX/XLA: The kernel relies on jnp.take (Gather). This op-
+eration aligns perfectly with the hardware’s scatter-gather
+capabilities and allows the XLA compiler to fuse the in-
+dex computation and memory fetch into a single optimized
+kernel.
+• PyTorch/Inductor: The logic translates directly to
+torch.gather. On GPUs, our stacked CSR layout ensures
+coalesced memory access. When a GPU warp of 32 threads
+fetches transitions for 32 different beams, the contiguous
+storage of the transition matrix minimizes the number of
+cache lines fetched. This contrasts sharply with pointer-
+based tries, which result in random memory access patterns
+(uncoalesced loads) that stall execution units.
+A.3
+Memory Footprint
+In large-scale serving setups (e.g., TPU v6e Pods or H100 Clusters),
+LLM parameters are typically sharded across devices. However,
+the sparse transition matrix (representing the constraints) is rela-
+tively compact. For a constrained vocabulary of 20 million items
+in the context of Section 5, the sparse representation requires only
+approximately 1.5 GB of memory. Consequently, we adopt a repli-
+cation strategy: the sparse transition matrix is replicated on the
+HBM (High-Bandwidth Memory) of every device. This eliminates
+the need for cross-chip communication (All-Gather or All-Reduce)
+during the constraint check. Each chip independently computes
+the validity mask for its local batch of beams, preserving the linear
+scalability of the serving system.
+As item corpora scale toward billions, future research should
+explore hierarchical storing or sharding strategies to maintain this
+linear scalability without saturating device memory.
+B
+Analysis of STATIC Memory Usage
+We present an analysis of the HBM memory usage of our STATIC
+method.
+B.1
+Absolute Upper Bound
+Given that the core memory usage for STATIC lies in the storage
+of the associated trie (which represents the restricted vocabulary)
+
+Su et al.
+and the dense tensor mask D, we focus our analysis in this direc-
+tion. Note that the storage associated with the dense tensor mask
+framework is simply the cost of storing |V|𝑑bits and |V|𝑑state
+IDs. The total storage cost for a trie in CSR format is a function of
+the number of unique prefix nodes at each level ℓof the tree. For a
+restricted vocabulary of |C| items, where each item is a Semantic
+ID (SID) of length 𝐿and each token has a vocabulary size |V|, the
+number of unique nodes at level ℓ(𝑁ℓ) is strictly limited by two
+factors:
+(1) Level Capacity: The maximum possible unique sequences
+of length ℓ, which is |V|ℓ.
+(2) Total Constraints: The total number of unique constraint
+items |C|, as no level can have more unique prefixes than
+there are total items in the vocabulary.
+The absolute upper bound for nodes at level ℓis therefore:
+𝑁ℓ≤min(|V|ℓ, |C|)
+The total storage upper bound in bytes,𝑈max(𝐾1, 𝐾2, |V|, |C|, 𝐿,𝑑),
+is given by a contribution of ( 1
+8 +𝐾2)|V|𝑑for the dense tensor mask
+(1 bit for the mask and 𝐾2 bytes per state, where 𝐾2 = 4 typically),
+as well as by multiplying the sum of the per-level prefix node upper
+bounds for later levels by the storage cost per node 𝐾1 (typically 12
+bytes, due to the three arrays of the CSR sparse matrix format):
+𝑈max(𝐾1, 𝐾2, |V|, |C|, 𝐿,𝑑) =
+ 1
+8 + 𝐾2
+
+|V|𝑑+𝐾1·
+𝐿
+∑︁
+ℓ=𝑑+1
+min(|V|ℓ, |C|)
+B.2
+Calculation for YouTube
+We compute the upper bound for the YouTube setting in Section
+5. Our main configuration variables are fixed to |V| = 2048, 𝐿=
+8, 𝐾1 = 12, 𝐾2 = 4, and 𝑑= 2. Note since we have 20 million
+constraints in the restricted vocabulary, we also have |C| = 20 · 106.
+Now we compute the total memory usage
+(1) Dense Mask Phase (ℓ= 1, 2):
+• The number of bytes we need to store the dense mask
+is simply   1
+8 + 4 · 20482 = 17301504 bytes, or ≈17.3
+MB.
+(2) Constraint Phase (ℓ≥3):
+• For 3 ≤ℓ≤8, the capacity |𝑉|𝑛is significantly larger
+than |C| (e.g., |𝑉|3 ≈8.5 billion). Hence, each of these
+6 levels contributes |C| · 12 bytes.
+• Contribution: (𝐿−2) · |C| · 12 = 6 · 20 · 106 · 12 = 1.44
+GB.
+Our maximum per-chip usage is thus ≈1.46 GB, validating our
+claim of approximately 1.5 GB of HBM usage for 20 million con-
+straints. Due to the fact that the YouTube video distribution is highly
+non-uniform and exhibits significant clustering [8], the semantic
+ID distribution will also, which produces a significant amount of
+collision in the prefix space. As such, for most restrict vocabularies,
+the actual HBM usage will be much less than this upper bound. In
+practice, we note that our utilization is ≤75% of this amount.
+B.3
+Capacity Planning
+In the context of our YouTube setting (Section 5), we use the rule
+of thumb that every 1 million constraints introduce an additional
+≈90 MB of HBM usage. This approximation is valid because the
+storage cost is dominated by the constraint phase described in the
+previous section.
+As shown above, the dense mask phase (early levels) contribution
+remains constant (for fixed 𝑑), while each additional level in the
+constraint phase adds exactly |C| × 𝐾1 bytes to the storage cost.
+When C is 1 million:
+• Dense Mask Phase Contribution: Only   1
+8 + 4 · 20482 =
+17301504 bytes, or ≈17.3 MB.
+• Constraint Phase Contribution: For |C| = 106, we see
+the total contribution is 6 · 106 · 12 bytes = 72MB.
+• Total: 17.3 MB + 72 MB ≈90 MB per million items.
+For the production-scale restrict corpus in Appendix B.2 of 20
+million items, we saw the transition to the constraint phase hap-
+pen later, resulting in an average of ≈73 MB per 1 million items,
+making 90 MB a highly reliable linear upper bound approximation
+for capacity planning. A similar rule-of-thumb can be computed
+for different values of 𝐿, |V|, and |C| using the principles laid out
+in this appendix section.
+C
+Detailed Latency Analysis
+In this section, we present a fine-grained latency overhead analysis
+of our STATIC method in the setting of Section 5 compared to
+the baselines in Table 1. All numbers given represent the per-step
+latency throughout the full decoding (over 𝐿= 8 decoding steps).
+All values represent the additional latency (in milliseconds) incurred
+by the constraint enforcement logic relative to the unconstrained
+baseline (which performs no masking), calculated over 100 trials.
+The precise numbers (means and standard deviations) for Figure
+2 are given in Table 4a, with the exclusion of the 𝑁= 2 · 107 row,
+which gives the precise means and standard deviations for Table 1.
+The precise numbers (means and standard deviations) for Figure
+3 are given in Table 4b.
+Table 4: Per-Step Latency Overhead (ms) over the Uncon-
+strained Baseline. We report mean and standard deviation
+over 100 trials.
+Setting
+STATIC (Ours)
+Hash Bitmap
+PPV Approximate
+PPV Exact
+CPU Trie
+(a) Scaling with Constraint Size |C| (|V| = 2048)
+|C| = 105
+0.023 ± 0.008
+12.335 ± 0.020
+0.588 ± 0.008
+6.375 ± 0.268
+27.070 ± 0.416
+|C| = 106
+0.030 ± 0.008
+12.339 ± 0.016
+0.846 ± 0.008
+15.368 ± 0.338
+27.579 ± 0.353
+|C| = 107
+0.034 ± 0.006
+12.341 ± 0.026
+1.486 ± 0.020
+31.765 ± 2.150
+28.060 ± 0.396
+|C| = 2 · 107
+0.033 ± 0.008
+12.343 ± 0.020
+1.564 ± 0.033
+34.116 ± 2.118
+31.336 ± 0.479
+|C| = 108
+0.039 ± 0.010
+12.331 ± 0.013
+1.713 ± 0.038
+38.691 ± 2.469
+OOM
+(b) Scaling with Vocabulary Size |V| (|C| = 107)
+|V| = 256
+0.040 ± 0.008
+1.554 ± 0.008
+1.584 ± 0.035
+6.004 ± 0.228
+27.359 ± 0.365
+|V| = 512
+0.041 ± 0.008
+3.094 ± 0.008
+1.543 ± 0.035
+10.586 ± 0.655
+27.853 ± 0.294
+|V| = 1024
+0.038 ± 0.008
+6.180 ± 0.011
+1.509 ± 0.036
+18.360 ± 1.313
+29.239 ± 0.491
+|V| = 2048
+0.034 ± 0.006
+12.341 ± 0.026
+1.486 ± 0.020
+31.765 ± 2.150
+31.176 ± 0.446
+|V| = 4096
+0.034 ± 0.008
+24.620 ± 0.033
+1.620 ± 0.025
+57.066 ± 3.540
+29.810 ± 0.426
+|V| = 8192
+0.041 ± 0.008
+49.191 ± 0.090
+1.668 ± 0.024
+107.015 ± 9.269
+29.383 ± 0.741
+|V| = 16384
+0.044 ± 0.008
+98.273 ± 0.025
+1.824 ± 0.031
+287.181 ± 4.321
+30.885 ± 0.276
+|V| = 32768
+0.041 ± 0.006
+196.474 ± 0.038
+2.093 ± 0.029
+578.738 ± 14.596
+31.676 ± 0.399
+D
+Hardware Scaling with High Branching
+Factor
+To isolate the hardware-level scaling efficiency of the STATIC mask-
+ing kernel, we design a benchmark that stresses the vectorized
+burst-read mechanism under extreme sparsity and high-cardinality
+conditions. Specifically, we evaluate the execution time of the core
+
+Vectorizing the Trie: Efficient Constrained Decoding for LLM-based Generative Retrieval on Accelerators
+2
+4
+8
+16
+32
+64
+128
+256
+512
+1024
+2048
+4096
+8192
+16384
+32768
+65536
+131072
+262144
+Vocab Size (||) & Branch Factor (B)
+0.01
+0.1
+1
+Compute Time (ms/step)
+STATIC JAX/XLA Time
+(B) Reference
+Figure 4: Scaling of the STATIC masking kernel with respect
+to the max branch factor (log-log scale). We plot means and
+standard deviations (shaded region) over 100 trials. For each
+trial, the token vocabulary size is set to the branch factor,
+while the number of constraints is fixed at |C| = 106. The
+STATIC method exhibits asymptotically linear O(𝐵) scaling.
+Vectorized Node Transition Kernel (VNTK), i.e. Algorithm 2, as the
+maximum branching factor increases.
+For each tested max branching factor 𝐵∈{21, 22, . . . , 218}, we
+dynamically set the token vocabulary size such that |V| = 𝐵. Under
+this configuration, we synthesize a new constraint set comprising
+|C| = 106 Semantic IDs generated uniformly at random. We then
+flatten this newly generated prefix tree into a Compressed Sparse
+Row (CSR) matrix for the VNTK algorithm.
+During the timed trials, we execute the JIT-compiled masking
+kernel, which performs a coalesced read of 𝐵contiguous elements
+from High-Bandwidth Memory (HBM) and applies the validity
+mask. To ensure robust measurements, we perform synchronous
+wall-clock timing over multiple iterations, capturing the amor-
+tized pure hardware compute time per operation while aggressively
+clearing the accelerator memory between scales to prevent out-of-
+memory (OOM) errors. The scaling results are illustrated in Figure 4.
+Crucially, the benchmark demonstrates that the STATIC decoding
+framework exhibits strict asymptotic linear scaling, 𝑂(𝐵), with
+respect to the maximum branch factor 𝐵. We note that STATIC
+exhibits constant runtime before reaching TPU VMEM bandwidth,
+at which point the linear regime begins.
+E
+STATIC Code: JAX Implementation
+In this section, we give a code snippet to demonstrate an explicit
+example implementation of Algorithms 1 and 2 using the JAX [2]
+and Flax [10] frameworks. Note that the code works on both TPU
+and GPU with almost identical latency overhead.
+# Copyright 2026 Google LLC.
+# SPDX-License-Identifier: Apache-2.0
+"""Implementation of Hardware-Accelerated Constrained Decoding algorithms."""
+import functools
+import flax
+import jax
+import jax.numpy as jnp
+NEG_INF = -1.0e10
+@flax.struct.dataclass(frozen=True)
+class TransitionMatrix:
+"""CSR-based Transition Matrix with optional dense optimizations."""
+row_pointers: jnp.ndarray
+data: jnp.ndarray
+start_mask_packed: jnp.ndarray | None = None
+l1_dense_mask_packed: jnp.ndarray | None = None
+l1_dense_states: jnp.ndarray | None = None
+def vectorized_sparse_candidate_extraction(
+log_probs, nodes, transition_matrix, layer_max_branches, vocab_size
+):
+"""Algorithm 2: Vectorized Node Transition Kernel (VNTK)."""
+n_flat, lp_flat = nodes.reshape(-1), log_probs.reshape(-1, vocab_size)
+starts = transition_matrix.row_pointers[n_flat]
+lens = transition_matrix.row_pointers[n_flat + 1] - starts
+offsets = jnp.arange(layer_max_branches)
+gathered = jnp.take(
+transition_matrix.data,
+starts[:, None] + offsets[None, :],
+axis=0,
+mode="fill",
+fill_value=0,
+)
+valid_mask = offsets[None, :] < lens[:, None]
+dense_indices, dense_data = gathered[:, :, 0], gathered[:, :, 1]
+dense_data = jnp.where(
+valid_mask, dense_data, 0
+)
+candidate_lp = jnp.take_along_axis(
+lp_flat, jnp.clip(dense_indices, max=vocab_size - 1), axis=1
+)
+return (
+jnp.where(valid_mask, candidate_lp, NEG_INF),
+dense_indices,
+dense_data,
+valid_mask,
+)
+@functools.partial(
+jax.jit, static_argnames=("vocab_size", "layer_max_branches", "step")
+)
+def hardware_accelerated_constrained_decoding_step(
+logits,
+previous_nodes,
+transition_matrix,
+layer_max_branches,
+vocab_size,
+step=-1,
+):
+"""Algorithm 1: Hardware-Accelerated Constrained Decoding Step."""
+log_probs = jax.nn.log_softmax(logits)
+if step == 0 and transition_matrix.start_mask_packed is not None:
+mask = jnp.unpackbits(transition_matrix.start_mask_packed).astype(bool)[
+:vocab_size
+]
+
+Su et al.
+return jnp.where(mask, log_probs, NEG_INF), jnp.broadcast_to(
+jnp.arange(vocab_size, dtype=jnp.int32) + 1, logits.shape
+)
+if step == 1 and transition_matrix.l1_dense_mask_packed is not None:
+parents = previous_nodes - 1
+mask = jnp.unpackbits(
+transition_matrix.l1_dense_mask_packed[parents], axis=-1
+)
+return (
+jnp.where(mask.astype(bool)[..., :vocab_size], log_probs, NEG_INF),
+transition_matrix.l1_dense_states[parents],
+)
+sparse_lp, sparse_toks, sparse_next, valid_mask = (
+vectorized_sparse_candidate_extraction(
+log_probs,
+previous_nodes,
+transition_matrix,
+layer_max_branches,
+vocab_size,
+)
+)
+scatter_idx = jnp.where(valid_mask, sparse_toks, vocab_size)
+masked_lp = jnp.full((previous_nodes.size, vocab_size + 1), NEG_INF)
+masked_lp = masked_lp.at[
+jnp.arange(previous_nodes.size)[:, None], scatter_idx
+].set(sparse_lp)
+return (
+masked_lp[:, :vocab_size].reshape(logits.shape),
+sparse_next.reshape(previous_nodes.shape + (layer_max_branches,)),
+)

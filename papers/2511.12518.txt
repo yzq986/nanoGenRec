@@ -1,0 +1,689 @@
+DualGR: Generative Retrieval with Long and Short-Term
+Interests Modeling
+Zhongchao Yi∗
+University of Science and
+Technology of China
+Hefei, China
+zhongchaoyi@mail.ustc.edu.cn
+Kai Feng
+Kuaishou Technology
+Beijing, China
+fengkai90@yeah.net
+Xiaojian Ma
+Kuaishou Technology
+Beijing, China
+maxiaojian@kuaishou.com
+Yalong Wang
+Kuaishou Technology
+Beijing, China
+wangyalong03@kuaishou.com
+Yongqi Liu
+Kuaishou Technology
+Beijing, China
+liuyongqi@kuaishou.com
+Han Li
+Kuaishou Technology
+Beijing, China
+lihan08@kuaishou.com
+Zhengyang Zhou†
+University of Science and
+Technology of China
+Hefei, China
+Suzhou Institute for
+Advanced Research,
+University of Science and
+Technology of China
+Suzhou, China
+zzy0929@ustc.edu.cn
+Yang Wang
+University of Science and
+Technology of China
+Hefei, China
+Suzhou Institute for
+Advanced Research,
+University of Science and
+Technology of China
+Suzhou, China
+angyan@ustc.edu.cn
+Abstract
+In large-scale industrial recommendation systems, retrieval must
+produce high-quality candidates from massive corpora under strict
+latency. Recently, Generative Retrieval (GR) has emerged as a viable
+alternative to Embedding-Based Retrieval (EBR), which quantizes
+items into a finite token space and decodes candidates autoregres-
+sively, providing a scalable path that explicitly models target-history
+interactions via cross-attention. However, deploying GR in short-
+video feeds remains challenged by long-short interest interference,
+context-induced noise in hierarchical SID generation, and the lack of
+explicit learning from exposed-but-unclicked feedback. To address
+these challenges, we propose DualGR, which combines (i) a Dual-
+Branch Long/Short-Term Router (DBR) with selective activation, (ii)
+Search-based SID Decoding (S2D) that constrains fine-level decod-
+ing within the current coarse bucket for efficiency and noise control,
+and (iii) an Exposure-aware Next-Token Prediction Loss (ENTP-
+Loss) that treats unclicked exposures as coarse-level hard negatives
+to promote timely interest fade-out. On the large-scale Kuaishou
+short-video recommendation system, DualGR has achieved out-
+standing performance. Online A/B testing shows +0.527% video
+views and +0.432% watch time lifts, validating DualGR as a practical
+and effective paradigm for industrial generative retrieval.
+CCS Concepts
+• Information systems →Retrieval models and ranking.
+∗Work done during internship at Kuaishou Technology.
+†Corresponding author.
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+WWW ’26, Dubai, United Arab Emirates
+© 2026 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2307-0/2026/04
+https://doi.org/10.1145/3774904.3792851
+Keywords
+Generative Retrieval, Short-Video Recommendation, User Interest
+Modeling
+ACM Reference Format:
+Zhongchao Yi, Kai Feng, Xiaojian Ma, Yalong Wang, Yongqi Liu, Han Li,
+Zhengyang Zhou, and Yang Wang. 2026. DualGR: Generative Retrieval with
+Long and Short-Term Interests Modeling. In Proceedings of the ACM Web
+Conference 2026 (WWW ’26), April 13–17, 2026, Dubai, United Arab Emirates.
+ACM, New York, NY, USA, 4 pages. https://doi.org/10.1145/3774904.3792851
+1
+Introduction
+In large-scale industrial recommender systems, retrieval is the first
+stage, which must select thousands of high-quality candidates from
+a multi-billion-item corpus for downstream ranking. Our work is
+deployed in Kuaishou’s double-column Explore feed, akin to Insta-
+gram’s two-column waterfall layout, where multiple cards appear
+on the same screen. Compared with the single-column full-screen
+feed, this layout places stricter demands on candidate diversity,
+which must produce diverse yet relevant candidates in real time
+to cover multiple topics and intents, also to rapidly track emerg-
+ing interests, therefore it magnifies modeling and efficiency chal-
+lenges at the retrieval stage. In industry, the dominant approach
+is Embedding-Based Retrieval (EBR), whose DNN twin-tower ar-
+chitecture retrieves user-item matches via approximate nearest
+neighbors (ANN) [3, 5]. While highly scalable, EBR is inherently
+limited in multi-interest modeling and target-aware interaction,
+and is vulnerable to exposure bias [1, 9].
+Recently, inspired by the generative progress of LLMs and Trans-
+formers [10], industry has begun adopting Generative Retrieval
+(GR), whose items are discretized into multi-level semantic IDs
+(SIDs) and candidates are decoded autoregressively along the hi-
+erarchy [7, 8, 11]. Operating within the same finite and discrete
+token space during both training and inference can effectively alle-
+viate exposure bias; moreover, cross-attention in decoding enables
+arXiv:2511.12518v2  [cs.IR]  26 Jan 2026
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Zhongchao Yi et al.
+Embedding
+LayerNorm
+…
+𝑠⋆
+"
+𝑠⋆
+#
+𝑠⋆
+$
+𝐵𝑂𝑆
+𝑠⋆
+"
+𝑠⋆
+#
+𝑘, 𝑣
+Dual-Branch Long/Short-Term Router (DBR)
+Search-based SID Decoding (S2D)
+…
+…
+Long-term actions ℋ!
+"#$%
+Short-term actions ℋ!&'#()
+Embed & Pooling
+get all 𝑠*
++
+Embed
+𝐫!"#$
+𝐫%&"'(
+sim
+sim
+select max as ℋ"
+⋆
+User static info 𝐮
+User history ℋ!⋆
+…
+While decoding 𝑠⋆
+# and 𝑠⋆
+$
+User history 
+Query
+𝑠⋆
+%
+Search by level-1 SID
+…
+…
+as candidate history 
+Model
+Model
+ℋ!
+"#$%
+ℋ!&'#()
+𝐮,
+𝐮,
+ℒ#$%&
+< 𝑠)
+(+), 𝑠)
+(-), 𝑠)
+(.) >
+< 𝑠/
+(+), 𝑠/
+(-), 𝑠/
+(.) >
+…
+< 𝑠0
+(+), 𝑠0
+(-), 𝑠0
+(.) >
+< 𝑠1
+(+), 𝑠1
+(-), 𝑠1
+(.) >
+< 𝑠2
+(+), 𝑠2
+(-), 𝑠2
+(.) >
+…
+< 𝑠3
+(+), 𝑠3
+(-), 𝑠3
+(.) >
+Merge&Dedup
+Re-mapped
+…
+Beam Search
+Cross-Attention
+Causal Self-Attention
+Feed Forward Network
+Transformer Decoder
+with S2D
+×𝑁
+…
+-
+…
+…
+Codebook 1
+Codebook 2
+Codebook 3
+=
+=
+-
+-
+< 𝑠)
+* 𝑠)
+# , 𝑠)
+$ >
+Encoded
+Quantization
+Training
+Inference
+𝑒⋆
++
+Figure 1: Overview of the proposed DualGR.
+explicit target-history interaction. Combined with beam search,
+the model can naturally produce diverse candidate sets under com-
+parable latency budgets, aligning with retrieval’s coverage and
+exploration goals. Despite this promise, deploying the generative
+paradigm robustly in multi-interest, short-video retrieval still faces
+three key challenges: ❶Long-short interest interference. The
+double-column feed is highly sensitive to both persistent prefer-
+ences and hotspot tracking; existing "multi-interest" effects often
+emerge passively via multi-beam decoding and lack explicit control
+across time scales. When stable preferences and transient hotspots
+coexist, attention and gradients can dilute each other, destabilizing
+routing and decoding and upsetting the relevance-diversity balance.
+❷Context noise and long-history constraints. During fine-
+grained (level-2/3) SIDs generation, the model struggles to separate
+target-relevant fragments from irrelevant noise, akin to context
+engineering issues observed in LLMs [4]. In the same time, under
+the strict latency budgets of retrieval, without category-wise coarse
+screening before interaction, the use of long histories will become
+prohibitive [5, 6]. ❸Missing negative feedback. Industrial logs
+contain many unclicked exposed items, yet in the next-token predic-
+tion (NTP) [7, 11], it’s difficult to encode them as explicit negative
+signals, impeding the timely fade-out of non-interest directions and
+thereby degrading decoding quality and coverage efficiency.
+To address these issues, we propose DualGR, a generative re-
+trieval framework with two explicit interest branches and search-
+based decoding, while enabling the timely fade-out of non-interest.
+First, we utilizes Dual-Branch Long/Short-Term Router (DBR) to de-
+compose a user’s history into long-term and short-term summaries,
+compute target-aware similarities, and route to exactly one branch
+to suppress cross-branch dilution; at inference, run one forward pass
+per branch and merge the candidates to cover both stable prefer-
+ences and transient intents. Second, we introduce Search-based
+SID Decoding (S2D), when predicting fine-grained (level-2/3) SIDs,
+candidate actions are constrained to the current coarse (level-1)
+bucket, which shrinks the search space and reinforces intra-bucket
+consistency, thereby enabling longer usable histories while
+reducing noise interference and improving computational
+efficiency. Third, to overcome the lack of negatives, we propose
+Exposure-aware Next-Token Prediction Loss (ENTP-Loss), at level-1,
+we treat unclicked exposures as hard negatives, explicitly penal-
+izing the corresponding coarse categories to accelerate the
+fade-out of non-interest directions. Considering latency and
+compute budgets, we adopt an encoder-free lightweight frontend
+(embeddings + LayerNorm) and perform step-wise cross attention
+over the action list, achieving SIM-like target awareness without
+redundant re-encoding [6]. The contributions are as follows:
+• We propose DualGR, a generative retriever that explicitly models
+users’ long- and short-term interests while enabling the timely
+fade-out of non-interest, providing a practical and effective para-
+digm for industrial generative retrieval.
+• We design Dual-Branch Long/Short-Term Router (DBR) to cap-
+ture users’ long- and short-term preferences, Search-based SID
+Decoding (S2D) to suppress context-induced noise, and improve
+computational efficiency; and Exposure-aware Next-Token Pre-
+diction (ENTP-Loss) to bring in unclicked exposures for timely
+fade-out of non-interest. Taken together, these components make
+retrieval more interpretable and controllable.
+• Extensive experiments on Kuaishou’s double-column Explore
+feed short-video recommendation with hundreds of millions of
+users, demonstrates the effectiveness of DualGR.
+2
+Methodology
+2.1
+Preliminary
+In short-video recommendation, we model user interests from past
+interactions and predict which videos the user is likely to engage
+with next. Let V be the universe of videos, for a user 𝑢at request
+time𝑡, the context consists of a static user feature u (e.g., age, gender)
+and a chronologically ordered action history H𝑡= (a1, . . . , a𝑇𝑡),
+where each action a𝑗includes the video ID 𝑣𝑗∈V, author ID,
+interaction tags (e.g., like, follow), and watch time, etc. The goal of
+retrieval stage is to return a candidate set
+R𝜃(u, H𝑡) = argmax 𝑈 R𝜃; u, H𝑡
+.
+(1)
+where R𝜃(u, H𝑡) = {𝑣1, 𝑣2, ..., 𝑣𝑘} ⊆V, 𝑈(·) denotes the overall
+online-utility objective (e.g., watch time, video views, diversity).
+For generative retrieval, each video 𝑣∈V is discretized into
+hierarchical semantic IDs (SIDs):  𝑠(1), 𝑠(2), . . . , 𝑠(𝐿), where 𝑠(ℓ) ∈
+
+DualGR: Generative Retrieval with Long and Short-Term
+Interests Modeling
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+C(ℓ), C(ℓ) is the level-ℓcodebook [7, 8, 11]. A generative retriever
+defines a conditional distribution over hierarchical SIDs via:
+𝑝𝜃
+ 𝑠(1:𝐿) | 𝑥𝑡
+ =
+𝐿
+Ö
+ℓ=1
+𝑝𝜃
+ 𝑠(ℓ)  𝑠(1:ℓ−1), 𝑥𝑡
+,
+(2)
+where 𝑥𝑡is encoded from (u, H𝑡). The training objective maximizes
+the likelihood of the ground-truth multi-level SID.
+At serving time, the Top-𝐾SIDs are decoded under beam search
+(beam size 𝐵) or sampling [11]: b
+S𝜃(𝑥𝑡) = TopK𝐵
+n
+𝑝𝜃
+ 𝑠(1:𝐿) | 𝑥𝑡
+o
+.
+Finally, a prebuilt mapping/index Map : S →V projects SIDs
+back to concrete video ids forming the retrieval result R𝜃(𝑥𝑡) =
+Map  b
+S𝜃(𝑥𝑡) ⊆V, which is also required to satisfy Eq. 1.
+2.2
+Framework Overview
+We first pre-quantize videos into 𝐿=3 hierarchical SIDs via resid-
+ual k-means (RQ-KMeans) [11]. Built on an encoder-free, decoder-
+centric backbone, DualGR integrates three components, i.e., DBR
+(long/short routing), S2D (search-based fine decoding), and ENTP-
+Loss (exposure-aware training) as illustrated in Fig. 1.
+2.3
+Dual-Branch Long/Short-Term Router
+To explicitly capture users’ long- and short-term dependencies, we
+propose the Dual-Branch Long/Short-Term Router (DBR), which de-
+fines two windows Hlong
+𝑡
+(length 𝐿long) and Hshort
+𝑡
+(length 𝐿short <
+𝐿long), obtained from H𝑡by taking the most recent actions with
+padding if needed. Then DBR maps video’s level-1 SID in each action
+to an embedding using the vocabulary embedding 𝐸(1)
+𝑣𝑜𝑐𝑎𝑏∈R| C(1) |×𝑑
+and form two target-aware summaries via pooling:
+rlong =Pool {𝐸(1)
+𝑣𝑜𝑐𝑎𝑏[𝑠(1) (a)] : a∈Hlong
+𝑡
+}
+(3)
+rshort =Pool {𝐸(1)
+𝑣𝑜𝑐𝑎𝑏[𝑠(1) (a)] : a∈Hshort
+𝑡
+}
+(4)
+For a training example with ground-truth level-1 token 𝑠(1)
+★
+(embed-
+ding e(1)
+★=𝐸(1)
+𝑣𝑎𝑐𝑜𝑏[𝑠(1)
+★]), DBR computes target-aware similarities:
+𝛾long = cos(e(1)
+★, rlong), 𝛾short = cos(e(1)
+★, rshort),
+(5)
+applying a hard gate to select the window with the larger similarity
+as the coarse-step user history H★
+𝑡. Subsequently, DBR constructs
+the input by concatenating it with user static features, then applying
+embeddings and LayerNorm:
+𝑥★
+𝑡= LN
+
+𝐸𝑢(u) ; 𝐸𝑎
+ H★
+𝑡
+ 
+(6)
+where 𝐸𝑢and 𝐸𝑎are embedding transforms for user statics and
+actions. The decoder conditions on 𝑥★
+𝑡to predict the level-1 token
+𝑠(1), which avoids long-short term dilution and yields a cleaner
+supervision signal for the coarse category.
+At inference time, DBR instantiates both branches
+𝑥long
+𝑡
+= LN [𝐸𝑢(u); 𝐸𝑎(Hlong
+𝑡
+)], 𝑥short
+𝑡
+= LN [𝐸𝑢(u); 𝐸𝑎(Hshort
+𝑡
+)],
+(7)
+and runs one beam-search decoding pass per branch to obtain
+the coarse level-1 tokens. Following the fine-grained decoding in
+Sec. 2.4, each branch continues beam search to decode ˆ𝑠(2), ˆ𝑠(3) and
+form a candidate SID set. Then the two sets are merged as b
+S𝜃(𝑥𝑡),
+and finally mapped back to concrete videos to produce the retrieval
+set, thereby jointly covering both long- and short-term interests.
+2.4
+Search-based SID Decoding
+For fine-grained decoding (ℓ>1), Search-based SID Decoding (S2D)
+ignores the long/short windowing and searches over the original
+action list H𝑡, so as to harvest as many in-bucket interactions as
+possible once the coarse category is determined.
+2.4.1
+Training. Let 𝑠(1)
+★
+denote the coarse (level-1) SID of the train-
+ing target. Given H𝑡= (a1, . . . , a𝑇𝑡), S2D constructs a same-bucket,
+recent subset via
+b
+H𝑡(𝑠(1)
+★) = Search({a ∈H𝑡: 𝑠(1) (a) = 𝑠(1)
+★}).
+(8)
+then builds the fine-level input by concatenating user static features
+with the selected actions and encoding them as in Eq. 6 to obtain
+𝑥(>1)
+𝑡
+. Under teacher forcing [10], the conditional likelihood for the
+remaining tokens is
+𝑝𝜃(𝑠(ℓ)
+★
+𝑠(1:ℓ−1)
+★
+, 𝑥(>1)
+𝑡
+), ℓ= 2, . . . , 𝐿
+(9)
+, which is optimized by minimizing the ENTP objective in Sec. 2.5.
+2.4.2
+Inference. At serving, each branch first predicts ˆ𝑠(1) as de-
+scribed in Sec. 2.3. Subsequently, S2D runs the global search on the
+full action list H𝑡to obtain b
+H𝑡(ˆ𝑠(1)) via Eq. (8), forming 𝑥(≥1), and
+then decodes 𝑠(2),𝑠(3) autoregressively.
+S2D realizes the decoding with searching, controlled noise and
+latency. Conditioning on the chosen level-1 bucket 𝑠(1)
+★, the size of
+the in-bucket history scales approximately as
+H𝑡
+ 𝑠(1)
+★
+ ≈
+|H𝑡|
+|V (1) | .
+In practice, the codebook per level is typically large (e.g., ≥256 and
+up to 8192) [7, 11], hence
+H𝑡(𝑠(1)
+★)
+≪|H𝑡|. This shrinkage enables
+longer usable histories under a fixed latency budget.
+2.5
+Exposure-aware NTP Loss
+To encourage timely fade-out of non-interest directions, we pro-
+pose an Exposure-aware NTP Loss (ENTP-Loss). Specifically, we
+organize training tuples as (𝑥𝑖,𝑠(1:𝐿)
+𝑖
+,𝑐𝑖) where 𝑐𝑖∈{0, 1} indicates
+a positive (valid interactive) 𝑠(1:𝐿)
+𝑖
+if 𝑐𝑖=1, and 𝑐𝑖=0 for the negative
+(unclicked exposure) 𝑠(1:𝐿)
+𝑖
+. Let 𝑝(ℓ)
+𝑖
+be the predicted probability
+(clipped to [𝜀, 1 −𝜀]) of the ground-truth SID at level ℓ, the ENTP-
+Loss can be defined as
+LENTP= 1
+𝑁
+∑︁
+𝑖∈B
+"
+𝑐𝑖
+𝐿
+∑︁
+ℓ=1
+  −log𝑝(ℓ)
+𝑖
++(1−𝑐𝑖) −𝛼log 1−𝑝(1)
+𝑖
+
+#
+(10)
+where B is a mini-batch of size 𝑁=|B| and 𝛼> 0 controls the
+strength of the negative signal. This objective keeps the standard
+NTP likelihood on positives at all levels while adding a coarse-
+level (level-1) penalty for negatives, promoting timely non-interest
+fade-out without introducing fine-level label noise.
+3
+Experiments
+Experimental Settings. We conduct experiments on Kuaishou’s
+double-column Explore feed short-video stream, one of the plat-
+form’s largest recommendation surfaces, serving over 100M users,
+1B video views, and 10B exposures per day. We compare Du-
+alGR against strong retrieval baselines deployed in this scenario,
+including ComiRec [1], PDN [2], and KuaiFormer [3]; addition-
+ally, for a fair comparison with generative retrieval, we implement
+TIGER [7]. For evaluation, we use Online Hit Rate (HR), a metric
+
+WWW ’26, April 13–17, 2026, Dubai, United Arab Emirates
+Zhongchao Yi et al.
+Table 1: Overall online HR@K performance.
+Method
+HR@100
+HR@500
+HR@1000
+ComiRec
+2.539%
+6.134%
+8.249%
+PDN
+2.343%
+5.483%
+7.249%
+KuaiFormer
+4.495%
+7.251%
+12.356%
+TIGER
+4.936%
+8.184%
+14.442%
+DualGR
+6.827%
+10.319%
+19.529%
+widely adopted in prior work [3]. DualGR adopts an encoder-
+free decoder of 4 Transformer blocks with model dimension 512,
+8 attention heads, and feed-forward dimension 1024. Videos are
+pre-quantized into 𝐿=3 hierarchical codebooks with per-level size
+|C(ℓ) |=8192. For inputs, we use the user’s most recent positive in-
+teractions where |H𝑡|=1000, the DBR employs window lengths
+𝐿long=1000 and 𝐿short=64. Training uses the ENTP-Loss with 𝛼=0.1.
+Overall Performance. Table 1 summarizes the results on the short-
+video recommendation. DualGR consistently outperforms strong
+baselines and the implemented generative retriever, demonstrating
+clear advantages. These gains indicate that explicitly modeling long-
+and short-term interests with search-based activation, coupled with
+fade-out of non-interest, yields a more effective and robust genera-
+tive retrieval paradigm for industrial short-video feeds.
+Sensitivity Analysis. We study the impact of the short-term win-
+dow length 𝐿short (Fig. 2a). Small windows underfit recency, missing
+short-term interests, while large windows blur the boundary with
+the long-term branch, so a moderate 𝐿short can best captures recency
+and remains complementary. For 𝛼in ENTP-Loss (Fig. 2b), overly
+large values over-penalize unclicked exposures, thus destabilizing
+training and suppressing true interests, whereas overly small values
+yield slow fade-out. A moderate setting strikes the best balance.
+16 32
+64
+128
+256
+Lshort
+16
+17
+18
+19
+20
+Online HR@1000 (%)
+(a) Short-term window length.
+1
+0.1
+0.001
+0.0001
+0.00001
+ (ENTP-Loss)
+10
+12
+14
+16
+18
+20
+Online HR@1000 (%)
+(b) 𝛼in ENTP-Loss.
+Figure 2: Sensitivity analysis of DualGR.
+3.1
+Online A/B Test
+We conducted a week-long online A/B experiment on Kuaishou’s
+double-column Explore feed with 6% traffic, integrating DualGR
+as an additional retrieval channel. Results show consistent lifts of
++0.527% video views and +0.432% watch time, while keeping end-to-
+end latency within service-level budgets (no measurable response
+time increase), validating DualGR’s practical effectiveness.
+3.2
+Ablation Study
+We assess the contribution of each module via three variants (Ta-
+ble 2), i.e., w/o DBR replaces the DBR with long branch only, w/o
+S2D removes S2D and performs unconstrained fine-level decoding,
+and w/o ENTP-Loss trains with vanilla NTP without exposure-
+aware negatives. DualGR consistently outperforms all variants ver-
+ifying that all components are necessary and complementary.
+Table 2: Ablation study of DualGR.
+Method
+HR@100
+HR@500
+HR@1000
+w/o DBR
+5.134%
+8.892%
+15.379%
+w/o S2D
+6.257%
+9.182%
+16.287%
+w/o ENTP-Loss
+6.672%
+9.837%
+17.576%
+DualGR
+6.827%
+10.319%
+19.529%
+4
+Conclusion
+We present DualGR, a generative retriever that explicitly models
+long- and short-term interests via a Dual-Branch Router (DBR),
+controls context noise through Search-based SID Decoding (S2D),
+and accelerates non-interest fade-out with an Exposure-aware NTP
+Loss (ENTP-Loss). Built on an encoder-free, step-wise target-aware
+decoder, DualGR delivers consistent HR@K gains and strong online
+lifts in our production setting, demonstrating its effectiveness as a
+practical paradigm for industrial generative retrieval.
+Acknowledgements
+This paper is partially supported by the National Natural Science
+Foundation of China (No.62502488, No.12227901), Natural Science
+Foundation of Jiangsu Province (BK20240460), the grant from State
+Key Laboratory of Resources and Environmental Information Sys-
+tem.
+References
+[1] Yukuo Cen, Jianwei Zhang, Xu Zou, Chang Zhou, Hongxia Yang, and Jie Tang.
+2020. Controllable multi-interest framework for recommendation. In Proceedings
+of the 26th ACM SIGKDD international conference on knowledge discovery & data
+mining. 2942–2951.
+[2] Houyi Li, Zhihong Chen, Chenliang Li, Rong Xiao, Hongbo Deng, Peng Zhang,
+Yongchao Liu, and Haihong Tang. 2021. Path-based Deep Network for Candidate
+Item Matching in Recommenders. arXiv preprint arXiv:2105.08246 (2021).
+[3] Chi Liu, Jiangxia Cao, Rui Huang, Kai Zheng, Qiang Luo, Kun Gai, and Guorui
+Zhou. 2024. KuaiFormer: Transformer-Based Retrieval at Kuaishou. arXiv preprint
+arXiv:2411.10057 (2024).
+[4] Nelson F Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua,
+Fabio Petroni, and Percy Liang. 2023. Lost in the middle: How language models
+use long contexts. arXiv preprint arXiv:2307.03172 (2023).
+[5] Yue Meng, Cheng Guo, Xiaohui Hu, Honghu Deng, Yi Cao, Tong Liu, and Bo
+Zheng. 2025. User Long-Term Multi-Interest Retrieval Model for Recommenda-
+tion. In Proceedings of the Nineteenth ACM Conference on Recommender Systems.
+1112–1116.
+[6] Qi Pi, Guorui Zhou, Yujing Zhang, Zhe Wang, Lejian Ren, Ying Fan, Xiaoqiang
+Zhu, and Kun Gai. 2020. Search-based user interest modeling with lifelong
+sequential behavior data for click-through rate prediction. In Proceedings of the
+29th ACM International Conference on Information & Knowledge Management.
+2685–2692.
+[7] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[8] Liu Yang, Fabian Paischer, Kaveh Hassani, Jiacheng Li, Shuai Shao, Zhang Gabriel
+Li, Yun He, Xue Feng, Nima Noorshams, Sem Park, et al. 2024. Unifying gen-
+erative and dense retrieval for sequential recommendation.
+arXiv preprint
+arXiv:2411.18814 (2024).
+[9] Xinyang Yi, Ji Yang, Lichan Hong, Derek Zhiyuan Cheng, Lukasz Heldt, Aditee
+Kumthekar, Zhe Zhao, Li Wei, and Ed Chi. 2019. Sampling-bias-corrected neural
+modeling for large corpus item recommendations. In Proceedings of the 13th ACM
+conference on recommender systems. 269–277.
+[10] Wayne Xin Zhao, Kun Zhou, Junyi Li, Tianyi Tang, Xiaolei Wang, Yupeng Hou,
+Yingqian Min, Beichen Zhang, Junjie Zhang, Zican Dong, et al. 2023. A survey
+of large language models. arXiv preprint arXiv:2303.18223 1, 2 (2023).
+[11] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv preprint arXiv:2506.13695 (2025).

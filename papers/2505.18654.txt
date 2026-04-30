@@ -1,0 +1,1123 @@
+MTGR: Industrial-Scale Generative Recommendation Framework
+in Meituan
+Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma, Mincong Huang,
+Xiaoguang Li, Chunzhen Jing, Yueming Han, Menglei Zhou, Lei Yu, Chuan Liu, Wei Lin∗
+{hanruidong, yinbin05, chenshangyu03, jianghe06, jiangfei05, lixiang245, machi04, huangmincong, lixiaoguang12,
+jingchunzhen, hanyueming02, zhoumenglei, yulei37, liuchuan11, linwei31}@meituan.com
+Meituan
+Beijing, China
+Abstract
+Scaling law has been extensively validated in many domains such as
+natural language processing and computer vision. In the recommen-
+dation system, recent work has adopted generative recommenda-
+tions to achieve scalability, but their generative approaches require
+abandoning the carefully constructed cross features of traditional
+recommendation models. We found that this approach significantly
+degrades model performance, and scaling up cannot compensate
+for it at all. In this paper, we propose MTGR (Meituan Generative
+Recommendation) to address this issue. MTGR is modeling based
+on the HSTU [23] architecture and can retain the original deep
+learning recommendation model (DLRM) features, including cross
+features. Additionally, MTGR achieves training and inference accel-
+eration through user-level compression to ensure efficient scaling.
+We also propose Group-Layer Normalization (GLN) to enhance
+the performance of encoding within different semantic spaces and
+the dynamic masking strategy to avoid information leakage. We
+further optimize the training frameworks, enabling support for our
+models with 10 to 100 times computational complexity compared
+to the DLRM, without significant cost increases. MTGR achieved
+65x FLOPs for single-sample forward inference compared to the
+DLRM model, resulting in the largest gain in nearly two years both
+offline and online. This breakthrough was successfully deployed on
+Meituan, the world’s largest food delivery platform, where it has
+been handling the main traffic.
+CCS Concepts
+• Information systems →Recommendation systems.
+Keywords
+Scaling Law; Generative Recommendation
+ACM Reference Format:
+Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi
+Ma, Mincong Huang, Xiaoguang Li, Chunzhen Jing, Yueming Han, Menglei
+∗Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+CIKM ’25, Seoul, Republic of Korea
+© 2025 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 979-8-4007-2040-6/2025/11
+https://doi.org/10.1145/3746252.3761565
+Zhou, Lei Yu, Chuan Liu, Wei Lin. 2025. MTGR: Industrial-Scale Generative
+Recommendation Framework in Meituan. In Proceedings of the 34th ACM
+International Conference on Information and Knowledge Management (CIKM
+’25), November 10–14, 2025, Seoul, Republic of Korea. ACM, New York, NY,
+USA, 8 pages. https://doi.org/10.1145/3746252.3761565
+1
+Introduction
+Scaling law have been proven to apply to most deep learning tasks,
+including language models[9], computer vision[14, 24], and infor-
+mation retrieval[4]. Our work focuses on scaling up the ranking
+model in industrial recommendation systems effectively. Under the
+requirements of high QPS (Queries Per Second) and low latency in
+industrial recommendation systems, the scaling of the model is usu-
+ally limited by both the training cost and inference time. Currently,
+the study on scaling ranking models can be divided into two types:
+Deep Learning Recommendation Model (DLRM) and Generative
+Recommendation Model (GRM). DLRM models individual user-item
+pairs to learn the probability of interest for ranking and scales up
+by developing more complex mappings. GRM organizes data by
+token like natural language and performs next token prediction
+through a transformer architecture.
+In industrial recommendation systems, DLRM has been used for
+nearly a decade, typically with inputs that include a large number
+of well-designed handcrafted features such as cross features 1 to
+improve model performance. However, DLRM has two significant
+drawbacks when it comes to scaling: 1) with exponential growth of
+user behavior, traditional DLRM cannot efficiently process entire
+user behaviors, often resorting to sequence retrieval or designing
+low-complexity modules for learning, which limits the model’s
+learning capability [1, 15]. 2) scaling based on DLRM incurs approx-
+imately linear costs in training and inference with the number of
+candidates, making the expenses unbearably high.
+For GRM, recent studies have pointed out its excellent scalability
+[3, 23]. We identify two key factors: 1) GRM directly models the com-
+plete chain of user behavior, which compresses multiple samples of
+exposure under the same user into one. This significantly reduces
+computational redundancy, while allowing end-to-end encoding of
+longer sequence compared to DLRM; 2) GRM adopts a transformer
+architecture with efficient attention computation[2, 23], enabling
+the model’s training and inference to meet the requirements of in-
+dustrial recommendation systems. However, GRM heavily relies on
+next token prediction to model a complete user behavior sequence,
+which requires removing cross features between candidates and the
+1Cross features measure the interactions of multiple raw features, like the user’s
+historical click-through rate for the target candidate
+arXiv:2505.18654v4  [cs.IR]  22 Aug 2025
+
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+Ruidong Han, Bin Yin, Shangyu Chen et al.
+user. We found that excluding cross features severely damages the
+model’s performance, and this degeneration cannot be compensated
+by scaling up at all.
+How can we build a ranking model that utilizes cross features to
+ensure effectiveness while also possessing the scalability of GRM?
+To address this problem, we propose the Meituan Generative Rec-
+ommendation (MTGR). Compared to traditional DLRM and GRM,
+MTGR utilizes the advantages and discards disadvantage of the
+methods. MTGR maintains inputs feature consistent with tradi-
+tional DLRM, including cross features. Specially, MTGR reorganizes
+features by converting user and candidate features into different to-
+kens, leading to a token sequence for efficient model scaling. Then
+MTGR incorporates the cross feature in the candidate tokens and
+learns with a discriminative loss.
+MTGR employs the similar HSTU (Hierarchical Sequential Trans-
+duction Units) architecture as used in [23] for modeling. In HSTU,
+we propose Group-layer Normalization(GLN) to normalize differ-
+ent types of token separately, enabling better modeling of multiple
+heterogeneous information simultaneously. In addition, we propose
+a dynamic masking strategy, where full-attention, auto-regressive
+and visibility only to itself are used to ensure performance and
+avoid information leakage.
+Unlike the commonly used TensorFlow in the industry, MTGR
+training framework is built based on TorchRec[8] and optimized
+for computational efficiency. Specifically, to handle the real-time
+insert/delete of sparse embedding entries, we employ dynamic hash
+tables to replace static tables. To improve efficiency, we conduct
+dynamic sequence balancing to address the computation load im-
+balances among GPUs and adopt embedding ID de-duplication
+alongside automatic table merging to accelerate embedding lookup.
+We also incorporate implementation optimization including mixed
+precision training and operator fusion. Compared to TorchRec, our
+optimized framework improves training throughput by 1.6x – 2.4x
+while achieving good scalability when running over 100 GPUs.
+We validate the scalability of MTGR on a small-scale dataset.
+Then, we design three models of varying sizes, which are trained
+using following over six months of data, to verify the scaling law for
+both offline and online performance. The large version, compared to
+the DLRM baseline optimized over years, demonstrates 65x FLOPs
+per sample for forward computation and increases the conversion
+volumes by 1.22% and the CTR (Click-Through Rate) by 1.31% in our
+scenarios. Meanwhile, the training cost remains unchanged and the
+inference cost is reduced by 12%. MTGR-large has been deployed in
+the Meituan take-away recommendation system, serving hundreds
+of millions of users.
+In summary, our contributions are summarized as follows:
+• MTGR combines the advantages of DLRM and GRM, retain-
+ing all the features of DLRM, including the cross feature,
+while demonstrating excellent scalability as GRM.
+• We propose Group-Layer Normalization and dynamic mask-
+ing strategies to achieve better performance.
+• We perform systematic optimizations on the TorchRec-based
+MTGR training framework to enhance training performance.
+• Both offline and online experiments were conducted to demon-
+strate the power-law relationship between the performance
+of MTGR and computational complexity, and its superiority
+compared to DLRM.
+2
+Related Works
+2.1
+Deep Learning Recommendation Model
+A classic DLRM structure typically includes many inputs such as
+context (e.g. time, location), user profile (e.g. gender, age), user be-
+havior sequences, and target item with many cross features. Two
+particularly important modules in ranking model are behavior se-
+quence processing and feature interactions learning. The behavior
+sequence module[15, 17, 27] usually employs target attention mech-
+anisms to capture the similarity between the historical behavior
+of the users and the item to be estimated. The feature interactions
+module[12, 18–20] is designed to capture interactions among differ-
+ent features including user and item to produce the final prediction.
+2.2
+Scaling up Recommendation Model
+Based on the different scaling modules in DLRM, there are two
+distinct approaches. One approach is the scaling cross module, i.e.
+scaling up the feature interactions module that integrates user and
+item information. [25] introduces a stackable Wukong layer for
+scaling up. [6] employ a multi-embedding strategy to address the
+embedding collapse, thereby enhancing the model’s scalability. The
+other approach is the scaling user module, where only the user
+part is scaled up, making this approach more inference-friendly.
+[7, 26] reduce online inference costs by scaling only user represen-
+tations and caching or broadcasting them to different items that
+will be estimated. [16, 22] design a pre-training method for user
+representations, demonstrating scalability in downstream tasks.
+The counterpart to DLRM is GRM. [23] validate the scaling law
+through HSTU with scaling up to trillion-level parameters. [3] use
+semantic coding to replace traditional ID representations, com-
+bining DPO optimization with a transformer-based framework to
+replace the cascaded learning framework with a unified generative
+model.
+3
+Preliminary
+3.1
+Data Arrangement
+Traditionally, for a user and the corresponding 𝐾candidates, the
+𝑖-th sample for the user and 𝑖-th candidate pair can be represented
+as D𝑖= [U, −→S , −→R, C𝑖, I𝑖]. Specifically, U = [U1, ..., U𝑁U] represents
+the user’s profile feature (U𝑖), such as age, gender, etc. Each feature
+U𝑖is a scalar, and 𝑁U represents the number of features used. −→S =
+[S1, ..., S𝑁S] contains the sequence of items that have historically
+been interacted with by the user. Each element in S𝑖= [s1, ..., s𝑁s]
+represents an item, it is comprised by selected features (s𝑖) such as
+the item’s ID, tag, average CTR on the item and etc. Similar to −→S , −→R
+records the closet interaction to current request within a few hours
+or a day. −→R represents user’s real-time actions and preference. It
+shares the same features with −→S . C = [C1, ..., C𝑁C] comprises the
+cross features between the user and the candidates. I = [I1, ..., I𝑁I]
+contains the features used for candidates, such as item’s ID, tag,
+and brand. I is candidate-dependent and shared for different users.
+
+MTGR: Industrial-Scale Generative Recommendation Framework in Meituan
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+Query
+Query
+age
+gender
+ctr
+pv
+ID
+tag
+brand
+embedding lookup
+Target Attention
+Feat(seq)
+Concatenation
+logit
+MLP
+Feat(user)
+Feat(cross)
+Feat(candidate)
+User
+Seq
+Cross
+Candidiate
+Emb(ID)
+Emb(tag)
+Emb(brand)
+RT
+ID
+tag
+brand
+ID
+tag
+brand
+Emb(age)
+Emb(gender)
+Emb(ID)
+Emb(tag)
+Emb(ctr)
+Emb(ID)
+Emb(tag)
+Emb(ctr)
+Target Attention
+Emb(ID)
+Emb(tag)
+Emb(brand)
+Emb(ID)
+Emb(tag)
+Emb(brand)
+Emb(ctr)
+Emb(pv)
+Feat(rt)
+ID
+tag
+brand
+ID
+tag
+brand
+Figure 1: Data Arrangement and workflow of traditional ranking
+model. An example with simplified features is demonstrated: U con-
+tains ‘age’ and ‘gender’; −→S and −→R is comprised by 2 item respectively,
+each item possesses ‘ID’, ‘tag’ and ‘brand’; C contains ‘ctr’ and ‘pv’,
+presenting user’s historical CTR and number of exposures to the
+candidate, which uses ‘ID’, ‘tag’ and ‘brand’.
+3.2
+Ranking Model in Recommendation
+Systems
+With input samples D, traditional recommendation system pro-
+cesses the samples independently. Specially, it firstly embeds the
+features in D and converts the samples to a dense representation.
+Formally, the features in U, C, I are embedded and concatenated to
+EmbU ∈R𝐾×𝑑U, EmbC ∈R𝐾×𝑑C and EmbI ∈R𝐾×𝑑I, respectively.
+For features in −→S and −→R 2, each item(S𝑖)’s feature are similarly
+embedded and concatenated to EmbS𝑖∈R𝑑s, items in −→S are con-
+catenated in other dimension, leading to Emb−→S ∈R𝑁−→S ×𝑑s 3.
+To extract user interest between the historical interacted items
+and candidates, target attention normally be used with target as
+query and sequence feature as key/value. Formally,
+Feat−→S = Attention(EmbI, Emb−→S , Emb−→S ) ∈R𝐾×𝑑S
+(1)
+Eq.1 aggregates −→S according to I. Finally, embedded and processed
+features from D are concatenated and represented as:
+FeatD = [EmbU, Feat−→S , Feat−→R , EmbC, Embs] ∈R𝐾×(𝑑U+𝑑S+𝑑C+𝑑I)
+(2)
+FeatD is further fed to a multiple layer perceptron (MLP) to output
+logit for each sample. The logit is used for learning in training and
+for ranking when inference.
+2In the following description, since −→S and −→R are processed in a similar way, only −→S ’s
+modeling is described for clarity.
+3𝑁∗represents the sequence length of ∗
+Fig.1 shows a simplified data arrangement and workflow under
+the traditional ranking model. These features are firstly embedded,
+the leading embeddings are processed in different methods. Finally,
+the processed features are concatenated and processed by MLP for
+feature interaction. The final logit is generate for each candidates.
+3.3
+Scaling Dilemma in Recommendation
+Systems
+Model scaling has been a common method for performance im-
+provement in ranking. Generally, model scaling aims at scaling
+parameters in user module and cross module. The user module
+processes user feature including sequence features and generates
+user-dependent representation. Scaling user module brings in bet-
+ter representation for user. Besides, since the user is shared and
+inferred once for all candidates, a large inference cost in the user
+module does not lead to a burdensome system overload. However,
+scaling user module alone does not contribute to feature interaction
+in user and item directly.
+On the contrary, another trend of method aims at scaling cross
+module, i.e., the feature interaction MLP after feature concatenation.
+These methods enhance ranking ability by paying more attention
+to interaction between user and candidates. However, since cross
+module is inferred for each candidates, computation increasing is
+scaled linearly with number of candidates. Cross module scaling
+brings in unacceptable system latency.
+The scaling dilemma in traditional recommendation system ne-
+cessitates a new scaling method, leading to efficient feature interac-
+tion between user and candidates, while at the same time brings
+sub-linear inference cost with number of candidates. MTGR in-
+novates the scaling approach in recommendation system by data
+rearrangement and corresponding architecture optimization.
+4
+Data Rearrangement and Architecture of
+MTGR
+4.1
+User Sample Aggregation for Training and
+Inference Efficiency
+Compared with feature categorization in Sec.3.1, for 𝑖-th sample in
+candidates, MTGR organizes features into D𝑖= [U, −→S , −→R, [C𝑖, I𝑖]].
+Specially, the cross feature C is arranged as part of the item feature
+of candidates. In MTGR, candidates are aggregated by user in a
+specific window for training and by request for inference. Since the
+aggregation is performed by the same user, the aggregated sample
+can use the same user representation (U, −→S , −→R). In particular, −→R
+arranges all the user’s real-time interaction items within another
+specific window in chronological order of interaction time.
+Fig.2(a) demonstrates the aggregation: Compared with Fig.1
+where only one candidate is predicted, Fig.2(a) aggregates three
+items in one sample, reusing the same user representation. Formally,
+it forms a feature representation for the same user:
+D = [U, −→S , −→R, [C, I]1, ..., [C, I]𝐾]
+(3)
+By aggregating candidates into one sample, MTGR reduces a
+tremendous amount of resource by performing only a single com-
+putation and producing scores for all candidates. Specially, the user
+aggregation procedure greatly reduce the training samples from the
+
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+Ruidong Han, Bin Yin, Shangyu Chen et al.
+(a) Data Arrangement & Architecture of MTGR
+(b) Self Attention Block
+(c) Costomized Mask
+embedding lookup
+ MLP for Candiates
+Self Attention with Costomized Mask
+logit
+MLP
+logit
+logit
+Emb(tag)
+Emb(brand)
+Emb(tag)
+Emb(brand)
+ MLP for Seq
+Emb(ID)
+Emb(ID)
+Raw Features
+Seq
+Candiates
+Emb(tag)
+Emb(brand)
+Emb(tag)
+Emb(brand)
+ MLP for RT
+Emb(ID)
+Emb(ID)
+Emb(tag)
+Emb(brand)
+Emb(ctr)
+Emb(pv)
+Emb(ID)
+Emb(tag)
+Emb(brand)
+Emb(ctr)
+Emb(pv)
+Emb(ID)
+Emb(tag)
+Emb(brand)
+Emb(ctr)
+Emb(pv)
+Emb(ID)
+Token(candiate)
+Token(candidate)
+Token(candidate)
+Token(seq)
+Token(seq)
+Token(seq) Token(seq)
+Token(age)
+Token(gender)
+Output(candiate)
+Output(candidate)
+Output(candidate)
+age
+ctr
+seq1
+seq2
+target2
+target1
+target3
+age
+ctr
+seq1
+seq2
+target1
+target2
+target3
+rt1
+rt2
+rt1
+rt2
+Group LN
+K Proj
+Q Proj
+V Proj
+Attention
+Masking
+Value Update
+U Proj
+ x K
+Group LN
+age
+gender
+User
+RT
+brand
+ID
+tag
+brand
+ID
+tag
+brand
+ID
+tag
+brand
+ID
+tag
+ID
+tag
+brand
+ctr
+pv
+ID
+tag
+brand
+ctr
+pv
+ID
+tag
+brand
+ctr
+pv
+Token(User) Token(Seq) Token(RT) Token(Candidate)
+x N
+Figure 2: Data Arrangement and architecture of MTGR. (a) represents
+data arrangement and overall workflow of MTGR: 3 candidates’ fea-
+tures are aggregated with the counterpart of one user. The features
+are embedded and converted to token by MLP, forming a series of
+input sequence for self-attention with mask. The representation of
+the tokens of candidates are used for logit via another MLP module.
+(b) Detailed description of self-attention module of 𝐿layers: input
+sequence is firstly processed by a group layer norm and 4 projec-
+tions (Q/K/V/U). Self-attention is conducted with a customized mask.
+After value update, a dot-producted is performed on updated V and
+projected U. Finally, the updated value is again group-wise layer
+normed and added with a residual connection. (c) Customized mask
+to avoid information leakage, ‘rt’s and ‘target’s are ordered from
+recent to past: user feature (U, −→S ) is visible to all the tokens; ‘rt’s is
+visible to other tokens appear later; ‘target’s is visible to itself only.
+sizes of all candidates to all users. For inference, the candidates in a
+request are grouped as mentioned above, MTGR only perform one-
+time inference for all the candidate ranking, instead of inference
+of candidates’ number. The aggregation circumvents the depen-
+dency of candidate’ volume in inference cost, leaving possibility
+and potential for model scaling.
+Eq.3 is a combination of scalar and sequence features. To unify
+the input format, MTGR converts features and sequence into tokens.
+Specially, for scalar features in U, each feature is naturally converted
+to individual token with dimension FeatU ∈R𝑁U×𝑑model. 𝑑model is
+a set unified dimension for all tokens. For sequence feature of −→S
+and −→R, each item S is regarded as a token. Features in S is firstly
+embedded and concatenated, then a MLP module is adopted for
+dimension unification. Formally, FeatS𝑖= MLP(Concat(Embs)) ∈
+R𝑑model. The features of S in the sequence is concatenated along
+another dimension, leading to Feat−→S ∈R𝑁−→S ×𝑑model.
+Similar, each item I in candidates is regarded as a token. The fea-
+tures in candidates are embedded and concatenated, converted to
+the unified dimension by another MLP. Candidates are concatenated
+as a series of tokens: FeatI = Concat(MLP(Concat(EmbC𝑖, EmbI𝑖))) ∈
+R𝑁I Finally, the constructed tokens from U, −→S , [C, s] are concate-
+nated, leading a long sequence of tokens:
+FeatD
+=
+Concat([FeatU, Feat−→S , Feat−→R , FeatI])
+(4)
+∈
+R(𝑁U+𝑁−→S +𝑁−→R +𝑁I)×𝑑model
+4.2
+Unified HSTU Encoder
+Samples from a user are aggregated as a sequence of tokens, which
+is naturally suitable for processing using self-attention. Inspired by
+HSTU [23], MTGR uses stacks of self-attention layer and encoder-
+only architecture for modeling.
+Similar in LLM, the input token sequences are processed layer-
+wisely. As shown in Fig.2, in the self-attention block, input sequence
+X is firstly normalized by group layer norm. Features of the same
+domain (for example, U) form a group. Then, the group layer norm
+ensures that tokens from different domains share a similar distribu-
+tion before self-attention and aligns different semantic spaces of dif-
+ferent domains ˜𝑋= GroupLN(X). The normalized input is then pro-
+jected to 4 different representation: K, Q, V, U = MLPK/Q/V/U( ˜X).
+Q, K is utilized for multi-head attention computation with silu non-
+linear activation. The leading attention is divided by total length of
+input features as an average factor. Next, a customized mask (M) is
+imposed on the attention score and the projected V is applied for
+value update:
+˜V
+=
+silu(K𝑇Q)
+(𝑁U + 𝑁−→S + 𝑁−→R + 𝑁I) MV
+(5)
+The projected U and the updated ˜V is dot-producted. Then, another
+group layer norm is applied. Finally, we add a residual module and
+place another MLP above it:
+X
+=
+MLP(GroupLN( ˜V ⊙U)) + X
+(6)
+Dynamic Masking [23] utilizes the causal mask for sequence
+modeling. However, such a implementation does not bring in sig-
+nificant improvement in MTGR. Besides, since −→R records the user’s
+most recent interactions which timing might coincide with the
+sample aggregation window. Using a simple causal mask in MTGR
+could result in information leakage. For example, interactions in the
+evening should not be exposed to candidates in the afternoon, yet
+this information may be aggregated into one sample. This dilemma
+requires a flexible and efficient masking.
+In MTGR, U, −→S is regarded as static (in the following, we de-
+note U, −→S as ‘static sequence’) because its information comes from
+before the aggregation window, thus it does not cause causality
+errors. −→R is dynamic as it progressively include user’s interaction
+
+MTGR: Industrial-Scale Generative Recommendation Framework in Meituan
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+(‘dynamic sequence’ for −→S ) in real-time. MTGR applies full atten-
+tion for static sequence, auto-regressive with dynamic masking for
+−→R and diagonal masking for inter-candidates. Specially, 3 rules are
+set for MTGR’s masking:
+• The static sequence is visible to all tokens.
+• The visibility of the dynamic sequence adheres to causal-
+ity, where each token is only visible to tokens that occur
+afterward, which include candidate tokens.
+• Candidate tokens (C, I) is visible to itself only.
+Fig.2 (c) demonstrates an example for the dynamic masking: ‘age’,
+‘ctr’ represent feature token from U; ‘seq1’, ‘seq2’ for −→S ; ‘rt1’, ‘rt2’
+for −→R and ‘target1’ - ‘target3’ for candidates. White block in row
+represents that the certain token is able to use the information
+from others while column represents the token is visible to others
+or not. Full attention is utilized for U and S, leading to a white
+square from ‘age’ to ‘seq2’. For ‘rt1’ to ‘rt2’, we assume that ‘rt1’
+appear latter than ‘rt2’, Therefore, a tiny square from ‘rt1’ to ‘rt2’
+is constructed with white blocks in upper triangle, meaning that
+‘rt1’ is able to use information from ‘rt2’ while ‘rt1’ is not visible
+to ‘rt2’. Besides, ‘target2’ and ‘target3’ is assumed to appear earlier
+than ‘rt1’, leading to ‘rt1’ is not visible to them. ‘rt2’ appear earlier
+than all ‘target1’ and ‘target2’ while latter than ‘target3’. Therefore,
+‘rt2’ is not visible to ‘target3’, which appears earlier than all ‘rt’s,
+leading to its unable to use information from ‘rt’s.
+5
+Training System
+To facilitate the design and development of MTGR model struc-
+ture and to conveniently incorporate more features from the fast-
+growing LLM community, we decided not to continue with our
+previous TensorFlow-based training framework. Instead, we opted
+to reconstruct our training framework within the PyTorch ecosys-
+tem. Specifically, we expanded and optimized TorchRec’s function-
+ality, made enhancements specifically catering to MTGR model’s
+characteristics, and ultimately accomplished efficient training of
+MTGR model. Compared to TorchRec, our optimized framework
+improves training throughput by 1.6x – 2.4x while achieving good
+scalability when running over 100 GPUs. Compared to the DLRM
+baseline, we achieved 65x FLOPs per sample for forward compu-
+tation, while the training cost remained nearly unchanged. We
+provide some of our key work as follows.
+Dynamic Hash Table. TorchRec use a fixed-size table to process
+sparse embeddings, which is not suitable for large-scale industrial
+streaming training scenarios. Firstly, additional embeddings cannot
+be allocated to new users and items at real-time once the static
+table hits its preset capacity. Secondly, static embedding tables
+often require reserving more space than needed to avoid ID over-
+flow, resulting in ineffective use of memory resources. To address
+these issues, we develop a high-performance embedding table uti-
+lizing hash techniques, enabling the dynamic allocation of space
+to accommodate sparse IDs during training. Our design employs
+a decoupled hash table architecture[21], segregating key storage
+and value storage into separate entities. The key storage offers a
+lightweight mapping system linking keys to pointers, which point
+to embedding vectors, while the value storage contains the embed-
+ding vectors along with additional metadata, such as counters and
+timestamps, for eviction policies. This two-part system achieves
+two primary objectives: (1) facilitating dynamic expansion of ca-
+pacity by replicating only the key storage instead of the extensive
+embeddings, and (2) improving the efficiency of key scanning by
+arranging keys in a compact format.
+Embedding Lookup. The embedding lookup process employs
+All-to-all communication for cross-device embedding exchange. To
+minimize duplicate ID transfers between devices, we implement a
+two-step process that ensures IDs remain unique both before and
+after communication.
+Load balance. In recommendation systems, user behavior se-
+quences often exhibit a long-tail distribution where only a few
+users have long sequences, while most have short ones. This leads
+to significant computational load imbalance when training with a
+fixed batch size (abbreviated as BS). A common solution is to use se-
+quence packing techniques[10], where multiple short sequences are
+merged into a longer one. However, this approach requires careful
+mask adjustments to prevent different sequences from interfering
+with each other during the attention calculation, which can be quite
+costly to implement. Our straightforward solution is to introduce
+dynamic BS. Each GPU’s local BS is adjusted based on the actual
+sequence length of the input data, ensuring a similar computational
+load. Additionally, we’ve tweaked the gradient aggregation strategy
+to weight each GPU’s gradients according to its BS, maintaining
+computational logic consistency with fixed BS.
+Other Optimizations. To further enhance training efficiency,
+we implement pipeline technology utilizing three distinct streams:
+copy, dispatch, and compute. The copy stream is responsible for
+transferring input data from the CPU to the GPU, while the dispatch
+stream executes table lookups using IDs, and the compute stream
+deals with both forward computations and backward updates. For
+example, while the compute stream performs forward and backward
+passes for batch T, the copy stream simultaneously loads batch T+1,
+thereby minimizing I/O delay. Once backward updates for batch T
+are completed, the dispatch stream promptly starts table lookups
+and communication for batch T + 1. Furthermore, we employ bf16
+mixed-precision training and have designed a specialized attention
+kernel based on cutlass to accelerate training progress.
+6
+Experiments
+6.1
+Experiment setup
+Datasets. Public datasets widely use independent ID and attribute
+features, where cross features are seldom introduced. However,
+cross features demonstrate importance in real-world application.
+Cross features are an important category of features in our scenario.
+They are often meticulously hand-crafted, including interactions
+like user-item, user and higher-level categories, item and spatio-
+temporal information. To compensate the absence of cross feature in
+public datasets, we construct a training dataset based on logs from
+the real industrial-scale recommendation system in Meituan. Unlike
+public datasets, our real dataset contains a richer cross features set
+and longer user behavior sequences. Using our industrial-scale data
+for experiments better highlights the significant impact of these
+cross features on real recommendation systems. In addition, the
+volume of our dataset is large, allowing complex models to achieve
+
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+Ruidong Han, Bin Yin, Shangyu Chen et al.
+more adequate convergence during training. For the offline experi-
+ments, we collect data over a 10-day period. The statistics of the
+dataset are shown in Table 1. For the online experiments, in order
+to compare with the DLRM baseline that has been trained for over
+2 years, we constructed a longer-term dataset for the experiments,
+using data spanning more than 6 months.
+Table 1: Dataset Statistics
+Dataset
+#Users
+#Items
+#Exposure
+#Click
+#Purchases
+Train
+0.21 billion
+4,302,391
+23.74 billion
+1.08 billion
+0.18 billion
+Test
+3,021,198
+3,141,997
+76,855,608
+4,545,386
+769,534
+Baseline. For DLRM, we compare two methods in sequence
+modeling: SIM based on sequence retrieval and End2End modeling
+for original long sequences (E2E). In terms of scaling, we compared
+DNN, MoE[13], Wukong[25], MultiEmbed[6], and UserTower.
+MoE uses 4 experts, with each expert containing a network of
+the same complexity as the base DNN. Wukong and MultiEmbed
+are configured to the same computational complexity as MoE. User-
+Tower uses a set of learnable queries and inserts a qFormer[11]
+layer with another MoE (16 experts) module on user behavior. User-
+Tower’s computational complexity is tripled than MoE method, but
+it can share this computation for multiple predicted items for the
+same user during inference, thereby reducing inference costs. It has
+achieved good results in our scenario.
+MTGR employs E2E to handle all sequence information. Addi-
+tionally, as shown in Table 2, we have set up three different scales
+to verify the scalability of MTGR.
+Table 2: Comparison of models with different settings and computa-
+tional complexity
+Model
+Setting
+Learning rate
+GFLOPs/example
+UserTower-SIM
+-
+8 × 10−4
+0.86
+MTGR-small
+𝑛layer = 3, 𝑑model = 512, 𝑛heads = 2
+3 × 10−4
+5.47
+MTGR-medium
+𝑛layer = 5, 𝑑model = 768, 𝑛heads = 3
+3 × 10−4
+18.59
+MTGR-large
+𝑛layer = 15, 𝑑model = 768, 𝑛heads = 3
+1 × 10−4
+55.76
+Evaluation Metrics. In offline, we focus on learning of two
+tasks: CTR and CTCVR (Click-Through Conversion Rate) and use
+AUC[5] and GAUC (Group AUC) for evaluation. GAUC is averaged
+on the the AUCs under users. Compared to AUC, GAUC pays more
+attention to the model’s ranking ability for the same user. For online
+evaluation, we focus on two metrics: PV_CTR (CTR per page view)
+and UV_CTCVR (CTCVR per user view), where UV_CTCVR is the
+most crucial metric for evaluating the growth of business.
+Parameter Setting. Our model is trained using the Adam opti-
+mizer. For DLRM, each GPU processes a batch size of 2400, with 8
+NVIDIA A100 GPUs for training. In the case of MTGR, the batch
+size is set to 96, utilizing 16 NVIDIA A100 GPUs for training. As
+shown in Table 2, the learning rate decreases as the complexity of
+the model increases. Additionally, as the computational complexity
+grows, we proportionally enlarge the size of the sparse parameters
+by configuring different embedding dimensions. Assuming that a
+token consists of 𝑘features, the embedding dimension for each
+feature is generally set to an integer close to 𝑑model/𝑘. It is worth
+noting that, to prevent excessive overhead due to the overexpan-
+sion of sparse parameters, we primarily increase the dimensions
+of sparse features with smaller cardinality, while maintaining the
+dimensions of extremely sparse features unchanged. Finally, the
+maximum length of −→S is set to 1000, while −→R is set to 100.
+6.2
+Overall Performance Comparison
+We evaluate the performance of MTGR and other baseline methods
+using our 10-day dataset. Table 3 shows the performance of different
+models. The differences among various models across different of-
+fline metrics are quite consistent. Based on previous experience, an
+increase 0.001 in our offline metric is considered significant. Among
+the various versions of DLRM, Wukong-SIM and MultiEmbed-SIM
+achieve a better result than MoE-SIM. UserTower-SIM performs
+the best and UserTower-E2E shows a slight decline in performance
+compared to UserTower-SIM. We speculate that under the DLRM
+paradigm, the model complexity is insufficient to model all sequence
+information, leading to underfitting. Our proposed MTGR, even
+the smallest version, exceeds the strongest DLRM model. Addition-
+ally, models of three different sizes exhibit scalability, with their
+performance smoothly increasing as the complexity of the model
+increases.
+Table 3: Overall performance. Impr.% represents the relative improve-
+ment of the best MTGR model compared to the strongest DLRM
+baselines (underlined).
+Model
+CTR
+CTCVR
+AUC
+GAUC
+AUC
+GAUC
+DNN-SIM
+0.7432
+0.6679
+0.8737
+0.6504
+MoE-SIM
+0.7484
+0.6698
+0.8750
+0.6519
+MultiEmbed-SIM
+0.7501
+0.6715
+0.8766
+0.6525
+Wukong-SIM
+0.7568
+0.6759
+0.8800
+0.6530
+UserTower-SIM
+0.7593
+0.6792
+0.8815
+0.6550
+UserTower-E2E
+0.7576
+0.6787
+0.8818
+0.6548
+MTGR-small
+0.7631
+0.6826
+0.8840
+0.6603
+MTGR-medium
+0.7645
+0.6843
+0.8849
+0.6625
+MTGR-large
+0.7661
+0.6865
+0.8862
+0.6646
+Impr.%
+0.8956
+1.0748
+0.4990
+1.4656
+Table 4: Ablation studies of MTGR
+Model
+CTR
+CTCVR
+AUC
+GAUC
+AUC
+GAUC
+MTGR-small
+0.7631
+0.6826
+0.8840
+0.6603
+w/o cross features
+0.7495
+0.6689
+0.8736
+0.6514
+w/o GLN
+0.7606
+0.6809
+0.8826
+0.6585
+w/o dynamic mask
+0.7620
+0.6810
+0.8828
+0.6587
+6.3
+Ablation Study
+We perform ablation studies on two components of MTGR: Dy-
+namic Masking and group layer norm (GLN) based on our small
+one. The ablation results are shown in Fig 4. Eliminating any of
+these from MTGR will result in a significant decline in performance,
+
+MTGR: Industrial-Scale Generative Recommendation Framework in Meituan
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+0.6591
+0.6603
+0.6615
+0.6623
+0.65
+0.655
+0.66
+0.665
+2
+3
+5
+8
+0.6551
+0.6591
+0.6603
+0.6625
+0.65
+0.655
+0.66
+0.665
+100
+300
+1000
+5000
+0.6543
+0.6583
+0.6603
+0.6614
+0.65
+0.655
+0.66
+0.665
+128
+256
+512
+1024
+-0.2
+0
+0.2
+0.4
+0.6
+0.8
+1
+1.2
+-2
+0
+2
+4
+6
+8
+log2(flops)
+CTCVR GAUC gain
+a. Number of HSTU block
+b. 𝑑!"#$%
+c. Sequence length
+d. Scaling Law
+CTCVR GAUC
+CTCVR GAUC
+Figure 3: MTGR performance improves smoothly as we increase the
+numer of HSTU block, 𝑑𝑚𝑜𝑑𝑒𝑙and sequence length for training
+with the degree of decline being comparable to the increase from
+MTGR-small to MTGR-medium. This indicates the importance of
+Dynamic Masking and GLN for MTGR. In addition, we conducted
+extra experiments on the importance of cross features to MTGR.
+After removing the cross features, the performance metrics show a
+significant drop, which even erases the gain of MTGR-large over
+DLRM, highlighting the vital role of cross features in the real rec-
+ommendation system.
+6.4
+Scalability
+Fig. 3 illustrates the scalability of our MTGR. We perform tests based
+on MTGR-small for three different hyperparameters: the number
+of HSTU blocks, the 𝑑model, and the input sequence length. As can
+be observed, MTGR demonstrates good scalability across different
+hyperparameters. Furthermore, Fig. 3(d) presents a power-law rela-
+tionship between performance and computational complexity. The
+vertical axis indicates the gain in the CTCVR GAUC metric relative
+to our best DLRM model, UserTower-SIM, while the horizontal
+axis reflects the logarithmic multiple of computational complexity
+compared to UserTower-SIM.
+6.5
+Online Experiments
+To further validate the effectiveness of MTGR, we deployed MTGR
+in the Meituan Take-away platform, conducting AB testing with 2%
+of the traffic. The volume of experimental traffic covers millions of
+exposures per day, demonstrating the confidence of the experiment.
+The comparison baseline is the most advanced online DLRM model
+(UserTower-SIM), and it has been continuously learning for 2 years.
+We use data from the last 6 months to train the MTGR model, which
+is then deployed online for comparison.
+Although the volume of training data is significantly lower than
+the counterpart of DLRM model, the offline and online metrics
+still greatly exceed the DLRM base. As shown in Table 5, both the
+offline and online metrics demonstrate scalability. We also found
+that as the number of training tokens increases, the benefits com-
+pared to DLRM continue to amplify. Eventually, in terms of CTCVR
+GAUC, our large version even exceeds the cumulative increase of
+all optimizations over the past year.
+The model has already been fully deployed in our scenario, with
+training costs equal to DLRM, and inference costs reduced by 12%.
+For DLRM, its inference cost is approximately linear with the num-
+ber of candidates. However, MTGR uses user aggregation for all
+candidates in a request, leading to sub-linear inference cost scaling
+with the number of candidates. This helps us reduce the overhead
+of online inference.
+Table 5: Comparison of offline and online effects for different ver-
+sions of MTGR.
+Offline Metric diff
+Online Metric diff
+CTR GAUC
+CTCVR GAUC
+PV_CTR
+UV_CTCVR
+MTGR-small
++0.0036
++0.0154
++1.04%
++0.04%
+MTGR-medium
++0.0071
++0.0182
++2.29%
++0.62%
+MTGR-large
++0.0153
++0.0288
++1.90%
++1.02%
+7
+Conclusion
+In this paper, we proposed MTGR, a new ranking framework to
+explore the scaling law in recommendation systems based on HSTU.
+MTGR combines the advantages of DLRM and GRM, allowing the
+use of cross-features to ensure model performance while having
+the same scalability as GRM. MTGR has already been deployed
+in our scenario and has yielded significant benefits. In the future,
+we will explore how to extend MTGR to multi-scenario modeling,
+similar to large language models, to establish a recommendation
+foundation model with extensive knowledge.
+
+CIKM ’25, November 10–14, 2025, Seoul, Republic of Korea
+Ruidong Han, Bin Yin, Shangyu Chen et al.
+References
+[1] Qiwei Chen, Changhua Pei, Shanshan Lv, Chao Li, Junfeng Ge, and Wenwu Ou.
+2021. End-to-end user behavior retrieval in click-through rateprediction model.
+arXiv preprint arXiv:2108.04468 (2021).
+[2] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher Ré. 2022. Flashat-
+tention: Fast and memory-efficient exact attention with io-awareness. Advances
+in neural information processing systems 35 (2022), 16344–16359.
+[3] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding,
+Qiang Luo, and Guorui Zhou. 2025. OneRec: Unifying Retrieve and Rank with
+Generative Recommender and Iterative Preference Alignment. arXiv preprint
+arXiv:2502.18965 (2025).
+[4] Yan Fang, Jingtao Zhan, Qingyao Ai, Jiaxin Mao, Weihang Su, Jia Chen, and Yiqun
+Liu. 2024. Scaling laws for dense retrieval. In Proceedings of the 47th International
+ACM SIGIR Conference on Research and Development in Information Retrieval.
+1339–1349.
+[5] Cesar Ferri, José Hernández-Orallo, and Peter A Flach. 2011. A coherent in-
+terpretation of AUC as a measure of aggregated classification performance. In
+Proceedings of the 28th International Conference on Machine Learning (ICML-11).
+657–664.
+[6] Xingzhuo Guo, Junwei Pan, Ximei Wang, Baixu Chen, Jie Jiang, and Mingsheng
+Long. 2023. On the embedding collapse when scaling up recommendation models.
+arXiv preprint arXiv:2310.04400 (2023).
+[7] Ruidong Han, Qianzhong Li, He Jiang, Rui Li, Yurou Zhao, Xiang Li, and Wei
+Lin. 2024. Enhancing CTR Prediction through Sequential Recommendation Pre-
+training: Introducing the SRP4CTR Framework. In Proceedings of the 33rd ACM
+International Conference on Information and Knowledge Management. 3777–3781.
+[8] Dmytro Ivchenko, Dennis Van Der Staay, Colin Taylor, Xing Liu, Will Feng, Rahul
+Kindi, Anirudh Sudarshan, and Shahin Sefati. 2022. Torchrec: a pytorch domain
+library for recommendation systems. In Proceedings of the 16th ACM Conference
+on Recommender Systems. 482–483.
+[9] Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B Brown, Benjamin Chess,
+Rewon Child, Scott Gray, Alec Radford, Jeffrey Wu, and Dario Amodei. 2020.
+Scaling laws for neural language models. arXiv preprint arXiv:2001.08361 (2020).
+[10] Mario Michael Krell, Matej Kosec, Sergio P Perez, and Andrew Fitzgibbon. 2021.
+Efficient sequence packing without cross-contamination: Accelerating large lan-
+guage models without impacting performance. arXiv preprint arXiv:2107.02027
+(2021).
+[11] Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi. 2023. Blip-2: Bootstrapping
+language-image pre-training with frozen image encoders and large language
+models. In International conference on machine learning. PMLR, 19730–19742.
+[12] Jianxun Lian, Xiaohuan Zhou, Fuzheng Zhang, Zhongxia Chen, Xing Xie, and
+Guangzhong Sun. 2018. xdeepfm: Combining explicit and implicit feature in-
+teractions for recommender systems. In Proceedings of the 24th ACM SIGKDD
+international conference on knowledge discovery & data mining. 1754–1763.
+[13] Jiaqi Ma, Zhe Zhao, Xinyang Yi, Jilin Chen, Lichan Hong, and Ed H Chi. 2018.
+Modeling task relationships in multi-task learning with multi-gate mixture-of-
+experts. In Proceedings of the 24th ACM SIGKDD international conference on
+knowledge discovery & data mining. 1930–1939.
+[14] William Peebles and Saining Xie. 2023. Scalable diffusion models with transform-
+ers. In Proceedings of the IEEE/CVF international conference on computer vision.
+4195–4205.
+[15] Qi Pi, Guorui Zhou, Yujing Zhang, Zhe Wang, Lejian Ren, Ying Fan, Xiaoqiang
+Zhu, and Kun Gai. 2020. Search-based user interest modeling with lifelong
+sequential behavior data for click-through rate prediction. In Proceedings of the
+29th ACM International Conference on Information & Knowledge Management.
+2685–2692.
+[16] Kyuyong Shin, Hanock Kwak, Su Young Kim, Max Nihlén Ramström, Jisu Jeong,
+Jung-Woo Ha, and Kyung-Min Kim. 2023. Scaling law for recommendation
+models: Towards general-purpose user representations. In Proceedings of the
+AAAI conference on artificial intelligence, Vol. 37. 4596–4604.
+[17] Zihua Si, Lin Guan, ZhongXiang Sun, Xiaoxue Zang, Jing Lu, Yiqun Hui, Xingchao
+Cao, Zeyu Yang, Yichen Zheng, Dewei Leng, et al. 2024. Twin v2: Scaling ultra-
+long user behavior sequence modeling for enhanced ctr prediction at kuaishou.
+In Proceedings of the 33rd ACM International Conference on Information and
+Knowledge Management. 4890–4897.
+[18] Hongyan Tang, Junning Liu, Ming Zhao, and Xudong Gong. 2020. Progressive
+layered extraction (ple): A novel multi-task learning (mtl) model for personalized
+recommendations. In Proceedings of the 14th ACM conference on recommender
+systems. 269–278.
+[19] Ruoxi Wang, Rakesh Shivanna, Derek Cheng, Sagar Jain, Dong Lin, Lichan Hong,
+and Ed Chi. 2021. Dcn v2: Improved deep & cross network and practical lessons
+for web-scale learning to rank systems. In Proceedings of the web conference 2021.
+1785–1797.
+[20] Xu Wang, Jiangxia Cao, Zhiyi Fu, Kun Gai, and Guorui Zhou. 2024. HoME:
+Hierarchy of Multi-Gate Experts for Multi-Task Learning at Kuaishou. arXiv
+preprint arXiv:2408.05430 (2024).
+[21] Yuxiang Wang, Xiao Yan, Chi Ma, Mincong Huang, Xiaoguang Li, Lei Yu, Chuan
+Liu, Ruidong Han, He Jiang, Bin Yin, et al. 2025. MTGRBoost: Boosting Large-scale
+Generative Recommendation Models in Meituan. arXiv preprint arXiv:2505.12663
+(2025).
+[22] Bencheng Yan, Shilei Liu, Zhiyuan Zeng, Zihao Wang, Yizhen Zhang, Yujin Yuan,
+Langming Liu, Jiaqi Liu, Di Wang, Wenbo Su, et al. 2025. Unlocking Scaling Law
+in Industrial Recommendation Systems with a Three-step Paradigm based Large
+User Model. arXiv preprint arXiv:2502.08309 (2025).
+[23] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, et al. 2024. Actions speak louder than words:
+Trillion-parameter sequential transducers for generative recommendations. arXiv
+preprint arXiv:2402.17152 (2024).
+[24] Xiaohua Zhai, Alexander Kolesnikov, Neil Houlsby, and Lucas Beyer. 2022. Scaling
+vision transformers. In Proceedings of the IEEE/CVF conference on computer vision
+and pattern recognition. 12104–12113.
+[25] Buyun Zhang, Liang Luo, Yuxin Chen, Jade Nie, Xi Liu, Daifeng Guo, Yanli Zhao,
+Shen Li, Yuchen Hao, Yantao Yao, et al. 2024. Wukong: Towards a scaling law for
+large-scale recommendation. arXiv preprint arXiv:2403.02545 (2024).
+[26] Wei Zhang, Dai Li, Chen Liang, Fang Zhou, Zhongke Zhang, Xuewei Wang,
+Ru Li, Yi Zhou, Yaning Huang, Dong Liang, et al. 2024. Scaling User Modeling:
+Large-scale Online User Representations for Ads Personalization in Meta. In
+Companion Proceedings of the ACM Web Conference 2024. 47–55.
+[27] Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan, Han Zhu, Xiao Ma, Yanghui
+Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep interest network for click-through
+rate prediction. In Proceedings of the 24th ACM SIGKDD international conference
+on knowledge discovery & data mining. 1059–1068.

@@ -1,0 +1,1963 @@
+PIT: A Dynamic Personalized Item Tokenizer for End-to-End
+Generative Recommendation
+Huanjie Wang
+Beijing University of Posts and
+Telecommunications
+Beijing, China
+wanghuanjie@bupt.edu.cn
+Xinchen Luo
+Kuaishou Technology
+Beijing, China
+luoxinchen@kuaishou.com
+Honghui Bao
+Kuaishou Technology
+Beijing, China
+honghuibao2000@gmail.com
+Zixing Zhang
+Kuaishou Technology
+Beijing, China
+zhangzixing@kuaishou.com
+Lejian Ren
+Kuaishou Technology
+Beijing, China
+renlejian@kuaishou.com
+Yunfan Wu
+Institute of Computing Technology,
+Chinese Academy of Sciences
+Beijing, China
+wuyunfan15@mails.ucas.ac.cn
+Hongwei Zhang
+Kuaishou Technology
+Beijing, China
+zhanghongwei08@kuaishou.com
+Liwei Guan
+Kuaishou Technology
+Beijing, China
+guanliwei@kuaishou.com
+Guang Chen∗
+Beijing University of Posts and
+Telecommunications
+Beijing, China
+chenguang@bupt.edu.cn
+Abstract
+Generative Recommendation has revolutionized recommender sys-
+tems by reformulating retrieval as a sequence generation task over
+discrete item identifiers. Despite the progress, existing approaches
+typically rely on static, decoupled tokenization that ignores collabo-
+rative signals. While recent methods attempt to integrate collabora-
+tive signals into item identifiers either during index construction or
+through end-to-end modeling, they encounter significant challenges
+in real-world production environments. Specifically, the volatility
+of collaborative signals leads to unstable tokenization, and cur-
+rent end-to-end strategies often devolve into suboptimal two-stage
+training rather than achieving true co-evolution. To bridge this gap,
+we propose PIT, a dynamic Personalized Item Tokenizer frame-
+work for end-to-end generative recommendation, which employs a
+co-generative architecture that harmonizes collaborative patterns
+through collaborative signal alignment and synchronizes item tok-
+enizer with generative recommender via a co-evolution learning.
+This enables the dynamic, joint, end-to-end evolution of both index
+construction and recommendation. Furthermore, a one-to-many
+beam index ensures scalability and robustness, facilitating seamless
+integration into large-scale industrial deployments. Extensive ex-
+periments on real-world datasets demonstrate that PIT consistently
+outperforms competitive baselines. In a large-scale deployment at
+∗Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+Kuaishou, an online A/B test yielded a substantial 0.402% uplift in
+App Stay Time, validating the framework’s effectiveness in dynamic
+industrial environments.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Short-Video Recommendation, Generative Recommendation, LLMs
+for Recommendation, Item Tokenization, Learnable Tokenizer
+ACM Reference Format:
+Huanjie Wang, Xinchen Luo, Honghui Bao, Zixing Zhang, Lejian Ren, Yun-
+fan Wu, Hongwei Zhang, Liwei Guan, and Guang Chen. 2018. PIT: A Dy-
+namic Personalized Item Tokenizer for End-to-End Generative Recommen-
+dation. In Proceedings of Make sure to enter the correct conference title from
+your rights confirmation email (Conference acronym ’XX). ACM, New York,
+NY, USA, 13 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+As the cornerstone of modern digital platforms, recommender sys-
+tems must efficiently process billions of interactions to deliver
+personalized content within an ever-expanding item universe. Tra-
+ditionally, the dominant paradigm follows a “Retrieve-then-Rank”
+funnel [3, 5, 8, 12, 55], which is inherently limited by the accuracy-
+efficiency trade-off in approximate search of vector retrieval and the
+heavy memory footprint required for storing dense indices [13, 25].
+Recently, Generative Recommendation (GR) has emerged as a dis-
+ruptive paradigm to overcome these limitations [16, 17, 41]. Unlike
+cascaded pipelines that suffer from optimization inconsistencies and
+fragmented computation, GR enables holistic optimization within
+a unified architecture, significantly reducing communication over-
+head [53]. Furthermore, by replacing atomic identifiers with seman-
+tic identifiers, it facilitates knowledge transfer across items and
+arXiv:2602.08530v1  [cs.IR]  9 Feb 2026
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+demonstrates superior parameter efficiency at scale[28, 53]. Adopt-
+ing generative retrieval as its core mechanism, GR reformulates
+recommendation as a sequence generation task over discrete item
+identifiers [37, 42]. This shift unifies indexing and recommendation
+into a single differentiable Transformer [39] model, demonstrating
+promising potential in both efficiency and deep semantic interac-
+tion [21, 28, 53].
+However, a critical bottleneck remains in the tokenization pro-
+cess, the mechanism of assigning discrete identifiers to items in GR.
+Existing approaches [19, 28, 31, 44, 51] typically adopt a disjoint,
+two-stage pipeline: (1) static tokenization, where quantizers (e.g.,
+RQ-VAE [15]) map items to static identifiers using hierarchical clus-
+tering [31, 43, 44] or content reconstruction [18, 20, 28, 40]; and
+(2) generative recommender learning [28, 37, 42, 53], where the
+generative model is trained to predict these fixed identifiers as im-
+mutable labels. This separation results in a fundamental “semantic
+gap”: the representations optimized for reconstructing item content
+inherently deviate from those that are the most predictable by a
+generative recommender based on historical interactions [40].
+To surmount the limitations of these disjoint pipelines, the re-
+search focus has shifted towards learnable [40] and end-to-end [1,
+20] tokenization strategies. The core motivation is to eliminate the
+barrier between index construction and recommendation, enabling
+a unified optimization landscape where the item tokenizer is explic-
+itly guided by recommendation rather than mere reconstruction
+fidelity [1, 20]. Theoretically, this seamless integration promises to
+refine item representations through deep fusion with collaborative
+signals, achieving mutual enhancement between the tokenizer and
+the generative recommender. However, adapting these academic ad-
+vances into real-world production environments remains a formida-
+ble challenge [56], primarily due to the severe distribution shifts in
+collaborative signals driven by real-time interactions [45, 47, 48, 56].
+In such highly dynamic industrial environments, interaction pat-
+terns and their corresponding optimal collaborative representations
+undergo continuous evolution [45, 48, 56]. This volatility is incom-
+patible with the optimization mechanisms of existing end-to-end
+methods [1, 20], which typically rely on rigid alternating optimiza-
+tion or a phased training schedule where the tokenizer is frozen
+in the later stages to mitigate instability. Consequently, these ap-
+proaches fail to adapt to rapid concept drifts, making it impractical
+to maintain a stable and synchronized index within a large-scale
+online learning framework, thereby obstructing their widespread
+industrial deployment.
+To address these challenges, we argue that index construction
+and user preference learning should be a true co-evolutionary pro-
+cess. In this paper, we propose PIT, a dynamic Personalized Item
+Tokenizer framework for end-to-end generative recommendation.
+Specifically, PIT comprises three components: First, we propose a
+co-generative architecture comprising an Item-to-Token model for
+indexing, a User-to-Token model for generative recommendation,
+and a collaborative signal alignment component. The latter is a
+DIN-based [55] auxiliary task designed to reconcile the discrepancy
+between semantic and collaborative signals. Second, we propose a
+co-evolution learning paradigm centered on a user-guided minimum-
+loss selection mechanism. This mechanism enables the concurrent
+optimization of both Item-to-Token and User-to-Token processes
+by dynamically selecting the identifier that minimizes prediction
+loss, thereby ensuring their seamless synchronization. Finally, a
+one-to-many beam index is employed to maintain multiple valid
+identifiers per item, which not only mitigates the fragility of single-
+path indexing against distribution shifts but also supports seamless
+and dynamic index updates during industrial streaming training
+In summary, our main contributions are as follows:
+• We propose PIT, a dynamic end-to-end generative framework
+that unifies item tokenization and recommendation into a co-
+generative architecture, ensuring identifiers are optimized specif-
+ically for collaborative signals.
+• We introduce co-evolution learning via a minimum-loss selection
+mechanism and one-to-many beam index, enabling concurrent
+optimization of identifiers and models to mitigate instability in
+industrial streams.
+• We validate PIT through both extensive offline experiments and
+a large-scale online A/B test, where it achieved a 0.402% uplift in
+App Stay Time, demonstrating its robustness and business value
+in a hundred-million-scale environment.
+2
+Related Work
+Generative Recommendation. The shift towards Generative Rec-
+ommendation has transitioned the recommendation paradigm from
+traditional vector similarity searches [13, 25] to an autoregressive
+sequence-to-sequence task [16, 17, 34, 41]. Central to this evolu-
+tion is the design of item identifiers, which serve as the bridge
+between raw item features and the model’s discrete output space.
+Early works such as P5 [6] utilize text-based tokens to predict
+the next item. Building upon this, TIGER [28] introduces the con-
+cept of semantic identifiers (SIDs), which represent items through
+discrete identifiers quantized from content embeddings, enabling
+the model to better capture item-specific semantics. To accommo-
+date extensive item corpora, recent industrial advancements such
+as OneRec [53] demonstrate the efficacy and scalability of GR by
+deploying unified SIDs within large-scale commercial infrastruc-
+tures. Furthermore, LC-Rec [51] and OneRec-Think [21, 52] explic-
+itly integrate SIDs into the Large Language Model (LLM) [26, 39]
+modality, treating items as a distinct native vocabulary. These meth-
+ods [16, 17, 41] demonstrate that autoregressive generation can
+achieve deeper semantic matching than conventional recommen-
+dation paradigms such as dual-encoder [5, 12]. However, the per-
+formance of these recommenders remains critically dependent on
+the quality of the SIDs used as generation targets.
+Item Tokenization. The core of Generative Recommendation lies
+in item tokenization, which maps items into a discrete identifier
+space. Existing strategies for constructing these tokenizers can be
+broadly categorized into static and learnable approaches [16, 17, 41].
+(1) Static Tokenization. Methods like TIGER [28] and LC-Rec [51]
+adopt a decoupled two-stage pipeline: items are first tokenized of-
+fline based on content features (e.g., RQ-VAE [15, 28]), which freezes
+the identifier space prior to generative recommender training. How-
+ever, such a decoupled design suffers from a misalignment between
+content and collaborative signals [40]. Since tokenizers optimize
+for reconstruction rather than collaborative signals, behaviorally
+distinct items might be assigned identical identifiers due to content
+similarity, creating a “semantic gap” that limits precision [40]. (2)
+Learnable Tokenization. To bridge this gap, research has shifted
+
+PIT: A Dynamic Personalized Item Tokenizer for End-to-End Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+towards learnable and end-to-end tokenization to inject collabo-
+rative signals into the index. LETTER [40] employs collaborative
+regularization to optimize the codebook during tokenizer train-
+ing. Moving towards more complex optimization, ETEGRec [20]
+achieves end-to-end tokenization but relies on an alternating opti-
+mization strategy, iteratively updating the tokenizer and generative
+recommender. This strategy increases training complexity, and the
+requirement of freezing the tokenizer in later stages limits its adapt-
+ability to real-time streaming data. (3) Our Approach. Reviewing
+the existing works on generative recommendation, we observe
+that current paradigms often fail to achieve true one-stage end-to-
+end training. Furthermore, their limited adaptability to large-scale
+industrial systems remains a critical bottleneck. To address these de-
+ficiencies, we propose a novel framework that enables the dynamic
+co-evolution of the tokenizer and the generative recommender, fa-
+cilitating a seamless one-stage industrial pipeline, yielding superior
+recommendation performance.
+3
+Methodology
+In this section, we first formulate the generative recommendation
+problem and the definitions of tokenization in Section 3.1. Sub-
+sequently, we detail the co-generative architecture comprising the
+collaborative signal alignment, Item-to-Token and User-to-Token mod-
+els in Section 3.2. In Section 3.3 we introduce a co-evolution learning
+strategy, which utilizes minimum-loss selection mechanism to align
+index construction with user preferences. Then, in Section 3.4, we
+elaborate on the dynamic beam index, which enables an inverse
+mapping from multiple SIDs to a single item. Finally, in Section 3.5,
+we describe the practical online deployment and operational work-
+flow of PIT within a large-scale industrial infrastructure.
+3.1
+Problem Formulation
+Let U and I denote the sets of users and items, respectively. For
+each user𝑢∈U, we represent their historical interaction history as
+a sequence 𝐻𝑢= {𝑖1,𝑖2, . . . ,𝑖𝑛}, where 𝑖𝑡∈I. Crucially, each item
+𝑖∈I is intrinsically characterized by a comprehensive feature set
+𝑋𝑖, which integrates its unique item identifier with heterogeneous
+multimodal signals, such as textual descriptions, cover images, and
+other categorical attributes.
+Generative Recommendation. Following the standard GR
+paradigm [28], we represent each item 𝑖as a sequence of discrete
+tokens 𝑐𝑖= (𝑐𝑖,1,𝑐𝑖,2, . . . ,𝑐𝑖,𝐿) from a codebook V of size 𝐾. The
+goal of the generative recommender is to learn a probabilistic model
+𝑃𝜃(𝑐𝑖|𝐻𝑢) that autoregressively generates the SID of the target item
+given the user context:
+𝑃𝜃(𝑐𝑖|𝐻𝑢) =
+𝐿
+Ö
+𝑙=1
+𝑃𝜃(𝑐𝑖,𝑙|𝑐𝑖,<𝑙, 𝐻𝑢),
+(1)
+where 𝑐𝑖,<𝑙denotes the prefix of the token sequence generated.
+Item Tokenization. In conventional approaches, 𝑐𝑖is derived
+via a static function 𝑓𝑠𝑡𝑎𝑡𝑖𝑐: 𝑋𝑖→𝑐𝑖fixed before generative recom-
+mender training. In our framework, we treat the assignment of 𝑐𝑖as
+a dynamic process governed by a learnable tokenizer parameterized
+by 𝜙.
+3.2
+Co-Generative Architecture
+Our framework follows a co-generative architecture, as shown in
+Figure 1, which consists of three primary components: (1) collabora-
+tive signal alignment, which enriches item representations by cap-
+turing latent user-item interactions; (2) An Item-to-Token tokenizer
+that yields dynamic semantic identifiers; and (3) the User-to-Token
+recommender for generative recommendation.
+3.2.1
+collaborative signal alignment (CSA). We introduce an auxil-
+iary multi-behavior prediction task to inject multi-faceted collab-
+orative signals directly into the item embedding 𝑋𝑖. Furthermore,
+𝑋𝑖is enriched with multimodal embedding representations (e.g.,
+visual and textual features), enabling the model to capture both
+intrinsic semantic attributes and collaborative user behaviors si-
+multaneously. We employ a Deep Interest Network [55] structure
+as the auxiliary module. It takes the user behavior sequence 𝐻𝑢
+and the target item representation 𝑋𝑖as input. An attention mecha-
+nism computes the relevance between the target item and historical
+behaviors to predict the interaction probability ˆ𝑦𝑏
+𝑢,𝑖for behavior 𝑏:
+ˆ𝑦𝑏
+𝑢,𝑖= DIN(sg(𝐻𝑢),𝑋𝑖),
+(2)
+where sg(·) denotes the stop-gradient operator; 𝑏∈B represents
+a specific user behavior (e.g., clicking or liking) from the multi-
+faceted behavior set B. The term 𝑦𝑏
+𝑢,𝑖∈{0, 1} is the ground-truth
+label indicating whether user 𝑢performed behavior 𝑏on item 𝑖.
+Crucially, we detach𝐻𝑢to prevent the auxiliary binary classification
+objective from interfering with the representation space of the
+main generative recommender model, ensuring the user context
+embeddings remain focused on the generation task.
+3.2.2
+Item-to-Token Model (Item Tokenizer). The Item-to-Token
+model, parameterized by 𝜙, acts as the index generator. Given the
+relative simplicity of the Item-to-Token task, we employ a light-
+weight decoder-only Transformer to maintain efficiency during
+iterative co-evolution. Functionally, the model conditions the gen-
+eration on the collaborative and multimodal item representation
+learned in collaborative signal alignment. We use the detached item
+embedding sg(𝑋𝑖) as the initial BOS token for the Transformer,
+which then recursively predicts the discrete SID sequence. The
+probability is formulated as:
+𝑃𝜙(𝑐𝑖|sg(𝑋𝑖)) =
+𝐿
+Ö
+𝑙=1
+𝑃𝜙(𝑐𝑖,𝑙|𝑐𝑖,<𝑙, sg(𝑋𝑖)).
+(3)
+We explicitly detach 𝑋𝑖here because the goal of the Item-to-Token
+is to generate tokens that describe the existing collaborative and
+multimodal embedding, not to modify the embedding to make token
+generation easier. This forces the generated SIDs to faithfully reflect
+the collaborative signals injected by the CSA.
+3.2.3
+User-to-Token Model (Generative Recommender). The User-
+to-Token model, parameterized by 𝜃, learns to capture user prefer-
+ences. It takes the interaction history 𝐻𝑢as input and predicts the
+target item’s SID sequence. We adopt either an encoder-decoder [4,
+34] or a lazy-decoder [54] as the base architecture for the User-to-
+Token:
+𝑃𝜃(𝑐|𝐻𝑢) =
+𝐿
+Ö
+𝑙=1
+𝑃𝜃(𝑐𝑙|𝑐<𝑙, 𝐻𝑢).
+(4)
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+在此处键入公式。
+User Context Processor
+like follow others
+Embedding Look-up
+Sparse ID Embedding Layer
+…
+…
+…
+…
+user feature
+…
+Item feature
+Embedding Look-up
+Encoder-Decoder Block
+Or Lazy-Decoder Block
+MLLM
+Deep Cross
+Network
+Linear
+𝑺𝑰𝑫𝟏
+𝑺𝑰𝑫𝟐
+𝑺𝑰𝑫𝟑
+User-to-Token
+𝑩𝑶𝑺
+𝑺𝑰𝑫𝟏
+𝑺𝑰𝑫𝟐
+Linear
+Item Emb
+𝑺𝑰𝑫𝟏
+𝑺𝑰𝑫𝟐
+Cross-Attention
+𝑺𝑰𝑫𝟏
+𝑺𝑰𝑫𝟐
+𝑺𝑰𝑫𝟑
+<a_12> <b_37> <c_92>
+Decoder-only Block
+beam search Si
+×𝑳𝒖𝒔𝒆𝒓𝟐𝒕𝒐𝒌𝒆𝒏
+×𝑳𝒊𝒕𝒆𝒎𝟐𝒕𝒐𝒌𝒆𝒏
+Item-to-Token
+CSA
+RtuXQWk36N5a2rSFuhZUVJR2zKSPAhGP3SP20u3f7ErzWm3lX3I2Lr3HOfCVlVS60ieNPQSe8d/BSvdh79HjJ09Xo/6zEy1rxfiEyVyqs4xqnouST4wOT+rFKdFlvPT7GrP1U8/cqWFLI/NouIXBZ2XYiYNQilUZMU1Fxms2aXa5OQow
+/vLHlLPCirJslkPtWLAqcmoWqeFK0Nr0RMUsSUZJlepQKa8lwme69t8Nb5qsb2n5a242NXi+NBvEo9oPcDcZtMIB2HMjoGhKYgQGNRTAoQSDcQ4UND7nMIYKsQuoEFMYSR8nYOFHmprZHFkUESv8DvH7LxFS8ydp/Zqhqvk+CpUEniJGok8h
+bFbjfh67Z0d+ifvxnu6f1vgnLVeBaIGLhH9l27J/F+d68XADLZ9DwJ7qjziumOtS+13xf05+akrgw4VYi6eYl1hzLxyuc/Ea7Tv3e0t9fWvnulQl7OW8O3v3aXoSueCF6A8e/HfTc4eT0ab42D98Mdnbq9CF7AOQzvLdiBfTiACfp/Dla
+CKOh3voTdcDXs/6B2glazBr+M8Pl3ZX/CHA=</latexit>Best SID = arg min
+c2Si
+(CE(c, Hu))
+C1
+YM0NCX7dSEH5Dd8rWT/IL1L/wzjgkKvExTdsz595zZu7csSPTbhPGe0peWV1bXsem5jc2t7J7+710jCNHZY3Qm9MG7ZVsI8N2B17nKPtaKYWb7tsaY9qop485bFiRsGV3wcsY5vDQK37zoWJ6rd9i0+tPuTarc07eYLRtGQ18EpgIFqFEL8y9o4cQDlL4YAjACXuwk
+NBzDRMGIuI6mBAXE3JlnGKHGlTymKUYRE7ou+AZteKDWguPBOpdmgVj96YlDqOSBNSXkxYrKbLeCqdBfuT90R6ir2N6W8rL59YjiGxf+nmf/ViVo4+jiTNbhUyQZUZ2jXFJ5KmLn+qeqODlExAnco3hM2JHK+TnrUpPI2sXZWjL+KjMFK+aOyk3x9mt1NrlSR+gCmN/bv
+QgapaJZLpYvTwqVc3UVsjAIY6p36eo4AI1Mk/wh0eMdNutHvtQZt9pGoZpdnHl6E9vQMd5psO</latexit>C2
+YM0NCX06kJIfyG7pStn+QXqH/hnbEkKvExTdsz595zZu7csSPjYVhPGe0peWV1bXsem5jc2t7J7+714jDhDus7oReyFu2FTPDVhduMJjrYgzy7c91rRHVRlv3jIeu2FwJcYRu/atQeD2XcSRHU6viWGdn9S7Vam3XzBKBpq6IvATEB6aiF+Rd0EMIBwl8MAQhD1Yi
+Olpw4SBiLhrTIjhFwVZ5giR9qEshlWMSO6DugWTtlA5pLz1ipHVrFo5eTUscRaULK4TlarqKJ8pZsj95T5Sn3NuY/nbq5RMrMCT2L908786WYtAH+eqBpdqihQjq3NSl0Sdity5/qkqQ4RcRL3KM4JO0o5P2daWJVuzxbS8VfVaZk5dxJcxO8/VqdTa7UEboA5vd2L
+4LGSdEsFUuXp4VyJb0KWRzgEMfU7zOUcYEa6uQf4Q6PmGk32r32oM0+UrVMqtnHl6E9vQNF9pse</latexit>CB
+Figure 1: Illustration of the PIT framework comprising co-generative architecture when using user-guided minimum-loss
+selection mechanism in co-evolution learning.
+The User-to-Token model primarily serves as the generative recom-
+mender. Beyond its inference capability, it acts as a critical evaluator
+during the co-evolution learning. By calculating the cross-entropy
+loss for various candidate SID sequences, the model identifies the op-
+timal SID that is most congruent with the specific user’s preferences.
+This selection process determines the most effective optimization
+direction.
+3.3
+Co-Evolution Learning
+To achieve a truly end-to-end update of both the tokenizer and
+generative recommender based on the co-generative architecture,
+we adopt a curriculum learning [2, 32] strategy. This approach be-
+gins with a warm-up phase to learn from existing SID assignments,
+establishing robust foundational representations. Subsequently, the
+model transitions seamlessly into a user-guided dynamic evolution
+phase driven by a minimum-loss selection mechanism. Through-
+out this process, the collaborative signal alignment auxiliary task
+continuously refines item embeddings.
+3.3.1
+Training Objectives. We define three atomic loss functions
+to modularly optimize the collaborative alignment, Item-to-Token,
+and User-to-Token components:
+• Collaborative Loss (L𝑥𝑡𝑟): Refines item embeddings 𝑋𝑖via a
+multi-task Binary Cross-Entropy (BCE) loss on multi-faceted
+behaviors 𝑏∈B:
+L𝑥𝑡𝑟= −
+∑︁
+𝑏∈B
+∑︁
+(𝑢,𝑖)∈D𝑏
+
+𝑦𝑏
+𝑢,𝑖log ˆ𝑦𝑏
+𝑢,𝑖+ (1 −𝑦𝑏
+𝑢,𝑖) log(1 −ˆ𝑦𝑏
+𝑢,𝑖)
+
+. (5)
+• Tokenizer Loss (L𝑖𝑡𝑒𝑚): Optimizes the Item-to-Token tokenizer
+(𝜙) to generate the target SID sequence 𝑐conditioned on the
+collaborative item representation:
+L𝑖𝑡𝑒𝑚(𝑐) = −
+𝐿
+∑︁
+𝑙=1
+log 𝑃𝜙(𝑐𝑙| 𝑐<𝑙, sg(𝑋𝑖)).
+(6)
+• Recommender Loss (L𝑢𝑠𝑒𝑟): Updates the User-to-Token rec-
+ommender (𝜃) to predict the SID sequence based on user history
+𝐻𝑢:
+L𝑢𝑠𝑒𝑟(𝑐) = −
+𝐿
+∑︁
+𝑙=1
+log 𝑃𝜃(𝑐𝑙| 𝑐<𝑙, 𝐻𝑢).
+(7)
+These objectives are combined during the warm-up and dynamic
+evolution phases to achieve end-to-end co-evolution learning.
+
+PIT: A Dynamic Personalized Item Tokenizer for End-to-End Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+3.3.2
+Phase 1: Warm-up with Collaborative Signals. Directly learn-
+ing discrete SIDs from random initialization often leads to index
+instability. To establish foundational recognition capabilities, we
+facilitate Item-to-Token and User-to-Token learning by leveraging
+an existing tokenizer (e.g., RQ-VAE or RQ-Kmeans). By training all
+three modules simultaneously, the joint objective is:
+L𝑤𝑎𝑟𝑚= L𝑢𝑠𝑒𝑟(¯𝑐𝑖) + 𝜆1L𝑖𝑡𝑒𝑚(¯𝑐𝑖) + 𝜆2L𝑥𝑡𝑟,
+(8)
+where ¯𝑐𝑖denotes the pre-defined SID sequence of item 𝑖gener-
+ated by the existing tokenizer, and L𝑢𝑠𝑒𝑟and L𝑖𝑡𝑒𝑚represent the
+negative log-likelihood of generating ¯𝑐𝑖for the User-to-Token and
+Item-to-Token, respectively. This phase ensures the models possess
+basic representational capabilities, with 𝑋𝑖pre-encoding collabora-
+tive patterns prior to dynamic evolution.
+3.3.3
+Phase 2: User-Guided Dynamic Evolution. After the warm-
+up phase, our framework employs a dynamic generation-selection
+loop, as shown in Figure 1, which iteratively executes the following
+three steps for each mini-batch (see Appendix A.2.1 for details):
+Step 1: Candidate Generation via Beam Search. For a target
+item 𝑖, the Item-to-Token proposes potential SIDs based on the item
+embedding 𝑋𝑖. Using beam search, we generate a set of 𝐵diverse
+candidate SID sequences S𝑖:
+S𝑖= BeamSearch(𝑃𝜙(·|sg(𝑋𝑖)), 𝐵).
+(9)
+Step 2: Minimum-Loss Selection. The candidate set S𝑖is
+passed to the User-to-Token model, which functions as a critic to
+measure the compatibility of each candidate with the user history
+𝐻𝑢. Specifically, we identify the optimal identifier 𝑐∗
+𝑖by minimizing
+the cross-entropy loss in an autoregressive manner:
+𝑐∗
+𝑖= arg min
+𝑐∈S𝑖
+ 
+−1
+𝐿
+𝐿
+∑︁
+𝑙=1
+log 𝑃𝜃(𝑐𝑙|𝑐<𝑙, 𝐻𝑢)
+!
+.
+(10)
+Step 3: Joint Optimization. The selected sequence 𝑐∗
+𝑖serves as
+the dynamic pseudo-label for the current iteration. We update the
+entire framework via a unified objective:
+L𝑑𝑦𝑛𝑎𝑚𝑖𝑐= L𝑢𝑠𝑒𝑟(𝑐∗
+𝑖) + 𝛼L𝑖𝑡𝑒𝑚(𝑐∗
+𝑖) + 𝛽L𝑥𝑡𝑟
+(11)
+Specifically, the gradients flow to jointly optimize the framework:
+L𝑢𝑠𝑒𝑟updates the User-to-Token parameters 𝜃to align user repre-
+sentations with the best-selected token 𝑐∗
+𝑖continuously refining
+the user representation to adapt to emerging interests in the data
+stream; L𝑖𝑡𝑒𝑚refines the Item-to-Token parameters 𝜙to generate
+SIDs that fuse collaborative signals and multimodal representa-
+tions, conditioned on L𝑢𝑠𝑒𝑟(𝑐∗
+𝑖) is sufficiently small to ensure the
+selected 𝑐∗
+𝑖carries substantial semantic relevance and represents
+a valid optimization direction aligned with true user preferences;
+and L𝑥𝑡𝑟refines the item embeddings 𝑋𝑖along with DIN parame-
+ters to adapt to evolving collaborative patterns, thereby providing
+enhanced signals for the next Item-to-Token stage.
+3.4
+Dynamic Beam Index
+Unlike existing generative recommendation methods that rely on
+static, one-to-one indexing, we propose the beam index, a scheme
+that reformulates the mapping between items and SIDs as a dy-
+namic, one-to-many relationship. Within this scheme, item-to-SID
+associations are continuously optimized. For each item, a candi-
+date set S𝑖= {𝑠1,𝑠2, . . . ,𝑠𝐵} is generated via item-to-token beam
+token1
+token2
+token3
+token4
+Beam search
+Item k
+dynamic beam index
+: SID in index
+: item id in index
+previous 
+mapping
+disconnect
+new mapping
+to current item
+Item-to-Token
+Figure 2: The mechanism of beam index which shows how
+PIT dynamically maps multiple SIDs and item identifiers
+search. We refine these 𝐵indices using a loss-based competitive
+weighting strategy: if a candidate overlaps with an existing index,
+its weight is updated via a momentum-based moving average of
+the losses; otherwise, the current loss is directly assigned as the
+weight. By selecting the top-𝐵weighted indices, beam index re-
+configures the index topology, pruning sub-optimal identifiers to
+enhance collaborative signals integration. Our framework leverages
+the latest synchronized indices from the training phase to execute
+downstream tasks.(see Appendix A.1 for details).
+3.5
+System Deployment
+As illustrated in Figure 3, the PIT is deployed on Kuaishou’s dis-
+tributed infrastructure, comprising real-time storage, a training
+system, and online serving systems. During the training phase,
+the training engine jointly optimizes the CSA, Item-to-Token, and
+User-to-Token model. The latest index assignments, derived via
+beam search, are concurrently synchronized to the beam index,
+while model parameters are synchronized to the inference engine
+in real time. During online serving, the Data Engine aggregates
+user-specific features to feed the inference module. Only the gen-
+erative recommender model is involved in the online prediction
+process.
+Training
+System
+Online
+System
+Real-Time
+Storage
+System
+Beam Index
+Storage
+User/Item ID-based
+Features Storage
+All models Trainer
+Data Engine
+Feature & Label
+Assembler
+Online GRs Inference
+Real-time Model
+Param Sync
+Request
+Short-Videos
+Update
+Index
+Support
+Feed
+Token
+map
+Item
+Labal
+Log sender
+Online Data Engine
+Feature Assembler
+Support
+Feed
+Figure 3: The overall system deployment pipeline, illustrat-
+ing the interplay between models training, real-time index
+synchronization, and online generative recommender infer-
+ence.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+4
+Expriments
+To validate the effectiveness of our PIT framework, we conduct
+extensive experiments on three real-world datasets and a large-scale
+online production environment. Our experiments aim to answer
+the following research questions:
+• RQ1: How does PIT perform compared to representative tradi-
+tional sequential and generative recommendation methods?
+• RQ2: What is the significance of the key components (e.g., CSA
+and minimum-loss selection) to our framework?
+• RQ3: How effectively does the PIT optimize codebook utilization
+and information entropy across different quantization layers?
+• RQ4: How does PIT perform in real-world industrial scenarios
+compared to state-of-the-art production baselines?
+4.1
+Offline Public Dataset Experiments
+4.1.1
+Datasets. We evaluate our method on three widely used
+datasets from the Amazon Review 2014 [10] collection:“Beauty”,
+“Sports and Outdoors”, and “Toys and Games”. Following established
+preprocessing protocols [14, 28], we treat all ratings as positive im-
+plicit feedback and adopt the 5-core setting, filtering out users and
+items with fewer than five interactions. User behavior sequences are
+constructed chronologically, with the maximum sequence length
+fixed at 50. For evaluation, we employ the widely used leave-one-out
+strategy [14], utilizing the last interaction for testing, the second-
+to-last for validation, and the remainder for training. The detailed
+statistics of the processed datasets are summarized in Table 1.
+Table 1: Statistics of the preprocessed datasets.
+Dataset
+#Users
+#Items
+#Interactions
+Sparsity
+Avg. Length
+Beauty
+22,363
+12,101
+198,502
+99.93%
+8.9
+Sports
+35,598
+18,357
+296,337
+99.95%
+8.3
+Toys
+19,412
+11,924
+167,597
+99.93%
+8.6
+4.1.2
+Baselines. We compare PIT with a wide range of competitive
+baselines, categorized into traditional sequential recommendation
+models and recent generative recommendation models:
+Traditional Sequential Models:
+• Caser [36]: Proposes a convolution-based approach that views
+the embedding matrix as an image to capture high-order Markov
+chains via horizontal and vertical filters.
+• HGN [24]: Introduces a hierarchical gating architecture effec-
+tively capturing both long-term and short-term user interests
+through feature gating and instance gating layers.
+• GRU4Rec [11]: A pioneering session-based method that utilizes
+Gated Recurrent Units (GRU) to model user clicking behaviors
+in sequential data.
+• BERT4Rec [33]: Adapts the deep bidirectional Transformer
+architecture to recommendation, utilizing Cloze tasks (Masked
+Language Modeling) to capture bidirectional context.
+• SASRec [14]: Leverages a unidirectional self-attention mech-
+anism to identify relevant historical interactions and capture
+long-term sequential dependencies efficiently.
+• ReaRec [35]: Enhances sequential models by performing im-
+plicit reasoning on latent user intents, moving beyond simple
+pattern matching.
+Generative Recommendation Models:
+• HSTU [46]: A high-performance sequential transducer designed
+for industrial scale, optimizing attention mechanisms for faster
+training and inference without compromising accuracy.
+• TIGER [28]: Formulates recommendation as a generative re-
+trieval task, utilizing a hierarchical RQ-VAE to generate semantic
+identifiers for items.
+• LETTER [40]: Focuses on optimizing item tokenization by in-
+corporating semantic, collaborative, and diversity regularization
+into a learnable framework.
+• ETEGRec [20]: Proposes an end-to-end training strategy with
+alternating optimization, introducing auxiliary recommendation-
+oriented losses to align representations effectively.
+• LC-Rec [51]: Investigates the adaptation of Large Language
+Models for recommendation, integrating collaborative semantics
+into the generation process via vector quantization.
+4.1.3
+Evaluation Metrics. We adopt two standard metrics for eval-
+uation: Recall@𝐾and NDCG@𝐾. To provide a fine-grained anal-
+ysis of model performance at different ranking positions, we report
+results for 𝐾∈{5, 10} following [28].
+4.1.4
+Implementation Details. For a fair comparison, we uniformly
+employ a frozen Llama3-8B [7] to extract item embeddings for code-
+book construction in TIGER [28], LETTER [40], LC-Rec [51] and
+PIT. Notably, for TIGER and LETTER, we adopt the implementation
+provided by LETTER; For LC-Rec, while the embeddings follow the
+standardized extraction process, the subsequent fine-tuning stage
+is conducted using LLaMA-7B [38], consistent with its original
+architecture. Furthermore, they share an identical quantization con-
+figuration using RQ-VAE [15, 28] with 4 codebooks, each containing
+256 codes of dimension 32. Traditional recommendation baselines
+are implemented by an open-source recommendation framework
+RecBole [49, 50]. For ReaRec [35], HSTU [46] and ETEGRec [20],
+we utilize their official implementations. Our framework employs
+a T5-based [27] User-to-Token model with 4 layers, 𝑑𝑚𝑜𝑑𝑒𝑙= 128,
+𝑑𝑓𝑓= 1024, 6 heads and a decoder-only Transformer Item-to-Token
+model with 4 layers, 𝑑𝑚𝑜𝑑𝑒𝑙= 64, 𝑑𝑓𝑓= 256, 4 heads. We train the
+models for up to 200 epochs using AdamW [22] with a weight decay
+of 0.01, applying early stopping based on validation NDCG@10.
+Unlike production environments that leverage rich real-time data
+for continuous Item-to-Token updates, our offline setting utilizes
+limited, small-scale data. To prevent instability caused by frequent
+updates under data scarcity, we freeze the Item-to-Token during
+the subsequent dynamic epoch phase, focusing exclusively on User-
+to-Token updates to ensure model stability. The learning rates for
+the User-to-Token and Item-to-Token models were tuned within
+the ranges of {5e-4, 3e-4, 1e-4} and {1e-3, 5e-4, 1e-4}, respectively.
+We train all experiments on 8 NVIDIA RTX A800 GPUs.
+4.2
+Overall Offline Performance (RQ1)
+The results of PIT and different baselines on three datasets are
+shown in Table 2. Based on the results, we have the following
+observations:
+
+PIT: A Dynamic Personalized Item Tokenizer for End-to-End Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 2: Overall performance comparisons between the baselines and PIT on three Amazon datasets. The best results are in
+bold, and the second-best are underlined. Metrics: Recall (R) and NDCG (N) at 𝐾∈{5, 10}.
+Dataset
+Metric
+Caser
+HGN
+GRU4Rec
+BERT4Rec
+SASRec
+ReaRec
+HSTU
+TIGER
+LETTER
+ETEGRec
+LC-Rec
+PIT
+R@5
+0.0262
+0.0337
+0.0401
+0.0226
+0.0403
+0.0439
+0.0423
+0.0403
+0.0411
+0.0408
+0.0433
+0.0479
+Beauty
+N@5
+0.0162
+0.0207
+0.0260
+0.0140
+0.0266
+0.0247
+0.0282
+0.0256
+0.0263
+0.0270
+0.0289
+0.0305
+R@10
+0.0428
+0.0554
+0.0614
+0.0385
+0.0592
+0.0741
+0.0623
+0.0648
+0.0654
+0.0657
+0.0653
+0.0783
+N@10
+0.0216
+0.0277
+0.0329
+0.0191
+0.0327
+0.0344
+0.0347
+0.0336
+0.0340
+0.0344
+0.0360
+0.0403
+R@5
+0.0127
+0.0192
+0.0194
+0.0102
+0.0203
+0.0190
+0.0236
+0.0262
+0.0266
+0.0269
+0.0271
+0.0284
+Sports
+N@5
+0.0083
+0.0117
+0.0124
+0.0063
+0.0133
+0.0117
+0.0157
+0.0165
+0.0167
+0.0164
+0.0177
+0.0186
+R@10
+0.0211
+0.0325
+0.0320
+0.0168
+0.0320
+0.0321
+0.0348
+0.0418
+0.0439
+0.0435
+0.0428
+0.0462
+N@10
+0.0110
+0.0160
+0.0164
+0.0084
+0.0171
+0.0158
+0.0193
+0.0215
+0.0223
+0.0221
+0.0228
+0.0243
+R@5
+0.0141
+0.0356
+0.0358
+0.0194
+0.0424
+0.0478
+0.0405
+0.0352
+0.0383
+0.0391
+0.0466
+0.0516
+Toys
+N@5
+0.0084
+0.0216
+0.0234
+0.0120
+0.0282
+0.0262
+0.0283
+0.0220
+0.0239
+0.0245
+0.0323
+0.0328
+R@10
+0.0233
+0.0565
+0.0571
+0.0302
+0.0609
+0.0771
+0.0582
+0.0562
+0.0599
+0.0602
+0.0687
+0.0839
+N@10
+0.0114
+0.0284
+0.0302
+0.0155
+0.0342
+0.0357
+0.0339
+0.0287
+0.0308
+0.0321
+0.0394
+0.0432
+• PIT consistently achieves the best performance across all datasets
+and evaluation metrics. This significant improvement validates
+the effectiveness of our proposed framework in capturing com-
+plex user-item patterns even in offline scenarios with limited data.
+The superior performance can be attributed to the incorporation
+of collaborative signals, the multi-faceted representation of beam
+index, and the architectural superiority of the proposed model.
+• Traditional sequential recommendation methods (e.g., Caser, HGN,
+and GRU4Rec) generally underperform compared to most gen-
+erative approaches. This performance gap is likely due to their
+reliance on discrete, one-hot identifier representations, which
+fail to capture the underlying semantic relationships between
+items. While models like SASRec show competitive performance
+among traditional baselines by leveraging self-attention mecha-
+nisms, they still struggle to match the performance of advanced
+generative models that utilize hierarchical semantic structures.
+• Generative recommendation models (e.g., TIGER and LC-Rec)
+typically show better results than traditional sequential models.
+Specifically, models that incorporate RQ-VAE for semantic tok-
+enization like TIGER and LETTER demonstrate the advantage of
+leveraging fine-grained, hierarchical item representations. No-
+tably, the superior performance of LETTER and ETEGRec over
+the standard TIGER framework underscores the critical necessity
+and benefits of integrating collaborative signals and end-to-end
+optimization. PIT further extends this advantage by better bal-
+ancing the tokenization process and the recommendation task,
+allowing for a more robust mapping between user preferences
+and the generative target space even under the constraints of
+offline data.
+4.3
+Ablation Studies (RQ2)
+To investigate the individual contribution of each component within
+PIT, we conduct a comprehensive ablation study on the Amazon
+Beauty as well as Toys and Games. The results, summarized in
+Table 3, compare the full PIT model against four variants
+• w/o CSA: Removes the collaborative signal alignment (CSA),
+thereby decoupling the global collaborative semantics from the
+Table 3: Ablation study of PIT on Beauty as well as Toys and
+Games datasets.
+Variant
+Beauty
+Toys
+R@10
+N@10
+R@10
+N@10
+PIT (Full)
+0.0783
+0.0403
+0.0839
+0.0432
+w/o CSA
+0.0738
+0.0379
+0.0771
+0.0397
+w/o MLS
+0.0742
+0.0387
+0.0798
+0.0405
+w/o BI
+0.0666
+0.0349
+0.0622
+0.0321
+w/o MLS & BI
+0.0606
+0.0317
+0.0498
+0.0252
+TIGER
+0.0648
+0.0336
+0.0562
+0.0287
+item-to-token generative process. The resulting consistent perfor-
+mance decay validates that aligning collaborative signals through
+shared item embeddings is essential for bridging the semantic
+gap.
+• w/o MLS: Replaces the minimum-loss selection (MLS) mecha-
+nism with a stochastic selection strategy, neutralizing the optimal
+alignment between beam candidates and user preferences. The
+evident superiority of PIT(Full) over this variant indicates that
+loss-based selection effectively filters out generative noise.
+• w/o BI: Constrains the model to a rigid one-to-one mapping by
+disabling the beam index (BI) functionality, effectively reverting
+to a unique SID assignment. The sharp performance decline
+observed here highlights that multi-view indexing is fundamental
+for capturing complex item semantics.
+• w/o MLS & BI: A minimalist configuration where Item-to-Token
+reduces to a generative tokenizer equipped only with standard
+RQ-VAE capabilities. The substantial gap between PIT(Full) and
+this variant indicates that without these modules, the process
+degrades into a suboptimal tokenizer. Furthermore, the fact that
+this variant even underperforms the original TIGER underscores
+the critical role of MLS and BI; without them, the dynamic gen-
+erative indexing fails to match the efficacy of traditional static
+tokenizer.
+4.4
+Codebook Entropy Analysis (RQ3)
+To evaluate the discrete codebook’s efficiency, we analyzed its den-
+sity as a measure of the ratio of active to total codewords and
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+Table 4: Online A/B test results: Relative improvement of OneRec-V2-PIT over OneRec-V2 on Kuaishou and Kuaishou Lite.
+Scenarios
+Important Online Metrics
+Interaction Metrics
+APP Stay Time
+LT7
+Watch Time
+Video View
+Like
+Follow
+Comment
+Collect
+Forward
+Kuaishou
++0.217%
++0.056%
++0.371%
++0.239%
++0.652%
++0.674%
++0.130%
++0.131%
++0.073%
+Kuaishou Lite
++0.402%
++0.146%
++0.531%
++1.664%
++0.728%
++0.070%
++0.811%
++0.042%
++0.199%
+0
+50
+100
+150
+200
+250
+Index
+0.00
+0.01
+0.02
+Codebook 1
+Usage Rate
+Density: 40%
+Entropy: 6.48
+Static Index
+0
+50
+100
+150
+200
+250
+Index
+0.000
+0.005
+0.010
+0.015
+0.020
+Usage Rate
+Density: 97%
+Entropy: 6.63
+Dynamic Index
+0
+50
+100
+150
+200
+250
+Index
+0.0000
+0.0025
+0.0050
+0.0075
+0.0100
+Codebook 2
+Usage Rate
+Density: 100%
+Entropy: 7.92
+Static Index
+0
+50
+100
+150
+200
+250
+Index
+0.000
+0.002
+0.004
+0.006
+0.008
+Usage Rate
+Density: 100%
+Entropy: 7.94
+Dynamic Index
+0
+50
+100
+150
+200
+250
+Index
+0.000
+0.005
+0.010
+Codebook 3
+Usage Rate
+Density: 100%
+Entropy: 7.87
+Static Index
+0
+50
+100
+150
+200
+250
+Index
+0.000
+0.002
+0.004
+0.006
+0.008
+Usage Rate
+Density: 100%
+Entropy: 7.91
+Dynamic Index
+0
+50
+100
+150
+200
+250
+Index
+0.000
+0.005
+0.010
+0.015
+Codebook 4
+Usage Rate
+Density: 100%
+Entropy: 7.91
+Static Index
+0
+50
+100
+150
+200
+250
+Index
+0.0000
+0.0025
+0.0050
+0.0075
+0.0100
+Usage Rate
+Density: 100%
+Entropy: 7.93
+Dynamic Index
+(a) Codebook Entropy Analysis on Toys and Games
+Beauty
+Sports_and_Outdoors
+Toys_and_Games
+7.55
+7.60
+7.65
+7.70
+7.75
+7.80
+Entropy
+Average Entropy Across Codebooks
+Static
+Dynamic
+(b) Total Entropy Comparison on three datasets
+Figure 4: Quantitative analysis of codebook utilization. (a)
+Codeword distribution across quantization layers on the Toys
+and Games dataset. (b) Overall comparison of average en-
+tropy across three datasets.
+Shannon entropy to assess the uniformity of codeword distribu-
+tion across quantization layers using the Toys and Games dataset.
+Additionally, we compared the average entropy across all code-
+books for the three datasets, as illustrated in Figure 4. The empiri-
+cal results demonstrate that PIT components significantly enhance
+the utilization of the initial quantization layers. While the overall
+improvement in entropy appears moderate, we attribute this con-
+straint primarily to the fact that the Item-to-Token model was not
+fully updated in a synchronous manner due to the scale limitations
+of the offline datasets. Despite these challenges, our experiments
+demonstrate that the proposed components effectively optimize
+entropy distribution and increase codebook density.
+4.5
+Online A/B Result (RQ4)
+To verify the effectiveness of PIT in a real-world industrial environ-
+ment, we deployed it on a large-scale short video recommendation
+platform. We conducted experiments over a 24-day period, spanning
+two major recommendation scenarios at Kuaishou. We compare
+PIT against the current production baseline OneRec-V2 [23, 54]).
+The results are reported in Table 4. The proposed model demon-
+strates superior performance across all metrics in both scenarios,
+validating the effectiveness of our approach. Specifically, regard-
+ing the online metrics in our internal scenarios, we prioritize Stay
+Time and LT7 (Lifetime over 7 days). These metrics function as
+the primary indicators for assessing user stickiness and long-term
+retention, respectively. Furthermore, the beam index is updated
+synchronously during streaming training, allowing our personal
+tokenizer to be seamlessly integrated into various generative rec-
+ommender architectures. These models, irrespective of their scale
+or structure, can directly leverage the dynamic index by retrieving
+item-to-token mappings (details in Appendix A.2.2).
+5
+Conclusion
+In this study, we presented a dynamic end-to-end generative re-
+trieval framework specifically designed to achieve a deeper inte-
+gration of collaborative signals and shortcomings of tokenizer in
+industrial scenarios. By integrating a dynamic tokenizer and beam
+index, our approach moves beyond the constraints of traditional
+fixed-token indexing. This architecture allows for a more flexible
+and granular representation of semantic identifiers, ensuring that
+the generative process is more aligned with the underlying data
+distribution. Empirical results on Kuaishou’s Short Videos scenar-
+ios demonstrate the effectiveness of our method on large-industry
+Generative Recommendation. Future work involves substituting
+the basic DNN backbone with high-quality ranking-stage embed-
+dings and exploring advanced integration strategies of collaborative
+filtering with semantic identifiers for enhanced synergistic repre-
+sentations.
+References
+[1] Yimeng Bai, Chang Liu, Yang Zhang, Dingxian Wang, Frank Yang, Andrew Rabi-
+novich, Wenge Rong, and Fuli Feng. 2025. Bi-Level Optimization for Generative
+
+PIT: A Dynamic Personalized Item Tokenizer for End-to-End Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Recommendation: Bridging Tokenization and Generation. arXiv:2510.21242 [cs]
+doi:10.48550/arXiv.2510.21242
+[2] Yoshua Bengio, Jérôme Louradour, Ronan Collobert, and Jason Weston. 2009.
+Curriculum Learning. In Proceedings of the 26th Annual International Conference
+on Machine Learning (ICML ’09). Association for Computing Machinery, New
+York, NY, USA, 41–48. doi:10.1145/1553374.1553380
+[3] Heng-Tze Cheng, Levent Koc, Jeremiah Harmsen, Tal Shaked, Tushar Chandra,
+Hrishi Aradhye, Glen Anderson, Greg Corrado, Wei Chai, Mustafa Ispir, Rohan
+Anil, Zakaria Haque, Lichan Hong, Vihan Jain, Xiaobing Liu, and Hemal Shah.
+2016. Wide & Deep Learning for Recommender Systems. In Proceedings of the 1st
+Workshop on Deep Learning for Recommender Systems, DLRS@RecSys 2016, Boston,
+MA, USA, September 15, 2016, Alexandros Karatzoglou, Balázs Hidasi, Domonkos
+Tikk, Oren Sar Shalom, Haggai Roitman, Bracha Shapira, and Lior Rokach (Eds.).
+ACM, 7–10. doi:10.1145/2988450.2988454
+[4] Kyunghyun Cho, Bart van Merrienboer, Çaglar Gülçehre, Dzmitry Bahdanau,
+Fethi Bougares, Holger Schwenk, and Yoshua Bengio. 2014. Learning Phrase
+Representations using RNN Encoder-Decoder for Statistical Machine Translation.
+In Proceedings of the 2014 Conference on Empirical Methods in Natural Language
+Processing, EMNLP 2014, October 25-29, 2014, Doha, Qatar, A meeting of SIGDAT,
+a Special Interest Group of the ACL, Alessandro Moschitti, Bo Pang, and Walter
+Daelemans (Eds.). ACL, 1724–1734. doi:10.3115/V1/D14-1179
+[5] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep Neural Networks
+for YouTube Recommendations. In Proceedings of the 10th ACM Conference on
+Recommender Systems, Boston, MA, USA, September 15-19, 2016, Shilad Sen, Werner
+Geyer, Jill Freyne, and Pablo Castells (Eds.). ACM, 191–198. doi:10.1145/2959100.
+2959190
+[6] Shijie Geng, Shuchang Liu, Zuohui Fu, Yingqiang Ge, and Yongfeng Zhang. 2022.
+Recommendation as Language Processing (RLP): A Unified Pretrain, Personalized
+Prompt & Predict Paradigm (P5). In RecSys ’22: Sixteenth ACM Conference on
+Recommender Systems, Seattle, WA, USA, September 18 - 23, 2022, Jennifer Golbeck,
+F. Maxwell Harper, Vanessa Murdock, Michael D. Ekstrand, Bracha Shapira,
+Justin Basilico, Keld T. Lundgaard, and Even Oldridge (Eds.). ACM, 299–315.
+doi:10.1145/3523227.3546767
+[7] Aaron Grattafiori, Abhimanyu Dubey, et al. 2024. The Llama 3 Herd of Models.
+arXiv:2407.21783 [cs] doi:10.48550/arXiv.2407.21783
+[8] Huifeng Guo, Ruiming Tang, Yunming Ye, Zhenguo Li, and Xiuqiang He. 2017.
+DeepFM: A Factorization-Machine based Neural Network for CTR Prediction.
+In Proceedings of the Twenty-Sixth International Joint Conference on Artificial
+Intelligence, IJCAI 2017, Melbourne, Australia, August 19-25, 2017, Carles Sierra
+(Ed.). ijcai.org, 1725–1731. doi:10.24963/IJCAI.2017/239
+[9] Kaiming He, Haoqi Fan, Yuxin Wu, Saining Xie, and Ross B. Girshick. 2020.
+Momentum Contrast for Unsupervised Visual Representation Learning. In 2020
+IEEE/CVF Conference on Computer Vision and Pattern Recognition, CVPR 2020,
+Seattle, WA, USA, June 13-19, 2020. Computer Vision Foundation / IEEE, 9726–9735.
+doi:10.1109/CVPR42600.2020.00975
+[10] Ruining He and Julian J. McAuley. 2016. Ups and Downs: Modeling the Visual
+Evolution of Fashion Trends with One-Class Collaborative Filtering. In Proceed-
+ings of the 25th International Conference on World Wide Web, WWW 2016, Montreal,
+Canada, April 11 - 15, 2016, Jacqueline Bourdeau, Jim Hendler, Roger Nkambou, Ian
+Horrocks, and Ben Y. Zhao (Eds.). ACM, 507–517. doi:10.1145/2872427.2883037
+[11] Balázs Hidasi and Alexandros Karatzoglou. 2018. Recurrent Neural Networks
+with Top-k Gains for Session-based Recommendations. In Proceedings of the 27th
+ACM International Conference on Information and Knowledge Management, CIKM
+2018, Torino, Italy, October 22-26, 2018, Alfredo Cuzzocrea, James Allan, Norman W.
+Paton, Divesh Srivastava, Rakesh Agrawal, Andrei Z. Broder, Mohammed J. Zaki,
+K. Selçuk Candan, Alexandros Labrinidis, Assaf Schuster, and Haixun Wang
+(Eds.). ACM, 843–852. doi:10.1145/3269206.3271761
+[12] Po-Sen Huang, Xiaodong He, Jianfeng Gao, Li Deng, Alex Acero, and Larry P.
+Heck. 2013. Learning deep structured semantic models for web search using
+clickthrough data. In 22nd ACM International Conference on Information and
+Knowledge Management, CIKM’13, San Francisco, CA, USA, October 27 - November
+1, 2013, Qi He, Arun Iyengar, Wolfgang Nejdl, Jian Pei, and Rajeev Rastogi (Eds.).
+ACM, 2333–2338. doi:10.1145/2505515.2505665
+[13] Jeff Johnson, Matthijs Douze, and Hervé Jégou. 2021. Billion-Scale Similarity
+Search with GPUs. IEEE Trans. Big Data 7, 3 (2021), 535–547. doi:10.1109/TBDATA.
+2019.2921572
+[14] Wang-Cheng Kang and Julian J. McAuley. 2018. Self-Attentive Sequential Rec-
+ommendation. In IEEE International Conference on Data Mining, ICDM 2018,
+Singapore, November 17-20, 2018. IEEE Computer Society, 197–206. doi:10.1109/
+ICDM.2018.00035
+[15] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive Image Generation using Residual Quantization. In IEEE/CVF
+Conference on Computer Vision and Pattern Recognition, CVPR 2022, New Orleans,
+LA, USA, June 18-24, 2022. IEEE, 11513–11522. doi:10.1109/CVPR52688.2022.01123
+[16] Lei Li, Yongfeng Zhang, Dugang Liu, and Li Chen. 2024. Large Language Mod-
+els for Generative Recommendation: A Survey and Visionary Discussions. In
+Proceedings of the 2024 Joint International Conference on Computational Linguis-
+tics, Language Resources and Evaluation, LREC/COLING 2024, 20-25 May, 2024,
+Torino, Italy, Nicoletta Calzolari, Min-Yen Kan, Véronique Hoste, Alessandro
+Lenci, Sakriani Sakti, and Nianwen Xue (Eds.). ELRA and ICCL, 10146–10159.
+https://aclanthology.org/2024.lrec-main.886
+[17] Xiaopeng Li, Bo Chen, Junda She, Shiteng Cao, You Wang, Qinlin Jia, Haiying He,
+Zheli Zhou, Zhao Liu, Ji Liu, Zhiyang Zhang, Yu Zhou, Guoping Tang, Yiqing
+Yang, Chengcheng Guo, Si Dong, Kuo Cai, Pengyue Jia, Maolin Wang, Wanyu
+Wang, Shiyao Wang, Xinchen Luo, Qigen Hu, Qiang Luo, Xiao Lv, Chaoyi Ma,
+Ruiming Tang, Kun Gai, Guorui Zhou, and Xiangyu Zhao. 2025. A Survey of
+Generative Recommendation from a Tri-Decoupled Perspective: Tokenization,
+Architecture, and Optimization. doi:10.20944/preprints202512.0203.v1
+[18] Guanyu Lin, Zhigang Hua, Tao Feng, Shuang Yang, Bo Long, and Jiaxuan You.
+2025. Unified Semantic and ID Representation Learning for Deep Recommenders.
+arXiv:2502.16474 [cs] doi:10.48550/arXiv.2502.16474
+[19] Chang Liu, Yimeng Bai, Xiaoyan Zhao, Yang Zhang, Fuli Feng, and Wenge Rong.
+2025. DiscRec: Disentangled Semantic-Collaborative Modeling for Generative
+Recommendation. arXiv:2506.15576 [cs] doi:10.48550/arXiv.2506.15576
+[20] Enze Liu, Bowen Zheng, Cheng Ling, Lantao Hu, Han Li, and Wayne Xin Zhao.
+2025. Generative Recommender with End-to-End Learnable Item Tokenization.
+In Proceedings of the 48th International ACM SIGIR Conference on Research and
+Development in Information Retrieval, SIGIR 2025, Padua, Italy, July 13-18, 2025,
+Nicola Ferro, Maria Maistro, Gabriella Pasi, Omar Alonso, Andrew Trotman, and
+Suzan Verberne (Eds.). ACM, 729–739. doi:10.1145/3726302.3729989
+[21] Zhanyu Liu, Shiyao Wang, Xingmei Wang, Rongzhou Zhang, Jiaxin Deng,
+Honghui Bao, Jinghao Zhang, Wuchao Li, Pengfei Zheng, Xiangyu Wu, Yifei Hu,
+Qigen Hu, Xinchen Luo, Lejian Ren, Zixing Zhang, Qianqian Wang, Kuo Cai, Yun-
+fan Wu, Hongtao Cheng, Zexuan Cheng, Lu Ren, Huanjie Wang, Yi Su, Ruiming
+Tang, Kun Gai, and Guorui Zhou. 2025. OneRec-Think: In-Text Reasoning for Gen-
+erative Recommendation. arXiv:2510.11639 [cs] doi:10.48550/arXiv.2510.11639
+[22] Ilya Loshchilov and Frank Hutter. 2019. Decoupled Weight Decay Regularization.
+In 7th International Conference on Learning Representations, ICLR 2019, New Or-
+leans, LA, USA, May 6-9, 2019. OpenReview.net. https://openreview.net/forum?
+id=Bkg6RiCqY7
+[23] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, Changqing Qiu, Jiaqi Zhang, Xu
+Zhang, Zhiheng Yan, Jingming Zhang, Simin Zhang, Mingxing Wen, Zhaojie Liu,
+and Guorui Zhou. 2025. QARM: Quantitative Alignment Multi-Modal Recom-
+mendation at Kuaishou. In Proceedings of the 34th ACM International Conference
+on Information and Knowledge Management, CIKM 2025, Seoul, Republic of Korea,
+November 10-14, 2025, Meeyoung Cha, Chanyoung Park, Noseong Park, Carl
+Yang, Senjuti Basu Roy, Jessie Li, Jaap Kamps, Kijung Shin, Bryan Hooi, and
+Lifang He (Eds.). ACM, 5915–5922. doi:10.1145/3746252.3761502
+[24] Chen Ma, Peng Kang, and Xue Liu. 2019. Hierarchical Gating Networks for Se-
+quential Recommendation. In Proceedings of the 25th ACM SIGKDD International
+Conference on Knowledge Discovery & Data Mining, KDD 2019, Anchorage, AK, USA,
+August 4-8, 2019, Ankur Teredesai, Vipin Kumar, Ying Li, Rómer Rosales, Evimaria
+Terzi, and George Karypis (Eds.). ACM, 825–833. doi:10.1145/3292500.3330984
+[25] Yury A. Malkov and Dmitry A. Yashunin. 2020. Efficient and Robust Approximate
+Nearest Neighbor Search Using Hierarchical Navigable Small World Graphs. IEEE
+Trans. Pattern Anal. Mach. Intell. 42, 4 (2020), 824–836. doi:10.1109/TPAMI.2018.
+2889473
+[26] Alec Radford, Karthik Narasimhan, Tim Salimans, Ilya Sutskever, et al. 2018.
+Improving language understanding by generative pre-training. (2018).
+[27] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang,
+Michael Matena, Yanqi Zhou, Wei Li, and Peter J. Liu. 2020. Exploring the
+Limits of Transfer Learning with a Unified Text-to-Text Transformer. J. Mach.
+Learn. Res. 21 (2020), 140:1–140:67. https://jmlr.org/papers/v21/20-074.html
+[28] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Kesha-
+van, Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah
+Samost, Maciej Kula, Ed H. Chi, and Mahesh Sathiamoorthy. 2023.
+Rec-
+ommender Systems with Generative Retrieval. In Advances in Neural Infor-
+mation Processing Systems 36: Annual Conference on Neural Information Pro-
+cessing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16,
+2023, Alice Oh, Tristan Naumann, Amir Globerson, Kate Saenko, Moritz Hardt,
+and Sergey Levine (Eds.).
+http://papers.nips.cc/paper_files/paper/2023/hash/
+20dcab0f14046a5c6b02b61da9f13229-Abstract-Conference.html
+[29] Franco Scarselli, Marco Gori, Ah Chung Tsoi, Markus Hagenbuchner, and Gabriele
+Monfardini. 2009. The Graph Neural Network Model. IEEE Trans. Neural Networks
+20, 1 (2009), 61–80. doi:10.1109/TNN.2008.2005605
+[30] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei
+Zhang, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. 2024. DeepSeek-
+Math: Pushing the Limits of Mathematical Reasoning in Open Language Models.
+arXiv:2402.03300 [cs] doi:10.48550/arXiv.2402.03300
+[31] Zihua Si, Zhongxiang Sun, Jiale Chen, Guozhang Chen, Xiaoxue Zang, Kai Zheng,
+Yang Song, Xiao Zhang, Jun Xu, and Kun Gai. 2024. Generative Retrieval with
+Semantic Tree-Structured Identifiers and Contrastive Learning. In Proceedings of
+the 2024 Annual International ACM SIGIR Conference on Research and Development
+in Information Retrieval in the Asia Pacific Region, SIGIR-AP 2024, Tokyo, Japan,
+December 9-12, 2024, Tetsuya Sakai, Emi Ishita, Hiroaki Ohshima, Faegheh Hasibi,
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+Jiaxin Mao, and Joemon M. Jose (Eds.). ACM, 154–163. doi:10.1145/3673791.
+3698408
+[32] Petru Soviany, Radu Tudor Ionescu, Paolo Rota, and Nicu Sebe. 2022. Curriculum
+Learning: A Survey. Int. J. Comput. Vis. 130, 6 (2022), 1526–1565. doi:10.1007/
+S11263-022-01611-X
+[33] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential Recommendation with Bidirectional Encoder Repre-
+sentations from Transformer. In Proceedings of the 28th ACM International Con-
+ference on Information and Knowledge Management, CIKM 2019, Beijing, China,
+November 3-7, 2019, Wenwu Zhu, Dacheng Tao, Xueqi Cheng, Peng Cui, Elke A.
+Rundensteiner, David Carmel, Qi He, and Jeffrey Xu Yu (Eds.). ACM, 1441–1450.
+doi:10.1145/3357384.3357895
+[34] Ilya Sutskever, Oriol Vinyals, and Quoc V. Le. 2014. Sequence to Sequence
+Learning with Neural Networks. In Advances in Neural Information Pro-
+cessing Systems 27: Annual Conference on Neural Information Processing Sys-
+tems 2014, December 8-13 2014, Montreal, Quebec, Canada, Zoubin Ghahra-
+mani, Max Welling, Corinna Cortes, Neil D. Lawrence, and Kilian Q. Wein-
+berger (Eds.). 3104–3112.
+https://proceedings.neurips.cc/paper/2014/hash/
+a14ac55a4f27472c5d894ec1c3c743d2-Abstract.html
+[35] Jiakai Tang, Sunhao Dai, Teng Shi, Jun Xu, Xu Chen, Wen Chen, Jian Wu, and
+Yuning Jiang. 2025. Think Before Recommend: Unleashing the Latent Reasoning
+Power for Sequential Recommendation. arXiv:2503.22675 [cs] doi:10.48550/arXiv.
+2503.22675
+[36] Jiaxi Tang and Ke Wang. 2018. Personalized Top-N Sequential Recommendation
+via Convolutional Sequence Embedding. In Proceedings of the Eleventh ACM
+International Conference on Web Search and Data Mining, WSDM 2018, Marina
+Del Rey, CA, USA, February 5-9, 2018, Yi Chang, Chengxiang Zhai, Yan Liu, and
+Yoelle Maarek (Eds.). ACM, 565–573. doi:10.1145/3159652.3159656
+[37] Yi Tay, Vinh Tran, Mostafa Dehghani, Jianmo Ni, Dara Bahri, Harsh Mehta, Zhen
+Qin, Kai Hui, Zhe Zhao, Jai Prakash Gupta, Tal Schuster, William W. Cohen, and
+Donald Metzler. 2022. Transformer Memory as a Differentiable Search Index.
+In Advances in Neural Information Processing Systems 35: Annual Conference on
+Neural Information Processing Systems 2022, NeurIPS 2022, New Orleans, LA, USA,
+November 28 - December 9, 2022, Sanmi Koyejo, S. Mohamed, A. Agarwal, Danielle
+Belgrave, K. Cho, and A. Oh (Eds.). http://papers.nips.cc/paper_files/paper/2022/
+hash/892840a6123b5ec99ebaab8be1530fba-Abstract-Conference.html
+[38] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne
+Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro,
+Faisal Azhar, Aurelien Rodriguez, Armand Joulin, Edouard Grave, and Guil-
+laume Lample. 2023. LLaMA: Open and Efficient Foundation Language Models.
+arXiv:2302.13971 [cs] doi:10.48550/arXiv.2302.13971
+[39] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N. Gomez, Lukasz Kaiser, and Illia Polosukhin. 2017.
+Attention is
+All you Need. In Advances in Neural Information Processing Systems 30: An-
+nual Conference on Neural Information Processing Systems 2017, December 4-
+9, 2017, Long Beach, CA, USA, Isabelle Guyon, Ulrike von Luxburg, Samy
+Bengio, Hanna M. Wallach, Rob Fergus, S. V. N. Vishwanathan, and Roman
+Garnett (Eds.). 5998–6008.
+https://proceedings.neurips.cc/paper/2017/hash/
+3f5ee243547dee91fbd053c1c4a845aa-Abstract.html
+[40] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable Item Tokenization for Generative
+Recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management, CIKM 2024, Boise, ID, USA, October
+21-25, 2024, Edoardo Serra and Francesca Spezzano (Eds.). ACM, 2400–2409.
+doi:10.1145/3627673.3679569
+[41] Wenjie Wang, Xinyu Lin, Fuli Feng, Xiangnan He, and Tat-Seng Chua. 2024.
+Generative Recommendation: Towards Next-generation Recommender Paradigm.
+arXiv:2304.03516 [cs] doi:10.48550/arXiv.2304.03516
+[42] Yujing Wang, Yingyan Hou, Haonan Wang, Ziming Miao, Shibin Wu, Qi
+Chen, Yuqing Xia, Chengmin Chi, Guoshuai Zhao, Zheng Liu, Xing Xie,
+Hao Sun, Weiwei Deng, Qi Zhang, and Mao Yang. 2022.
+A Neural Cor-
+pus Indexer for Document Retrieval. In Advances in Neural Information
+Processing Systems 35: Annual Conference on Neural Information Processing
+Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 - Decem-
+ber 9, 2022, Sanmi Koyejo, S. Mohamed, A. Agarwal, Danielle Belgrave,
+K. Cho, and A. Oh (Eds.).
+http://papers.nips.cc/paper_files/paper/2022/hash/
+a46156bd3579c3b268108ea6aca71d13-Abstract-Conference.html
+[43] Yidan Wang, Zhaochun Ren, Weiwei Sun, Jiyuan Yang, Zhixiang Liang, Xin
+Chen, Ruobing Xie, Su Yan, Xu Zhang, Pengjie Ren, Zhumin Chen, and Xin
+Xin. 2024. Content-Based Collaborative Generation for Recommender Systems.
+In Proceedings of the 33rd ACM International Conference on Information and
+Knowledge Management, CIKM 2024, Boise, ID, USA, October 21-25, 2024, Edoardo
+Serra and Francesca Spezzano (Eds.). ACM, 2420–2430. doi:10.1145/3627673.
+3679692
+[44] Ye Wang, Jiahao Xun, Minjie Hong, Jieming Zhu, Tao Jin, Wang Lin, Haoyuan Li,
+Linjun Li, Yan Xia, Zhou Zhao, and Zhenhua Dong. 2024. EAGER: Two-Stream
+Generative Recommender with Behavior-Semantic Collaboration. In Proceedings
+of the 30th ACM SIGKDD Conference on Knowledge Discovery and Data Mining,
+KDD 2024, Barcelona, Spain, August 25-29, 2024, Ricardo Baeza-Yates and Francesco
+Bonchi (Eds.). ACM, 3245–3254. doi:10.1145/3637528.3671775
+[45] Zhengyi Yang, Xiangnan He, Jizhi Zhang, Jiancan Wu, Xin Xin, Jiawei Chen,
+and Xiang Wang. 2023. A Generic Learning Framework for Sequential Recom-
+mendation with Distribution Shifts. In Proceedings of the 46th International ACM
+SIGIR Conference on Research and Development in Information Retrieval, SIGIR
+2023, Taipei, Taiwan, July 23-27, 2023, Hsin-Hsi Chen, Wei-Jou (Edward) Duh,
+Hen-Hsen Huang, Makoto P. Kato, Josiane Mothe, and Barbara Poblete (Eds.).
+ACM, 331–340. doi:10.1145/3539618.3591624
+[46] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Jiayuan He, Yinghai Lu, and Yu Shi. 2024. Actions Speak
+Louder than Words: Trillion-Parameter Sequential Transducers for Generative
+Recommendations. In Forty-first International Conference on Machine Learning,
+ICML 2024, Vienna, Austria, July 21-27, 2024. OpenReview.net. https://openreview.
+net/forum?id=xye7iNsgXn
+[47] An Zhang, Wenchang Ma, Jingnan Zheng, Xiang Wang, and Tat-Seng Chua. 2024.
+Robust Collaborative Filtering to Popularity Distribution Shift. ACM Trans. Inf.
+Syst. 42, 3 (2024), 80:1–80:25. doi:10.1145/3627159
+[48] An Zhang, Jingnan Zheng, Xiang Wang, Yancheng Yuan, and Tat-Seng Chua. 2023.
+Invariant Collaborative Filtering to Popularity Distribution Shift. In Proceedings
+of the ACM Web Conference 2023, WWW 2023, Austin, TX, USA, 30 April 2023 - 4
+May 2023, Ying Ding, Jie Tang, Juan F. Sequeda, Lora Aroyo, Carlos Castillo, and
+Geert-Jan Houben (Eds.). ACM, 1240–1251. doi:10.1145/3543507.3583461
+[49] Wayne Xin Zhao, Yupeng Hou, Xingyu Pan, Chen Yang, Zeyu Zhang, Zihan Lin,
+Jingsen Zhang, Shuqing Bian, Jiakai Tang, Wenqi Sun, Yushuo Chen, Lanling Xu,
+Gaowei Zhang, Zhen Tian, Changxin Tian, Shanlei Mu, Xinyan Fan, Xu Chen, and
+Ji-Rong Wen. 2022. RecBole 2.0: Towards a More Up-to-Date Recommendation
+Library. In Proceedings of the 31st ACM International Conference on Information &
+Knowledge Management, Atlanta, GA, USA, October 17-21, 2022, Mohammad Al
+Hasan and Li Xiong (Eds.). ACM, 4722–4726. doi:10.1145/3511808.3557680
+[50] Wayne Xin Zhao, Shanlei Mu, Yupeng Hou, Zihan Lin, Yushuo Chen, Xingyu
+Pan, Kaiyuan Li, Yujie Lu, Hui Wang, Changxin Tian, Yingqian Min, Zhichao
+Feng, Xinyan Fan, Xu Chen, Pengfei Wang, Wendi Ji, Yaliang Li, Xiaoling Wang,
+and Ji-Rong Wen. 2021. RecBole: Towards a Unified, Comprehensive and Efficient
+Framework for Recommendation Algorithms. In CIKM ’21: The 30th ACM Inter-
+national Conference on Information and Knowledge Management, Virtual Event,
+Queensland, Australia, November 1 - 5, 2021, Gianluca Demartini, Guido Zuccon,
+J. Shane Culpepper, Zi Huang, and Hanghang Tong (Eds.). ACM, 4653–4664.
+doi:10.1145/3459637.3482016
+[51] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming Chen,
+and Ji-Rong Wen. 2024. Adapting Large Language Models by Integrating Col-
+laborative Semantics for Recommendation. In 40th IEEE International Conference
+on Data Engineering, ICDE 2024, Utrecht, The Netherlands, May 13-16, 2024. IEEE,
+1435–1448. doi:10.1109/ICDE60146.2024.00118
+[52] Guorui Zhou, Honghui Bao, Jiaming Huang, Jiaxin Deng, Jinghao Zhang, Junda
+She, Kuo Cai, Lejian Ren, Lu Ren, Qiang Luo, Qianqian Wang, Qigen Hu,
+Rongzhou Zhang, Ruiming Tang, Shiyao Wang, Wuchao Li, Xiangyu Wu, Xinchen
+Luo, Xingmei Wang, Yifei Hu, Yunfan Wu, Zhanyu Liu, Zhiyang Zhang, Zixing
+Zhang, Bo Chen, Bin Wen, Chaoyi Ma, Chengru Song, Chenglong Chu, Defu
+Lian, Fan Yang, Feng Jiang, Hongtao Cheng, Huanjie Wang, Kun Gai, Pengfei
+Zheng, Qiang Wang, Rui Huang, Siyang Mao, Tingting Gao, Wei Yuan, Yan Wang,
+Yang Zhou, Yi Su, Zexuan Cheng, Zhixin Ling, and Ziming Li. 2025. OpenOneRec
+Technical Report. arXiv:2512.24762 [cs] doi:10.48550/arXiv.2512.24762
+[53] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo,
+Qianqian Wang, Qigen Hu, Rui Huang, Shiyao Wang, Weifeng Ding, Wuchao Li,
+Xinchen Luo, Xingmei Wang, Zexuan Cheng, Zixing Zhang, Bin Zhang, Boxuan
+Wang, Chaoyi Ma, Chengru Song, Chenhui Wang, Di Wang, Dongxue Meng, Fan
+Yang, Fangyu Zhang, Feng Jiang, Fuxing Zhang, Gang Wang, Guowang Zhang,
+Han Li, Hengrui Hu, Hezheng Lin, Hongtao Cheng, Hongyang Cao, Huanjie
+Wang, Jiaming Huang, Jiapeng Chen, Jiaqiang Liu, Jinghui Jia, Kun Gai, Lantao
+Hu, Liang Zeng, Liao Yu, Qiang Wang, Qidong Zhou, Shengzhe Wang, Shihui He,
+Shuang Yang, Shujie Yang, Sui Huang, Tao Wu, Tiantian He, Tingting Gao, Wei
+Yuan, Xiao Liang, Xiaoxiao Xu, Xugang Liu, Yan Wang, Yi Wang, Yiwu Liu, Yue
+Song, Yufei Zhang, Yunfan Wu, Yunfeng Zhao, and Zhanyu Liu. 2025. OneRec
+Technical Report. arXiv:2506.13695 [cs] doi:10.48550/arXiv.2506.13695
+[54] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, Pengfei Zheng, Qiang Luo, Qianqian
+Wang, Qigen Hu, Rui Huang, Ruiming Tang, Shiyao Wang, Shujie Yang, Tao
+Wu, Wuchao Li, Xinchen Luo, Xingmei Wang, Yi Su, Yunfan Wu, Zexuan Cheng,
+Zhanyu Liu, Zixing Zhang, Bin Zhang, Boxuan Wang, Chaoyi Ma, Chengru
+Song, Chenhui Wang, Chenglong Chu, Di Wang, Dongxue Meng, Dunju Zang,
+Fan Yang, Fangyu Zhang, Feng Jiang, Fuxing Zhang, Gang Wang, Guowang
+Zhang, Han Li, Honghui Bao, Hongyang Cao, Jiaming Huang, Jiapeng Chen,
+Jiaqiang Liu, Jinghui Jia, Kun Gai, Lantao Hu, Liang Zeng, Qiang Wang, Qidong
+Zhou, Rongzhou Zhang, Shengzhe Wang, Shihui He, Shuang Yang, Siyang Mao,
+Sui Huang, Tiantian He, Tingting Gao, Wei Yuan, Xiao Liang, Xiaoxiao Xu,
+Xugang Liu, Yan Wang, Yang Zhou, Yi Wang, Yiwu Liu, Yue Song, Yufei Zhang,
+Yunfeng Zhao, Zhixin Ling, and Ziming Li. 2025. OneRec-V2 Technical Report.
+
+PIT: A Dynamic Personalized Item Tokenizer for End-to-End Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+arXiv:2508.20900 [cs] doi:10.48550/arXiv.2508.20900
+[55] Guorui Zhou, Xiaoqiang Zhu, Chengru Song, Ying Fan, Han Zhu, Xiao Ma,
+Yanghui Yan, Junqi Jin, Han Li, and Kun Gai. 2018. Deep Interest Network for
+Click-Through Rate Prediction. In Proceedings of the 24th ACM SIGKDD Inter-
+national Conference on Knowledge Discovery & Data Mining, KDD 2018, London,
+UK, August 19-23, 2018, Yike Guo and Faisal Farooq (Eds.). ACM, 1059–1068.
+doi:10.1145/3219819.3219823
+[56] Kuan Zou and Aixin Sun. 2025. A Survey of Real-World Recommender Systems:
+Challenges, Constraints, and Industrial Perspectives. arXiv:2509.06002 [cs] doi:10.
+48550/arXiv.2509.06002
+A
+Appendix
+A.1
+Beam Index Online
+A defining characteristic of Beam Index is that the index is not a
+static lookup table but a fluid, multi-view evolutionary topology.
+During the training process, the index is automatically constructed
+and refreshed in real-time based on the output of the Item-to-Token
+model.
+Online Storage of Beam Index. To accommodate Kuaishou’s
+large-scale production environment, we use a high-performance
+GNN [29] storage service designed to facilitate bi-directional map-
+pings between SIDs and item identifiers, as well as the retrieval
+of their heterogeneous side information. Specifically, each item
+identifier is projected onto eight distinct token nodes. Within this
+architecture, the ingestion timestamps and significance weights con-
+stitute the critical dimensions of the side info; these attributes dic-
+tate the definitive associations between items and tokens, thereby
+serving as the foundational logic for constructing the Beam Index.
+Online Update of Beam Index. The foundation of the Beam
+Index update mechanism is a quantitative measure of the represen-
+tational strength between an item 𝑖and a token sequence 𝑐. We
+define the relevance weight𝑊𝑖,𝑐based on the generative confidence:
+𝑊𝑖,𝑐= 𝛼−
+|𝑐|
+∑︁
+𝑡=1
+LCE(𝑥𝑡|𝑥<𝑡,𝑖),
+(12)
+where LCE denotes the cross-entropy loss at each decoding step,
+and 𝛼is a normalization constant (empirically set to 100) to ensure
+a positive weight distribution. A higher 𝑊𝑖,𝑐indicates that token
+sequence 𝑐captures the semantics of item 𝑖with lower uncertainty.
+Triggered by each Item-to-Token inference step, the Beam Index
+undergoes a real-time refresh as shown in Algorithm 1. We first
+synthesize a unified candidate set Tmerge by amalgamating histori-
+cally indexed tokens (Tfetch) and currently predicted tokens (Tpred).
+To balance historical stability with instantaneous generative con-
+fidence, we implement a differential weight update strategy prior
+to topology pruning. Specifically, the weight 𝑊𝑖,𝜏for each token
+𝜏∈Tmerge is determined by its intersection status:
+𝑊𝑖,𝜏=
+
+
+𝛾·𝑊old
+𝑖,𝜏+ (1 −𝛾) ·𝑊cur
+𝑖,𝜏
+if 𝜏∈Tfetch ∩Tpred,
+𝑊cur
+𝑖,𝜏
+if 𝜏∈Tpred \ Tfetch,
+𝑊old
+𝑖,𝜏
+if 𝜏∈Tfetch \ Tpred,
+(13)
+where𝑊cur
+𝑖,𝜏is calculated via Eq. 12,𝑊old
+𝑖,𝜏denotes the stored weight,
+and 𝛾∈[0, 1] is a momentum coefficient controlling the update
+rate. This mechanism ensures that recurring indices (overlap) are re-
+inforced through momentum [9], while novel tokens are initialized
+with their current generative uncertainty. To ensure graph integrity
+Algorithm 1 Dynamic Beam Index Evolution and Pruning
+1: Input: Item 𝑖, Historical tokens Tfetch, Predicted tokens Tpred,
+Momentum 𝛾, Index capacity 𝐵, Time threshold Δ𝑡
+2: Output: Updated SID set S𝑖
+3: // Step 1: Relevance Weight Calculation
+4: for each 𝜏∈Tpred do
+5:
+Calculate current weight 𝑊cur
+𝑖,𝜏using Eq. (12)
+6: end for
+7: // Step 2: Momentum-based Weight Update
+8: Tmerge ←Tfetch ∪Tpred
+9: for each 𝜏∈Tmerge do
+10:
+if 𝜏∈Tfetch ∩Tpred then
+11:
+𝑊𝑖,𝜏←𝛾·𝑊old
+𝑖,𝜏+ (1 −𝛾) ·𝑊cur
+𝑖,𝜏
+12:
+else if 𝜏∈Tpred \ Tfetch then
+13:
+𝑊𝑖,𝜏←𝑊cur
+𝑖,𝜏
+14:
+else
+15:
+𝑊𝑖,𝜏←𝑊old
+𝑖,𝜏
+16:
+end if
+17: end for
+18: // Step 3: Graph Integrity Pruning
+19: for each 𝜏∈Tmerge do
+20:
+if 𝜏∈Tfetch then
+21:
+{Forward Consistency Maintenance}
+22:
+if Map(𝜏) ≠𝑖then
+23:
+Terminate the mapping: Tmerge ←Tmerge \ {𝜏}
+24:
+end if
+25:
+else if 𝜏∈Tpred and Map(𝜏) = 𝑗(𝑗≠𝑖) then
+26:
+{Temporal Ownership Resolution}
+27:
+if Timestamp(𝜏→𝑗) < Now() −Δ𝑡then
+28:
+Prune stale link (𝑗,𝜏) and reassign to 𝑖
+29:
+else
+30:
+Respect incumbent ownership: Tmerge ←Tmerge \ {𝜏}
+31:
+end if
+32:
+end if
+33: end for
+34: // Step 4: Top-B Consolidation
+35: S𝑖←Top-𝐵tokens in Tmerge sorted by 𝑊𝑖,𝜏
+36: return S𝑖
+and maximize retrieval relevance under storage constraints, the
+topology is refined through the following protocols:
+• Forward Consistency Maintenance: For any historically fetched
+token 𝜏∈Tfetch, we verify the global reverse index Map(𝜏). If
+Map(𝜏) no longer points to the current item 𝑖, the forward asso-
+ciation is severed to prevent graph inconsistency.
+• Temporal Ownership Resolution: For any newly predicted
+token 𝜏∈Tpred involved in a conflict (where Map(𝜏) ≠𝑖), we
+evaluate the recency of the existing link. If 𝜏was engaged by an-
+other item within a recent time window (indicating fresh usage),
+we respect the incumbent ownership and exclude 𝜏. Conversely,
+stale links are actively pruned and reassigned to item 𝑖.
+• Top-𝐵Consolidation: To strictly enforce storage constraints,
+the definitive index for item 𝑖is consolidated by retaining only
+the top-𝐵tokens with the highest weights from the surviving
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Wang et al.
+candidates. In cases where the valid candidate count falls below
+𝐵, all remaining tokens are preserved with padding.
+Consequently, at any given moment, the set S𝑖represents the opti-
+mal, competitively selected aliases for item 𝑖. Upon the completion
+of the training phase, the co-evolutionary process terminates, and
+the item SIDs effectively stabilize. Our framework directly utilizes
+the final optimized Beam Index obtained from the last training
+epoch.
+A.2
+Online Implementation
+A.2.1
+Online Traning.
+Online Training Settings. For the online experiments, we strictly
+adhere to the configuration proposed in our methodology. The User-
+to-Token component is fully aligned with the deployed OneRec-
+V2 [54] model. For the Item-to-Token component, we employ a
+0.1B parameter decoder-only Transformer. Both components share
+a vocabulary size of 8192 × 3. For the DIN [55] model, we utilize
+a simplified architecture consisting of a 4-layer MLP and a single
+cross-attention Transformer layer. Regarding the online Beam Index
+in Appendix A.1, we configure the index capacity to 8 for each item,
+such that each item identifier is represented by 8 distinct tokens.
+It is noteworthy that during the warmup phase, the Beam Index
+is continuously populated leveraging a codebook initialized via
+RQ-Kmeans, which is pre-trained through Item-to-Item (I2I) con-
+trastive learning [23]. The detailed architectural initialization and
+the generation of semantic tokens via RQ-Kmeans are illustrated
+in Figure 5.
+Details of Online Training. (1) Warm-up: The curriculum
+learning [2] begins with a warm-up objective, where the Beam In-
+dex is constructed by inserting deterministic, one-to-one mappings
+between SIDs and their corresponding item identifiers. This phase
+serves as a structural initialization, ensuring the model captures the
+fundamental item-token alignment. Throughout this period, the
+User-to-Token loss trajectory remains consistent with the OneRec-
+V2 baseline. The transition to the subsequent phase is triggered
+once the model’s performance aligns with the convergence level of
+OneRec-V2, indicating that the model has sufficiently mastered the
+basic latent representations. (2) Dynamic Evolution: Upon switching,
+the model enters a more challenging dynamic learning objective.
+While a transient loss spike occurs due to the distributional shift
+of the index, the loss eventually stabilizes slightly above the static
+baseline. In this phase, the Beam Index evolves from rigid assign-
+ments to the momentum-weighted, one-to-many associations as
+detailed in Appendix A.1. Specifically, for the User-to-Token objec-
+tive, we implement a minimum-loss selection mechanism to refine
+the labels. For the Item-to-Token objective, we introduce a gradient-
+based filtering strategy: updates are selectively executed only when
+the associated User-to-Token label yields a weight exceeding 90.
+Within our 8192×3 vocabulary space, we posit that an accumulated
+loss within a threshold of 10 signifies a statistically valid signal
+rather than a noisy sample, thereby ensuring the precision and
+stability of the dynamic index evolution.
+A.2.2
+Online Experiments And Index Reuse. To evaluate the
+practical utility of PIT in real-world industrial systems, we con-
+ducted extensive online A/B tests on two large-scale short-video
+platforms: Kuaishou and Kuaishou Lite. For each application, 5% of
+the total traffic was randomly allocated to the experiment group
+(equipped with PIT-enhanced OneRec-V2) and the control group
+(base OneRec-V2), respectively. Notably, while PIT model was
+trained on Kuaishou Lite data, its Beam Index was directly trans-
+ferred to the OneRec-V2 training on Kuaishou as shown in A/B tests.
+Specifically, the system selects the index with the highest learned
+weight to guide the feature representation in OneRec-V2, which
+is shown in figure 6. The observed performance gap between the
+two platforms suggests a potential distribution shift, as the index
+was fully optimized for Kuaishou Lite. To ensure long-term robust-
+ness and account for the stability issues discussed in Appendix A.3,
+the experiments were monitored over a 24-day duration. Results
+demonstrate that PIT significantly outperforms the baseline across
+core engagement metrics, including App Stay Time, LT7 (Lifetime
+over 7 days), Watch Time, and Video Views. However, a relatively
+moderate improvement was observed in interaction-based metrics
+(e.g., Collect, Forward) compared to the primary retention indica-
+tors. Notably, the persistent improvement in LT7 demonstrates the
+long-term user retention capability of our proposed method, which
+is often considered a challenging objective in industrial recommen-
+dation systems. It is worth highlighting that our online inference
+architecture remains highly efficient. Although multiple models
+and iterative augmentation are employed during the offline train-
+ing phase, only the User-to-Token model is required for real-time
+serving. Since the tokenizer and collaborative signals alignment
+components are strictly confined to the training stage, the inference
+path is decoupled from these complex processes. Consequently, our
+approach maintains a service latency consistent with the standard
+OneRec-V2, ensuring seamless integration into production environ-
+ments without additional computational overhead.
+A.3
+Empirical Findings and Solutions
+During continuous multi-week streaming updates, we observed a
+significant index decay phenomenon. As training extends over sev-
+eral weeks, the item embeddings 𝑋𝑖within the CSA module increas-
+ingly converge toward collaborative signals, which inadvertently
+leads to them being dominated by popularity biases. Consequently,
+the Item-to-Token model (𝜙) overfits to this biased distribution,
+leading to a phenomenon where distinct items are mapped to a
+narrow set of “hot” token sequences, thereby reducing representa-
+tional diversity and retrieval precision. To counteract this instability
+and maintain the semantic integrity of the learned identifiers, we
+introduce a Reference-Regularized Constraint mechanism, drawing
+inspiration from the Kullback-Leibler (KL) divergence regulariza-
+tion used in Group Relative Policy Optimization [30].
+Reference Model Construction. We introduce a reference tok-
+enizer, parameterized by 𝜙𝑟𝑒𝑓, which shares the same architecture
+as the Item-to-Token model. Unlike the primary tokenizer 𝜙which
+evolves with user feedback, 𝜙𝑟𝑒𝑓is trained to maintain a stationary
+mapping between item attributes and RQ-Kmeans SIDs. It is super-
+vised by the initial collaborative-semantic identifiers ¯𝑐𝑖established
+during the all phase (Section 3.3):
+L𝑟𝑒𝑓= −
+𝐿
+∑︁
+𝑙=1
+log 𝑃𝜙𝑟𝑒𝑓(¯𝑐𝑖,𝑙|¯𝑐𝑖,<𝑙, sg(𝑋𝑖)).
+(14)
+
+PIT: A Dynamic Personalized Item Tokenizer for End-to-End Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Initialization
+Warm-up stage
+Nearest
+Code
+search
+Initialize Semantic Code
+-
+=
+Codebook 1
+-
+=
+Codebook 2
+-
+=
+Codebook 3
+Quantitative Code
+Item code (3, 4, …)
+Compress the following short-video information
+Title: #Fans #Cristiano Ronaldo
+Images:
+MLLM
+<a_45> <b_23> <c_78>
+I2I
+training
+Figure 5: Architectural overview of the RQ-Kmeans initialization. The codebook is pre-trained via Item-to-Item (I2I) contrastive
+learning to provide a semantically rich starting point for subsequent dynamic Beam Index updates.
+OneRec-V2
+OneRec-V2-PIT
+Beam
+Index
+RQ-Kmeans
+Index
+Initialization
+Dynamic Update
+Best weight SID
+Figure 6: PIT Index Transfer Framework: Enabling Universal
+Index Reuse Across Generative Recommenders
+Crucially, 𝜙𝑟𝑒𝑓serves as a stable anchor. It captures the fundamental
+semantic-collaborative mapping without being corrupted by the
+dynamic shifts in popularity-driven user feedback during the co-
+evolution phase.
+KL-Divergence Constraint. To ensure that the dynamic Item-
+to-Token model 𝜙does not deviate excessively from the stable
+semantic space, we impose a KL-divergence constraint between the
+output distributions of the current model and the reference model.
+For each generation step 𝑙, the constraint is defined as:
+D𝐾𝐿(𝑃𝜙∥𝑃𝜙𝑟𝑒𝑓) = 1
+𝐿
+𝐿
+∑︁
+𝑙=1
+𝑃𝜙𝑟𝑒𝑓
+𝑃𝜙
+−log
+𝑃𝜙𝑟𝑒𝑓
+𝑃𝜙
+−1
+
+,
+(15)
+where 𝑃𝜙and 𝑃𝜙𝑟𝑒𝑓denote the shortcut for 𝑃𝜙(𝑐∗
+𝑖,𝑙|𝑐∗
+𝑖,<𝑙, sg(𝑋𝑖)) and
+𝑃𝜙𝑟𝑒𝑓(𝑐∗
+𝑖,𝑙|𝑐∗
+𝑖,<𝑙, sg(𝑋𝑖)), respectively.
+Regularized Joint Objective. Incorporating this constraint, the
+total optimization objective for the framework in the co-evolution
+phase is reformulated to balance user-guided evolution and seman-
+tic stability:
+L𝑡𝑜𝑡𝑎𝑙= L𝑑𝑦𝑛𝑎𝑚𝑖𝑐+ 𝛼
+
+L𝑟𝑒𝑓(¯𝑐𝑖) + 𝜂D𝐾𝐿(𝑃𝜙∥𝑃𝜙𝑟𝑒𝑓)
+
+,
+(16)
+where 𝜂is a scaling hyperparameter. This regularization prevents
+the tokenizer from being overly biased by popularity signals, which
+would otherwise degrade the performance of highly popular items,
+ensuring that semantic nuances are preserved even as collaborative
+embeddings drift towards high-heat patterns.
+Future Outlook. While the reference-regularized mechanism
+provides a robust safeguard against popularity-induced index col-
+lapse, it remains a grounded approach relying on static anchors. Fu-
+ture research will focus on developing more adaptive, self-correcting
+update strategies that ensure long-term index stability without a
+fixed reference, alongside investigating deeper structural synergies
+between collaborative filtering embeddings and semantic identifiers.
+We invite the community to explore even more sophisticated and
+innovative paradigms to further push the boundaries of generative
+recommendation and index evolution.

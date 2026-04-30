@@ -1,0 +1,2219 @@
+ONEREC-THINK: In-Text Reasoning for Generative Recommendation
+Zhanyu Liu*, Shiyao Wang*, Xingmei Wang, Rongzhou Zhang, Jiaxin Deng,
+Honghui Bao, Jinghao Zhang, Wuchao Li, Pengfei Zheng, Xiangyu Wu,
+Yifei Hu, Qigen Hu, Xinchen Luo, Lejian Ren, Zixing Zhang,
+Qianqian Wang, Kuo Cai, Yunfan Wu, Hongtao Cheng, Zexuan Cheng,
+Lu Ren, Huanjie Wang, Yi Su, Ruiming Tang, Kun Gai, Guorui Zhou†
+Kuaishou Inc., Beijing, China
+{liuzhanyu,wangshiyao08,zhouguorui}@kuaishou.com
+Abstract
+The powerful generative capacity of Large
+Language Models (LLMs) has instigated a
+paradigm shift in recommendation. However,
+existing generative models (e.g., OneRec) op-
+erate as implicit predictors, critically lacking
+the capacity for explicit and controllable rea-
+soning—a key advantage of LLMs. To bridge
+this gap, we propose OneRec-Think, a unified
+framework that seamlessly integrates dialogue,
+reasoning, and personalized recommendation.
+OneRec-Think incorporates: (1) Itemic Align-
+ment: cross-modal Item-Textual Alignment
+for semantic grounding; (2) Reasoning Activa-
+tion: Reasoning Scaffolding to activate LLM
+reasoning within the recommendation context;
+and (3) Reasoning Enhancement, where we
+design a recommendation-specific reward func-
+tion that accounts for the multi-validity nature
+of user preferences. Experiments across public
+benchmarks show state-of-the-art performance.
+Moreover, our proposed "Think-Ahead" archi-
+tecture enables effective industrial deployment
+on Kuaishou, achieving a 0.159% gain in APP
+Stay Time and validating the practical efficacy
+of the model’s explicit reasoning capability.
+1
+Introduction
+The rapid advancement of Large Language Mod-
+els (LLMs) has fundamentally reshaped recom-
+mender systems, ushering in the generative re-
+trieval paradigm(GR) (Peng et al., 2025; Zhang
+et al., 2025b; Deldjoo et al., 2024; Li et al., 2023;
+Wang et al., 2023). This approach represents a
+profound shift from traditional query-candidate
+matching, utilizing Transformer-based sequence-
+to-sequence models to autoregressively decode the
+identifiers of target candidates. Capitalizing on
+this, a major research frontier is the development
+*: Equal contributions.
+†: Corresponding Author.
+Prompt
+Please describe the content of
+<item_a_8121><item_b_3259><item_c_6391>
+Note: <item_a_8121><item_b_3259><item_c
+_6391> are the itemic IDs of a video. Part of 
+the content of this video includes:
+This is a bustling street market 
+scene, filled with various food stalls
+and the calls of vendors hawking
+their goods. Vendors enthusiastically
+promote their products to passersby,
+such as skewers, fried rice,
+pancakes, and candied hawthorns.
+……
+Describe the video
+Describe the user's preferences based on 
+their interaction history:
+Liked and favorited video 
+<item_a_1468><item_b_868><item_c_6436>
+Liked and favorited video 
+<item_a_1468><item_b_2768><item_c_349> ;
+Liked video 
+<item_a_842><item_b_92><item_c_7860>;
+Favorited video 
+<item_a_5069><item_b_4601><item_c_3132 >;
+……
+Primary
+I n t e r e s t s :
+e n j o y s
+humorous skits, film analyses (over
+60% of content) and lighthearted
+entertainment. Also engages with
+Honor of Kings content, indicating
+a casual gaming interest.
+Secondary
+Interests:
+Diverse
+explorations include pet (cat) videos,
+traditional culture, and local food 
+content.
+……
+Recommend videos based on 
+the user's viewing history.
+The user's viewing history is primarily themed around international relations and military
+dynamics,
+demonstrating a
+strong interest
+in military equipment and
+technological
+advancements, especially those pertaining to national security and international competition.
+This suggests the user is likely to continue engaging with content on similar topics, such as
+other nations' military developments, international conflict analyses, or defense policy
+interpretations. A recommended candidate video focusing on advancements in China's
+military technology, particularly the debut of the new J-35 fighter jet which signifies a major
+technological breakthrough, is highly relevant to these interests:
+<item_a_5083><item_b_2280><item_c_5301>.
+Based on the user's interest in military-themed and action-adventure games, as
+evidenced by their engagement with Battlefield content and GTA6 leaks, along with
+their active research into GPU comparisons for optimal gaming performance, the
+recommended video is <item_a_4029><item_b_4601><item_c_5058>.
+The user‘s active search on communicating with rebellious adolescents indicates a
+focus on parent-child relationships or teenage education challenges, highlighting a
+specific need for practical strategies to improve communication. Providing
+professional guidance on effective communication techniques would directly
+address
+this
+need,
+making
+the
+recommended
+video
+<item_a_6786><item_b_4138><item_c_1091> highly relevant.
+Rollout-1: Reasoning and Recommendation
+Rollout-2: Reasoning and Recommendation
+Rollout-3: Reasoning and Recommendation
+I'm feeling a bit down. Could you 
+suggest some cheerful and 
+lighthearted videos to watch?
+Note: This user's historical 
+behavior is identical to the above.
+Historical Interactions:
+Based on the user's viewing history suggesting potential interest in
+action-adventure or military-themed content, but aligned with their
+explicit request for warm and uplifting material, recommendations will
+prioritize
+lighthearted
+games,
+animation,
+and
+stress-relieving
+videos—such as heartwarming stories like Frozen or Zootopia, pet vlogs
+featuring cats and dogs, and nature documentaries on topics like polar
+bears or coral reefs—while excluding any violent, horror, or tension-
+inducing content and increasing the proportion of positive inspirational
+shorts to better meet the user's emotional needs.
+Prompt
+Prompt
+Prompt
+Describe the user
+Think&Recommend
+Interactive Recommendations
+Figure 1: Examples of OneRec-Think’s Unified Dia-
+logue, Reasoning and Recommendation Framework.
+of end-to-end generative frameworks, including
+OneRec, OneLoc, OneSug, and OneSearch (Deng
+et al., 2025; Zhou et al., 2025a,b; Wei et al., 2025;
+Guo et al., 2025b; Chen et al., 2025). These unified
+models replace the traditional multi-stage recom-
+mendation funnel (involving separate retrieval and
+ranking stages), enabling holistic optimization to-
+wards the final objective and concentrating compu-
+tational resources for better industrial scaling and
+performance.
+While these models successfully harness the
+LLMs’ capacity for output generation, they fun-
+damentally lack the explicit, verifiable reasoning
+pathways that define modern LLM breakthroughs,
+1
+arXiv:2510.11639v2  [cs.IR]  11 Nov 2025
+
+such as text-based Chain-of-Thought (CoT) (Ra-
+jput et al., 2023; Zheng et al., 2024; Wang et al.,
+2024b). To bridge this critical gap, we propose
+OneRec-Think, a novel framework that inte-
+grates dialogue, reasoning, and personalized
+generative recommendations within a single,
+unified model. It is capable of generating high-
+quality, interpretable textual reasoning paths, sig-
+nificantly enhancing both recommendation accu-
+racy and user trustworthiness. The model’s inher-
+ent dialogic nature further enables dynamic tailor-
+ing of suggestions to specific user constraints (as
+shown in Fig. 1). Our approach is realized through
+a three-stage framework: (1) Itemic Alignment,
+which maps item semantics into the LLM’s tex-
+tual embedding space, establishing a unified rep-
+resentational continuum that unlocks the model’s
+capacity for reasoning. (2) Reasoning Activation,
+which aims to induce the LLM’s inherent reasoning
+ability directly within the context of recommender
+systems; (3) Reasoning Enhancement, which uti-
+lizes a recommendation-specific reward function
+that captures the multi-validity (i.e., multiple valid
+choices) nature of user preferences. Furthermore,
+we introduce the OneRec-Think Inference Archi-
+tecture to ensure efficient deployment and real-time
+responsiveness in industrial-scale serving scenarios.
+Our contributions are summarized as follows:
+• We introduce a unified framework that bridges
+the semantic gap between discrete recommen-
+dation items and continuous reasoning spaces,
+enabling seamless integration of personalized
+recommendation within LLMs’ natural lan-
+guage understanding.
+• We design a novel reasoning paradigm that
+orchestrates multi-step deliberation with rec-
+ommendation optimization, achieving inter-
+pretable and accuracy-aware personalized rec-
+ommendation through synergistic training.
+• The proposed approach achieves state-of-
+the-art results on multiple public bench-
+marks, while our deployment-friendly "Think-
+Ahead" architecture enables significant indus-
+trial impact with a 0.159% gain in APP Stay
+Time.
+2
+Related Work
+2.1
+Reasoning in Large Language Models
+Large language models achieve complex reason-
+ing through various prompting techniques, with
+CoT prompting (Wei et al., 2022) being the foun-
+dational approach that decomposes problems into
+intermediate reasoning steps. This has inspired
+numerous extensions including zero-shot CoT (Ko-
+jima et al., 2022), self-consistency decoding (Wang
+et al., 2022), and tree-of-thoughts (Yao et al., 2023).
+These techniques enable test-time scaling where
+additional computational budget during inference
+improves performance (Snell et al., 2024). Recent
+work has shifted focus from prompting to post-
+training enhancement of reasoning capabilities by
+using techniques such as Reinforcement Learning.
+Models including DeepSeek-R1 (Guo et al., 2025a)
+and Seed-1.5 (Seed et al., 2025) optimize reasoning
+behaviors via techniques such as GRPO (Shao et al.,
+2024), DAPO (Yu et al., 2025), and VAPO (Yue
+et al., 2025), which demonstrates promising ad-
+vancements in this direction.
+2.2
+Reasoning-Based Recommendation
+Although generative recommendation models such
+as TIGER (Rajput et al., 2023), HSTU (Zhai et al.,
+2024), and OneRec (Zhou et al., 2025a) have
+demonstrated effectiveness, they inherently lack
+reasoning capabilities. Recently, the Reasoning-
+based recommendation systems aim to perform
+multi-step deduction for more accurate and inter-
+pretable recommendations. Existing approaches
+fall into two categories: explicit reasoning meth-
+ods generate human-readable rationales but are con-
+fined to discriminative tasks (Tsai et al., 2024; Bis-
+may et al., 2024; Fang et al., 2025; Kim et al.),
+while implicit reasoning methods (Zhang et al.,
+2025a; Tang et al., 2025) perform latent reason-
+ing without textual interpretability. Our work in-
+troduces explicit reasoning into generative recom-
+mendation, bridging this gap to enable both inter-
+pretable rationales and scalable item generation.
+3
+Preliminary
+Itemic Token
+An itemic token is a discrete,
+semantic-rich representation unit for an item, anal-
+ogous to a word token in natural language. Fol-
+lowing OneRec (Zhou et al., 2025a; Rajput et al.,
+2023), we map each item v to a sequence of such to-
+kens sv = (s1
+v, . . . , sL
+v ), which are generated from
+the item’s multi-modal and collaborative content.
+Problem Definition
+Let U and V denote the
+sets of users and items, respectively. Each user
+u ∈U has a chronological interaction history
+Vu = (vu
+1, vu
+2, . . . , vu
+nu) of length nu. For brevity,
+2
+
+<think>
+OneRec-Think
+Reasoning
+Itemic Tokens
+Short Video
+Short Video
+Short Video
+(a) Stage1: Itemic Alignment
+(b) Stage2: Reasoning Activation
+User Historical Behaviors
+Target Item
+……
+Most Relative Behaviors
+Prompt: Reason for preference →!
+Task2: Sequential Preference Modeling
+Task3: Itemic Dense Captioning
+Task4: General Language Modeling
+Training Strategy:
+Token Warm-up
+Multi-Task Integration
+!"# $%#& &#'#()*+ *,-#. /,.#0 12
+345),0(#. 1 4(. /,.#0 12 '45),0(#. 12
+6)",(-7 ! 68)",(-7
+30(%#9$#()*+2
+)"#
+$%#&:%
+(#;)
+/,.#0
+0<
+,()#&#%)
+,%
+6,)#=>476,)#=>?76,)#=>'7@!4&A#) B)#=CD
+…
+…
+…
+…
+Tokenizer
+Tokenizer
+Mapping
+Text Token
+Itemic Token
+(c) Stage3: Reasoning Enhancement 
+After searching for Arctic, the user clicked <item_a_1><item_b_1><item_c_1> and collected <item_a_2><item_b_2><item_c_2> , she will next click
+Task 1: Interleaved User Persona Grounding
+OneRec-Think
+OneRec-Think
+("!! , "!" , …, "!# )
+(""! , """ , …, ""$ )
+""$%!
+!"# $%#& ,% 4 EFGHI +#4& 0*. %0<)J4&#
+K(A,(##&D L# &#'#()*+ *,-#. /,.#0 6
+,)#=>4>MMEH76,)#=>?>FNMH76,)#=>'>OEME72
+345),0(#. PK;5*0&,(A )"# Q(.&0=#.4
+R4*4;+ J,)" )"# S4=#% T#?? !#*#%'05#DU 4(.
+/,.#0 6,)#=>4>EHO76,)#=>?>MVW76,)#=>'>HHE72
+'45),0(#. DDD
+OneRec-Think
+……
+……
+……
+……
+……
+Rollout-1
+Rollout-n
+Rollout-i
+Reasoning
+Reasoning
+Reasoning
+OneRec-
+Think
+OneRec-Think
+Figure 2: The framework of the OneRec-Think. In the first stage, we achieve item-level semantic alignment through
+multi-task pre-training. In the second stage, we activate explicit reasoning by prompting the model to generate
+preference rationales. In the third stage, we refine the reasoning paths through RL based on a reward tailored for
+recommendations.
+we omit the user index u. By using the itemic
+tokens, the user’s interaction history is thus repre-
+sented by the sequence Su = (sv1, . . . , svn).
+Conventional generative recommenders (Rajput
+et al., 2023; Zhou et al., 2025a,b; Zheng et al.,
+2024) define their task with a generation target of
+the next itemic tokens as:
+svn+1 ∼P(·|sv1, . . . , svn; θ)
+(1)
+In contrast, we reformulate this task to unify reason-
+ing and recommendation in a single autoregressive
+pass. Conditioned on a prompted user history, we
+generate tokens sequentially, beginning with a rea-
+soning sequence τ = (r1, . . . , rM) and concluding
+with the next itemic tokens svn+1. This end-to-end
+process is captured by:
+τ ∼P (· | P(sv1, . . . , svn); θ)
+svn+1 ∼P (· | P(sv1, . . . , svn), τ; θ)
+(2)
+where P(·) means a valid prompt constructed for
+the recommendation.
+4
+Methodolody
+We now present OneRec-Think, a scalable frame-
+work for end-to-end generative reasoning recom-
+mendation. Our approach comprises three core
+components: an Itemic Alignment stage, a Reason-
+ing Activation stage, and a "Think Ahead" archi-
+tecture for industrial deployment. The illustration
+of OneRec-Think is shown in Fig. 2.
+4.1
+Itemic Alignment through Multi-Task
+Pre-training
+To align recommender knowledge with the LLM’s
+linguistic space, we design a Multi-Task Pre-
+training strategy enabling seamless processing of
+natural language and itemic tokens via four com-
+plementary tasks under Next Token Prediction.
+Interleaved User Persona Grounding
+Unlike
+prior work that uses either pure textual data or
+isolated item sequences, this task interleaves the
+itemic tokens and text tokens of User Persona. It
+includes serialized static attributes, active search
+behaviors, interactive sequences, and summarized
+user interests. This composition creates rich, dual-
+3
+
+modality training instances where itemic tokens are
+grounded in their semantic context.
+Sequential Preference Modeling
+As the core
+recommendation task, this task constructs data that
+teaches the model to predict subsequent item inter-
+actions from chronological user histories.
+Itemic Dense Captioning
+This task requires the
+model to decode an item’s descriptive content from
+its itemic tokens. By learning to generate detailed
+textual descriptions, the model establishes a funda-
+mental understanding of the semantic characteris-
+tics represented by item combinations.
+General Language Modeling
+This task contin-
+ues pre-training the model on general text corpora,
+preserving the model’s fundamental language ca-
+pabilities during applying the model to recommen-
+dation scenarios.
+To enable effective knowledge integration while
+preserving the linguistic capabilities of the model,
+we implement a two-substage training strategy to
+ensure stable alignment. The Token Warm-up sub-
+stage exclusively trains itemic token embeddings
+on the Interleaved User Persona Grounding task
+while keeping the base LLM frozen. The subse-
+quent Multi-Task Integration substage jointly op-
+timizes all parameters on the combined task using
+a designed ratio (see Appendix A.3 for details).
+4.2
+Reasoning Activation
+Despite robust itemic alignment, direct application
+to industrial recommendation scenarios often fails
+to yield effective CoT reasoning due to the noisy
+and lengthy nature of real-world user behavior se-
+quences. To address this, we propose a supervised
+fine-tuning framework that first extracts coherent
+reasoning trajectories from pruned user contexts,
+then leverages these trajectories to guide rationale
+generation over raw behavioral data, enabling ef-
+fective contextual distillation for noisy industrial
+settings (as shown in Fig. 2(b)).
+Bootstrapping with Pruned Contexts: To boot-
+strap reasoning capabilities, we first construct easy-
+to-learn instances where logical relationships are
+preserved despite sequence pruning. For each user,
+we select the target item svn+1 and form a context-
+target pair < (sv1, . . . , svn), svn+1 >. We then
+retrieve the top-k most relevant historical items
+using a similarity function g(·, ·):
+g((sv1, . . . , svn), svn+1) = (sw1, . . . , swk). (3)
+Using these relevant items, we query our pre-
+aligned model to generate a rationale τ explaining
+the target interaction:
+τ ∼P
+ · | Pr((sw1, . . . , swk), svn+1); θ
+
+(4)
+where Pr(a, b) means constructs a prompt to query
+the rationale why a user who interacts with item
+sequence a would interact with item b. This process
+yields high-quality rationales that are both logically
+sound and target-aligned, providing ideal training
+signals for reasoning induction.
+Learning to Reason from Noisy Sequences: The
+distilled rationales serve as supervision for learn-
+ing to reason from raw sequences. The training
+objective minimizes the negative log-likelihood of
+generating both the rationale and target item:
+LRA = −
+ M
+X
+i=1
+log P(ri|P(sv1, . . . , svn), r<i; θ)
++
+L
+X
+j=1
+log P(sj
+vn+1|P(sv1, . . . , svn), τ, s<j
+vn+1; θ)
+!
+,
+(5)
+where τ = {r1, . . . , rM} represents the rationale
+tokens and svn+1 = {s1
+vn+1, . . . , sL
+vn+1} denotes
+the target item tokens. By optimizing LRA, the
+model learns to internally distill relevant context
+from noisy sequences and generate coherent ratio-
+nales that bridge user history to target interactions,
+significantly enhancing its CoT capabilities in chal-
+lenging recommendation scenarios.
+4.3
+Reasoning Enhancement
+Building upon the CoT capabilities from Reasoning
+Activation, we address the challenge of ensuring
+consistently high-quality reasoning through Rein-
+forcement Learning. This stage refines the recom-
+mendation accuracy using a novel reward mecha-
+nism tailored for generative recommendation.
+Beam Candidate Reward Maximization: Standard
+verifiable pass rewards face significant sparsity
+challenges in recommendation scenarios, as most
+reasoning rollouts fail to hit the target item and
+consequently yield identical zero rewards—thereby
+neutralizing group advantages in algorithms such
+as GRPO (Shao et al., 2024). To overcome this, we
+introduce the Rollout-Beam reward that evaluates
+reasoning capability by the model’s best achiev-
+able performance within a constrained beam. Our
+approach employs beam search with width K to
+4
+
+explore multiple generation candidates after rea-
+soning trajectory generation:
+RRollout-Beam =
+max
+ˆsvn+1∈B
+L
+X
+l=1
+I(ˆsl
+vn+1 = sl
+vn+1),
+(6)
+where the beam search result set is defined as :
+B =
+ ˆs1,(j)
+vn+1, · · · , ˆsL,(j)
+vn+1
+K
+j=1
+	
+,
+= BeamSearch
+
+P(svn+1 | H, τ; θ
+
+, K
+ (7)
+which contains the items with the top-K proba-
+bilty in the beam search within the distribution
+P
+ svn+1 | H, τ; θ
+
+.
+H
+=
+P(sv1, . . . , svn)
+is
+a
+valid
+prompt
+of
+history
+sequence.
+BeamSearch(P, K)
+means
+the
+top-K
+result
+of beam search within distribution P.
+Subse-
+quently, we optimize the model using GRPO (Shao
+et al., 2024) based on RRollout-Beam, which effec-
+tively leverages the enriched reward signals from
+the multi-validity nature of user preferences.
+Overall,
+this
+design
+establishes
+training-
+inference
+consistency
+by
+aligning
+reward
+computation
+with
+beam
+search-based
+infer-
+ence, providing denser learning signals through
+multi-path evaluation.
+4.4
+Industrial Deployment: A
+"Think-Ahead" Architecture
+The deployment of OneRec-Think in industrial rec-
+ommendation systems presents a fundamental chal-
+lenge: reconciling the computational demands of
+multi-step reasoning with the stringent latency re-
+quirements of real-time user interactions.
+To address this critical bottleneck, we introduce
+a novel Think-Ahead Inference Architecture. Our
+solution strategically decouples the model’s infer-
+ence into two stages: In the first stage, the compu-
+tationally intensive reasoning path and the initial
+item-tokens (e.g., the first two itemic tokens) are
+generated offline by the full OneRec-Think model.
+These initial tokens are designed to capture the
+user’s broad intent or general preference context.
+Subsequently, the second stage then employs a
+real-time updated OneRec model following (Zhou
+et al., 2025a) for online finalization. It utilizes the
+pre-generated item-tokens as a constrained prefix
+to rapidly produce the final itemic token. This de-
+sign ensures real-time responsiveness and achieves
+production-grade performance by leveraging cur-
+rent contextual data. The details of this architecture
+are in Appendix A.3.4.
+5
+Experiments
+5.1
+Experimental Settings
+Datasets and Baselines.
+We use three real-world recommendation
+datasets from the popular Amazon review bench-
+mark1: Beauty, Toys, and Sports. We compare
+OneRec-Think against two groups of competitive
+baselines: (1) Classic sequential methods like
+BERT4Rec (Sun et al., 2019), HGN (Ma et al.,
+2019), GRU4Rec (Hidasi et al., 2016), and SAS-
+Rec (Kang and McAuley, 2018); and (2) Genera-
+tive Recommender Models, such as TIGER (Ra-
+jput et al., 2023), HSTU (Zhai et al., 2024), and
+ReaRec (Tang et al., 2025). Top-K Recall (R@K)
+and NDCG (N@K) with K=5 and 10 are used as
+metrics, following (Rajput et al., 2023). Implemen-
+tation 2 details are in Appendix A.1.
+5.2
+Overall Performance
+The results are shown in Table 1. We could observe
+that models leveraging powerful reasoning-based
+architectures (ReaRec and our OneRec-Think) con-
+sistently outperform both traditional sequential rec-
+ommenders and generative recommenders. This
+robust trend confirms that effective sequential pre-
+diction necessitates robust inference and contex-
+tual reasoning capabilities. Furthermore, OneRec-
+Think further gets the best performance across all
+benchmarks. This significant superiority is directly
+attributed to explicit, text-based reasoning ability
+for item generation, in contrast to the more im-
+plicit, purely learned generation mechanisms in
+prior works.
+5.3
+Ablation Study
+We conduct an ablation study on the Beauty
+dataset, comparing three configurations: the Base
+model tuned by the raw itemic token sequence,
+the Base+IA model enhanced with Itemic Align-
+ment, and the full Base+IA+R model incorporating
+our enhanced reasoning mechanism, as shown in
+Table 2. It demonstrates that each component is in-
+dispensable: Itemic Alignment provides a founda-
+tional boost by creating coherent semantic represen-
+tations of itemic tokens, while the reasoning mech-
+anism yields a further significant gain, confirming
+that both components synergistically address core
+challenges in sequential recommendation.
+1https://jmcauley.ucsd.edu/data/amazon/.
+2code and data are in https://github.com/wangshy31/
+OneRec-Think
+5
+
+Table 1: Overall performance comparison between the baselines and OneRec-Think on three datasets. The bold
+results highlight the best results, while the second-best ones are underlined.
+Dataset
+Method
+BERT4Rec
+HGN
+GRU4Rec
+SASRec
+TIGER
+HSTU
+ReaRec
+OneRec-Think
+Beauty
+R@5
+0.0232
+0.0319
+0.0395
+0.0402
+0.0405
+0.0424
+0.0450
+0.0563
+R@10
+0.0396
+0.0536
+0.0584
+0.0607
+0.0623
+0.0652
+0.0704
+0.0791
+N@5
+0.0146
+0.0196
+0.0265
+0.0254
+0.0267
+0.0280
+0.0262
+0.0398
+N@10
+0.0199
+0.0266
+0.0326
+0.0320
+0.0337
+0.0353
+0.0344
+0.0471
+Sports
+R@5
+0.0102
+0.0183
+0.0190
+0.0199
+0.0215
+0.0268
+0.0214
+0.0288
+R@10
+0.0175
+0.0313
+0.0312
+0.0301
+0.0347
+0.0343
+0.0332
+0.0412
+N@5
+0.0065
+0.0109
+0.0122
+0.0106
+0.0137
+0.0173
+0.0116
+0.0199
+N@10
+0.0088
+0.0150
+0.0161
+0.0141
+0.0179
+0.0226
+0.0154
+0.0239
+Toys
+R@5
+0.0215
+0.0326
+0.0330
+0.0448
+0.0337
+0.0366
+0.0523
+0.0579
+R@10
+0.0332
+0.0517
+0.0490
+0.0626
+0.0547
+0.0566
+0.0764
+0.0797
+N@5
+0.0131
+0.0192
+0.0228
+0.0300
+0.0209
+0.0245
+0.0298
+0.0412
+N@10
+0.0168
+0.0254
+0.0279
+0.0358
+0.0276
+0.0309
+0.0376
+0.0482
+游戏预告片
+Game Rrailer
+青春期叛逆
+Adolescent 
+Rebellion
+Recommendation in Conversation
+篮球
+Basketball
+音乐演唱
+Music
+可爱宠物
+Cute Pet
+Output
+……
+User Interest
+我现在心情不好，请给我推一些轻松的内容
+I'm not in a good mood right now, please recommend 
+some relaxing content for me
+根据观看历史，用户可能对动作冒险类游戏或运动感兴趣。然而，由于用户明确表示希望看到温暖治愈的
+内容，因此需要避免推荐过于激烈或紧张的视频。相反，可以考虑推荐一些轻松愉快的游戏或动画，或者
+提供一些能够缓解压力的视频内容。最终，用户更倾向于选择能带来积极情绪体验的内容，而不是那些可
+能引发焦虑或不适的内容。我将优先考虑以下几类视频：1. 动画电影中的温馨故事，如《冰雪奇缘》或
+《疯狂动物城》；2. 宠物日常vlog，尤其是猫咪和狗狗的可爱瞬间；3. 自然风光纪录片，比如北极熊的生存
+挑战或珊瑚礁生态。此外，我会排除任何涉及暴力、恐怖元素的内容，并增加正能量励志短片的比例。通
+过这样的调整，我相信可以更好地满足用户的情感需求。所以，用户可能点击视频
+<|item_begin|><item_a_234><item_b_1262><item_c_941><|item_end|>
+Based on viewing history, users may be interested in action-adventure games or sports content. 
+However, since users have explicitly expressed a desire to view warm and healing content, it is 
+therefore necessary to avoid recommending overly intense or tense videos. Conversely, one might 
+consider recommending some light-hearted and enjoyable games or animations, or providing video 
+content that can alleviate stress. Ultimately, users are more inclined to select content that provides 
+positive emotional experiences rather than content that may trigger anxiety or discomfort. I will 
+prioritize the following categories of videos: 1. Heartwarming stories from animated films, such as 
+Frozen or Zootopia; 2. Pet daily vlogs, especially adorable moments featuring cats and dogs; 3. Nature 
+documentary films, such as the survival challenges of polar bears or coral reef ecosystems. Additionally, 
+I will exclude any content involving violence or horror elements and increase the proportion of positive 
+and inspirational short videos. Through such adjustments, I believe users' emotional needs can be 
+better satisfied. Therefore, users may click on video 
+<|item_begin|><item_a_234><item_b_1262><item_c_941><|item_end|>.
+Figure 3: Demonstration of context-aware recommendation adaptation: our model dynamically shifts recommenda-
+tions to relaxing content based on the user’s command.
+Table 2: Ablation Study of different variants of OneRec-
+Think on Beauty dataset.
+Training Method
+R@5
+R@10
+N@5
+N@10
+Base
+0.0460
+0.0654
+0.0314
+0.0377
+Base+IA
+0.0532
+0.0735
+0.0342
+0.0402
+Base+IA+R
+0.0563
+0.0791
+0.0398
+0.0471
+5.4
+Industrial Experiments
+5.4.1
+Training Settings
+We adopt Qwen-8B (Yang et al., 2025) as our back-
+bone model, initializing its parameters from the
+publicly available pre-trained weights. The model’s
+vocabulary is extended with 24,576 new tokens rep-
+resenting the three-level hierarchical itemic tokens
+(8,192 tokens per level), plus two special bound-
+ary tokens, <|item_begin|> and <|item_end|>.
+For our production environment, we implement a
+daily incremental training pipeline. The model is
+updated each day on a cluster of 80 flagship GPUs,
+processing approximately 20B tokens per day to
+stay current with newly generated user interaction
+data. The details are shown in Appendix A.3.
+5.4.2
+Results
+Online A/B Result.
+We deploy OneRec-Think
+on Kuaishou, a short-video platform with hundreds
+of millions of daily active users. Using a 1.29% traf-
+fic experimental group, we compare OneRec-Think
+with our online model for one week and report the
+result in Table 3, where the primary metric is APP
+Stay Time (reflecting total user engagement time).
+The primary metric, App Stay Time, shows signif-
+6
+
+Reasoning
+对于用户观看历史记录的主题，可以看出其主要集中在《三角洲行动》这款游戏的相关内容上。通过分析用户的点赞行为可以发现，用户对游戏内的各种玩法、策略及角
+色扮演元素表现出浓厚的兴趣，例如“跑刀”、“绝密巴克什”等术语的出现表明了用户对特定游戏机制的关注。此外，用户还对一些具有幽默感或创意性的游戏场景进行了互
+动，比如“假钻石真能献祭出真非洲之心”这样的搞笑内容。这些行为共同构成了用户观看历史记录的主要主题。至于用户为何会点击候选视频，从提供的信息来看，该视
+频涉及的是《三角洲行动》的新版本更新内容，特别是与“黑鹰坠落上线”相关的游戏内活动。考虑到用户之前频繁互动的游戏相关内容，尤其是对游戏内特定功能和事件
+的讨论，显然用户对这类新版本的信息有着较高的关注度。因此，当看到一个包含类似更新内容的视频时，用户很可能会选择点击以获取更多相关信息或者参与相关讨论。
+所以，用户很可能点击主题相近的候选视频<|item_begin|><item_a_1428><item_b_2625><item_c_2470><|item_end|>。
+Regarding the thematic content of the user‘s viewing history, it is evident that the primary focus centers on content related to the game Delta Force. Analysis of the 
+user’s liking behavior reveals a strong interest in various gameplay mechanics, strategies, and role-playing elements within the game. For instance, the appearance of 
+terms such as ”looting run“ and ”classified Bakshi“ indicates the user‘s attention to specific game mechanisms. Furthermore, the user has engaged with humorous or 
+creative game scenarios, such as the comedic content ”fake diamonds can actually sacrifice a real Heart of Africa.“ These behaviors collectively constitute the main 
+themes of the user’s viewing history. As for why the user would click on the candidate video, the available information suggests that this video pertains to new 
+version update content for Delta Force, particularly in-game activities related to the ”Black Hawk Down launch.“ Given the user‘s previous frequent interactions with 
+game-related content, especially discussions concerning specific in-game features and events, it is apparent that the user maintains a high level of interest in such 
+version update information. Consequently, upon encountering a video containing similar update content, the user would likely choose to click on it to obtain 
+additional relevant information or participate in related discussions. Therefore, the user is highly likely to click on the thematically similar candidate video 
+<|item_begin|><item_a_1428><item_b_2625><item_c_2470><|item_end|>.
+三角洲行动游戏
+Delta Force Game
+Output
+……
+User Interest
+三角洲行动游戏
+Delta Force Game
+漫展Cosplay
+Anime Convention Cosplay
+体育生
+Student Athlete
+校园生活
+Campus Life
+Reasoning
+对于用户观看历史记录的主题，可以总结为：用户对校园生活、幽默情景剧和轻松搞笑的内容感兴趣。具体来说，用户喜欢涉及学生身份转换、意外事件和搞笑反转的情
+景剧，如“当我的朋友是个盾构玩家”、“狂人日记”等，这些视频都带有幽默和讽刺元素。候选视频的主题与用户的观看历史记录相似，因为它也涉及到校园生活和幽默情
+景剧。该视频讲述了一个关于学生身份转换的故事，这与用户之前观看的视频中提到的学生身份转换情节相符。此外，候选视频还包含了幽默和讽刺的元素，符合用户对
+轻松搞笑内容的偏好。因此，用户点击候选视频的逻辑在于，候选视频延续了用户观看历史记录中的主题，即校园生活和幽默情景剧，并且通过类似的故事情节和风格吸
+引用户。所以，用户很可能点击主题相近的候选视频<|item_begin|><item_a_4367><item_b_2360><item_c_295><|item_end|>。
+Regarding the thematic content of the user's viewing history, it can be summarized as follows: the user demonstrates interest in campus life, humorous sitcoms, 
+and light-hearted comedic content. Specifically, the user favors situational comedies involving student identity transformations, unexpected incidents, and 
+comedic plot reversals, such as "When My Friend is a Shield Machine Player" and "A Madman's Diary," all of which incorporate elements of humor and satire.
+The theme of the candidate video aligns with the user‘s viewing history, as it similarly pertains to campus life and humorous sitcoms. This video presents a narrative 
+centered on student identity transformation, which corresponds to the identity transformation plotlines featured in the user’s previously viewed videos. Moreover, 
+the candidate video contains humorous and satirical elements, conforming to the user‘s preference for light-hearted comedic content. Therefore, the logic underlying 
+the user’s click on the candidate video lies in the fact that the candidate video continues the themes present in the user‘s viewing history—namely, campus life and 
+humorous sitcoms—and attracts the user through similar storylines and stylistic elements. Therefore, the user is highly likely to click on the thematically similar 
+candidate video <|item_begin|><item_a_4367><item_b_2360><item_c_295><|item_end|>.
+Reasoning
+用户观看历史记录的主题是二次元文化及cosplay相关内容。用户多次点赞涉及二次元角色扮演、漫展活动及cosplay技巧的视频，如“二次元”、“COS”、“漫展”等标签频繁出
+现，且内容聚焦于cosplay过程中的细节处理和创意展示。候选视频的主题与用户观看历史记录高度契合，均围绕二次元文化和cosplay展开。候选视频通过幽默方式探讨
+cosplay中的常见误区，并融入流行元素（如“汪猩星”），符合用户对轻松有趣、贴近生活的cosplay内容的兴趣。因此，用户点击该视频的逻辑在于其延续了用户对二次元
+文化及cosplay话题的关注，同时提供了新颖有趣的视角来吸引用户的注意力。所以，用户很可能点击主题相近的候选视频
+<|item_begin|><item_a_4367><s_b_2101><item_c_7941><|item_end|>。
+The thematic content of the user‘s viewing history centers on anime culture and cosplay-related content. The user has repeatedly liked videos involving anime role-
+playing, comic convention activities, and cosplay techniques, with tags such as “anime,” “COS,” and “comic convention” appearing frequently. The content focuses 
+on detail management and creative presentation in the cosplay process. The theme of the candidate video exhibits high alignment with the user‘s viewing history, 
+both revolving around anime culture and cosplay. The candidate video explores common misconceptions in cosplay through a humorous approach and incorporates 
+popular elements (such as “Wang Xing Xing”), which aligns with the user’s interest in light-hearted, entertaining, and relatable cosplay content. Therefore, the logic 
+underlying the user‘s click on this video lies in its continuation of the user’s attention to anime culture and cosplay topics, while simultaneously providing a novel and 
+engaging perspective to capture the user‘s interest. Therefore, the user is highly likely to click on the thematically similar video 
+<|item_begin|><item_a_4367><s_b_2101><item_c_7941><|item_end|>.
+校园喜剧
+Campus Comedic
+Output
+漫展Cosplay
+Anime Convention
+Cosplay
+Output
+Figure 4: Demonstration of fine-grained interest reasoning, which shows the end-to-end process from user behavior
+analysis to interpretable recommendations.
+Table 3: The relative improvement of our online A/B
+testing on a short-video recommendation scenario.
+Online Metrics
+OneRec-Think
+App Stay Time
++0.159%
+Watch Time
++0.169%
+Video View
++0.150%
+Follow
++0.431%
+Forward
++0.758%
+Like
++0.019%
+Collect
++0.098%
+icant gains that increase by 0.159%. Note that in
+industrial recommendation systems, 0.1% improve-
+ments are considered substantial. Furthermore, in-
+teractive metrics such as Video View and Forward
+exhibit positive trends, indicating enhanced user
+engagement. We conducted multiple experiments
+at different times and consistently observed signifi-
+cant improvements in stay time and related interac-
+tion metrics.
+Table 4: The Bertscore for User Understanding and
+Short Video Understanding Benchmark.
+Benchmark
+Qwen3
+Qwen3
+Qwen3
++ TW
++ TW + MI
+User
+0.6588
+0.6492
+0.7053
+Short Video
+0.6031
+0.6443
+0.7300
+Ablation on Itemic Alignment on industrial
+benchmark
+We evaluate Token Warm-up (TW)
+and Multi-Task Integration (MI) of the Itemic
+Alignment stage on our industrial User and
+Short Video Understanding benchmarks using
+BertScore (Zhang et al., 2019) (details in Ap-
+pendix A.3.2). Results in Table 4 reveal distinct
+roles for each component. On the text-heavy User
+Understanding task, TW provides limited gain over
+the strong Base model since the LLM can effec-
+tively process the abundant textual information di-
+rectly, while MI delivers a substantial boost by
+translating aligned representations into actionable
+insights. In contrast, in the pure itemic token Short
+Video Understanding task, it shows progressive
+gains from both TW and MI, confirming their ne-
+7
+
+Force Beam Search at Different Reasoning Steps
+<think><|item_begin|>
+<think>
+对于⽤户观看历史记录的主题，可以总结为：⽤户对影视<|item_begin|>
+The user's viewing history reveals a strong interest in film and TV 
+content<|item_begin|>
+<think>
+对于⽤户观看历史记录的主题，可以总结为：⽤户对影视作品和明星相关内容的关注度较
+⾼，尤其偏好具有情感冲突或剧情反转的题材<|item_begin|>
+The user's viewing history reveals a strong interest in film and TV content, particularly celebrity-
+related material. They show a clear preference for stories with emotional conflict or plot twists
+<|item_begin|>
+<think>
+对于⽤户观看历史记录的主题，可以总结为：⽤户对影视作品和明星相关内容的关注度较
+⾼，尤其偏好具有情感冲突或剧情反转的题材，如《宝莲灯》系列剧集及其衍⽣内容。⽤
+户点击候选视频的逻辑可能与上述主题相符，即点击古装相关的视频<|item_begin|>
+The user's viewing history reveals a strong interest in film and TV content, particularly celebrity-
+related material. They show a clear preference for stories with emotional conflict or plot twists , 
+such as the "Lotus Lantern" series and its related content. The logic behind the user's clicks on 
+candidate videos likely aligns with these interests—specifically, clicking on videos related to 
+period dramas<|item_begin|>
+⽻⽑球
+Badminton
+乒乓球
+Table Tennis
+国乒队
+Chinese table 
+tennis team
+影视
+Film and 
+television
+影视
+Film and 
+television
+影视
+Film and 
+television
+古装剧
+Period drama
+古装剧
+Period drama
+古装剧
+Period drama
+情节反转⽚段
+Plot twists
+情感冲突⽚段
+Emotional 
+conflicts
+情感冲突⽚段
+Emotional 
+conflicts
+Consistent 
+with raw 
+user 
+interest
+Beam 
+Search
+Beam 
+Search
+Beam 
+Search
+Beam 
+Search
+Consistent 
+with the 
+reasoning 
+content 
+Reasoning Content
+Recommendation Results
+User Interest
+台球
+Billiards
+电影
+Movie
+乒乓球
+Table Tennis
+科普短⽚
+Popular Science
+……
+乒乓球
+Table Tennis
+电影
+Movie
+Figure 5: The model’s reasoning process evolves from broad interest matching (left) to fine-grained theme
+specification (middle), with recommendations (right) showing semantic consistency with each reasoning step.
+cessity for interpreting non-textual item informa-
+tion. These results validate that these two substages
+both contribute to the final performance of Itemic
+Alignment.
+5.5
+Case Study
+Our case studies demonstrate the model’s sophis-
+ticated reasoning capabilities across different sce-
+narios. In conversational settings (Fig. 3), when
+the user expresses negative emotions, the model
+detects this affective signal and strategically shifts
+recommendations from general interests toward
+relaxing and positive content, demonstrating its
+ability to actively optimize the viewing experience
+through the interaction with the user. In reasoning-
+based short-video recommendation (Fig. 4), the
+model generates diverse reasoning paths that cap-
+ture fine-grained user preferences, such as spe-
+cific gameplay mechanics and narrative patterns,
+enabling more precise recommendations beyond
+coarse topic matching. Furthermore, our consis-
+tency analysis (Fig. 5) reveals strong alignment
+between reasoning textx and recommended items
+when applying beam search at intermediate rea-
+soning steps, confirming that the reasoning pro-
+cess genuinely guides recommendation generation
+rather than serving as post-hoc justification. No-
+tably, our model achieves itemic-textual interleaved
+reasoning paths (Fig. 6). Through precise content
+anchoring by itemic tokens and causal articula-
+tion by textual tokens, the interleaved reasoning
+delivers enhanced recommendation accuracy and
+transparent explanations beyond isolated modal-
+ity approaches. These results collectively validate
+our model’s capacity for authentic, multi-faceted
+reasoning by demonstrating its ability to adapt to
+real-time interactions, capture fine-grained prefer-
+ences, and maintain semantic consistency across
+diverse recommendation scenarios.
+6
+Conclusion
+We present OneRec-Think, a novel framework
+that bridges reasoning capabilities with genera-
+tive recommendation through three key innova-
+tions: hierarchical itemic token alignment, reason-
+ing activation via CoT supervised fine-tuning, and
+reinforcement-based reasoning refinement. Our
+method fundamentally transforms recommendation
+systems from mere item predictors into reasoning-
+aware models that generate interpretable rationales
+alongside high-quality recommendations. Exten-
+sive experiments demonstrate that OneRec-Think
+not only achieves state-of-the-art performance
+across multiple benchmarks, but also translates to
+concrete industrial impact with a 0.15% gain in pri-
+mary metrics like APP Stay Time. Future work will
+8
+
+汽⻋
+Car
+汽⻋
+Car
+Reasoning
+视频观看历史显示用户对汽车保养、车型评测及优惠活动高度关注，近期观看的“<s_a_3313><s_b_4487>”相关视
+频可能涉及二手车交易、品牌对比或购车策略。用户偏好通过“<s_a_456>”字标签指向汽车配件/装饰品，结合
+“<s_a_5184>”字标签可能与电子产品相关，形成跨品类兴趣链。用户兴趣呈现三重特征：1）汽车领域
+（<s_a_3313><s_b_4487>、<s_a_456>、<s_a_1966>等标签）与生活类内容（短剧、运动）的交叉，反映对实用
+价值与娱乐性兼具的内容需求；2）对汽车保养、优惠信息的关注，暗示潜在购车或维修需求；3）跨品类兴趣
+（汽车配件与电子产品）表明用户可能具备多元消费能力，但需通过精准内容匹配提升转化率。推荐策略应兼
+顾汽车知识科普、优惠活动推送及生活类短视频，强化用户场景化兴趣联动。因此用户接下来可能喜欢的视频
+是<|sid_begin|><s_a_1966><s_b_2581><s_c_6305><|sid_end|>
+The video viewing history shows that users are highly attentive to car maintenance, vehicle reviews, and promotional 
+activities, with recently viewed videos related to "<s_a_3313><s_b_4487>" potentially involving second-hand car 
+transactions, brand comparisons, or car purchasing strategies. User preferences indicated by the "<s_a_456>" tag point 
+toward car accessories/decorative items, and combined with the "<s_a_5184>" tag may relate to electronic products, 
+forming a cross-category interest chain. User interests exhibit three key characteristics: 1) the intersection of the 
+automotive domain (<s_a_3313><s_b_4487>, <s_a_456>, <s_a_1966>, and other tags) with lifestyle content (short 
+dramas, sports), reflecting demand for content combining practical value with entertainment; 2) attention to car 
+maintenance and promotional information, suggesting potential car purchasing or maintenance needs; 3) cross-category 
+interests (car accessories and electronic products) indicating that users may possess diverse consumption capacity, but 
+requiring precise content matching to improve conversion rates. The recommendation strategy should balance 
+automotive knowledge dissemination, promotional activity push notifications, and lifestyle short videos to strengthen 
+scenario-based interest linkage for users. Therefore, the videos users are likely to enjoy next are 
+<|sid_begin|><s_a_1966><s_b_2581><s_c_6305><|sid_end|>
+搞笑
+Comedy
+脱⼝秀
+Talk Show
+汽⻋
+Car
+Output
+……
+User Interest
+Reasoning
+视频观看历史显示用户偏好搞笑、悬疑、动作类内容，尤其对喜剧、家庭题材和生活类视频兴趣浓厚；最近观看
+的视频类型中，"短剧""运动""影视综"等关键词表明用户对剧情紧凑、节奏快的视频有较高需求，且对轻松幽默
+的类型（如搞笑、喜剧）更倾向点击。用户兴趣与视频的关联性体现在：1. **内容偏好**：用户对搞笑、家庭
+题材和生活类视频的兴趣与"<s_a_66><s_b_2870><s_c_202>"的"搞笑"属性高度契合，且"家庭"元素可延伸至亲子
+互动场景，符合短视频平台的用户画像。2. **观看行为**：近期观看的"短剧""运动"等类型暗示用户偏好碎片化、
+高节奏内容，而"搞笑"视频的快速剪辑和夸张表现形式正好满足其对高效娱乐的需求。3. **潜在需求**：用户可
+能通过观看此类视频获取情感共鸣（如家庭温暖）、缓解日常压力，或寻找同好群体，因此视频内容需兼顾娱乐
+性与社交属性。因此用户下一个可能感兴趣的视频是<|sid_begin|><s_a_66><s_b_2870><s_c_202><|sid_end|>
+The video viewing history shows that users prefer comedy, suspense, and action content, with particularly strong interest 
+in comedy, family-themed, and lifestyle videos; among recently viewed video types, keywords such as “short drama,” 
+“sports,” and “film and TV variety” indicate that users have high demand for videos with compact plots and fast pace, and 
+are more inclined to click on light-hearted and humorous types (such as comedy and humor). The relevance between 
+user interests and videos is reflected in: 1. Content preference: Users‘ interest in comedy, family-themed, and lifestyle 
+videos is highly consistent with the “comedy” attribute of “<s_a_66><s_b_2870><s_c_202>”, and the "family" element 
+can extend to parent-child interaction scenarios, aligning with the user profile of short video platforms. 2. Viewing 
+behavior: Recently viewed types such as "short drama" and "sports" suggest that users prefer fragmented, high-paced 
+content, and the fast editing and exaggerated presentation of "comedy" videos precisely meet their demand for efficient 
+entertainment. 3. Potential needs: Users may obtain emotional resonance (such as family warmth) and relieve daily 
+stress by watching such videos, or seek like-minded communities, therefore video content needs to balance 
+entertainment value with social attributes. Therefore, the next video users are likely to be interested in is 
+<|sid_begin|><s_a_66><s_b_2870><s_c_202><|sid_end|>
+家庭搞笑段子
+Family Comedy
+Output
+……
+User Interest
+汽⻋
+Car
+汽⻋
+Car
+搞笑
+Comedy
+脱⼝秀
+Talk Show
+Figure 6: Demonstration of itemic-textual interleaved reasoning.
+focus on exploring user long-sequence modeling
+and dense RL reward for finer-grained preference
+modeling, further bridging LLM-based reasoning
+with industrial recommendation systems.
+Limitations
+Despite promising empirical results, current public
+datasets exhibit quality constraints through their
+limited behavior sequence lengths and restricted
+item spaces. These limitations hinder our Reason-
+ing Activation and Reasoning Enhancement mod-
+ules from acquiring high-quality reasoning capabil-
+ities comparable to those learned from industrial-
+scale data. Consequently, we simplify and adapt
+our approach to achieve a stable yet simplified rea-
+soning capacity, which remains robust within the
+public datasets. To address these issues, we are ac-
+tively constructing a large-scale benchmark with ex-
+tended behavioral trajectories and diversified item
+catalogs that will enable more comprehensive eval-
+uation of reasoning capabilities for reasoning-based
+recommendation models.
+Ethics Statement
+In this work, we have conducted experiments
+for two settings: one for open-source benchmark
+datasets and one for the industrial scenario. For the
+experiments for open-source benchmark datasets,
+all datasets are publicly available from previous
+works or public APIs while maintaining anonymity.
+For the industrial scenario, we utilize user interac-
+tion data collected from our platform to train the
+recommendation model. All data collection and
+usage strictly comply with our platform’s privacy
+policy and terms of service, to which users have
+provided explicit consent. Importantly, our training
+process operates solely on aggregated behavioral
+sequences, textual content, and user base informa-
+tion without accessing or processing any personally
+identifiable information.
+References
+Millennium Bismay, Xiangjue Dong, and James Caver-
+lee. 2024.
+Reasoningrec: Bridging personalized
+recommendations and human-interpretable expla-
+9
+
+nations through llm reasoning.
+arXiv preprint
+arXiv:2410.23180.
+Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue
+Lv, Yufei Ma, Xinlong Xiao, Bowen Xue, Xuxin
+Zhang, Ying Yang, and 1 others. 2025. Onesearch:
+A preliminary exploration of the unified end-to-end
+generative framework for e-commerce search. arXiv
+preprint arXiv:2509.03236.
+Yashar Deldjoo, Zhankui He, Julian McAuley, An-
+ton Korikov, Scott Sanner, Arnau Ramisa, René Vi-
+dal, Maheswaran Sathiamoorthy, Atoosa Kasirzadeh,
+and Silvia Milano. 2024. A review of modern rec-
+ommender systems using generative models (gen-
+recsys). In Proceedings of the 30th ACM SIGKDD
+conference on Knowledge Discovery and Data Min-
+ing, pages 6448–6458.
+Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen
+Hu, Weifeng Ding, Qiang Luo, and Guorui Zhou.
+2025. Onerec: Unifying retrieve and rank with gen-
+erative recommender and iterative preference align-
+ment. arXiv preprint arXiv:2502.18965.
+Yi Fang, Wenjie Wang, Yang Zhang, Fengbin Zhu, Qi-
+fan Wang, Fuli Feng, and Xiangnan He. 2025. Rea-
+son4rec: Large language models for recommendation
+with deliberative user preference alignment. CoRR.
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song,
+Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong
+Ma, Peiyi Wang, Xiao Bi, and 1 others. 2025a.
+Deepseek-r1: Incentivizing reasoning capability in
+llms via reinforcement learning.
+arXiv preprint
+arXiv:2501.12948.
+Xian Guo, Ben Chen, Siyuan Wang, Ying Yang,
+Chenyi Lei, Yuqing Ding, and Han Li. 2025b. One-
+sug: The unified end-to-end generative framework
+for e-commerce query suggestion. arXiv preprint
+arXiv:2506.06913.
+Balázs Hidasi, Alexandros Karatzoglou, Linas Bal-
+trunas, and Domonkos Tikk. 2016. Session-based
+recommendations with recurrent neural networks. In
+ICLR. ICLR.
+Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan
+Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang,
+Weizhu Chen, and 1 others. 2022. Lora: Low-rank
+adaptation of large language models. ICLR, 1(2):3.
+Wang-Cheng Kang and Julian McAuley. 2018. Self-
+attentive sequential recommendation.
+In ICDM,
+pages 197–206. IEEE.
+Jieyong Kim, Hyunseo Kim, Hyunjin Cho, SeongKu
+Kang, Buru Chang, Jinyoung Yeo, and Dongha Lee.
+Review-driven personalized preference reasoning
+with large language models for recommendation. corr,
+abs/2408.06276, 2024. doi: 10.48550. arXiv preprint
+ARXIV.2408.06276.
+Takeshi Kojima, Shixiang Shane Gu, Machel Reid, Yu-
+taka Matsuo, and Yusuke Iwasawa. 2022. Large lan-
+guage models are zero-shot reasoners. Advances in
+neural information processing systems, 35:22199–
+22213.
+Lei Li, Yongfeng Zhang, Dugang Liu, and Li Chen.
+2023. Large language models for generative rec-
+ommendation: A survey and visionary discussions.
+arXiv preprint arXiv:2309.01157.
+Chen Ma, Peng Kang, and Xue Liu. 2019. Hierarchical
+gating networks for sequential recommendation. In
+KDD. ACM.
+Qiyao Peng, Hongtao Liu, Hua Huang, Qing Yang,
+and Minglai Shao. 2025. A survey on llm-powered
+agents for recommender systems. arXiv preprint
+arXiv:2502.10050.
+Shashank Rajput, Nikhil Mehta, Anima Singh, Raghu-
+nandan Hulikal Keshavan, Trung Vu, Lukasz Heldt,
+Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, and 1
+others. 2023. Recommender systems with generative
+retrieval. Advances in Neural Information Process-
+ing Systems, 36:10299–10315.
+ByteDance Seed, Jiaze Chen, Tiantian Fan, Xin Liu,
+Lingjun Liu, Zhiqi Lin, Mingxuan Wang, Chengyi
+Wang, Xiangpeng Wei, Wenyuan Xu, and 1 others.
+2025.
+Seed1. 5-thinking: Advancing superb rea-
+soning models with reinforcement learning. arXiv
+preprint arXiv:2504.13914.
+Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu,
+Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan
+Zhang, YK Li, Yang Wu, and 1 others. 2024.
+Deepseekmath: Pushing the limits of mathematical
+reasoning in open language models. arXiv preprint
+arXiv:2402.03300.
+Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin
+Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin
+Lin, and Chuan Wu. 2024. Hybridflow: A flexible
+and efficient rlhf framework. arXiv preprint arXiv:
+2409.19256.
+Charlie Snell, Jaehoon Lee, Kelvin Xu, and Aviral Ku-
+mar. 2024. Scaling llm test-time compute optimally
+can be more effective than scaling model parameters.
+arXiv preprint arXiv:2408.03314.
+Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin,
+Wenwu Ou, and Peng Jiang. 2019. Bert4rec: Se-
+quential recommendation with bidirectional encoder
+representations from transformer. In CIKM, pages
+1441–1450. ACM.
+Jiakai Tang, Sunhao Dai, Teng Shi, Jun Xu, Xu Chen,
+Wen Chen, Jian Wu, and Yuning Jiang. 2025. Think
+before recommend: Unleashing the latent reason-
+ing power for sequential recommendation. arXiv
+preprint arXiv:2503.22675.
+10
+
+Alicia Tsai, Adam Kraft, Long Jin, Chenwei Cai,
+Anahita Hosseini, Taibai Xu, Zemin Zhang, Lichan
+Hong, Ed H. Chi, and Xinyang Yi. 2024. Leveraging
+LLM reasoning enhances personalized recommender
+systems. In Findings of the Association for Compu-
+tational Linguistics: ACL 2024, pages 13176–13188,
+Bangkok, Thailand. Association for Computational
+Linguistics.
+Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang,
+Yongqi Li, Fuli Feng, See-Kiong Ng, and Tat-Seng
+Chua. 2024a. Learnable item tokenization for gener-
+ative recommendation. In CIKM. ACM.
+Wenjie Wang, Xinyu Lin, Fuli Feng, Xiangnan He, and
+Tat-Seng Chua. 2023. Generative recommendation:
+Towards next-generation recommender paradigm.
+arXiv preprint arXiv:2304.03516.
+Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le,
+Ed Chi, Sharan Narang, Aakanksha Chowdhery, and
+Denny Zhou. 2022. Self-consistency improves chain
+of thought reasoning in language models.
+arXiv
+preprint arXiv:2203.11171.
+Yidan Wang, Zhaochun Ren, Weiwei Sun, Jiyuan
+Yang, Zhixiang Liang, Xin Chen, Ruobing Xie,
+Su Yan, Xu Zhang, Pengjie Ren, and 1 others. 2024b.
+Content-based collaborative generation for recom-
+mender systems. In Proceedings of the 33rd ACM
+International Conference on Information and Knowl-
+edge Management, pages 2420–2430.
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten
+Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou,
+and 1 others. 2022. Chain-of-thought prompting elic-
+its reasoning in large language models. Advances
+in neural information processing systems, 35:24824–
+24837.
+Zhipeng Wei, Kuo Cai, Junda She, Jie Chen, Ming-
+hao Chen, Yang Zeng, Qiang Luo, Wencong Zeng,
+Ruiming Tang, Kun Gai, and 1 others. 2025. One-
+loc: Geo-aware generative recommender systems for
+local life service. arXiv preprint arXiv:2508.14646.
+An Yang, Anfeng Li, Baosong Yang, Beichen Zhang,
+Binyuan Hui,
+Bo Zheng,
+Bowen Yu,
+Chang
+Gao, Chengen Huang, Chenxu Lv, and 1 others.
+2025.
+Qwen3 technical report.
+arXiv preprint
+arXiv:2505.09388.
+Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran,
+Thomas L Griffiths,
+Yuan Cao,
+and Karthik
+Narasimhan. 2023.
+Tree of thoughts: Deliberate
+problem solving with large language models, 2023.
+URL https://arxiv. org/abs/2305.10601, 3:1.
+Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan,
+Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan,
+Gaohong Liu, Lingjun Liu, and 1 others. 2025. Dapo:
+An open-source llm reinforcement learning system
+at scale. arXiv preprint arXiv:2503.14476.
+Yu Yue, Yufeng Yuan, Qiying Yu, Xiaochen Zuo, Ruofei
+Zhu, Wenyuan Xu, Jiaze Chen, Chengyi Wang,
+TianTian Fan, Zhengyin Du, and 1 others. 2025.
+Vapo: Efficient and reliable reinforcement learn-
+ing for advanced reasoning tasks. arXiv preprint
+arXiv:2504.05118.
+Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui
+Li, Xuan Cao, Leon Gao, Zhaojie Gong, Fangda
+Gu, Michael He, and 1 others. 2024. Actions speak
+louder than words: Trillion-parameter sequential
+transducers for generative recommendations. arXiv
+preprint arXiv:2402.17152.
+Junjie Zhang, Beichen Zhang, Wenqi Sun, Hongyu Lu,
+Wayne Xin Zhao, Yu Chen, and Ji-Rong Wen. 2025a.
+Slow thinking for sequential recommendation. arXiv
+preprint arXiv:2504.09627.
+Tianyi Zhang, Varsha Kishore, Felix Wu, Kilian Q
+Weinberger, and Yoav Artzi. 2019. Bertscore: Eval-
+uating text generation with bert.
+arXiv preprint
+arXiv:1904.09675.
+Yu Zhang, Shutong Qiao, Jiaqi Zhang, Tzu-Heng Lin,
+Chen Gao, and Yong Li. 2025b. A survey of large lan-
+guage model empowered agents for recommendation
+and search: Towards next-generation information re-
+trieval. arXiv preprint arXiv:2503.05659.
+Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen,
+Wayne Xin Zhao, and Ji-Rong Wen. 2024. Adapting
+large language models by integrating collaborative
+semantics for recommendation. In ICDE. IEEE.
+Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo
+Cai, Lejian Ren, Qiang Luo, Qianqian Wang, Qi-
+gen Hu, Rui Huang, Shiyao Wang, and 1 others.
+2025a.
+Onerec technical report.
+arXiv preprint
+arXiv:2506.13695.
+Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huan-
+jie Wang, Jiaxin Deng, Jinghao Zhang, Kuo Cai,
+Lejian Ren, Lu Ren, Liao Yu, and 1 others.
+2025b. Onerec-v2 technical report. arXiv preprint
+arXiv:2508.20900.
+A
+Appendix
+A.1
+Experiment settings
+Details of Baselines
+We compare OneRec-Think
+with competitive baselines within two groups of
+work, traditional recommender models and gener-
+ative recommender models: 1) BERT4Rec (Sun
+et al., 2019) leverages BERT’s pre-trained language
+representations to capture semantic user-item re-
+lationships. 2) HGN (Ma et al., 2019) utilizes
+graph neural networks to learn user and item rep-
+resentations for predicting user-item interactions.
+3) GRU4Rec (Hidasi et al., 2016) is a lightweight
+graph convolutional network model focusing on
+high-order connections between users and items. 4)
+11
+
+SASRec (Kang and McAuley, 2018) employs self-
+attention mechanisms to capture long-term depen-
+dencies in user interaction history. 5) TIGER (Ra-
+jput et al., 2023) introduces codebook-based iden-
+tifiers via RQ-VAE, which quantizes semantic in-
+formation into code sequences for LLM-based gen-
+erative recommendation. 6) HSTU (Zhai et al.,
+2024) reformulates recommendation problems as
+sequential transduction tasks within a generative
+modeling framework and proposes a new architec-
+ture for streaming data. 7) ReaRec (Tang et al.,
+2025) enhances user representations through im-
+plicit multi-step reasoning within an inference-time
+computing framework for recommendation. Evalu-
+ation Metrics. We use two metrics: top-K Recall
+(R@K) and NDCG (N@K) with K = 5 and 10,
+following (Rajput et al., 2023).
+Details of experiments on open-source datasets
+We adopt Qwen3-1.7B (Yang et al., 2025) as our
+backbone model. The model’s vocabulary is ex-
+tended with 1,024 new tokens representing the four-
+level hierarchical semantic IDs (256 tokens per
+level), in addition to two special boundary tokens,
+<|item_begin|> and <|item_end|>. All models
+were trained on a server equipped with flagship
+GPUs. To generate the top-K recommendations
+during evaluation, we employ a beam search strat-
+egy with a beam width of 10. Given the inher-
+ent challenge of deriving a robust reasoning path
+τ from the short and sparse item sequences typi-
+cal of public benchmarks, we strategically employ
+manually constructed category-based CoT as the
+pruned content for Reasoning Activation to ensure
+stable semantic guidance. For the training data, we
+adopt the pre-processing techniques from previous
+work (Rajput et al., 2023; Wang et al., 2024a), dis-
+carding sparse users and items with interactions
+less than 5. We consider the sequential recommen-
+dation setting and use leave-one-out strategy (Ra-
+jput et al., 2023; Zheng et al., 2024) to split datasets.
+For training, we follow (Kang and McAuley, 2018)
+to restrict the number of items in a user’s history to
+50.
+A.2
+Model Demonstration
+Reasoning Cases for Short-video Recommenda-
+tion
+In this part, we show some cases of short
+video recommendations of another user. Figure 7
+presents two reasoning paths generated by our
+model, demonstrating its capacity for multi-step
+interest inference and underlying need identifica-
+tion. In the first case, the model connects the user’s
+gaming preferences with hardware comparison be-
+haviors to deduce an unstated need for performance
+optimization, ultimately recommending monitor
+analysis videos. The second case reveals deeper
+psychological needs by associating sports/military
+viewing history with adolescent rebellion searches,
+identifying parenting challenges as the core con-
+cern. Both examples showcase our model’s ability
+to transcend superficial topic matching and perform
+causal reasoning about user motivations, enabling
+recommendations that address both expressed in-
+terests and latent needs.
+Semantic Comprehension Validation
+After se-
+mantic alignment, the model acquires the capability
+to comprehend and articulate the semantic meaning
+of item tokens through natural language. To vali-
+date this emergent ability, we evaluate the capacity
+of the model to generate descriptive captions for
+itemic tokens without explicit training on this task.
+When prompted to explain what an itemic token
+represents, the model leverages the learned seman-
+tic correspondences to produce coherent textual de-
+scriptions that accurately capture the characteristics
+of the items. This demonstrates that the alignment
+process successfully establishes genuine semantic
+understanding rather than superficial pattern match-
+ing, as the model can now bidirectionally translate
+between discrete itemic tokens and their rich nat-
+ural language semantics. The following cases in
+Beauty datset showcase the model’s caption gener-
+ation capability for item semantic tokens:
+Case: Itemic Token Explaining 1
+Question + Answer
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Can you explain the meaning of <|
+item_begin|><item_a_219><item_b_189><
+item_c_49><item_d_227><|item_end|>?<|
+im_end|>
+<|im_start|>assistant
+Its title is Manuka Honey and Manuka Oil
+Skin Cream, its category is Beauty > Skin
+Care > Face > Cleansers.
+Ground Truth
+"title": "Manuka Honey and Manuka Oil
+Skin Cream"
+"categories": "Beauty > Skin Care > Face
+> Creams & Moisturizers > Fluids &
+Lotions > Lotions"
+"sid": "<|item_begin|><item_a_219><
+item_b_189><item_c_49><item_d_227><|
+12
+
+游戏预告片
+Game Trailer
+青春期叛逆
+Adolescent 
+Rebellion
+Reasoning
+用户观看历史记录的主题是游戏和科技产品对比。用户点赞了《战地》系列经典场面回顾和《GTA6》最新爆料汇总，表明他
+对军事题材游戏和动作冒险类游戏有浓厚兴趣。同时，用户主动搜索了显卡对比视频，说明他对计算机硬件配置的关注度较
+高，尤其是对显卡性能的比较感兴趣。推理用户点击候选视频的逻辑是：用户对游戏和科技产品的兴趣延伸到了实际应用场
+景中，即通过显卡对比来优化自己的游戏体验。由于用户已经表现出对《战地》和《GTA6》这类高画质、高帧率的游戏的偏
+好，因此，他们可能会寻找能够提供更佳视觉效果和流畅度的硬件支持。显卡对比视频可以帮助用户了解不同型号显卡之间
+的性能差异，从而做出明智的选择以提升他们的游戏表现。因此，用户很可能会点击一个详细分析显卡性能并推荐适合特定
+游戏需求的视频，以便更好地满足他们的个人或家庭娱乐需求。所以，用户很可能点击主题相近的候选视频
+<|item_begin|><item_a_4029><item_b_4601><item_c_5058><|item_end|>。
+The themes of the user's viewing history are gaming and tech product comparisons. The user liked classic scene from the 
+"Battlefield" series and the latest Game trailer for "GTA 6", indicating a strong interest in military-themed games and 
+action-adventure games. Meanwhile, the user actively searched for graphics card comparison videos, showing high 
+attention to computer hardware configurations, with particular interest in comparing graphics card performance. The 
+logic behind the user's potential clicks on candidate videos is: the user's interest in gaming and tech products extends to 
+practical application scenarios, namely optimizing their gaming experience through graphics card comparisons. Since the 
+user has already shown preference for high-quality, high-frame-rate games like "Battlefield" and "GTA 6", they may seek 
+hardware support that can provide better visual effects and smoothness. Graphics card comparison videos can help users 
+understand performance differences between different GPU models, enabling them to make informed choices to 
+enhance their gaming performance. Therefore, the user would likely click on a video that provides detailed analysis of 
+graphics card performance and recommends suitable options for specific gaming needs, to better satisfy their personal 
+or family entertainment requirements. Thus, the user would very likely click on candidate videos with similar themes 
+<|item_begin|><item_a_4029><item_b_4601><item_c_5058><|item_end|>.
+篮球
+Basketball
+音乐演唱
+Music
+显示器帧数讨论
+monitor FPS 
+discussion
+Output
+……
+User Interest
+游戏预告片
+Game Rrailer
+青春期叛逆
+Adolescent 
+Rebellion
+Reasoning
+在用户主动搜索的内容中，青春期叛逆孩子的沟通问题成为焦点，这暗示了用户可能面临亲子关系或青少年教育
+方面的挑战。因此，用户潜在的需求在于寻求解决青春期叛逆问题的方法，特别是如何与孩子进行有效的沟通。
+这样的需求不仅反映了用户作为家长的角色转变，也突显了他们在面对复杂社会环境时的心理状态。针对这一情
+况，提供实用且专业的沟通技巧指导将能够满足用户的实际需求，帮助他们更好地处理家庭内部的问题。综上所
+述，用户观看历史记录的主题是体育赛事和国际军事领域，而用户潜在的需求则是解决青春期叛逆孩子沟通问题，
+因此需要推荐相关主题的视频来满足他们的需求。所以，用户很可能点击主题相近的候选视频
+<|item_begin|><item_a_6786><item_b_4138><item_c_1091><|item_end|>。
+Among the content actively searched by users, communication issues with rebellious adolescent children have become a 
+focal point, suggesting that users may be facing challenges in parent-child relationships or adolescent education. 
+Consequently, the underlying need of users lies in seeking methods to address adolescent rebellion, particularly 
+regarding how to communicate effectively with their children. Such needs not only reflect the user‘s evolving role as a 
+parent but also highlight their psychological state when confronting complex social environments. In response to this 
+situation, providing practical and professional guidance on communication techniques will enable users to meet their 
+actual needs and better handle problems within the family. In summary, the themes of the user’s viewing history are 
+sports events and international military affairs, while the user‘s underlying need is to resolve communication problems 
+with rebellious adolescent children. Therefore, it is necessary to recommend videos on related topics to satisfy their 
+needs. Thus, users are highly likely to click on candidate video with similar theme 
+<|item_begin|><item_a_6786><item_b_4138><item_c_1091><|item_end|>.
+篮球
+Basketball
+音乐演唱
+Music
+青春期叛逆
+Adolescent Rebellion
+Output
+……
+User Interest
+Figure 7: A reasoning example for a short-video recommendation scenario.
+item_end|>"
+Case: Itemic Token Explaining 2
+Question + Answer
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Can you explain the meaning of <|
+item_begin|><item_a_8><item_b_18><
+item_c_86><item_d_131><|item_end|>?<|
+im_end|>
+<|im_start|>assistant
+Its title is 25 Color Professional
+Camouflage Makeup Palette, its category
+is Beauty > Makeup > Face > Concealer &
+Base.
+Ground Truth
+"title": "Professional 15 Color Concealer
+Camouflage Makeup Palette",
+"categories": "Beauty > Makeup > Face >
+Concealers & Neutralizers",
+"sid": "<|item_begin|><item_a_8><
+item_b_18><item_c_86><item_d_131><|
+item_end|>"
+A.3
+Implementation Details
+A.3.1
+Itemic Alignment
+Task details
+Here, we first introduce the afore-
+mentioned four types of tasks.
+1. Interleaved User Persona Grounding. This
+part contains the interleaved itemic tokens with
+rich, natural-language text extracted from static
+user profiles. This process forces the model to
+create a robust mapping between the itemic tokens
+and their real-world meanings, grounded in user
+attributes, stated interests, and historical behaviors.
+The sample data is shown below.
+Interleaved User Persona Grounding data
+# User Profile Narrative
+The user is a 25-30 year-old male based
+in Beijing.
+# User Profile Narrative
+The user’s recent searches on the
+platform include: "best space opera
+novels," and "latest NASA discoveries."
+# Live Stream Behavior
+He recently commented 5 times on live
+streams in the "Science & Tech" category.
+# Like Behavior
+He recently liked video <|item_begin|><
+13
+
+item_a_1123><item_b_5813><item_c_4212><|
+item_end|>, captioned "Exploring the
+Andromeda Galaxy with the James Webb
+Telescope."; and video <|item_begin|><
+item_a_3421><item_b_8812><item_c_1234><|
+item_end|>, captioned "Top 10 Paradoxes
+of Time Travel."
+...
+# Comment Behavior
+He recently commented "Incredible footage
+!" on Video: <|item_begin|><item_a_5813><
+item_b_1123><item_c_9876><|item_end|>, a
+documentary about black holes; and
+commented "Mind-blowing concept!" on
+Video: <|item_begin|><item_a_8812><
+item_b_3421><item_c_5432><|item_end|>,
+explaining the Fermi Paradox.
+...
+# Followed Creators
+He follows creators on the platform
+across various fields, including science
+popularizers, book reviewers, and film
+critics specializing in sci-fi.
+# User Summary
+Primary Interests: This user enjoys
+science, especially astronomy. This user
+also engages with Honor of Kings content,
+indicating a casual gaming interest.
+Secondary Interests: Diverse explorations
+include pet (cat) videos, traditional
+culture, and local food content.
+2. Sequential Preference Modeling. The model
+is given a sequence of a user’s recent interactions
+(up to 256 items) and is tasked with predicting
+the next item. The loss is computed only on the
+tokens of the target itemic token. The sample data
+is shown below.
+Sequential Preference Modeling data
+<|im_start|>system
+You are a sequential recommendation
+engine. Your task is to analyze the
+provided sequence of user-item
+interactions and predict the single next
+item the user is most likely to engage
+with.
+<|im_end|>
+<|im_start|>user
+User interaction history: <|item_begin|><
+item_a_1024><item_b_2048><item_c_4096><|
+item_end|>...<|item_begin|><item_a_1234><
+item_b_5678><item_c_5876><|item_end|>.
+Predict the next item.
+<|im_end|>
+<|im_start|>assistant
+The next recommended item is <|item_begin
+|><item_a_5555><item_b_6666><item_c_7777
+><|item_end|>.
+<|im_end|>
+3. Itemic Dense Captioning. This task asks
+the model to generate a textural description of a
+given itemic token, ensuring a robust mapping be-
+tween itemic tokens and natural language. The
+loss is computed on the tokens of the target textual
+description. The sample data is shown below.
+Itemic Dense Captioning data
+<|im_start|>system
+You are an expert content analyst. Given
+an itemic token, generate a concise and
+accurate textual description of its
+content.
+<|im_end|>
+<|im_start|>user
+Provide a description for the itemic
+token: <|item_begin|><item_a_1357><
+item_b_2468><item_c_7753><|item_end|>.
+<|im_end|>
+<|im_start|>assistant
+This video showcases a local food stall,
+highlighting traditional cooking methods
+and signature dishes like grilled skewers
+to attract customers by celebrating
+local food culture.
+<|im_end|>
+4. General Language Modeling. This part of
+the data contains the pretraining and instruction
+fine-tuning data of the general corpus to maintain
+the base ability of the language model.
+To prepare our model for in-text reasoning rec-
+ommendations, we design a two-stage training cur-
+riculum to first build a foundational semantic un-
+derstanding and then develop sophisticated rec-
+ommendation capabilities. The initial substage,
+Token Warm-up, focuses on aligning itemic to-
+kens with their rich textual meanings. The second
+substage, Multi-Task Integration, develops the
+model’s core recommendation abilities while pre-
+serving the initial semantic alignment.
+Token Warm-up
+The initial and foundational
+step is to imbue the model with a deep understand-
+ing of the semantic content represented by each
+itemic tokens (sv). In the open-source benchmark
+datsets, the dataset is consist of the user profile
+of the full training data. In the industrial setting,
+the entire alignment process leverages a corpus of
+6 billion tokens of the Interleaved User Persona
+Grounding task, ensuring a comprehensive seman-
+tic grounding.
+During this stage, we freeze the parameters of
+the LLM backbone and exclusively train the em-
+beddings of the newly introduced itemic tokens.
+This focused approach allows the randomly initial-
+ized embeddings to efficiently converge to mean-
+ingful positions within the model’s existing seman-
+tic space without disrupting its pre-trained knowl-
+14
+
+Table 5: Data details for the Recommendation Enhanc-
+ing.
+Task Type
+Data Percentage
+Interleaved User Persona Grounding
+24.30%
+Sequential Preference Modeling
+65.73%
+Itemic Dense Captioning
+4.94%
+General Language Modeling
+5.03%
+edge. We use a higher learning rate of 5 × 10−4 to
+train only the new token embeddings, which allows
+the randomly initialized embeddings to converge
+quickly and efficiently.
+Multi-Task Integration
+With the semantic item
+vocabulary successfully grounded, the second sub-
+stage of our curriculum aims to develop the model’s
+core recommendation capabilities. Simply training
+on a single objective, such as next-item prediction,
+could cause the model to gradually treat the itemic
+tokens as conventional, non-semantic identifiers,
+thereby losing the benefits of the initial ground-
+ing substage. To prevent this and foster a more
+holistic understanding, we employ the Multi-Task
+Integration. The mixture of different tasks, detailed
+in Table 5, is designed to balance the learning of
+collaborative patterns with the reinforcement of
+semantic understanding and contextual reasoning.
+For the open-source benchmark dataset, we train
+the full parameters of the model. For the industrial
+scenario, we unfreeze the model backbone and uti-
+lize LoRA (Hu et al., 2022) for parameter-efficient
+fine-tuning. We employ a more conservative learn-
+ing rate of 3×10−4 and fine-tune the model, which
+ensures a stable adaptation of the model’s internal
+mechanisms to the recommendation tasks without
+disrupting its foundational knowledge.
+A.3.2
+Reasoning Activation
+The Reasoning Activation stage employs a care-
+fully orchestrated two-substage training pipeline
+designed to progressively develop the model’s rea-
+soning capabilities from simplified contexts to com-
+plex, noisy industrial sequences.
+Bootstrapping with Pruned Contexts:
+In this
+substage, we construct a high-quality reasoning
+dataset by strategically pruning user behavior se-
+quences to retain only the most relevant interac-
+tions. For each training instance, we employ a
+semantic similarity function g(·, ·) to extract the
+top-k items (we set k = 10 in our experiments)
+most relevant to the target interaction. The similar-
+ity function leverages pre-trained item embeddings
+to compute cosine similarity scores between his-
+torical items and the target. Using these pruned
+sequences, we prompt the semantically aligned
+model to generate step-by-step reasoning trajec-
+tories that explain why the target item aligns with
+the user’s demonstrated preferences. The example
+is shown below.
+Rationale Generation from Pruned Context
+<|im_start|>system
+You are an expert recommendation analyst.
+Given a user’s relevant interaction
+history, provide a step-by-step reasoning
+process explaining why a specific target
+item aligns with their preferences.
+<|im_end|>
+<|im_start|>user
+User’s relevant interaction history:
+<|item_begin|><item_a_1111><item_b_2222><
+item_c_3333><|item_end|> - Beginner’s
+guide to sourdough bread making
+<|item_begin|><item_a_2947><item_b_8156><
+item_c_3402><|item_end|> - Professional
+chef knife skills tutorial
+<|item_begin|><item_a_5618><item_b_3927><
+item_c_7084><|item_end|> - Italian pasta
+recipes from scratch
+<|item_begin|><item_a_7293><item_b_5471><
+item_c_1836><|item_end|> - Kitchen
+organization and meal prep tips
+<|item_begin|><item_a_9105><item_b_6248><
+item_c_4519><|item_end|> - Comparison of
+stand mixers for home baking
+Target item: <|item_begin|><item_a_3672><
+item_b_9814><item_c_2657><|item_end|> -
+Advanced French pastry techniques and
+equipment guide
+Explain why this target item matches the
+user’s interests.
+<|im_end|>
+<|im_start|>assistant
+Reasoning: The user’s viewing history
+shows a strong interest in advanced
+cooking techniques and kitchen equipment,
+with engagement in sourdough baking,
+handmade pasta, and stand mixer
+comparisons. The user has progressed from
+basic skills to time-intensive culinary
+projects, demonstrating commitment to
+mastering traditional cooking methods.
+French pastry represents a natural next
+step that combines their baking
+experience with technical precision.
+Therefore, the user would very likely
+click on candidate videos with similar
+themes <|item_begin|><item_a_3672><
+item_b_9814><item_c_2657><|item_end|>.
+<|im_end|>
+Learning to Reason from Noisy Sequences
+Building upon the distilled reasoning patterns, this
+15
+
+substage trains the model to transfer its reason-
+ing capabilities to raw, unfiltered user behavior
+sequences. The training data consists of complete
+user histories paired with the high-quality ratio-
+nales generated in Substage 1. We employ the joint
+optimization objective defined in Equation 5, which
+simultaneously trains the model to: (1) generate co-
+herent reasoning trajectories by predicting rationale
+tokens conditioned on noisy context, and (2) pro-
+duce accurate target item predictions informed by
+both the context and generated rationale. The loss
+function applies equal weighting to both compo-
+nents, ensuring the model learns to perform contex-
+tual distillation while maintaining recommendation
+accuracy. The example is shown below.
+Reasoning from Noisy Sequences
+<|im_start|>system
+You are an intelligent recommendation
+system. Given a user’s complete
+interaction history, provide reasoning
+for your recommendation and then suggest
+the most appropriate next item.
+<|im_end|>
+<|im_start|>user
+User’s complete interaction history:
+<|item_begin|><item_a_1847><item_b_6392><
+item_c_5104><|item_end|>, <|item_begin|><
+item_a_9263><item_b_4571><item_c_8026><|
+item_end|>, <|item_begin|><item_a_1111><
+item_b_2222><item_c_3333><|item_end|>, <|
+item_begin|><item_a_5419><item_b_8736><
+item_c_2948><|item_end|>, <|item_begin|><
+item_a_3082><item_b_7145><item_c_6379><|
+item_end|>, <|item_begin|><item_a_2947><
+item_b_8156><item_c_3402><|item_end|>, <|
+item_begin|><item_a_7651><item_b_2493><
+item_c_1087><|item_end|>, <|item_begin|><
+item_a_5618><item_b_3927><item_c_7084><|
+item_end|>, <|item_begin|><item_a_8304><
+item_b_9672><item_c_4215><|item_end|>, <|
+item_begin|><item_a_7293><item_b_5471><
+item_c_1836><|item_end|>, <|item_begin|><
+item_a_4926><item_b_1358><item_c_8740><|
+item_end|>, <|item_begin|><item_a_9105><
+item_b_6248><item_c_4519><|item_end|>, <|
+item_begin|><item_a_1537><item_b_8904><
+item_c_3261><|item_end|>
+What item should be recommended next?
+Explain your reasoning first.
+<|im_end|>
+<|im_start|>assistant
+<think>
+The user’s viewing history shows a strong
+interest in advanced cooking techniques
+and kitchen equipment, with engagement in
+sourdough baking, handmade pasta, and
+stand mixer comparisons. The user has
+progressed from basic skills to time-
+intensive culinary projects,
+demonstrating commitment to mastering
+traditional cooking methods. French
+pastry represents a natural next step
+that combines their baking experience
+with technical precision. Therefore, the
+user would very likely click on candidate
+videos with similar themes <|item_begin
+|><item_a_3672><item_b_9814><item_c_2657
+><|item_end|>.
+</think>
+Recommendation: <|item_begin|><
+item_a_3672><item_b_9814><item_c_2657><|
+item_end|>
+<|im_end|>
+Similarly, for these tasks, we train the full pa-
+rameters of the model. For the industrial scenario,
+we unfreeze the model backbone and utilize LoRA
+for parameter-efficient fine-tuning. We employ a
+learning rate of 3 × 10−4 and fine-tune the model.
+To quantify the impact of Semantic Grouding
+(SG) and Recommendation Enhancement (RE)
+in Itemic Alignment stage, we calculate the
+BertScore (Zhang et al., 2019) between the ground
+truth and prediction of OneRec-Think on the User
+Understanding and Short Video Understanding
+benchmarks. The cases of User and Short Video
+Understanding of Table 4 are shown below, and the
+ground truth is the accurate answer from our online
+multi-modal large language model.
+Case for Short Video Understanding Benchmark
+<|im_start|>system
+You are an expert content analyst. Given
+an itemic token, generate a concise and
+accurate textual description of its
+content.
+<|im_end|>
+<|im_start|>user
+Provide a description for the itemic
+token: <|item_begin|><item_a_1357><
+item_b_2468><item_c_7753><|item_end|>.
+<|im_end|>
+<|im_start|>assistant
+# Answers
+Case for User Understanding Benchmark
+<|im_start|>system
+You are an expert content analyst. Your
+task is to analyze the provided user
+interaction history and generate a
+structured, actionable user profile
+summary..
+<|im_end|>
+<|im_start|>user
+<|item_begin|><item_a_1111><item_b_2222><
+item_c_3333><|item_end|> - Beginner’s
+guide to sourdough bread making
+<|item_begin|><item_a_2947><item_b_8156><
+item_c_3402><|item_end|> - Professional
+chef knife skills tutorial
+<|item_begin|><item_a_5618><item_b_3927><
+item_c_7084><|item_end|> - Italian pasta
+recipes from scratch
+<|item_begin|><item_a_7293><item_b_5471><
+16
+
+item_c_1836><|item_end|> - Kitchen
+organization and meal prep tips
+<|item_begin|><item_a_9105><item_b_6248><
+item_c_4519><|item_end|> - Comparison of
+stand mixers for home baking
+...
+<|im_end|>
+<|im_start|>assistant
+# Answers
+A.3.3
+Reasoning Enhancement
+Building upon the reasoning capabilities estab-
+lished in the previous stage, we employ Reinforce-
+ment Learning to further refine both reasoning co-
+herence and recommendation accuracy. We lever-
+age the VERL framework (Sheng et al., 2024) for
+efficient optimization, which provides robust in-
+frastructure for distributed training and scalable re-
+ward computation. Our training utilizes the GRPO
+algorithm and implements the Rollout-Beam re-
+ward within VERL. During training, we sample
+|G| = 16 CoT paths and do beam search with
+width K = 32 for each path to compute rewards,
+balancing exploration breadth with computational
+efficiency. We train for 2 epochs with a learning
+rate of 1e-5, KL divergence coefficient β = 0.001,
+clip ratio ϵ = 0.2 to ensure stable policy updates.
+A.3.4
+System Deployment: A "Think-Ahead"
+Architecture
+Here, we show the details of the "Think-Ahead" Ar-
+chitecture. Our "Think-Ahead" architecture decou-
+ples inference into an offline stage that generates
+reasoning paths and initial item tokens to capture
+broad user intent, followed by an online stage that
+utilizes these tokens as constrained prefixes for
+real-time finalization, ensuring production-grade
+latency.
+Stage 1: Reasoning-Guided Prefix Generation
+Reasoning Path Synthesis: For user u with inter-
+action history Hu = P(sv1, . . . , svn), we sample
+T diverse reasoning paths:
+τ (i) ∼P(· | Hu; θ),
+(8)
+where each path τ (i) for i ∈{1, ..., T} encap-
+sulates a distinct logical pathway connecting the
+user’s behavioral patterns to potential interests.
+Constrained Prefix Generation: Given our hierar-
+chical itemic tokens with L identifiers, we perform
+beam search to generate candidate prefixes. Here,
+in our industrial setting, we use L = 3. For each
+reasoning path τ (i), we decode only the first two
+itemic tokens, yielding:
+A(i)
+u = BeamSearch
+
+P
+ ˆs1
+vn+1, ˆs2
+vn+1 | Hu, τ (i); θ
+
+, m
+
+(9)
+where A(i)
+u
+denotes the set of m candidate item
+prefixes derived from path τ (i) for user u.
+Semantic Space Materialization: The union of
+all item prefix sets forms the user’s personalized
+candidate space:
+Cu =
+T[
+i=1
+A(i)
+u
+(10)
+This set, containing T × m high-potential item
+prefixes, is cached in an industrial distributed stor-
+age system, effectively materializing the model’s
+deliberative reasoning into actionable semantic hy-
+potheses.
+Stage 2: Prefix-Constrained Finalization
+The
+online stage executes rapid inference while leverag-
+ing the pre-computed semantic priors from Stage 1
+upon user request arrival.
+Constrained Decoding: Upon receiving a request
+for user u, we retrieve Cu and infer the last to-
+ken using a real-time updated OneRec following
+(Zhou et al., 2025a) honline. The search space is
+restricted so that the prefix of the candidate tar-
+get item (ˆs1
+vn+1, ˆs2
+vn+1) should be in the candidate
+prefix set, which means (ˆs1
+vn+1, ˆs2
+vn+1) ∈Cu. Con-
+sequently, we could construct the decoding target:
+ˆsvn+1 = arg max
+svn+1
+Phonline
+ svn+1
+ sv1, . . . , svn
+
+s.t.
+(ˆs1
+vn+1, ˆs2
+vn+1) ∈Cu
+(11)
+where the items with top-K probability are then
+served to the users.
+In summary, our Think-Ahead architecture
+presents a novel paradigm for industrial recom-
+mendation, effectively reconciling sophisticated
+reasoning with strict latency requirements.
+17

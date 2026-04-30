@@ -1,0 +1,765 @@
+SIGMA: A Semantic-Grounded Instruction-Driven Generative
+Multi-Task Recommender at AliExpress
+Yang Yu∗
+yy456487@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+Hangzhou, China
+Lei Kou
+koulei.kl@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+Hangzhou, China
+Huaikuan Yi
+yihuaikuan.yhk@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+Hangzhou, China
+Bin Chen
+cb483157@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+Hangzhou, China
+Yayu Cao
+caoyayu.cyy@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+Hangzhou, China
+Lei Shen
+kenny.sl@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+Hangzhou, China
+Chao Zhang
+chao.zc@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+Hangzhou, China
+Bing Wang∗
+lingfeng.wb@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+Hangzhou, China
+Xiaoyi Zeng
+yuanhan@alibaba-inc.com
+Alibaba International Digital
+Commercial Group
+Hangzhou, China
+Abstract
+With the rapid evolution of Large Language Models (LLMs), gen-
+erative recommendation is gradually reshaping the paradigm of
+recommender systems. However, most existing methods remain
+confined to the interaction-driven next-item prediction paradigm,
+struggling to keep pace with the latest evolving trends or address
+the diverse recommendation tasks along with business-specific re-
+quirements in real-world scenarios. To this end, we present SIGMA,
+a Semantic-Grounded Instruction-Driven Generative Multi-Task
+Recommender deployed at AliExpress. Specifically, we first ground
+item entities in a unified latent space capturing both general seman-
+tics and collaborative signals. Building upon this, we introduce a
+hybrid item tokenization method for both precise modeling and ef-
+ficient generation. Moreover, we construct a large-scale multi-task
+supervised fine-tuning dataset empowering SIGMA to fulfill vari-
+ous recommendation demands via instruction-following. Finally,
+we design a three-step item generation procedure integrated with
+an adaptive probabilistic fusion mechanism to calibrate the output
+distributions based on task-specific requirements for recommen-
+dation accuracy and diversity. Extensive offline experiments and
+online A/B tests demonstrate the effectiveness of SIGMA across
+various real-world recommendation tasks.
+CCS Concepts
+• Information systems →Recommender systems.
+∗Corresponding author.
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+SIGIR ’26, Melbourne, VIC, Australia
+© 2026 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2599-9/2026/07
+https://doi.org/10.1145/3805712.3808421
+Keywords
+Generative Recommendation, Large Language Models, Instruction-
+Driven Generation, Semantic Alignment, Item Tokenization
+ACM Reference Format:
+Yang Yu, Lei Kou, Huaikuan Yi, Bin Chen, Yayu Cao, Lei Shen, Chao Zhang,
+Bing Wang, and Xiaoyi Zeng. 2026. SIGMA: A Semantic-Grounded Instruction-
+Driven Generative Multi-Task Recommender at AliExpress. In Proceedings of
+the 49th International ACM SIGIR Conference on Research and Development in
+Information Retrieval (SIGIR ’26), July 20–24, 2026, Melbourne, VIC, Australia.
+ACM, New York, NY, USA, 5 pages. https://doi.org/10.1145/3805712.3808421
+1
+Introduction
+Recently, the rapid advancement of Large Language Models (LLMs)
+has catalyzed a paradigm shift in recommender systems [9, 22, 26].
+Unlike traditional multi-stage cascaded pipelines, generative rec-
+ommenders (GR) generate item identifiers in an end-to-end manner.
+A growing body of studies has demonstrated its superior modeling
+capability, computational efficiency, and scalability [1, 5, 10, 20, 21].
+Despite recent progress, GR still faces several critical limitations.
+First, the majority of existing works solely focus on the vanilla next-
+item recommendation task [2, 19, 25]. They lack the versatility to
+accommodate diverse business-specific recommendation demands,
+such as providing personalized recommendations aligned with the
+upcoming festive theme or promoting specific items based on desig-
+nated characteristics. Besides, similar to traditional recommenders,
+mainstream GR methods remain heavily reliant on historical behav-
+ioral data [2, 11, 24], resulting in an inherent delay when responding
+to dynamic trend shifts [4, 14]. On the other hand, the strong seman-
+tic comprehension and extensive parametric knowledge of LLMs
+pave the way for a unified paradigm that consolidates heteroge-
+neous recommendation demands via instruction-following [3, 8, 13].
+It also allows GR to rapidly address varied business requirements
+without waiting for the accumulation of user feedback data.
+arXiv:2602.22913v2  [cs.IR]  19 Apr 2026
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yang Yu et al.
+LLM Backbone 🔥
+Predict
+his
+next
+click
+(c) Mul(-task Supervised Fine-tuning
+<q>
+<a_4>
+ℒ!"#
+ℒ$%&'!()
+(b) Hybrid Item Tokeniza(on
+𝒗*
++,-+
+𝒗*
+$.
+𝒗*
+/01
+Item ID = 𝑖𝑑2
+Item SID = <a_2><b_2><c_2><d_2>
+Pre-trained ❄
+Item Embeddings
+Proj & Fuse 🔥
+<a_2>
+%𝒗2
+(a) Mul(-view Seman(c Grounding
+Last Pooling & Down-Proj & Normalize 🔥
+LLM Backbone 🔥
+Relevance Pair (𝑣*, 𝑣*
+3) with In-Batch NegaLve Samples 𝑣4
+Pre-trained ❄
+Item ID Embeddings
+ContrasLve Learning Task ℒ(5
+Knowledge DisLllaLon Task ℒ6.
+In-batch Similarity
+In-batch Similarity
+𝒗*
++,-+
+𝒗*
+$.
+𝒗*!$.
+𝒗4
+$.
+𝒗*!+,-+
+𝒗4
++,-+
+User Proﬁle
+Task Instruc2on
+User History
+Label
+<|start|>
+<|end|>
+<|start|>
+<a_4>
+He
+clicked
+<a_1>
+%𝒗7
+recently
+<a_2>
+%𝒗2
+<a_3>
+%𝒗8
+(d) Three-step Item Genera(on
+Prompt
+𝒯
+SIGMA
+Step 1: SID Preﬁx 
+Beam Search
+Step 2: Item
+Subset ANN Search
+Top-𝑁
+items
+Global 
+Sort
+Beam Score
+<a_1>
+<a_𝐾>
+⋯
+⋯
+⋯
+𝑃(𝑣9
+7 ∣𝒯)
+𝑃(𝑣7
+7 ∣𝒯)
+𝑃(𝑣7
+: ∣𝒯)
+𝑃(𝑣9
+: ∣𝒯)
+⋯
+⋯
+𝑣9
+7
+ANN
+𝑣7
+7
+𝑣7
+:
+𝑣9
+:
+ANN
+Step 3: AdapLve 
+ProbabilisLc Fusion
+Age
+25
+Gender
+Male
+Country
+Italy
+SID Preﬁxes
+Unique Item Emb
+Figure 1: The overall framework of SIGMA.
+Given these factors, we propose SIGMA, a Semantic-Grounded
+Instruction-Driven Generative Multi-Task Recommender deployed
+at AliExpress. Specifically, to mitigate the domain shift and lack of
+collaborative signals for general LLMs [16, 19], we first propose a
+multi-view alignment framework that grounds natural language,
+world knowledge, and item entities within a unified latent space
+capturing both semantic and collaborative relationships. Unlike
+prevailing SID-based GR methods [6, 11, 24], we further develop a
+hybrid item tokenization strategy that combines SID prefixes with
+item-specific ID tokens to capture both structural and fine-grained
+characteristics of each item. Furthermore, we curate a large-scale
+multi-task SFT dataset empowering SIGMA to fulfill diverse recom-
+mendation demands via instruction-following. Finally, we introduce
+a three-step item generation procedure with an adaptive probabilis-
+tic fusion mechanism, which enables SIGMA to modulate its output
+distribution based on task-specific requirements for recommenda-
+tion accuracy and diversity. Our main contributions are as follows:
+• We present SIGMA, a GR that can follow natural language instruc-
+tions to satisfy diverse real-world recommendation demands.
+• We propose a multi-view alignment framework which maps gen-
+eral semantics and platform-specific items into a unified embed-
+ding space modeling both semantic and collaborative relations.
+• We design a novel hybrid item tokenization method along with a
+three-step item generation procedure and an adaptive probabilis-
+tic fusion mechanism for accurate and efficient GR.
+• Extensive offline experiments and online A/B tests at AliExpress
+verify the versatility and efficacy of SIGMA across various tasks.
+2
+Methodology
+As illustrated in Fig. 1, SIGMA consists of four main components:
+multi-view semantic grounding, hybrid item tokenization, multi-
+task supervised fine-tuning, and three-step item generation.
+2.1
+Multi-view Semantic Grounding
+To ground natural language, world knowledge, and item entities
+within a unified space, we curate a diverse set of relevance pairs
+covering both semantic and collaborative correlations:
+• Semantic Alignment: We extract query-to-item pairs from the
+online search logs. Each query is linked with its high-click items.
+• Visual Alignment: We leverage an online multi-modal model to
+pair items with the same-style visual features as relevance pairs.
+• Knowledge Alignment: By integrating general LLMs with our
+in-site search system, we associate world knowledge (e.g., festi-
+vals, trending topics, seasonal shifts) with relevant themed items.
+• Collaborative Alignment: We take items that frequently appear
+within the same interaction session as behaviorally correlated.
+For each item, we first linearize its metadata (e.g., title, category,
+brand, etc.) into a JSON-formatted text sequence. Then we employ
+a Contrastive Learning task to fine-tune the general LLM. Given
+a batch of relevance pairs {(𝑣𝑖, 𝑣+
+𝑖)}𝐵
+𝑖=1, we extract their semantic
+representations {𝒗text
+𝑘
+}2𝐵
+𝑘=1 with the LLM, where 𝒗text
+𝑖
+and 𝒗text
+𝑖+𝐵de-
+rive from 𝑣𝑖and 𝑣+
+𝑖, respectively. We adopt the following InfoNCE
+Loss [15] with in-batch negatives for model optimization:
+P({𝒗text
+𝑘
+}2𝐵
+𝑘=1,𝑖, 𝑗) =
+𝑒cos(𝒗text
+𝑖
+,𝒗text
+𝑗
+)/𝜏
+Í2𝐵
+𝑘=1,𝑘≠𝑖𝑒cos(𝒗text
+𝑖
+,𝒗text
+𝑘
+)/𝜏,
+(1)
+LCL = −1
+2𝐵
+2𝐵
+∑︁
+𝑖=1
+log P({𝒗text
+𝑘
+}2𝐵
+𝑘=1,𝑖,𝑖′),
+(2)
+where 𝑖′ = (𝑖+ 𝐵) mod 2𝐵and 𝜏is a temperature hyper-parameter.
+To bridge the gap between semantic and collaborative relevance,
+we further apply a Knowledge Distillation task to transfer rich inter-
+item relationships captured by the item ID embeddings from the
+online ranking model. For each item𝑣𝑖, we take its ID embedding𝒗ID
+𝑖
+and finetune the LLM backbone to jointly optimize the following KL
+Divergence Loss, which aligns the in-batch similarity distributions
+derived from item semantic representations and ID embeddings:
+LKD = −1
+2𝐵
+2𝐵
+∑︁
+𝑖,𝑗=1
+P({𝒗ID
+𝑘}2𝐵
+𝑘=1,𝑖, 𝑗) log
+P({𝒗ID
+𝑘}2𝐵
+𝑘=1,𝑖, 𝑗)
+P({𝒗text
+𝑘
+}2𝐵
+𝑘=1,𝑖, 𝑗) .
+(3)
+2.2
+Hybrid Item Tokenization
+To represent each item accurately and efficiently for SIGMA, we
+design a hybrid item tokenization method that combines Semantic
+
+SIGMA: A Semantic-Grounded Instruction-Driven Generative Multi-Task Recommender at AliExpress
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+ID (SID) prefixes with unique item IDs. Specifically, we first employ
+RQ-VAE [17] to quantize each item semantic representation 𝒗text
+𝑖
+into a sequence of hierarchical SID tokens {𝑐1,𝑐2, . . . ,𝑐𝐿}, where
+𝐿is the number of codebooks. To mitigate the information loss
+during quantization, we further introduce a unique ID token for
+each item to supplement item-specific features. Thus, each item 𝑣𝑖
+is tokenized as {𝑐1, . . . ,𝑐ℓ,𝑖𝑑𝑖}, where ℓ∈[1, 𝐿] is the length of the
+SID prefix. After tokenization, each SID token is used to look up the
+LLM’s token embedding table E. Meanwhile, the ID token 𝑖𝑑𝑖serves
+as an index to retrieve various pre-trained item embeddings (e.g., ID
+embedding 𝒗ID
+𝑖, semantic embedding 𝒗text
+𝑖
+, visual embedding 𝒗img
+𝑖
+),
+which are integrated into a fused representation ˜𝒗𝑖via a learnable
+MLP. The input embeddings of each item 𝑣𝑖to the LLM backbone
+are formulated as [E(𝑐1), . . . , E(𝑐ℓ), UpProj(MLP(𝒗ID
+𝑖, 𝒗text
+𝑖
+, 𝒗img
+𝑖
+))].
+2.3
+Multi-task Supervised Fine-tuning
+To empower SIGMA with the capability to handle heterogeneous
+real-world recommendation demands, we construct a large-scale
+instruction-tuning dataset covering seven different tasks, which can
+be broadly categorized into four groups based on their objectives:
+• General Rec: Focuses on fundamental personalized recommen-
+dations catering to user-specific interests (JustForYou).
+• Constrained Rec: Targets precise and relevant recommenda-
+tion subject to explicit constraints (Query, Category), requiring
+controlled generation within specific semantic subspaces.
+• Exploratory Rec: Aims to surface niche items (Longtail) or
+identify latent user interests (Discover) by recalibrating output
+probabilities for low-frequency but high-potential candidates.
+• Common Sense Rec: Leverages world knowledge to align rec-
+ommendations with specific real-world contexts, such as seasonal
+shifts (Season) and holiday themes (Holiday).
+For each task, we construct extensive instruction-tuning samples
+consisting of the following parts: user’s static profile U (e.g., age,
+gender, location), historical behaviors H, a task-specific instruction
+I, the SID prefix tokens of the target item {𝑐1, . . . ,𝑐ℓ}, and a special
+query token 𝑞for target item ID prediction. The LLM backbone is
+jointly optimized with two loss functions. Specifically, the following
+Next Token Prediction Loss is calculated over the SID prefix tokens:
+LNTP = −1
+ℓ
+ℓ∑︁
+𝑡=1
+log 𝑃(𝑐𝑡| U, H, I,𝑐<𝑡),
+(4)
+For the target item ID, we adopt the following InfoNCE Loss [15]
+for efficient optimization across massive candidate items:
+LInfoNCE = −log
+𝑒cos(𝒉, ˜𝒗𝑖)/𝜏
+𝑒cos(𝒉, ˜𝒗𝑖)/𝜏+ Í
+𝑣𝑗∈N{𝑐1,...,𝑐ℓ} 𝑒cos(𝒉, ˜𝒗𝑗)/𝜏,
+(5)
+where 𝒉is the hidden state of the query token and N{𝑐1,...,𝑐ℓ} is a
+set of randomly selected hard negative samples that share the same
+SID prefix with the target item. ˜𝒗𝑖and ˜𝒗𝑗are the fused item repre-
+sentations of the target item and negative samples, respectively.
+2.4
+Three-step Item Generation
+As illustrated in Fig. 1(d), SIGMA adopts a three-step item genera-
+tion procedure. Given a prompt T, we first generate top-𝐾candidate
+SID prefixes and their beam scores with Beam Search as follows:
+{𝑐𝑘
+1, . . . ,𝑐𝑘
+ℓ}𝐾
+𝑘=1 = BeamSearch(𝑃(𝑐1, . . . ,𝑐ℓ| T);𝐾),
+(6)
+𝜙𝑘=
+ℓ∑︁
+𝑡=1
+log 𝑃(𝑐𝑘
+𝑡| T,𝑐𝑘
+<𝑡).
+(7)
+Then we append the query token 𝑞to each prefix and use its hidden
+state to retrieve the top-𝑀candidate items from the respective item
+subset via Approximate Nearest Neighbor (ANN) search as follows:
+𝒉𝑘= SIGMA(T,𝑐𝑘
+1, . . . ,𝑐𝑘
+ℓ,𝑞),
+(8)
+{𝑣𝑘
+𝑖}𝑀
+𝑖=1 = ANN(𝒉𝑘, V𝑘; 𝑀) ≈arg top-𝑀
+𝑣𝑗∈V𝑘
+cos(𝒉𝑘, ˜𝒗𝑗),
+(9)
+where V𝑘denotes the set of items sharing the SID prefix {𝑐𝑘
+1, . . . ,𝑐𝑘
+ℓ}.
+We further propose an Adaptive Probabilistic Fusion (APF) mech-
+anism to yield the final recommendations based on task-specific
+requirements for precision and diversity. Specifically, the genera-
+tion probability of item 𝑣𝑖= {𝑐𝑘
+1, . . . ,𝑐𝑘
+ℓ,𝑖𝑑𝑖} given the prompt T is
+factorized into the following two components:
+𝑃(𝑣𝑖| T) = 𝑃(𝑐𝑘
+1, . . . ,𝑐𝑘
+ℓ| T) × 𝑃(𝑖𝑑𝑖| T,𝑐𝑘
+1, . . . ,𝑐𝑘
+ℓ).
+(10)
+The first term corresponds to the beam score 𝜙𝑘derived from gen-
+erating SID prefixes, and the second term is formulated as follows:
+𝑃(𝑖𝑑𝑖| T,𝑐𝑘
+1, . . . ,𝑐𝑘
+ℓ) =
+𝑒cos(𝒉𝑘, ˜𝒗𝑖)·𝜎({𝜙1,...,𝜙𝐾})/𝜏
+Í
+𝑣𝑗∈V𝑘𝑒cos(𝒉𝑘, ˜𝒗𝑗)·𝜎({𝜙1,...,𝜙𝐾})/𝜏,
+(11)
+where 𝜎({𝜙1, . . . ,𝜙𝐾}) denotes the standard deviation of the beam
+scores across the top-𝐾SID prefixes. For tasks with explicit con-
+straints (e.g., Query, Category), there is typically a large gap be-
+tween 𝜙1 and 𝜙𝐾, leading to a larger 𝜎that sharpens the distribution
+toward high relevance items and ensures high precision. Contrar-
+ily, tasks that require diversity (e.g., JustForYou, Discover) often
+have a smaller 𝜎which flattens the distribution, encouraging the
+exploration of non-top-ranked candidates.
+Finally, all candidate items from different SID prefixes are ranked
+by their generation probabilities to yield top-𝑁recommendations.
+3
+Experiments
+3.1
+Experimental Setup
+3.1.1
+Datasets and Metrics. We construct 150M relevance pairs for
+multi-view semantic grounding and 130M SFT samples based on the
+anonymized user behavior logs collected from AliExpress in 2026-
+01, with an additional 2M SFT samples from 2026-02 for evaluation.
+All methods are evaluated in terms of average SID-level Hit Rate
+(HR@𝐾) across all tasks. For methods that directly generate item
+IDs, we map their predicted items to SIDs for a fair comparison.
+3.1.2
+Baselines. We compare SIGMA with the following baselines:
+• Online Model: a Transformer-based generative model trained to
+predict users’ next behavior in an autoregressive manner [18].
+• GR (SID): An LLM-based GR which encodes items as SIDs derived
+from the semantic representations in Sec. 2.1 via RQ-VAE [17].
+• GR (ID): An LLM-based GR with ID-based item tokenization [7]. It
+encodes each item with a fused embedding as detailed in Sec. 2.2.
+Both GR (SID) and GR (ID) are finetuned with the same SFT dataset.
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yang Yu et al.
+Table 1: Performance of various methods. Bold denotes the
+best result, and the second best are underlined.
+Method
+HR@1
+HR@5
+HR@10
+HR@20
+Online Model
+6.25%
+15.16%
+21.32%
+30.06%
+GR (SID)
+8.01%
+16.17%
+22.41%
+26.41%
+GR (ID)
+7.31%
+20.15%
+28.98%
+37.37%
+SIGMA (SID4ID→SID2ID)
+8.91%
+21.33%
+28.43%
+36.02%
+SIGMA (SID4ID→SID1ID)
+9.50%
+24.89%
+33.37%
+42.77%
+SIGMA (SID1ID →SID1ID)
+9.61%
+24.73%
+33.76%
+43.05%
+- Semantic Grounding
+7.80%
+19.10%
+25.85%
+33.24%
+- APF (Top-𝐾1st Prefix)
+9.31%
+22.82%
+30.18%
+37.73%
+- Pre-trained Item Emb
+8.13%
+21.82%
+30.24%
+39.11%
+- SID Prefix Hard Negative
+9.03%
+23.79%
+32.40%
+41.34%
+- # Hard Negatives (10K)
+8.43%
+22.87%
+31.70%
+40.86%
+3.1.3
+Implementation Details. We use Qwen3-0.6B [23] as the LLM
+backbone. The dimensions of semantic representations and fused
+item embeddings are 64 and 128, respectively. The hyper-parameter
+𝜏is set as 0.05. We employ a 256×4 codebook for SID generation.
+The batch size for semantic grounding and SFT is 16,384 and 4,096,
+respectively. We randomly select 100K batch-shared hard negative
+samples for Eq. (5). All models are trained using an AdamW [12] op-
+timizer with a learning rate of 2e-5 and a 2,000-step linear warmup.
+3.2
+Experimental Results
+3.2.1
+Performance Comparison. Table 1 lists the performance of
+various baseline methods and SIGMA with different hybrid item
+tokenization settings, where SID𝑥ID→SID𝑦ID denotes using 𝑥SID
+prefix tokens in the prompt and 𝑦SID prefix tokens for generation.
+We first observe that SID4ID→SID2ID yields inferior performance
+compared to SID4ID→SID1ID. This is because the generation accu-
+racy of two SID prefix tokens is much lower than that of a single pre-
+fix token (63% vs. 29%), which limits the performance upper bound
+of the following item prediction. However, SID4ID→SID1ID brings
+marginal performance gains compared to SID1ID→SID1ID, while
+substantially increasing sequence length and computational over-
+head. Therefore, we adopt the SID1ID→SID1ID setting for SIGMA,
+which significantly outperforms other baseline methods.
+3.2.2
+Ablation Study. We also validate the effectiveness of each
+component in SIGMA. As shown in Table 1, ablating multi-view
+semantic grounding greatly impairs model performance, stressing
+the necessity to tackle domain shift and incorporate collaborative
+signals for general LLMs. The APF mechanism also enhances the
+overall performance of SIGMA by tailoring output distributions to
+task-specific requirements. Besides, integrating various pre-trained
+item embeddings and hard negative samples sharing the same SID
+prefix facilitates more accurate item modeling and generation.
+3.2.3
+Model Scaling. We further scale up the LLM backbone from
+Qwen3-0.6B to Qwen3-4B. The performance variations of different
+methods on each task are illustrated in Fig. 2. The results show that
+SIGMA achieves consistent performance improvement across all
+tasks with model scaling, especially in knowledge-intensive tasks
+(Holiday) and semantics-driven tasks (Query, Category), which
+validates the effectiveness of employing larger LLM backbones with
+stronger semantic comprehension and richer world knowledge.
+JustForYou
+Query
+Category
+Longtail
+Discover
+Season
+Holiday
+General Rec
+Exploratory Rec
+Constrained Rec
+Common Sense Rec
+GR (SID) 0.6B
+GR (SID) 4B
+GR (ID) 0.6B
+GR (ID) 4B
+SIGMA (SID1ID→SID1ID) 0.6B
+SIGMA (SID1ID→SID1ID) 4B
+Figure 2: Performance variations of different methods on
+each task across with model scaling.
+Figure 3: The online serving architecture for SIGMA.
+3.3
+Online Deployment and A/B Test
+To meet the latency requirement of real-time service, we develop
+an online serving architecture consisting of nearline inference and
+real-time retrieval as illustrated in Fig. 3. Users’ latest behaviors
+are aggregated at minute-level intervals and trigger asynchronous
+incremental inference with past KV cache. The resulting candidates
+are populated into a U2I index for real-time service. We conduct 2-
+week online A/B tests for JustForYou, Query, Season, and Holiday
+tasks with 5% traffic at AliExpress. The results show that SIGMA-4B
+brings significant uplifts in key business metrics, including +2.80%
+in Order Volume, +3.84% in Conversion Rate, +7.84% in GMV, and
++2.47% in Purchased Category Breadth, which verify its versatility
+and efficacy across various real-world recommendation tasks.
+4
+Conclusion
+In this paper, we propose SIGMA, a versatile GR designed to address
+diverse recommendation demands through an instruction-following
+paradigm. To deal with the domain shift and lack of collaborative
+signals for general LLMs, we first design a multi-view alignment
+framework that maps item entities into a unified latent space cap-
+turing both general semantics and collaborative signals. Then we
+develop a hybrid item tokenization strategy which combines SID
+prefixes with unique item IDs for precise item modeling and effi-
+cient generation. A large-scale instruction-tuning dataset is further
+curated for multi-task SFT. Finally, we design a three-step item
+generation procedure integrated with an adaptive probabilistic fu-
+sion mechanism, which can tailor output distributions according to
+task-specific requirements for recommendation accuracy and diver-
+sity. Extensive offline experiments and online A/B tests validate the
+effectiveness of SIGMA in diverse real-world industrial scenarios.
+
+SIGMA: A Semantic-Grounded Instruction-Driven Generative Multi-Task Recommender at AliExpress
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+References
+[1] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong Xiao,
+Bowen Xue, Xuxin Zhang, Ying Yang, et al. 2025. OneSearch: A Preliminary
+Exploration of the Unified End-to-End Generative Framework for E-commerce
+Search. arXiv:2509.03236
+[2] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. OneRec: Unifying Retrieve and Rank with Generative
+Recommender and Iterative Preference Alignment. arXiv:2502.18965
+[3] Shijie Geng, Shuchang Liu, Zuohui Fu, Yingqiang Ge, and Yongfeng Zhang. 2022.
+Recommendation as Language Processing (RLP): A Unified Pretrain, Personalized
+Prompt & Predict Paradigm (P5). In Proceedings of the 16th ACM Conference on
+Recommender Systems (RecSys ’22). Association for Computing Machinery, New
+York, NY, USA, 299–315.
+[4] Mihajlo Grbovic and Haibin Cheng. 2018. Real-time Personalization using Em-
+beddings for Search Ranking at Airbnb. In Proceedings of the 24th ACM SIGKDD
+International Conference on Knowledge Discovery & Data Mining (KDD ’18). Asso-
+ciation for Computing Machinery, New York, NY, USA, 311–320.
+[5] Xian Guo, Ben Chen, Siyuan Wang, Ying Yang, Chenyi Lei, Yuqing Ding, and Han
+Li. 2025. OneSug: The Unified End-to-End Generative Framework for E-commerce
+Query Suggestion. arXiv:2506.06913
+[6] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating Long
+Semantic IDs in Parallel for Recommendation. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V.2 (KDD ’25).
+Association for Computing Machinery, New York, NY, USA, 956–966.
+[7] Junguang Jiang, Yanwen Huang, Bin Liu, Xiaoyu Kong, Xinhang Li, Ziru Xu, Han
+Zhu, Jian Xu, and Bo Zheng. 2025. Large Language Model as Universal Retriever
+in Industrial-Scale Recommender System. arXiv:2502.03041
+[8] Jiayi Liao, Sihang Li, Zhengyi Yang, Jiancan Wu, Yancheng Yuan, Xiang Wang,
+and Xiangnan He. 2024. LLaRA: Large Language-Recommendation Assistant.
+In Proceedings of the 47th International ACM SIGIR Conference on Research and
+Development in Information Retrieval (SIGIR ’24). Association for Computing
+Machinery, New York, NY, USA, 1785–1795.
+[9] Jianghao Lin, Xinyi Dai, Yunjia Xi, Weiwen Liu, Bo Chen, Hao Zhang, Yong
+Liu, Chuhan Wu, Xiangyang Li, Chenxu Zhu, Huifeng Guo, Yong Yu, Ruiming
+Tang, and Weinan Zhang. 2025. How Can Recommender Systems Benefit from
+Large Language Models: A Survey. ACM Trans. Inf. Syst. 43, 2, Article 28 (2025),
+47 pages.
+[10] Enze Liu, Bowen Zheng, Cheng Ling, Lantao Hu, Han Li, and Wayne Xin Zhao.
+2025. Generative Recommender with End-to-End Learnable Item Tokenization.
+In Proceedings of the 48th International ACM SIGIR Conference on Research and
+Development in Information Retrieval (SIGIR ’25). Association for Computing
+Machinery, New York, NY, USA, 729–739.
+[11] Zihan Liu, Yupeng Hou, and Julian McAuley. 2024. Multi-Behavior Generative
+Recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management (CIKM ’24). Association for Computing
+Machinery, New York, NY, USA, 1575–1585.
+[12] Ilya Loshchilov and Frank Hutter. 2019. Decoupled Weight Decay Regularization.
+In International Conference on Learning Representations.
+[13] Hanjia Lyu, Song Jiang, Hanqing Zeng, Yinglong Xia, Qifan Wang, Si Zhang,
+Ren Chen, Chris Leung, Jiajie Tang, and Jiebo Luo. 2024. LLM-Rec: Personalized
+Recommendation via Prompting Large Language Models. In Findings of the Asso-
+ciation for Computational Linguistics: NAACL 2024. Association for Computational
+Linguistics, Mexico City, Mexico, 583–612.
+[14] Thomas M. McDonald, Lucas Maystre, Mounia Lalmas, Daniel Russo, and Kamil
+Ciosek. 2023. Impatient Bandits: Optimizing Recommendations for the Long-
+Term Without Delay. In Proceedings of the 29th ACM SIGKDD Conference on
+Knowledge Discovery and Data Mining (KDD ’23). Association for Computing
+Machinery, New York, NY, USA, 1687–1697.
+[15] Aaron van den Oord, Yazhe Li, and Oriol Vinyals. 2018. Representation Learning
+with Contrastive Predictive Coding. arXiv:1807.03748
+[16] Shutong Qiao, Wei Zhou, Junhao Wen, Chen Gao, Qun Luo, Peixuan Chen, and
+Yong Li. 2025. Multi-view Intent Learning and Alignment with Large Language
+Models for Session-based Recommendation. ACM Trans. Inf. Syst. 43, 4, Article
+91 (2025), 25 pages.
+[17] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender Systems with Generative Retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[18] Chunqi Wang, Bingchao Wu, Zheng Chen, Lei Shen, Bing Wang, and Xiaoyi Zeng.
+2025. Scaling Transformers for Discriminative Recommendation via Generative
+Pretraining. In Proceedings of the 31st ACM SIGKDD Conference on Knowledge
+Discovery and Data Mining V.2 (KDD ’25). Association for Computing Machinery,
+New York, NY, USA, 2893–2903.
+[19] Ye Wang, Jiahao Xun, Minjie Hong, Jieming Zhu, Tao Jin, Wang Lin, Haoyuan
+Li, Linjun Li, Yan Xia, Zhou Zhao, and Zhenhua Dong. 2024. EAGER: Two-
+Stream Generative Recommender with Behavior-Semantic Collaboration. In
+Proceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining (KDD ’24). Association for Computing Machinery, New York, NY,
+USA, 3245–3254.
+[20] Chen Wei, Yixin Ji, Zeyuan Chen, Jia Xu, and Zhongyi Liu. 2024. LLMGR: Large
+Language Model-based Generative Retrieval in Alipay Search. In Proceedings
+of the 47th International ACM SIGIR Conference on Research and Development in
+Information Retrieval (SIGIR ’24). Association for Computing Machinery, New
+York, NY, USA, 2847–2851.
+[21] Zhipeng Wei, Kuo Cai, Junda She, Jie Chen, Minghao Chen, Yang Zeng, Qiang Luo,
+Wencong Zeng, Ruiming Tang, Kun Gai, and Guorui Zhou. 2025. OneLoc: Geo-
+Aware Generative Recommender Systems for Local Life Service. arXiv:2508.14646
+[22] Likang Wu, Zhi Zheng, Zhaopeng Qiu, Hao Wang, Hongchao Gu, Tingjia Shen,
+Chuan Qin, Chen Zhu, Hengshu Zhu, Qi Liu, Hui Xiong, and Enhong Chen. 2024.
+A Survey on Large Language Models for Recommendation. World Wide Web 27,
+5 (2024), 31 pages.
+[23] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng,
+Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. 2025. Qwen3 Technical
+Report. arXiv:2505.09388
+[24] Wencai Ye, Mingjie Sun, Shuhang Chen, Wenjin Wu, and Peng Jiang. 2025.
+Align3GR: Unified Multi-Level Alignment for LLM-based Generative Recom-
+mendation. arXiv:2511.11255
+[25] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting Large Language Models by Integrating
+Collaborative Semantics for Recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). IEEE, New York, NY, USA, 1435–1448.
+[26] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv:2506.13695

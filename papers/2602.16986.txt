@@ -1,0 +1,2068 @@
+Bending the Scaling Law Curve in Large-Scale
+Recommendation Systems
+Qin Ding1,∗, Kevin Course1, Linjian Ma1, Jianhui Sun1, Ruochen Liu1, Zhao Zhu1, Chunxing Yin1, Wei Li1,
+Dai Li1, Yu Shi1, Xuan Cao1, Ze Yang1, Han Li1, Xing Liu1, Bi Xue1, Hongwei Li1, Rui Jian1, Daisy Shi He1,
+Jing Qian1, Matt Ma1, Qunshu Zhang1, Rui Li1,∗
+1Meta Recommendation Systems
+Learning from user interaction history through sequential models has become a cornerstone of large-
+scale recommender systems. Recent advances in large language models have revealed promising
+scaling laws, sparking a surge of research into long-sequence modeling and deeper architectures for
+recommendation tasks. However, many recent approaches rely heavily on cross-attention mechanisms
+to address the quadratic computational bottleneck in sequential modeling, which can limit the
+representational power gained from self-attention. We present ULTRA-HSTU, a novel sequential
+recommendation model developed through end-to-end model and system co-design. By innovating
+in the design of input sequences, sparse attention mechanisms, and model topology, ULTRA-HSTU
+achieves substantial improvements in both model quality and efficiency. Comprehensive benchmarking
+demonstrates that ULTRA-HSTU achieves remarkable scaling efficiency gains—over 5× faster training
+scaling and 21× faster inference scaling compared to conventional models—while delivering superior
+recommendation quality. Our solution is fully deployed at scale, serving billions of users daily and
+driving significant 4% to 8% consumption and engagement improvements in real-world production
+environments.
+Correspondence: qding@meta.com, ruili@meta.com
+Date: February 23, 2026
+1
+Introduction
+Recently, transformer-based sequential modeling has
+emerged as a new paradigm for advancing large-scale
+recommendation research (Kang and McAuley, 2018;
+de Souza Pereira Moreira et al., 2021; Zhai et al.,
+2024; Si et al., 2024) in the era of scaled-GPU compu-
+tation, Particularly, traditional deep-learning based
+recommendation models (DLRM) have focused on
+feature interactions (Wang et al., 2017) with carefully
+engineered human features. While effective, these
+models do not scale efficiently with increased com-
+pute (Zhai et al., 2024; Wang et al., 2025) on more
+feature interactions or additional layers. In contrast,
+transformer-based sequential modeling, which em-
+phasizes end-to-end learning from raw user behavior
+sequences, can jointly capture both long-term prefer-
+ences and short-term intent (Chen et al., 2019) and
+exhibit favorable scaling laws with compute: model
+performance improves with longer sequences, denser
+computation in attention layers, and increased depth
+in stacked attention layers.
+A prominent line of research in this area is the de-
+velopment of Hierarchical Sequential Transduction
+Units (HSTU) (Zhai et al., 2024), which introduces
+a customized transformer-style architecture designed
+to efficiently learn user interests directly from raw
+sequential data. HSTU is notable for being the first
+to demonstrate favorable scaling properties with a
+transformer-like approach specifically tailored for
+recommendation systems.
+The sequential model-
+ing paradigm has since been widely adopted and
+further advanced by leading industry practitioners,
+including Douyin (Guan et al., 2025; Chai et al.,
+2025), Meituan (Han et al., 2025), Alibaba (Wang
+et al., 2025), Xiaohongshu (Huang et al., 2025),
+Meta (Zhai et al., 2024) and Linkedin (Hertel et al.,
+2024), each contributing their own architectural inno-
+vations. This broad adoption across major platforms
+underscores the effectiveness and impact of sequential
+modeling in large-scale recommendation systems.
+However, transformer-based recommendation models
+including HSTU suffer from a complexity of O(L2)
+due to the self-attention mechanism, where L de-
+notes the length of the user history sequence. This
+quadratic scaling quickly becomes impractical (Za-
+1
+arXiv:2602.16986v2  [cs.IR]  20 Feb 2026
+
+heer et al., 2020; Vaswani et al., 2017) when attempt-
+ing to model user histories containing O(10k) to
+O(100k) events, especially in environments where it
+is standard to serve billions of recommendations daily
+with sub-second latency. To mitigate the quadratic
+computational bottleneck, previous approaches from
+industry leaders have primarily adopted cross at-
+tention (Chai et al., 2025; Guan et al., 2025), us-
+ing only ranking candidates or truncated user histo-
+ries as queries instead of self-attention, which con-
+siders the entire user history. Alternatively, some
+methods restrict themselves to shallow architectures,
+employing only 2–4 attention layers (Guan et al.,
+2025). These strategies fundamentally diverge from
+practices in large language models (LLMs). While
+these techniques substantially reduce computational
+complexity, they may forgo the benefits of powerful
+self-attention mechanisms and deeper model archi-
+tectures. As demonstrated in our experiments (see
+Table 1, 5), self-attention remains superior to cross
+attention in industrial settings, especially in terms
+of enabling stacked layers or scaled up computation.
+This distinction represents a key research finding and
+highlights a major difference of our work from prior
+solutions: rather than eliminating self-attention, our
+work focuses on efficiently harnessing its advantages
+from model and system co-optimizations inspired by
+DeepSeek-V2 (DeepSeek-AI et al., 2024).
+To bend the scaling efficiency of scaled ultra-long
+user history modeling, we introduce ULTRA-HSTU
+design, the next-generation HSTU model with a com-
+prehensive suite of detailed model and system op-
+timizations inspired by DeepSeek-V2 (DeepSeek-AI
+et al., 2024).
+Here, scaling efficiency is formally
+defined as the slope of the fitted linear regression
+between model performance and computational cost.
+Under fixed input sequence configurations, our opti-
+mizations achieve more than 21× inference scaling
+efficiency and 5× training scaling efficiency relative
+to the original HSTU architecture (Zhai et al., 2024).
+This advancement effectively bends the scaling curve
+of recommendation systems, enabling model quality
+to accelerate substantially when scaling computa-
+tional resources (see Figure 1).
+To validate the proposed solution, we deployed
+ULTRA-HSTU, with 18 layers of self-attention over
+16k user behavior sequences trained with multiple
+hundreds of H100 GPUs, in a large-scale production
+environment serving billions of users. It achieves sub-
+stantial consumption and engagement improvements
+ranging from 4% to 8% as well as a 0.217% uplift in
+topline metrics. This demonstrates both the scaling
+potential of sequential modeling in the recommenda-
+tion domain and the effectiveness of our solutions.
+To our knowledge, ULTRA-HSTU stands as one of
+the largest sequential models ever deployed in in-
+dustry, demonstrating substantially improved scaling
+efficiency. We summarize the technical innovations
+of ULTRA-HSTU as follows.
+Input sequence optimizations. We introduce two com-
+plementary designs to optimize original HSTU’s input
+sequence processing. First, we effectively merge item
+and action representations in sequence designs and
+enhance this simplified design with heterogeneous
+action encodings. Second, to mitigate inefficiency
+caused by cross-rank sequence-length imbalance in
+synchronous distributed training, we propose Load-
+Balanced Stochastic Length, enforcing a per-rank
+compute-load constraint during stochastic length
+sampling to reduce stragglers and improve training
+throughput by 15%.
+Model-system co-design for extremely efficient atten-
+tion. We provide an end-to-end model–system co-
+design that makes self-attention in HSTU viable for
+ultra-long user interaction history modeling in pro-
+duction by eliminating the common quadratic and
+kernel overheads. On the modeling side, we introduce
+a semi-local attention (SLA) mechanism tailored to
+the structure of user behavior sequences, achieving
+efficient linear sparse attention with O((K1 +K2)·L)
+complexity without sacrificing model quality, where
+K1 and K2 are local and global window sizes respec-
+tively. We show that SLA improves the inference
+scaling efficiency more than 5× compared to baseline
+models. On the system side, we pair SLA with fine-
+tuned, hardware-aware optimizations that remove
+practical bottlenecks and improve hardware utiliza-
+tion in both training and inference. We co-design a
+recsys-tailored mixed-precision framework spanning
+16/8/4-bit formats: we keep most of the operations
+in BF16 for stability, accelerate the dominant GEMM
+computations with FP8, and reduce inference commu-
+nication traffic with INT4 embedding quantization.
+We further extend FlashAttention V3 (Shah et al.,
+2024) ideas, building custom SLA kernels that han-
+dle HSTU’s SiLU-based attention and non-standard
+masks, and tuning them for heterogeneous GPU archi-
+tectures (NVIDIA H100 and AMD MI300) to sustain
+high GPU utilization. We also introduce memory sav-
+ing optimizations with minimal efficiency overhead
+that significantly cut HBM footprint, enabling ultra-
+long sequence training. Together, these co-designed
+components enable 70% training and 50% inference
+throughput gains over the same model without these
+system optimizations. Note that to maximize end-to-
+end performance, we focus on end-to-end throughput
+(how fast it finishes training/inference for a fixed num-
+ber of examples) given the same model performance,
+2
+
+250
+500
+750
+1000
+1250
+1500
+Train GFLOP / item
+0.0
+0.2
+0.4
+0.6
+0.8
+C-NE
+HSTU, 0.00028C+0.032
+ULTRA-HSTU, 0.0015C
+0.14
+0
+1000
+2000
+3000
+4000
+Inference GFLOP / item
+0.0
+0.2
+0.4
+0.6
+0.8
+C-NE
+HSTU, 9.8e
+05C+0.013
+ULTRA-HSTU, 0.0021C
+0.15
+Figure 1 Overall Performance: Scaling performance with respect to train (left) and inference (right) FLOP. Compared
+to vanilla HSTU, ULTRA-HSTU has more than 5.3× training scaling efficiency and 21.4× inference scaling efficiency.
+instead of purely optimizing GPU utilization.
+Dynamic topological model designs. Scalability in rec-
+ommendation models extend beyond sequence length,
+vertical scaling through stacking additional layers
+yields additional benefits, particularly by increasing
+capacity via residual connections (He et al., 2016).
+However, naively stacking HSTU with SLA incurs a
+cost of O(DL) where D is the depth of the model.
+Building on the insight that different user signals
+yield different predictive values, we propose two novel
+topological designs to focus computation on most im-
+portant signals. Specifically, we propose 1) Attention
+Truncation, which runs the first N1 layers on the full
+sequence, then selects a shorter valuable segment and
+applies additional N2 layers only on that segment;
+and 2) Mixture of Transducers (MoT), which pro-
+cesses heterogeneous behavioral signals as multiple
+sequences with separate transducers and fuses their
+representations, enabling targeted capacity/compute
+allocation to high-value signals rather than forcing
+everything to compete in one timeline. In our experi-
+ments, both topological designs significantly improve
+performance and efficiency tradeoff that further up-
+scales our scaling capabilities.
+2
+Related Work
+Traditional industrial-scale recommendation models
+usually follow the deep learning recommendation
+model framework (Naumov et al., 2019; Mudigere
+et al., 2022) that focuses modeling user and item fea-
+ture interactions. The past few years have witnessed
+a paradigm shift in how large-scale recommendation
+models are trained in industry. Rather than rely-
+ing on cross-user-item features, much of the recent
+progress in recommendation systems has been driven
+by learning from user interaction histories. Deep in-
+terest networks (DIN) (Zhou et al., 2018) were one
+of the classic short-sequence learning methods. SAS-
+Recs (Kang and McAuley, 2018) is a traditional trans-
+former implementation for recommendations. HSTU
+(Zhai et al., 2024) was later proposed to perform
+better than traditional transformer-based models in
+recommendations with target-aware predictions. By
+capturing the implicit and explicit information learnt
+from raw user interaction history, HSTU has removed
+its dependency on human-crafted user-item features
+and exhibits a favorable scaling law.
+Building on this line of work, our paper focuses on
+further improving the scaling behavior, aiming to
+achieve better models at reduced computational cost.
+Closely related to our work is research focused on
+improving the training and inference efficiency of se-
+quential models. With notable breakthroughs in na-
+tive sparse attention (NSA) (Yuan et al., 2025), linear
+sparse attention has become the focus to deploy scal-
+able big models (Beltagy et al., 2020). In addition to
+exploring sparse attention, Stacked Target-to-History
+Cross Attention (STCA) (Guan et al., 2025) was pro-
+posed to only run query focused on ranking targets,
+which significantly reduces the model complexity but
+introduces performance regressions due to the sim-
+plified attention mechanism without self-attention.
+Although STCA achieves linear complexity, more
+expensive pre-attention projections were introduced
+in STCA to improve the performance with a big
+computational overhead, making it less effective in
+capturing information from shorter sequences (see
+Table 3 for details).
+3
+
+Sequential
+Features
+Non- Sequential
+Features
+Feature Pre-processor
+STU
+STU
+...
+Multi-task Module
+...
+...
+STU x 
+STU x 
+...
+...
+Truncate
+(d) Attention Truncation
+STU
+(a) Recommendation Model
++
+History
+Candidate
+Item features
+Action encoding
+(c) Semi-local Attention
+(b) Sequence feature preprocessor
+ULTRA-HSTU
+Figure 2 Model design overview: (a) General recommendation model design. (b) Input sequence optimizations with
+action-aware designs (c) Semi-local attention mask with linear complexity (d) Attention truncation for dynamic
+topological designs.
+3
+Background
+As illustrated in Figure 2 (a), a typical recommender
+system takes input features and trains on multi-
+task classification problems. Formally, it learns a
+multi-task model M to output a probability ˆyk =
+M(X, xj) ∈[0, 1] for a candidate xj across different
+prediction tasks yk (e.g., like, video completion, com-
+ment), and rank the candidates based on predicted
+scores. Here X is the input features of user. We
+optimize the model by minimizing the cross-entropy
+loss between predictions ˆyk and ground truth labels
+yk collected from logs. Throughout the paper, we
+use L to denote the general sequence length, X to
+denote the input features. Most generative ranking
+paradigm models the input X as a sequence of em-
+beddings (see context below), and leverage attention
+layers to learn probabilities from those sequential
+embeddings.
+Input
+As shown in Figure 2 (a), a recommender
+uses a feature preprocessor to transfer different input
+features into a sequence of embeddings, including:
+user interaction history (UIH) sequence records a se-
+quence of items a specific user interacted with and
+the corresponding actions (e.g., like, comment, video
+completion, etc.) and context (e.g., timestamp). Raw
+item IDs (and its multi-modal representation), action
+types are represented by d-dimensional learnable em-
+beddings via embedding table lookups. For user i,
+we denote its UIH as Xi = {Ii, Ai}, where the item
+embeddings in UIH are Ii = {Ii,j}Li
+j=1 ∈RLi,d, and
+action embeddings are Ai = {ai,j}Li
+j=1 ∈RLi,d and Li
+is the total length of user i’s UIH. Non-sequential fea-
+tures include user-side features, such as country, user
+language, etc., and item-side features, such as sparse
+(e.g., raw ID of item) and dense (e.g., click-through
+rate for this item) features. Those user-side features
+could be summarized into context-embeddings and
+put at the beginning of sequential UIH (Zhai et al.,
+2024). Those item-side features could be summarized
+as item-embeddings and inserted into sequences as
+target-side embeddings (Zhang et al., 2025).
+Model
+Given a sequence of embeddings, modern rec-
+ommender leverages transformer-style models. One
+typical arch is Hierarchical Sequential Transduction
+Units (HSTU) (Zhai et al., 2024), which shows sig-
+nificant wins on top of vanilla transformers in recom-
+mender systems by the following modifications:
+normaliation: X = Norm(Z)
+(1)
+pre-attention: U, Q, K, V = ϕ1(f1(X))
+(2)
+attention: A =
+ ϕ2(QKT ) ⊙M
+
+V
+(3)
+post-attention: Y = f2 (Norm (A) ⊙U)
+(4)
+residual connection: Z = Y + Z
+(5)
+4
+
+Here ⊙denotes an elementwise product, f1 and f2
+are MLPs for pre-attention and post-attention projec-
+tions respectively, ϕ1 and ϕ2 are SiLU activations. In
+Equation 3, a causal mask M is applied to maintain
+the temporal relationship between sequential items.
+Input embeddings Z are normalized before passing
+to later operations, each layer connects the output
+from the previous layer Y by standard residual con-
+nections (He et al., 2016).
+While HSTU shows favorable scaling laws for rec-
+ommendation systems, we believe the scaling curve
+can be further optimized via a model and system co-
+design approach similar to Deepseek-V2 (DeepSeek-
+AI et al., 2024) for LLM. Thus, we introduce ULTRA-
+HSTU on top of the original HSTU, and the ideas
+discussed below can be generally applied to other at-
+tention architectures for sequential recommendation.
+4
+ULTRA-HSTU: Extremely Efficient
+High-performance Sequential En-
+coder
+To bend the scaling curve of vanilla HSTU, we make
+significant improvements over three key areas below:
+1) input sequence optimization reduces the effective
+sequence length at the source; 2) a recommender-
+tailored sparse attention computation achieves linear
+complexity; 3) dynamic topological design further
+enables favorable depth scaling without paying full-
+sequence cost in every layer.
+Beyond theoretical
+complexity reductions, ULTRA-HSTU is model and
+hardware co-designed for practical efficiency in large-
+scale distributed training and inference recommenda-
+tion settings. Together, we present ULTRA-HSTU
+below with more than 21× inference scaling efficiency
+and 5× training scaling efficiency compared to vanilla
+HSTU. The general architecture of the model design
+is detailed in Figure 2 and we present each compo-
+nents in the following sections.
+4.1
+Input Sequences Optimization
+We first propose an efficient action encoding method
+to effectively shorten the input sequence length
+by 2× and thus improve the efficiency by 4× in
+attention computation.
+Recall that the vanilla
+HSTU (Zhai et al., 2024) interleaves items and ac-
+tions, formulating the sequence input for user i as
+{Ii,1, ai,1, Ii,2, ai,2, . . . , Ii,Li, ai,Li}. While this gener-
+ally supports both retrieval and ranking stages, it
+causes the sequence in ranking to double the actual
+UIH length. Directly combing actions and items may
+leak the action information of candidates to be pre-
+dicted. Thus we mask the action embeddings in all
+candidate positions to be ai,j = 0d if j is a candidate
+to be ranked in recommender systems. We explored
+different ways of combining action and item embed-
+dings and choose to simply add the embeddings of
+items and actions, formulating the sequential input of
+user i as Xi = {xi,j}Li
+j=1, where xi,j = Ii,j + ai,j. We
+hypothesis that gradient can be more easily passed
+through action encodings in this method. Further,
+we enhance the construction of action embeddings
+in ULTRA-HSTU by exploring heterogeneous action
+encodings, from both implicit and explicit signals
+and side information through user contextual fea-
+tures. Importantly, this design reduces the sequence
+length to be half as the UIH designed in the vanilla
+HSTU (Zhai et al., 2024) without sacrificing model
+quality, allowing ULTRA-HSTU to achieve substan-
+tial performance improvements while preserving its
+scalability.
+We further designed load-balanced stochastic length
+algorithm to improve training throughput by 15%. In
+(Zhai et al., 2024), Stochastic Length (SL) randomly
+selects users and samples their history sequences to a
+predefined threshold length of L
+α
+2 during the training
+stage, where α ∈(1, 2] is a tunable hyper-parameter
+of SL. This reduces the computation complexity from
+O(L2) to O(Lα) during training and is proved to
+be able to generalize in inference with the full se-
+quence length. Similar ideas have been adapted in
+other papers (Guan et al., 2025) as well. However, in
+a distributed training environment, this sampling
+process occurs independently on each rank, lead-
+ing to significant variations in the input and out-
+put load (represented by the sum of user sequence
+lengths) on each rank. Such load imbalances could
+greatly reduce training efficiency in our synchronous
+distributed training framework. We propose load-
+balanced stochastic length (LBSL) algorithm, a vari-
+ant of SL that explicitly controls per-rank compute
+to reduce stragglers. Define the load of a rank in a
+batch as P
+u∈rank nγ
+u, where nu is the sequence length
+for request u and γ captures the superlinear cost of
+HSTU (γ ∈(1, 2)). Load balance is defined as the
+ratio between the maximum and minimum rank loads
+within a world size. LBSL runs in three stages: it first
+performs a short warmup using standard stochastic
+length to estimate a global target load l; then per-
+forms constrained sampling that adaptively selects an
+unsampled set so each rank’s realized load matches l
+as closely as possible, while preserving SL’s bias to-
+ward leaving shorter sequences unsampled via weights
+pu and weighted sampling-without-replacement plus
+a greedy fill; finally, it applies periodic recalibration of
+l on a configurable interval to track slow shifts in the
+5
+
+production length distribution. When recalibrated
+every batch, LBSL matches standard SL’s average
+load but redistributes sampling across ranks (sam-
+pling more on heavy-load ranks and less on light-load
+ranks) to reduce stragglers without harming quality.
+Details are in Algorithm 1 in Appendix.
+4.2
+Model-System Co-Design for Efficiency
+4.2.1
+Semi-Local Attention Design
+We introduce a novel sparse attention mechanism
+called Semi-Local Attention (SLA) which achieves
+linear complexity in attention computation, signifi-
+cantly improving the inference scaling efficiency of
+ULTRA-HSTU by 5×. Recall in Equation 3 that
+vanilla HSTU models (Zhai et al., 2024) calculate
+full causal self-attention mask with the following for-
+mula, incurring quadratic cost when model scales the
+sequence length.
+A(X) = ϕ2
+
+Q(X)K(X)T 
+⊙MV (X),
+(6)
+where M ∈RL×L is a causal attention mask with
+Mi,j = 1 only when j ≤L −i, ϕ2 is SiLU in HSTU.
+Figure 3 Attentions masks. Left plot: full causal self-
+attention masks. Right plot: Semi-local attention masks.
+In large-scale recommender systems, the length of
+UIH quickly accumulates and goes beyond 10k, lead-
+ing to an undeployable situation in real-world ranking.
+Motivated by the intrinsic sparse and dynamic at-
+tention in both LLM (Yuan et al., 2025) and Recsys,
+we develop a semi-local attention mechanism that
+leverages its nature of sparsity, with a focus on both
+long-term and local patterns. We define two hyper-
+parameters, local window size K1 and global window
+size K2.
+Local window size controls the window
+length of local pattern that will be counted into the
+attention mask, and global window size focuses on
+the latest UIH attention patterns, capturing users’
+long-term interests. The resulting attention mask is
+defined as the following in semi-local attention (see
+Figure 3 for illustration):
+Mi,j =
+
+
+
+
+
+1
+if L −K1 ≤i + j ≤L
+1
+if j ≤K2 and j ≤L −i
+0
+otherwise
+(7)
+With this design, the resulting computational com-
+plexity in attention is reduced to linear as O((K1 +
+K2)·L), significantly improving model efficiency when
+sequence length L scales beyond 10k in large-scale
+recommender systems. In contrast to native sparse
+attention (NSA) from DeepSeek (Yuan et al., 2025)
+where only local window is applied, we will show in
+Section 5 that both the design of local and global win-
+dows are necessary, which was especially pronounced
+in recommenders where users’ long-term behaviors
+are critical.
+4.2.2
+System optimizations
+Mixed-Precision Training and Inference
+Large-scale
+recommendation models are bottlenecked by a com-
+bination of dense compute including General Matrix
+Multiplications (GEMMs) and data movement, espe-
+cially embedding lookup and host-to-device transfer
+in serving. To make ULTRA-HSTU efficient end-to-
+end, we co-design a recsys-tailored mixed-precision
+framework spanning 16/8/4-bit formats: we keep
+most of the operations in BF16 for stability, accel-
+erate the dominant GEMM computations with FP8,
+and reduce inference communication traffic with INT4
+embedding quantization. In both offline and online
+experiments, this mixed-precision stack yields 10%
+training and 40% serving throughout improvement
+while preserving model accuracy. We develop a cus-
+tomized FP8 stack (shown in Figure 4) for HSTU
+that targets two practical bottlenecks simultaneously:
+improving Tensor Core utilization on NVIDIA H100
+to raise achieved TFLOP/s on the dense compute,
+and reducing the overhead of FP8 quantization/scal-
+ing that can otherwise become memory-bandwidth
+bound.
+Each HSTU layer contains two GEMMs:
+a projection that maps input embeddings X into
+the U, V, Q, K tensors prior to attention, and a post-
+attention projection that transforms the normalized
+and gated attention output to produce the layer out-
+put. We execute both GEMMs in FP8, while pre-
+serving all remaining operations in BF16, improv-
+ing throughput without sacrificing numerical robust-
+ness. Simply switching GEMMs to FP8 is inefficient:
+naive FP8 pipelines need an additional operation on
+scaling/quantization and layout preparation which
+can offset the expected speedup. To ensure FP8 ac-
+celerates end-to-end training/inference, we develop
+fused kernels that combine row-wise scaling compu-
+tation and quantization with the preceding layer-
+6
+
+Figure 4 Mixed precision computation framework. We
+fuse the scaling/quantization steps with the preceding
+kernels.
+normalization kernels (Equations 1 and 4) for jagged
+embeddings, eliminating extra passes over memory
+and reducing quantization overhead. We further de-
+velop high-performance Triton FP8 GEMM kernels
+specifically for the post-attention projection. In this
+path, the projection output must be accumulated
+with a 2D residual tensor (Equation 5), so we fuse
+this residual accumulation directly into the GEMM
+epilogue. This is not efficiently supported by Py-
+Torch GEMM kernels, which typically assume a 1D
+bias vector.
+Our Triton FP8 kernel natively sup-
+ports 2D bias, while leveraging persistent scheduling,
+TMA, warp specialization, and epilogue pipelining
+to sustain high throughput without excessive register
+pressure. In addition to FP8 GEMM, our mixed pre-
+cision framework incorporates 4-bit quantization for
+embedding movement during serving. Further details
+are provided in Appendix D.
+Efficient SLA Kernels for Heterogenous Hardware
+Attention operations are a bottleneck for HSTU.
+In (Zhai et al., 2024), the kernel is implemented with
+Triton (Tillet et al., 2019) using the FlashAttention
+V2 algorithm (Dao, 2024). We improve this baseline
+by adopting the FlashAttention-V3 algorithmic de-
+sign (Shah et al., 2024) to aggressively overlap data
+movement and compute, while customizing the kernel
+to HSTU’s non-standard attention (pointwise SiLU
+activation and SLA masking). We implemented this
+design on both NVIDIA H100 and AMD MI300x, al-
+lowing heterogeneous service and delivery 2× speedup
+over the FlashAttention-V2 baseline on both plat-
+forms.
+On NVIDIA H100, we implement CUDA
+kernel families for both full and semi-local HSTU at-
+tention using FlashAttention-3-style pipelining. We
+also implement an analogous kernel on AMD MI300x
+via Composable Kernel (AMD, 2025). Since MI300x
+lacks H100 features leveraged by FlashAttention-3
+(e.g., TMA and warp-specialized async execution), we
+introduce MI300x-native optimizations: XCD-aware
+scheduling to exploit the 8-chiplet topology, LDS lay-
+outs to reduce shared-memory bank conflicts, and
+explicit VMEM/MFMA interleaving via scheduling
+barriers—and obtain a 2× speedup over the Triton
+kernel baseline.
+Memory Saving with Minimal Overhead
+The stan-
+dard attention implementation incurs high GPU mem-
+ory pressure in the forward pass, which becomes a pri-
+mary bottleneck for ultra-long sequence training. We
+carefully designed the following optimizations to save
+memory and preserve training efficiency. First, we
+introduce selective activation rematerialization spe-
+cialized for ULTRA-HSTU. Specifically, we skip sav-
+ing six large forward tensors and reconstruct them in
+backward with minimal recompute, including reusing
+saved layer-norm statistics for normed X, rerunning
+GEMM to recover U, Q, K, V , and computing the
+intermediate Y inside the fused gated normalization
+kernel.
+This is substantially lighter than generic
+checkpointing, with only 5% overhead compared to
+the baseline without any activation recomputation.
+The detailed algorithm is in Listing 1 in Appendix.
+Second, we remove that overhead by eliminating gra-
+dient concatenation for dU, dQ, dK, dV , cutting mem-
+ory traffic and kernel overhead in backward. Overall,
+ULTRA-HSTU achieves about 67% per-layer memory
+reduction with no regression in efficiency. With a 512
+embedding dimension size, 256 batch size, and 3k
+sequence length and BF16 data type, the technique
+reduces the HBM memory usage per layer from 7GB
+to 2.3GB. Thrid, we employ a fully jagged tensor
+implementation for end-to-end training, eliminating
+the need for padding to dense tensors and signifi-
+cantly reducing memory usage. We present detailed
+efficiency benchmark experiments in Appendix E.
+4.3
+Dynamic Topological Design
+In addition to scaling sequence length, depth scaling
+are crucial for model performance. Naively stacking
+ULTRA-HSTU layers with SLA each processing the
+full sequences incurs a computational cost of O(DL)
+where D is the model depth. In real-world applica-
+tions, when L scales to 10k sequence lengths, stacking
+more and more model layers introduces significant
+training, memory and inference costs even when lin-
+ear sparse attention are already in place. However,
+the necessity to be able to handle millions of requests
+in large-scale recommender systems within millisec-
+onds remains the same. One natural question is that
+7
+
+200
+400
+600
+800
+Train GFLOP / item
+0.0
+0.2
+0.4
+0.6
+0.8
+C-NE
+HSTU, 0.00099C+0.039
+HSTU-SLA, 0.0027C
+0.16
+200
+400
+600
+800
+Inference GFLOP / item
+0.0
+0.2
+0.4
+0.6
+0.8
+C-NE
+HSTU, 0.0011C
+0.067
+HSTU-SLA, 0.0056C
+0.44
+100
+200
+Inference GFLOP / item
+0.0
+0.2
+0.4
+C-NE
+HSTU, 0.0023C
+0.069
+AT, 0.0079C
+0.31
+Figure 5 Ablation study on scaling: training (left) and inference (middle) of SLA, inference (right) of attention
+truncation (AT).
+do we really need attention on full sequences in every
+layer when we stack more and more layers? Moti-
+vated by this, we propose two efficient topological
+designs below to further improve the scaling law of
+ULTRA-HSTU.
+Attention Truncation. Motivated by the importance of
+users’ most recent interaction history, after stacking
+N1 layers of HSTU with full sequence length L, we
+propose to select a segment of length L′ from the
+full sequence, and stack another N2 layers of HSTU
+on the selected UIH segment only. Many methods
+can be applied to select this UIH segment, including
+1) truncating latest UIH of length L′; 2) applying
+Stochastic Length (SL) (Zhai et al., 2024) on top
+of the first SL to select sequence length of L′; 3)
+inserting a compression modules after the first N1
+layers to compress the full sequence to length L′. In
+practice, we found that simply truncating the latest
+UIH segment gives the best model performance (See
+Figure 2 (d)).
+Mixture of Transducers. Recommendation models in-
+herently process multiple input sequences, as user
+engagement signals from various sources and types
+are typically recorded separately. Aggregating all
+user signals into a single input sequence for a unified
+encoder compresses heterogeneous user interactions
+into one timeline can dilute sparse, high-value en-
+gagements among dense, implicit signals and force
+all signals to compete for limited sequence capacity.
+To address this challenge, we introduce the Mixture
+of Transducers (MoT) paradigm.
+MoT processes
+multiple distinct input sequences through separate
+transducers and subsequently fuses the learned user
+embeddings. This approach enables the model to
+capture different types of user behaviors over vary-
+ing time spans, resulting in a more granular and
+effective representation of diverse and sparse engage-
+ment patterns. Crucially, MoT allows for flexible
+allocation of computational resources across input
+sequences. For instance, the model can assign deeper
+layers and greater capacity to high-value sequences,
+while reducing resources for well-understood or less
+critical sequences. This targeted allocation of com-
+putation budget ensures that the model focuses its
+capacity on the most meaningful user interactions,
+thereby improving overall recommendation quality
+and efficiency tradeoff.
+Both of the proposed topological designs achieve sig-
+nificantly better model quality and cost tradeoff than
+vanilla HSTU. The design of Attention Truncation
+and MoT are compatible with each other and can
+be combined into one model. In real applications,
+the choice of the topological designs depends on the
+most concerning metrics (efficiency or model quality)
+in the system. In our experimental setups reported
+below (Section 5), we choose attention truncation
+due to its simplicity and powerful model quality and
+efficiency tradeoff. We defer the study of MoT to
+Appendix A.
+5
+Experimental Results
+Throughout this section, we measure model quality
+by normalized entropy (NE), defined as the model’s
+cross-entropy divided by the cross-entropy by purely
+making predictions based on mean frequency of posi-
+tive labels (He et al., 2014). Formally, NE is defined
+in the following equation:
+NE = −1
+N
+PN
+i=1(yi log pi + (1 −yi) log(1 −pi))
+−p log p −(1 −p) log(1 −p)
+,
+(8)
+where N is the number of training examples, yi ∈
+{0, 1} is the label for example i, pi is the model predic-
+tion for example i, and p = PN
+i=1 yi/N. The model is
+better if the NE is lower. Specifically, we measure the
+8
+
+NE improvement of a consumption task (e.g., video
+view complete) and an engagement task (e.g., share),
+denoted as C-NE and E-NE. Here, we choose to report
+NE to follow the original HSTU paper (Zhai et al.,
+2024) and the best practices internally (He et al.,
+2014). Based on our experiences and experiments,
+AUC and other metrics move in a consistent direction
+(better or worse) and at similar scales with NE. We
+omit reporting them due to space limitations.
+We evaluate our model against several strong base-
+lines, categorized by their ability to model short- or
+long-range user behaviors. Short-sequence methods
+include DIN (Zhou et al., 2018) and SASRecs (Kang
+and McAuley, 2018). Long-sequence methods include
+vanilla HSTU (Zhai et al., 2024), STCA (Guan et al.,
+2025). In addition, we also compare our methods to
+an internally optimized transformer which has ad-
+ditional projections and normalization to stabilize
+training and avoid unexpected metric regressions in
+the classic transformers for recommender systems.
+5.1
+Industrial Dataset Benchmark
+5.1.1
+Dataset
+We first report our model’s performance using
+industry-scale production datasets sourced from in-
+ternal, large-scale, real-world recommender systems.
+The dataset consists of a subset of online user in-
+teraction histories, totaling over 6 billion samples,
+each featuring ultra-long user interaction sequences
+with lengths ranging from 3, 072 to 16, 384 events.
+To ensure temporal consistency and prevent future
+data leakage, we employ a chronological data split:
+the initial 85% of the data is allocated for training,
+while the remaining 15% is reserved for evaluation.
+Please note that, we use LBSL for all the experiments
+on the industrial dataset. For example, when raw
+sequence length in inference is 16, 384, training se-
+quence length is around 4, 400 after applying LBSL.
+Based on (Zhai et al., 2024), comparing with models
+trained with full sequence length, LBSL has mini-
+mum NE differences while achieving significant train-
+ing speed up. This is the reason that our inference
+FLOP per example is higher than training FLOP per
+example. For more detailed sequence length compar-
+isons during training and inference, please see Table
+6 in Appendix.
+5.1.2
+Overall Performance
+Table 1 shows the results on all methods with se-
+quence length capped at 3, 072. We tune the model
+depth/parameters to allow approximately matched
+FLOP on all methods. We observe that ULTRA-
+HSTU significantly outperforms all other methods.
+STCA which heavily relies on cross attention for lin-
+ear complexity performs worse than ULTRA-HSTU
+due to lacking the power from self-attention. Note
+that model is worse when ∆NE is positive. Based
+on our experience, an improvement in the range of
+0.03% −0.05% is regarded as significant and can lead
+to substantial gains in online metrics.
+Model
+∆C-NE
+∆E-NE
+ULTRA-HSTU
+0%
+0%
+HSTU
++0.43%
++0.04%
+STCA
++0.94%
++0.74%
+Transformer
++0.57%
++0.59%
+DIN
++1.41%
++1.91%
+SASRecs
++1.12%
++1.28%
+Table 1 Model performance on Industrial datasets.
+5.1.3
+Scaling Law
+To analyze the scaling behavior, we fix the input
+sequence designs for both ULTRA-HSTU and vanilla
+HSTU and report the model performance on C-NE
+and TFLOP comparisons with improved model archi-
+tecture and topological designs. We vary the number
+of modeling layers from 6 to 18 and sequence length
+L ∈{3072, 8192, 16384} while fixing model dimen-
+sionality at d = 512. Table 2 reports detailed model
+performance and TFLOP numbers.
+As sequence
+length and the number of layers increase, we saw
+significantly improved efficiency and C-NE metrics
+from ULTRA-HSTU. In Figure 1, we present the
+C-NE gain relative to the baseline model as a linear
+regression of computational cost for both ULTRA-
+HSTU and vanilla-HSTU. Notably, by comparing the
+slope of the fitted linear function, ULTRA-HSTU
+demonstrates a remarkable advancement in scaling
+efficiency, achieving a 5.3× improvement in training
+scaling efficiency and an outstanding 21.4× enhance-
+ment in inference scaling efficiency.
+5.2
+Open source dataset
+Methods such as ULTRA-HSTU and STCA (Guan
+et al., 2025) are designed for industrial-scale recom-
+menders where user histories span tens of thousands
+of interactions. To demonstrate the general appli-
+cability of our method beyond these extreme-length
+settings, we evaluate on public open-source bench-
+marks on KuaiRand1 with much shorter sequences
+of length 256. Table 3 shows that our approach still
+1https://kuairand.com/
+9
+
+Model
+Sequence length
+# layers
+∆C-NE
+Training TFLOP
+Inference TFLOP
+HSTU
+3072
+6
+0.0%
+0.085
+0.118
+8192
+11
+−0.34%
+0.735
+2.756
+16384
+10
+−0.44%
+1.584
+4.692
+ULTRA-HSTU
+3072
+14
+−0.00%
+0.119 (↑40.0%)
+0.070 (↓40.7%)
+8192
+18
+−0.58%
+0.414 (↓43.7%)
+0.337 (↓87.8%)
+16384
+18
+−0.78%
+0.639 (↓59.7%)
+0.436 (↓90.7%)
+Table 2 Scaling of ULTRA-HSTU on industrial datasets.
+achieves the best NE at the lowest computational
+cost in both training and inference stages even under
+short-sequence scenarios. STCA struggles to adapt to
+shorter sequences due to the expensive pre-attention
+computational overhead.
+Model
+Training
+Inference
+NE
+TFLOP
+TFLOP
+STCA
+626.49
+208.75
+0.8689
+Transformer
+802.39
+267.46
+0.8688
+SASRec
+550.92
+176.51
+0.8804
+DIN
+505.08
+168.36
+0.8685
+HSTU
+617.78
+198.80
+0.8676
+ULTRA-HSTU
+504.41
+166.41
+0.8626
+Table 3 Comparisons on KuaiRand benchmark.
+5.3
+Ablations on Scaling Studies
+We first briefly mention the impact from input se-
+quence optimizations and then ablate the scaling
+efficiency of SLA and attention truncation by fixing
+the input sequence designs for both vanilla HSTU
+and ULTRA-HSTU. A detailed description of our
+approach for analyzing scaling laws is in Appendix F.
+5.3.1
+Input sequence optimization
+Removing item-action interleaving in input sequence
+design shrinks sequence length by half and signifi-
+cantly reduces training FLOP by 32.5% and inference
+FLOP by 63.5% given a UIH sequence with length
+3, 072. In the meantime, heterogeneous construction
+of action embeddings brings 0.45% C-NE gain com-
+pared to baselines. LBSL achieves 15% speedup in
+the world size of 512, demonstrating its effectiveness
+in accelerating the training of large-scale sequential
+models.
+5.3.2
+Semi-Local Attention (SLA)
+In Figure 8 we plot the C-NE vs the total FLOP with
+or without SLA enabled. The SLA enabled model
+achieves significantly improved scaling compared to
+the vanilla HSTU, with 2.7× training scaling effi-
+ciency and 5.1× inference scaling efficiency. We note
+that both local window size K1 and global window
+size K2 are necessary in the design of SLA, which sig-
+nificantly differs from NSA (Yuan et al., 2025) where
+only local sliding window is enabled. Moreover, we
+find that global window size K2 is more important
+than local window size K1. For example, if we set
+K1 = 0 and only enable global window in SLA, we
+observe 0.03% C-NE regression. If we set K2 = 0 and
+only enable local window in SLA, we observe 0.35%
+C-NE regression.
+5.3.3
+Dynamic Topological Design
+When stacking more layers in vanilla HSTU, we ob-
+serve significant performance gains but with unaf-
+fordable training and inference costs. Figure 8 (right
+figure) plots the scaling curve comparing the perfor-
+mance when stacking HSTU layers with Attention
+Truncation (AT) and purely stacking HSTU layers
+with full sequences. This experiments are conducted
+with n1 layers of sequence length 3072 in inference
+(around 1110 in training after SL) and n2 layers
+of sequence length 512, with n1 = 3, 6, 9, 12 and
+n2 = 0, 3, 6, 9. Attention truncation are more effec-
+tive when the sequence length is longer. With LBSL
+enabled in model training, efficiency savings from at-
+tention truncation at sequence length around 1110 is
+not significant enough, but we see much better results
+in inference (3.4× more effective inference scaling)
+with longer sequences at length 3072.
+5.4
+Online A/B Testing
+We showcase the results validated by multiple rigor-
+ous 30-day online A/B tests to evaluate the effective-
+ness of ULTRA-HSTU on a large-scale production
+video serving platform that reaches billions of users
+daily. We report three different kinds of online met-
+rics: 1) online consumption metrics (C-metric), such
+as watch time, video completion, etc. 2) online en-
+10
+
+gagement metrics (E-metric), such as likes, comments,
+shares, etc. 3) online topline metrics, such as number
+of visits, daily active users, etc.
+We upgrade the existing production model from
+vanilla HSTU to ULTRA-HSTU. The results, sum-
+marized in Table 4, reveal substantial and highly
+impressive improvements across key metrics. ULTRA-
+HSTU delivers significant 4.11% gains in online con-
+sumption metrics and 2% to 8% gains in engagement
+metrics depending on the engagement types. Most
+notably, we observed remarkable enhancements in
+critical “top-line” metrics, which are strong indicators
+of overall platform health. In our system, even single-
+digit percentage improvements in engagement and
+consumption are considered major breakthroughs.
+Furthermore, increases of 0.05% and 0.01% in Top-
+line 1 and 2, respectively, are regarded highly sig-
+nificant at Meta. Collectively, these results provide
+compelling evidence for the efficacy and potential of
+the proposed ULTRA-HSTU approach. To the best
+of our knowledge, this is the largest model tested in
+our recommendation platform, achieving one of the
+largest impacts in the past few years.
+User Value
+Percentage of gain
+Online C-Metric 1
+4.11%
+Online E-Metric 2
+2.27%
+Online E-Metric 3
+8.2%
+Online E-Metric 3
+4.34%
+Online Top-line 1
+0.217%
+Online Top-line 2
+0.037%
+Table 4 One-month online gain over production baseline.
+6
+Conclusions
+In this work, we present ULTRA-HSTU, a novel ap-
+proach of end-to-end model and system co-design
+that delivers substantial improvements in scaling effi-
+ciency of sequential modeling in the recommendation
+domain. Our contributions can be summarized as
+follows: 1) as our key research findings, we show
+self-attention is still superior to cross-attention and
+scaling up computation on attention layers and se-
+quence length continue improving model performance;
+2) as our key tech innovations, we presented multiple
+modeling and system co-optimizations from LBSL in
+input processing, semi local attention, heterogeneous
+hardware kernel optimization with mixed precision
+training/inference, to dynamic model topological de-
+sign, and achieved 5× training and 21× inference
+scaling efficiency. 3) as our key sharing with the
+recommendation industry, we deployed our ULTRA-
+HSTU, with 18 layers of self-attention over 16k user
+sequences trained on hundreds of H100 GPUs, into a
+large-scale production environment with significant
+impacts, demonstrating the promising direction of
+scaling up sequential models in recommendation and
+the effectiveness of our proposed innovations.
+7
+Acknowledgement
+This work would not be possible without contribu-
+tions from the collaborators and supports from the
+leaderships as follows (alphabetical order): Hao Lin,
+Hong Yan, Jiaqi Zhai, Jie Hua, Shilin Ding, Yu He.
+References
+AMD. Composable kernel. https://github.com/ROCm/
+composable_kernel, 2025.
+Iz Beltagy, Matthew E Peters, and Arman Cohan.
+Longformer: The long-document transformer. arXiv
+preprint arXiv:2004.05150, 2020.
+Zheng Chai, Qin Ren, Xijun Xiao, Huizhi Yang, Bo Han,
+Sijun Zhang, Di Chen, Hui Lu, Wenlin Zhao, Lele
+Yu, et al. Longer: Scaling up long sequence model-
+ing in industrial recommenders. In Proceedings of the
+Nineteenth ACM Conference on Recommender Systems,
+pages 247–256, 2025.
+Qiwei Chen, Huan Zhao, Wei Li, Pipei Huang, and Wenwu
+Ou. Behavior sequence transformer for e-commerce
+recommendation in alibaba. In Proceedings of the 1st
+international workshop on deep learning practice for
+high-dimensional sparse data, pages 1–4, 2019.
+Tri Dao. Flashattention-2: Faster attention with better
+parallelism and work partitioning. In 12th International
+Conference on Learning Representations, ICLR 2024,
+2024.
+Gabriel de Souza Pereira Moreira, Sara Rabhi, Jeong Min
+Lee, Ronay Ak, and Even Oldridge. Transformers4rec:
+Bridging the gap between nlp and sequential/session-
+based recommendation.
+In Proceedings of the 15th
+ACM conference on recommender systems, pages 143–
+153, 2021.
+DeepSeek-AI, Aixin Liu, Bei Feng, Bin Wang, Bingx-
+uan Wang, Bo Liu, Chenggang Zhao, Chengqi Dengr,
+Chong Ruan, Damai Dai, Daya Guo, Dejian Yang, Deli
+Chen, Dongjie Ji, Erhang Li, Fangyun Lin, Fuli Luo,
+Guangbo Hao, Guanting Chen, Guowei Li, H. Zhang,
+Hanwei Xu, Hao Yang, Haowei Zhang, Honghui Ding,
+Huajian Xin, Huazuo Gao, Hui Li, Hui Qu, J. L. Cai,
+Jian Liang, Jianzhong Guo, Jiaqi Ni, Jiashi Li, Jin
+Chen, Jingyang Yuan, Junjie Qiu, Junxiao Song, Kai
+Dong, Kaige Gao, Kang Guan, Lean Wang, Lecong
+Zhang, Lei Xu, Leyi Xia, Liang Zhao, Liyue Zhang,
+11
+
+Meng Li, Miaojun Wang, Mingchuan Zhang, Minghua
+Zhang, Minghui Tang, Mingming Li, Ning Tian, Pan-
+pan Huang, Peiyi Wang, Peng Zhang, Qihao Zhu,
+Qinyu Chen, Qiushi Du, R. J. Chen, R. L. Jin, Ruiqi
+Ge, Ruizhe Pan, Runxin Xu, Ruyi Chen, S. S. Li,
+Shanghao Lu, Shangyan Zhou, Shanhuang Chen, Shao-
+qing Wu, Shengfeng Ye, Shirong Ma, Shiyu Wang,
+Shuang Zhou, Shuiping Yu, Shunfeng Zhou, Size Zheng,
+T. Wang, Tian Pei, Tian Yuan, Tianyu Sun, W. L.
+Xiao, Wangding Zeng, Wei An, Wen Liu, Wenfeng
+Liang, Wenjun Gao, Wentao Zhang, X. Q. Li, Xi-
+angyue Jin, Xianzu Wang, Xiao Bi, Xiaodong Liu,
+Xiaohan Wang, Xiaojin Shen, Xiaokang Chen, Xiaosha
+Chen, Xiaotao Nie, Xiaowen Sun, Xiaoxiang Wang,
+Xin Liu, Xin Xie, Xingkai Yu, Xinnan Song, Xinyi
+Zhou, Xinyu Yang, Xuan Lu, Xuecheng Su, Y. Wu,
+Y. K. Li, Y. X. Wei, Y. X. Zhu, Yanhong Xu, Yan-
+ping Huang, Yao Li, Yao Zhao, Yaofeng Sun, Yaohui
+Li, Yaohui Wang, Yi Zheng, Yichao Zhang, Yiliang
+Xiong, Yilong Zhao, Ying He, Ying Tang, Yishi Piao,
+Yixin Dong, Yixuan Tan, Yiyuan Liu, Yongji Wang,
+Yongqiang Guo, Yuchen Zhu, Yuduan Wang, Yuheng
+Zou, Yukun Zha, Yunxian Ma, Yuting Yan, Yuxiang
+You, Yuxuan Liu, Z. Z. Ren, Zehui Ren, Zhangli Sha,
+Zhe Fu, Zhen Huang, Zhen Zhang, Zhenda Xie, Zhewen
+Hao, Zhihong Shao, Zhiniu Wen, Zhipeng Xu, Zhongyu
+Zhang, Zhuoshu Li, Zihan Wang, Zihui Gu, Zilin Li,
+and Ziwei Xie. Deepseek-v2: A strong, economical,
+and efficient mixture-of-experts language model, 2024.
+URL https://arxiv.org/abs/2405.04434.
+Lin Guan, Jia-Qi Yang, Zhishan Zhao, Beichuan Zhang,
+Bo Sun, Xuanyuan Luo, Jinan Ni, Xiaowen Li, Yuhang
+Qi, Zhifang Fan, et al.
+Make it long, keep it fast:
+End-to-end 10k-sequence modeling at billion scale on
+douyin. arXiv preprint arXiv:2511.06077, 2025.
+Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei
+Jiang, Xiang Li, Chi Ma, Mincong Huang, Xiaoguang
+Li, Chunzhen Jing, et al. Mtgr: Industrial-scale gen-
+erative recommendation framework in meituan.
+In
+Proceedings of the 34th ACM International Conference
+on Information and Knowledge Management, pages
+5731–5738, 2025.
+Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian
+Sun. Deep residual learning for image recognition. In
+Proceedings of the IEEE conference on computer vision
+and pattern recognition, pages 770–778, 2016.
+Xinran He, Junfeng Pan, Ou Jin, Tianbing Xu, Bo Liu,
+Tao Xu, Yanxin Shi, Antoine Atallah, Ralf Herbrich,
+Stuart Bowers, et al. Practical lessons from predict-
+ing clicks on ads at facebook. In Proceedings of the
+eighth international workshop on data mining for online
+advertising, pages 1–9, 2014.
+Lars Hertel, Neil Daftary, Fedor Borisyuk, Aman Gupta,
+and Rahul Mazumder. Efficient user history modeling
+with amortized inference for deep learning recommen-
+dation models. arXiv preprint arXiv:2412.06924, 2024.
+Jordan Hoffmann, Sebastian Borgeaud, Arthur Men-
+sch, Elena Buchatskaya, Trevor Cai, Eliza Ruther-
+ford, Diego de Las Casas, Lisa Anne Hendricks, Jo-
+hannes Welbl, Aidan Clark, et al. Training compute-
+optimal large language models.
+arXiv preprint
+arXiv:2203.15556, 2022.
+Yanhua Huang, Yuqi Chen, Xiong Cao, Rui Yang, Min-
+gliang Qi, Yinghao Zhu, Qingchang Han, Yaowei
+Liu, Zhaoyu Liu, Xuefeng Yao, and others.
+To-
+wards Large-scale Generative Ranking. arXiv preprint
+arXiv:2505.04180, 2025.
+Wang-Cheng Kang and Julian McAuley. Self-attentive se-
+quential recommendation. In 2018 IEEE international
+conference on data mining (ICDM), pages 197–206.
+IEEE, 2018.
+Jared Kaplan, Sam McCandlish, Tom Henighan, Tom B
+Brown, Benjamin Chess, Rewon Child, Scott Gray,
+Alec Radford, Jeffrey Wu, and Dario Amodei. Scal-
+ing laws for neural language models. arXiv preprint
+arXiv:2001.08361, 2020.
+Dheevatsa Mudigere, Yuchen Hao, Jianyu Huang, Zhihao
+Jia, Andrew Tulloch, Srinivas Sridharan, Xing Liu,
+Mustafa Ozdal, Jade Nie, Jongsoo Park, et al. Software-
+hardware co-design for fast and scalable training of deep
+learning recommendation models. In Proceedings of the
+49th Annual International Symposium on Computer
+Architecture, pages 993–1011, 2022.
+Maxim Naumov, Dheevatsa Mudigere, Hao-Jun Michael
+Shi, Jianyu Huang, Narayanan Sundaraman, Jongsoo
+Park, Xiaodong Wang, Udit Gupta, Carole-Jean Wu,
+Alisson G Azzolini, et al. Deep learning recommen-
+dation model for personalization and recommendation
+systems. arXiv preprint arXiv:1906.00091, 2019.
+Jay Shah, Ganesh Bikshandi, Ying Zhang, Vijay Thakkar,
+Pradeep Ramani, and Tri Dao.
+Flashattention-3:
+Fast and accurate attention with asynchrony and low-
+precision. Advances in Neural Information Processing
+Systems, 37:68658–68685, 2024.
+Zihua Si, Lin Guan, ZhongXiang Sun, Xiaoxue Zang,
+Jing Lu, Yiqun Hui, Xingchao Cao, Zeyu Yang, Yichen
+Zheng, Dewei Leng, et al.
+Twin v2: Scaling ultra-
+long user behavior sequence modeling for enhanced
+ctr prediction at kuaishou. In Proceedings of the 33rd
+ACM International Conference on Information and
+Knowledge Management, pages 4890–4897, 2024.
+Philippe Tillet, Hsiang-Tsung Kung, and David Cox. Tri-
+ton: an intermediate language and compiler for tiled
+neural network computations. In Proceedings of the 3rd
+ACM SIGPLAN International Workshop on Machine
+Learning and Programming Languages, pages 10–19,
+2019.
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob
+Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser,
+and Illia Polosukhin. Attention is all you need. Ad-
+12
+
+vances in neural information processing systems, 30,
+2017.
+Chunqi Wang, Bingchao Wu, Zheng Chen, Lei Shen,
+Bing Wang, and Xiaoyi Zeng. Scaling Transformers
+for Discriminative Recommendation via Generative
+Pretraining. arXiv preprint arXiv:2506.03699, 2025.
+Ruoxi Wang, Bin Fu, Gang Fu, and Mingliang Wang.
+Deep & cross network for ad click predictions.
+In
+Proceedings of the ADKDD’17, pages 1–7. 2017.
+Jingyang Yuan, Huazuo Gao, Damai Dai, Junyu Luo,
+Liang Zhao, Zhengyan Zhang, Zhenda Xie, Yuxing Wei,
+Lean Wang, Zhiping Xiao, et al. Native sparse atten-
+tion: Hardware-aligned and natively trainable sparse
+attention. In Proceedings of the 63rd Annual Meeting of
+the Association for Computational Linguistics (Volume
+1: Long Papers), pages 23078–23097, 2025.
+Manzil Zaheer, Guru Guruganesh, Kumar Avinava Dubey,
+Joshua Ainslie, Chris Alberti, Santiago Ontanon, Philip
+Pham, Anirudh Ravula, Qifan Wang, Li Yang, et al.
+Big bird: Transformers for longer sequences. Advances
+in neural information processing systems, 33:17283–
+17297, 2020.
+Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui
+Li, Xuan Cao, Leon Gao, Zhaojie Gong, Fangda Gu,
+Jiayuan He, et al. Actions speak louder than words:
+trillion-parameter sequential transducers for genera-
+tive recommendations. In Proceedings of the 41st In-
+ternational Conference on Machine Learning, pages
+58484–58509, 2024.
+Zhaoqi Zhang, Haolei Pei, Jun Guo, Tianyu Wang, Yufei
+Feng, Hui Sun, Shaowei Liu, and Aixin Sun. Onetrans:
+Unified feature interaction and sequence modeling with
+one transformer in industrial recommender.
+arXiv
+preprint arXiv:2510.26104, 2025.
+Guorui Zhou, Xiaoqiang Zhu, Chenru Song, Ying Fan,
+Han Zhu, Xiao Ma, Yanghui Yan, Junqi Jin, Han
+Li, and Kun Gai.
+Deep interest network for click-
+through rate prediction. In Proceedings of the 24th
+ACM SIGKDD international conference on knowledge
+discovery & data mining, pages 1059–1068, 2018.
+13
+
+A
+Selection of Topological Designs
+Both attention truncation and MoT achieve signifi-
+cantly better model quality and cost tradeoff than
+vanilla HSTU. The design of Mixture of Transducers
+and Attention Truncation are compatible with each
+other. In this section, we detail the advantage of
+each design. In real applications, the choice of the
+topological designs depend on the most concerning
+metrics (efficiency or model quality) in the system.
+Mixture of Transducers (MoT). MoT delivers signifi-
+cant NE gains on engagement tasks (E-NE in Table 8)
+while achieving competitive training/inference FLOP
+savings. By decoupling heterogeneous signals into
+dedicated modules, MoT mitigates the signal com-
+petition that occurs when diverse input signals are
+constrained within a single module with limited se-
+quence length.
+Specifically, we employ two specialized HSTU mod-
+ules: one for engagement events and one for consump-
+tion events, denoted as E-seq and C-seq in Table 8.
+Each module processes shorter sequences compared
+to its single-HSTU counterpart, yet achieves richer
+signal representation through careful sequence com-
+position. For instance, the dedicated engagement
+module, despite having a shorter sequence, captures
+significantly richer engagement history by mitigating
+competition with dense consumption signals.
+We
+further optimize computational efficiency by tailor-
+ing the compute allocation per module; the shorter
+sequences result in substantially lighter attention op-
+erations, yielding significant FLOP savings during
+both training and inference.
+# layers
+∆C-NE
+∆E-NE
+Cross-attention
+3
+0.00%
+0.00%
+6
+-0.09%
+-0.05%
+9
+-0.14%
+-0.15%
+12
+-0.14%
+-0.17%
+Self-attention
+3
+0.00%
+0.00%
+6
+-0.29%
+-0.27%
+9
+-0.38%
+-0.47%
+12
+-0.46%
+-0.65%
+Table 5 Depth scaling of cross-attention vs self-attention
+Attention Truncation. In Table 9, we list complimen-
+tary data of attention truncation with increasing
+number of layers of vanilla HSTU only or number
+of attention truncation layers. With deeper model
+layers, we observe significant NE wins in both con-
+sumption and engagement tasks, but at the cost
+of bigger inference FLOP burden. With attention
+truncation, we achieve significantly better tradeoff
+between model quality and computation costs. For
+example, comparing 3-layer vanilla HSTU stacked by
+another 6-layer attention truncation vs only 6-layer
+vanilla HSTU, attention truncation achieves on par
+C-NE metrics and better E-NE metrics with 3% train
+TFLOP savings and 38% inference FLOP savings.
+B
+Diminishing Return of Depth Scal-
+ing in Cross-Attention
+We show in Table 5 that self-attention is more pow-
+erful than cross attention in terms of model depth
+scaling. With a sequence length around 3072, stack-
+ing more layers of cross-attention shows saturated
+model performance with 9 layers, while self-attention
+exhibits consistently better model quality with in-
+creased number of layers.
+C
+Algorithm
+of
+Load
+Balanced
+Stochastic Length
+Raw UIH length
+3072
+8192
+16384
+Train with SL
+1110
+2600
+4400
+Inference without SL
+3072
+8192
+16384
+Table 6 Average UIH sequence length in training with SL
+and inference without SL.
+(m, k & n)
+Bias-Fused
+FP8
+Bias-Split
+FP8
+BF16
+(1M, 512)
+414
+236
+292
+(1M, 1K)
+734
+468
+410
+(250K, 512)
+414
+238
+281
+(250K, 1K)
+721
+466
+399
+Table 7 Benchmarking FP8 GEMM kernel efficiency with
+2D bias. Performance is reported in TFLOP/s under
+various m, n, k on NVIDIA H100. Bias-Fused FP8 uses
+our Triton kernel with native 2D bias support, whereas
+Bias-Split FP8 uses Torch FP8 GEMM plus a separate
+bias addition since it does not support the 2D bias case.
+Details of Load Balanced Stochastic Length (LBSL)
+are listed in Algorithm 1. With LBSL enabled in our
+experiments in Section 5, the training and inference
+sequence length when varying raw sequence length
+are listed in Table 6.
+D
+Other System Optimizations
+14
+
+Model Component
+Raw Seq Length
+∆C-NE
+∆E-NE
+Training TFLOP
+Inference TFLOP
+MoT vs 3k HSTU
+2k C-seq and 1k E-seq
++0.01%
+−1.00%
+0.138 (↑6%)
+0.076 (↓53%)
+MoT vs 16k HSTU
+10k C-seq and 3k E-seq
++0.05%
+−0.30%
+0.872 (↓45%)
+1.03 (↓69%)
+Table 8 Performance of MoT. MoT significantly improves E-NE metrics. (C-seq denotes the consumption sequences
+and E-seq denotes the engagement sequences.)
+Model
+Setup
+Train TFLOP
+Inference TFLOP
+∆C-NE
+∆E-NE
+Vanilla HSTU
+3-layer HSTU
+0.0427
+0.0561
+0.00%
+0.00%
+6-layer HSTU
+0.0851
+0.1180
+-0.29%
+-0.27%
+9-layer HSTU
+0.1284
+0.1821
+-0.38%
+-0.47%
+12-layer HSTU
+0.1705
+0.2438
+-0.46%
+-0.65%
+Attention Truncation (AT)
+3-layer HSTU + 3-layer AT
+0.0626
+0.0646
+-0.21%
+-0.24%
+3-layer HSTU + 6-layer AT
+0.0825
+0.0729
+-0.25%
+-0.31%
+3-layer HSTU + 9-layer AT
+0.1020
+0.0795
+-0.33%
+-0.35%
+Table 9 Scaling comparison between vanilla HSTU and attention truncation at 3072 sequence length. Model is better
+when ∆NE is negative.
+Mix-precision serving
+In model serving, sparse em-
+bedding features can dominate host-to-device transfer
+time under long sequences. We therefore quantize em-
+bedding tensors to INT4 and keep them in quantized
+form across the embedding lookup and transfer path,
+reducing transfer volume and alleviating the commu-
+nication bottleneck. In addition, we use groupwise
+INT4 that leverages group-specific scaling factors to
+significantly reducing quality loss compared to a sin-
+gle scale per row, while still delivering substantial
+throughput gains.
+E
+Efficiency Benchmarks
+In this section, we provide benchmarks to test the
+system optimizations presented in Section 4.2.2.
+E.1
+Mixed Precision Benchmarks
+FP8 precision efficiency
+We evaluate the perfor-
+mance impact of FP8 on the GEMMs in both the
+pre-attention and post-attention blocks, and sum-
+marize the speedups in Table 10. A key difference
+between the two blocks is the bias format in GEMM:
+the pre-attention GEMM uses a 1D bias, while the
+post-attention GEMM uses a 2D bias. Since FP8
+GEMM with 1D bias is already supported by Torch,
+we directly use the Torch kernel for the pre-attention
+GEMM. In contrast, Torch FP8 GEMM does not
+natively support the 2D bias case needed by post-
+attention; therefore, we develop a customized Triton
+FP8 GEMM kernel with native 2D-bias fusion, and
+report its kernel-level efficiency in Table 7.
+Part
+Quant-Fused
+FP8
+Quant-Separate
+FP8
+Pre-attn
+3.19X
+2.34X
+Post-attn
+1.99X
+1.01X
+Table 10 Performance comparison between FP8 GEMM
+with standard quantization versus FP8 GEMM with quan-
+tization fused into preceding kernels, reporting speedup
+of each approach relative to BF16.
+In Table 7, we benchmark the operation D = AB+C
+where A ∈Rm×k, B ∈Rk×n, and C ∈Rm×n, using
+matrix dimensions (m, k, n) that reflect our model
+workload. In particular, we emphasize large lead-
+ing dimensions m induced by jagged, variable-length
+sequences, which dominate the compute cost in prac-
+tice. The results show that fusing the 2D bias di-
+rectly into the FP8 GEMM (Bias-Fused FP8) pro-
+vides up to 1.75× speedup compared to using Torch
+FP8 GEMM followed by a separate bias addition
+(Bias-Split FP8), motivating our Triton implementa-
+tion for post-attention.
+Finally, Table 10 reports the speedup of the complete
+pre-attention and post-attention parts when switch-
+ing from BF16 to FP8. We observe strong end-to-end
+gains from two sources: (1) higher-performance FP8
+GEMM kernels (including our 2D-bias Triton ker-
+nel for post-attention), and (2) additional savings
+from fusing quantization into the kernels that pre-
+cede GEMM, which reduces extra memory traffic
+and kernel launch overhead compared to performing
+quantization as a separate step.
+15
+
+Algorithm 1 Load-Balanced Stochastic Length
+Require: World size R; warmup steps Twarm; recalibration interval Trecal; load exponent γ ∈(1, 2); SL
+parameter α; SL sampling length ℓSL; batch size b.
+1: Initialize target load ¯ℓ←0 and ℓr ←0 for all ranks r ∈{1, . . . , R}
+2: for training step t = 1, 2, . . . do
+3:
+for all ranks r ∈{1, . . . , R} in parallel do
+4:
+Receive local batch Br with raw lengths {nu}u∈Br
+5:
+Compute ℓr ←ℓr+StandardSL_Loads(Br; α; γ)
+▷pre-truncation proxy
+6:
+if t ≤Twarm then
+7:
+Apply StandardSL(Br; α) to truncate examples
+8:
+else
+9:
+Ur ←∅; s ←0
+▷Ur: untruncated set
+10:
+Compute weights pu ←SLWeight(nu; α) for all u ∈Br
+11:
+Draw a weighted random permutation π of Br without replacement using pu
+12:
+for u in order π do
+13:
+if s + (nγ
+u −ℓγ
+SL) ≤¯ℓ−b · ℓγ
+SL then
+14:
+Ur ←Ur ∪{u}; s ←s + (nγ
+u −ℓγ
+SL)
+15:
+end if
+16:
+end for
+17:
+Keep all u ∈Ur unsampled
+18:
+For each u ∈Br \ Ur, apply the same sampling rule as StandardSL(u; α)
+19:
+end if
+20:
+end for
+21:
+if t = Twarm then
+22:
+All-reduce to obtain mean load ¯ℓ←
+1
+RTwarm
+PR
+r=1 ℓr
+23:
+ℓr ←0 for all ranks r ∈{1, . . . , R}
+24:
+else if (t mod Trecal) = 0 then
+25:
+All-reduce to obtain mean load ¯ℓ←
+1
+RTrecal
+PR
+r=1 ℓr
+26:
+ℓr ←0 for all ranks r ∈{1, . . . , R}
+27:
+end if
+28: end for
+Int4 quantization efficiency
+The impact of Int4
+sparse embedding quantization on model serving ef-
+ficiency is summarized in Table 11. Applying 4-bit
+quantization to sparse embeddings reduces host-to-
+device data-transfer latency by around 40% and in-
+creases peak queries per second (QPS) by over 20%.
+In addition, we observed negligible differences in on-
+line model accuracy after applying 4-bit quantization.
+Dtype
+Latency
+Peak QPS
+Int8
+13ms
+3.6K
+Int4
+7.9ms (↓40%)
+4.4K (↑22%)
+Table11 Impact of sparse embedding datatypes over model
+serving efficiency performances. The latency of embed-
+ding lookup is measured at 3.5K QPS, and peak QPS
+refers to the maximum QPS at a end-to-end latency bud-
+get of 80ms. All results are collected from a single H100
+host.
+E.2
+Attention Kernel Benchmarks
+We present attention-kernel efficiency benchmarks
+in Figure 6, comparing our optimized implementa-
+tion against the FlashAttention-V2 baseline on both
+NVIDIA H100 and AMD MI300 GPUs. We evaluate
+two settings: semi-local attention (SLA) and causal
+attention.
+On H100, for causal attention, the ULTRA implemen-
+tation sustains over 520 TFLOP/s at a 16K sequence
+length, delivering a 1.64× speedup over the base-
+line.
+For SLA, across a range of batch sizes and
+sequence lengths, our kernels consistently achieve
+higher throughput and provide up to a 2.5× speedup.
+On MI300, Figure 6 reports forward-pass kernel per-
+formance. Our ULTRA kernels deliver up to a 1.51×
+speedup over the FlashAttention-V2-based implemen-
+tation. Relative to ULTRA on H100, ULTRA on
+MI300 achieves up to a 0.92× throughput ratio at
+16K sequence length under small batch sizes. These
+results highlight our targeted efforts to enable efficient
+16
+
+Listing 1 ULTRA-HSTU pseudocode with activation rematerialiation.
+1
+c l a s s
+HSTULayerFunction ( torch . autograd . Function ) :
+2
+@staticmethod
+3
+def
+forward ( ctx ,
+x , norm_w,
+linear_w_1 ,
+gated_norm_w ,
+linear_w_2 ) :
+4
+normed_x = norm_forward (x , norm_w)
+5
+u ,
+v ,
+q ,
+k = silu_forward (addmm(normed_x ,
+linear_w_1 ) )
+6
+attn = attention_forward (q ,
+k ,
+v)
+7
+y = gated_norm_forward ( attn ,
+u ,
+gated_norm_w)
+8
+out = addmm(y ,
+linear_w_2 ,
+bias=x)
+9
+ctx . save_for_backward (x ,
+u ,
+attn , norm_w,
+linear_w_1 ,
+gated_norm_w ,
+linear_w_2 )
+10
+return
+out
+11
+@staticmethod
+12
+def
+backward ( ctx ,
+dout ) :
+13
+x ,
+u ,
+attn , norm_w,
+linear_w_1 ,
+gated_norm_w ,
+linear_w_2 = ctx .
+saved_tensors
+14
+y = gated_norm_forward ( attn ,
+u ,
+gated_norm_w) # rematerialize y
+15
+normed_x = norm_forward (x , norm_w)
+16
+u ,
+v ,
+q ,
+k = silu_forward (addmm(normed_x ,
+linear_w_1 ) ) # rematerialize u, v
+, q , k
+17
+dy = addmm( dout ,
+linear_w_2 .T)
+18
+d_linear_w_2 = addmm(y .T,
+dout )
+19
+dx = dout
+20
+dattn ,
+du ,
+d_gated_norm_w = gated_norm_backward (dy ,
+attn ,
+u ,
+gated_norm_w)
+21
+dq ,
+dk ,
+dv = attention_backward ( dattn ,
+q ,
+k ,
+v)
+22
+duqkv = concat (du ,
+dq ,
+dk ,
+dv )
+23
+uqkv = concat (u ,
+q ,
+k ,
+v)
+24
+d_addmm = silu_backward ( duqkv ,
+uqkv )
+25
+d_normed_x = addmm(d_addmm,
+linear_w_1 .T)
+26
+d_linear_w_1 = addmm(normed_x .T, d_addmm)
+27
+dx , d_norm_w = norm_backward (d_normed_x ,
+x , norm_w)
+28
+dx += dout
+29
+return dx , d_norm_w,
+d_linear_w_1 ,
+d_gated_norm_w ,
+d_linear_w_2
+AMD inference for large-scale models.
+F
+Scaling Laws for ULTRA-HSTU
+In this section we analyze the compute scaling laws
+for the approaches proposed in the present work. To
+do so we assume that the NE as a function of the
+compute follows a power-law of the form (Kaplan
+et al., 2020; Hoffmann et al., 2022),
+L(C) = αC−β,
+(9)
+where we have have assumed NE metrics L(C) →0
+as computational budget C →∞. In general this
+will cause us to systematically underestimate the true
+scaling law exponent by the factor,
+ˆβ = β∗
+
+1 −L∞
+L
+
+(10)
+where ˆβ indicates our estimate for the true parameter
+β∗and L∞is the irreducible error on the data. The
+reason for this assumption is that it allows us to
+keep α and β linear in log-log space without having
+to estimate the irreducible error term. As we show
+below, this assumption also ensures that estimates
+for scaling improvement are conservative.
+Consider the estimated scaling ratio between two
+models,
+ˆβ1
+ˆβ2
+= β∗
+1
+β∗
+2
+(1 −L∞/L1)
+(1 −L∞/L2) = β∗
+1
+β∗
+2
+R,
+(11)
+where R is a correction factor to the scaling ratio
+estimate. The scaling ratio tells us how much model 1
+improves on model 2’s scaling curve. When L1 < L2
+then R < 1. When model 1 also achieves improved
+scaling (which is always true for models with lower
+loss for the compute regions we consider) our estimate
+for the the scaling ratio is conservative.
+Interpretingscalinglawexponentimprovements. While
+improvements to scaling law exponents may appear
+modest at first glance, their impact compounds dra-
+17
+
+(a) Forward, H100
+(b) Forward, H100
+(c) Forward, Mi300
+(d) Forward, H100
+(e) Forward, H100
+(f) Forward, Mi300
+(g) Backward, H100
+(h) Backward, H100
+(i) Backward, H100
+(j) Backward, H100
+Figure 6 Performance comparison of ULTRA vs Baseline for both H100 and Mi300. ULTRA uses FlashAttention-V3-
+style algorithm, while baseline uses Triton implementation with FlashAttention-V2-style algorithm. (a)(d)(g)(h): full
+attention TFLOP/s for forward and backward attention kernels on H100. (b)(e)(i)(j): Speedup of ULTRA SLA over
+two baselines on H100: full attention with ULTRA implementation and SLA with baseline implementation. (c)(f):
+Speedup of ULTRA SLA over three baselines on Mi300.
+18
+
+102
+102.2
+102.4
+Train log(GFLOP / item)
+0.676
+0.678
+0.680
+0.682
+0.684
+C-NE
+HSTU, 0.69C
+0.0022
+ULTRA-HSTU, 0.71C
+0.0068
+102.2
+102.6
+103
+103.5
+Inference log(GFLOP / item)
+0.676
+0.678
+0.680
+0.682
+0.684
+C-NE
+HSTU, 0.69C
+0.0017
+ULTRA-HSTU, 0.7C
+0.006
+Figure 7 Overall Compute Scaling Law: We compare the scaling performance of ULTRA-HSTU against vanilla
+HSTU with respect to training FLOP (left) and inference FLOP (right). ULTRA-HSTU achieves 3.09× and 3.52×
+improvements in the training and inference compute scaling law exponents, respectively.
+102
+102.2
+102.4
+102.6
+102.8
+Train log(GFLOP / item)
+0.676
+0.678
+0.680
+0.682
+0.684
+C-NE
+HSTU, 0.7C
+0.0056
+HSTU-SLA, 0.71C
+0.0078
+102.2
+102.6
+Inference log(GFLOP / item)
+0.676
+0.678
+0.680
+0.682
+0.684
+C-NE
+HSTU, 0.7C
+0.0059
+HSTU-SLA, 0.72C
+0.01
+101.7
+102
+102.2
+102.4
+Inference log(GFLOP / item)
+0.710
+0.712
+0.714
+C-NE
+HSTU, 0.73C
+0.0044
+AT, 0.74C
+0.0079
+Figure 8 Ablation study on scaling: Semi-Local Attention (SLA) improves the training scaling exponent by 1.39× (left)
+and the inference scaling exponent by 1.69× (middle). Attention Truncation Scaling Law: combining self-attention
+and attention truncation mechanisms yields a 1.8× improvement in inference compute scaling (right).
+matically as compute budgets grow. To see this, con-
+sider two models with scaling laws L1(C) = αC−β1
+and L2(C) = αC−β2, where β1 = kβ2 for some im-
+provement factor k > 1. To achieve the same loss
+with model 2 that model 1 achieves with compute C,
+we require,
+C2 = Ck,
+(12)
+meaning that the compute advantage grows as a
+polynomial with the scaling ratio. For example, a 2×
+improvement in the scaling exponent implies that the
+baseline model requires quadratically more compute
+to match the improved model’s performance.
+Overall ULTRA-HSTU scaling performance. In Figure 7,
+we plot the fitted compute scaling laws for ULTRA-
+HSTU versus HSTU as a function of train and infer-
+ence FLOP, respectively. We see that ULTRA-HSTU
+improves the scaling exponent by 2.08× compared
+to HSTU with respect to training FLOP and 4.59×
+with respect to inference FLOP.
+Semi-Localattentionscalingperformance. We next iso-
+late the contribution of Semi-Local Attention (SLA)
+to the overall scaling improvements. Figure 8 show
+the scaling performance of SLA with respect to train-
+ing and inference FLOP. Our approach achieves an
+improvement to the scaling law exponent of 1.39×
+and 1.69× with respect to training and inference
+FLOP, respectively.
+Attention truncation scaling performance. Finally, we
+analyze the scaling behavior of our attention trunca-
+tion approach. While improvements to the scaling
+law exponent with respect to training FLOP are mi-
+nor, Figure 8 shows we achieve an improvement to
+the inference FLOP exponent of 1.8×.
+19

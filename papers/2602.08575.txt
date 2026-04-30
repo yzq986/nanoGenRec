@@ -1,0 +1,1596 @@
+RankGR: Rank-Enhanced Generative Retrieval with Listwise
+Direct Preference Optimization in Recommendation
+Kairui Fu∗
+Zhejiang University
+Hangzhou, China
+fukairui.fkr@zju.edu.cn
+Changfa Wu∗
+Alibaba Group
+Beijing, China
+wuchangfa.wcf@alibaba-inc.com
+Kun Yuan
+Alibaba Group
+Beijing, China
+yuankun.yuan@taobao.com
+Binbin Cao
+Alibaba Group
+Beijing, China
+simon.cbb@taobao.com
+Dunxian Huang
+Alibaba Group
+Hangzhou, China
+dunxian.hdx@alibaba-inc.com
+Yuliang Yan
+Alibaba Group
+Hangzhou, China
+yuliang.yyl@alibaba-inc.com
+Junjun Zheng
+Alibaba Group
+Hangzhou, China
+fangcheng.zjj@alibaba-inc.com
+Jianning Zhang
+Alibaba Group
+Hangzhou, China
+zhangjianning.zjn@alibaba-inc.com
+Silu Zhou
+Alibaba Group
+Hangzhou, China
+silu.zsl@alibaba-inc.com
+Jian Wu
+Alibaba Group
+Beijing, China
+joshuawu.wujian@alibaba-inc.com
+Kun Kuang
+Zhejiang University
+Hangzhou, China
+kunkuang@zju.edu.cn
+Abstract
+Generative retrieval (GR) has emerged as a promising paradigm in
+recommendation systems by autoregressively decoding identifiers
+of target items. Despite its potential, current approaches typically
+rely on the next-token prediction schema, which treats each to-
+ken of the next interacted items as the sole target. This narrow
+focus 1) limits their ability to capture the nuanced structure of
+user preferences, and 2) overlooks the deep interaction between de-
+coded identifiers and user behavior sequences. In response to these
+challenges, we propose RankGR, a Rank-enhanced Generative
+Retrieval method that incorporates listwise direct preference opti-
+mization for recommendation. RankGR decomposes the retrieval
+process into two complementary stages: the Initial Assessment
+Phase (IAP) and the Refined Scoring Phase (RSP). In IAP, we in-
+corporate a novel listwise direct preference optimization strategy
+into GR, thus facilitating a more comprehensive understanding of
+the hierarchical user preferences and more effective partial-order
+modeling. The RSP then refines the top-𝜆candidates generated
+by IAP with interactions towards input sequences using a light-
+weight scoring module, leading to more precise candidate evalua-
+tion. Both phases are jointly optimized under a unified GR model,
+∗Equal contribution
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+ensuring consistency and efficiency. Additionally, we implement
+several practical improvements in training and deployment, ulti-
+mately achieving a real-time system capable of handling nearly ten
+thousand requests per second. Extensive offline performance on
+both research and industrial datasets, as well as the online gains on
+the "Guess You Like" section of Taobao, validate the effectiveness
+and scalability of RankGR.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Large-scale Recommender System, Generative Retrieval
+ACM Reference Format:
+Kairui Fu, Changfa Wu, Kun Yuan, Binbin Cao, Dunxian Huang, Yuliang
+Yan, Junjun Zheng, Jianning Zhang, Silu Zhou, Jian Wu, and Kun Kuang.
+2018. RankGR: Rank-Enhanced Generative Retrieval with Listwise Direct
+Preference Optimization in Recommendation. In Proceedings of Make sure
+to enter the correct conference title from your rights confirmation email (Con-
+ference acronym ’XX). ACM, New York, NY, USA, 9 pages. https://doi.org/
+XXXXXXX.XXXXXXX
+1
+Introduction
+Recommender systems play a crucial role in uncovering latent user
+interests and mitigating the growing challenge of information over-
+load [8]. This benefit has led to widespread adoption across diverse
+domains, including e-commerce [17, 29] and social media [38, 42].
+To manage the massive scale of users and items, existing approaches
+typically divide the process into two stages: retrieval and ranking.
+As illustrated in Figure 1(a), the retrieval stage rapidly filters out
+arXiv:2602.08575v1  [cs.IR]  9 Feb 2026
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+K Fu et al.
+thousands of potentially relevant items from a massive corpus con-
+taining billions, which are then passed to the ranking stage for more
+precise evaluation. Consequently, the retrieval stage presents a key
+challenge in building scalable recommender systems to balance
+response time, coverage, and relevance [30].
+Recent advances in generative models [3, 32] have sparked in-
+terest in generative retrieval (GR) as a promising alternative to tra-
+ditional methods like collaborative filtering [11, 33] or two-tower
+architectures [14, 16, 30]. Unlike these methods, which typically
+rely on similarity matching between user and item embeddings,
+generative retrieval in Figure 1(b) aims to directly produce a set
+of candidate items based on user behavior sequences, thereby of-
+fering new opportunities for capturing sequential patterns in an
+end-to-end manner. TIGER [23] pioneers this paradigm by introduc-
+ing semantic identifiers (SIDs) using several tokens derived from
+quantized semantic embeddings of item content features, enabling
+the use of Transformer-based sequence-to-sequence models to au-
+toregressively decode the SID of the next item. Subsequent work
+FORGE [9] improves performance by optimizing SIDs using collab-
+orative signals and reducing item collisions in industrial settings.
+COBRA [34] combines the strengths of sparse and dense represen-
+tations through a cascading architecture, effectively mitigating the
+information loss typically introduced during quantization.
+(a) Multi-stage architecture of recommendation
+(b) Generative Retrieval
+Item Corpus
+> 10!
+Retrieval
+Stage
+Exposed to 
+user
+…
+Ranking Stage
+Pre-Rank
+Re-Rank
+Rank
+~10"
+~10!
+~10"
+~10#
+GR Model
+Tokenizer
+<C11248> <C26475>
+<C12763> <C28176>
+<C11687> <C23245>
+<C15782><C22938>
+…
+…
+Label
+ℒ$%
+BS
+Candidate
+Figure 1: (a) Multi-stage architecture in modern recom-
+mender systems. (b) A brief diagram of generative retrieval.
+Despite the successful deployment of these methods in real-
+world platforms [7, 9, 39], their prevalent use of next token prediction
+(NTP) may not be well-suited for generative retrieval due to the two
+fundamental challenges: i) Insufficient modelling of the partial
+order of user preference. In industrial recommender systems,
+training data for each historical sequence is typically derived from
+user feedback on exposed samples within a session. However, con-
+ventional NTP operates at the token level and treats these signals
+as isolated point-wise examples, which lack explicit modeling at the
+item level and fail to capture the underlying partial order preference
+among items. For example, within a single session, user preference
+for the coat and computer purchased is substantially stronger than
+the preference for the clicked broom or the chips that were exposed
+but uninteracted (i.e.,
+=
+>
+>
+). The inability to capture
+such nuanced preference hierarchies hinders the ability to distin-
+guish the truly relevant items, ultimately leading to suboptimal
+recommendations. ii) Lack of cross-effects between the candi-
+dates and user behavior sequences. During inference, GR models
+predict the next candidate tokens (e.g., <𝐶11687>) through the inner
+product of a single hidden state with the entire vocabulary, which
+resembles a two-tower matching framework. In recommender sys-
+tems, this approximation only captures shallow interactions and
+overlooks the rich relationships between each candidate and the
+complete behavior sequence. As a result, GRs fall short in effectively
+modeling the evolving user-item space, limiting their performance
+in practical scenarios.
+To address these challenges, this paper presents RankGR, a
+novel framework designed for Rank-enhanced Generative Retrieval
+in recommendation. The core idea of our approach is to explicitly
+model a deep understanding of the partial order of user prefer-
+ences during GR training while enabling meaningful interactions
+between candidate items and the behavior sequence at an afford-
+able computational cost. With this principle, RankGR integrates
+two key components: i) The Initial Assessment Phase (IAP) goes
+beyond the point-wise modeling of conventional NTP by intro-
+ducing a novel training schema named listwise direct preference
+optimization (LDPO), which is specifically tailored to capture the
+hierarchical and partially ordered nature of user preferences inher-
+ent in recommendation. Based on the standard GR model, we start
+by modeling the overall probability of each item within a session
+with the combination of its corresponding tokens. During training,
+explicit reward signals in recommendations (e.g., purchases, clicks)
+are incorporated via supervised contrastive learning to guide the
+model in understanding the relative quality of items within a ses-
+sion. This strategy eliminates the need for an explicit reward model,
+thus significantly simplifying the training process. ii) Subsequently,
+the Refined Scoring Phase (RSP) builds upon the hidden states
+generated by IAP and the top-𝜆decoded candidate SIDs. It employs
+a lightweight scoring module to enable deep interaction between
+each candidate and the rich semantic information embedded in the
+input sequence, leading to fine-grained scoring for each candidate.
+RSP breaks the limitations of inner-product-based approximations
+commonly used in IAP and existing methods, resulting in more
+accurate and semantically informed scoring of candidate SIDs. The
+lightweight module within RSP is jointly trained with IAP, thus
+forming an efficient training framework. Furthermore, to handle
+tens of thousands of requests per second in industrial settings, we
+also propose several engineering optimizations that guarantee real-
+time and high-fidelity responsiveness to user requests. In summary,
+the main contributions of our paper can be summarized as follows:
+• We investigate the fundamental limitations of current GRs, partic-
+ularly their inability to capture hierarchy preference and rich in-
+teractions between retrieved items and user behavior sequences,
+which hinder their ability to preserve several interesting items
+for the subsequent ranking stage.
+• We propose RankGR, a rank-enhanced generative retrieval frame-
+work for recommendation. Equipped with the listwise direct pref-
+erence optimization in IAP and the extra scoring module in RSP,
+RankGR breaks the limitations of existing methods and provides
+new directions for the further development of GR.
+• Extensive offline comparison and additional analysis demon-
+strate the effectiveness of RankGR. Specifically, deployed in the
+Guess You Like Section for Taobao’s homepage recommendation,
+RankGR brings a notable 1.08% increase in Item Page Views.
+
+RankGR: Rank-Enhanced Generative Retrieval with Listwise Direct Preference Optimization in Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+2
+Related Work
+2.1
+Generative Retrieval
+The development of generative models has led to the development
+of generative retrieval (GR) in recommender systems, which en-
+ables more flexible modeling by autoregressively generating item
+representations from historical behaviors. Representative methods
+like HSTU [37] adopt stacked hierarchical sequential transduction
+units to enhance feature interactions and selection, demonstrat-
+ing how GR can benefit from scaling laws observed in large-scale
+recommendation systems. To prevent information loss due to the
+lack of explicit feature crosses, MTGR [10] incorporates a feature
+structure that aligns with traditional recommenders, ensuring com-
+patibility within the generative framework. TIGER [23] leverages
+the capability of generative models [32] to construct semantic iden-
+tifiers and employs beam search to retrieve the next potential items.
+FORGE [9] then introduces improvements in both the generation
+and post-processing of SIDs, achieving notable performance gains
+with the same model architecture. ETEGRec [18], on the other hand,
+integrates the generation of semantic IDs with GR training in an
+end-to-end manner, enabling more coherent learning of user pref-
+erences. Further methods [4, 7] advance this line of research by
+incorporating reinforcement learning to better align with user pref-
+erences, thus improving long-term engagement and satisfaction.
+2.2
+Preference Alignment
+Preference alignment is a crucial aspect of training large language
+models (LLMs) to ensure their outputs align with human expecta-
+tions. Several methods [5, 21, 22, 40] have been proposed in this
+area to offer distinct approaches to integrating human feedback
+into the learning process. One prominent method is Direct Pref-
+erence Optimization (DPO), which directly incorporates human
+preferences into the model’s training by optimizing a loss function
+based on pairwise comparisons [22]. Subsequent Multi-sample Di-
+rect Preference Optimization (mDPO) extends DPO by focusing on
+group-wise characteristics, which is more effective in optimizing
+collective characteristics for generative models than single-sample
+comparison [28]. Another approach, Preference Flow Matching
+(PFM), uses flow-based generative models to transform less pre-
+ferred data into preferred outcomes, reducing reliance on extensive
+fine-tuning [15]. In recommendation, several approaches [4, 7] also
+utilize DPO to capture fine-grained user preferences. The fundamen-
+tal difference between RankGR and these works in recommender
+systems lies in the capture of multi-level preferences and the explicit
+interaction between candidate items and historical sequence.
+3
+Methodology
+In this section, we will describe the proposed Rank-enhanced
+Generative Retrieval (RankGR) framework in detail. Specifically,
+Section 3.1 presents a brief overview of the workflow for both SID
+generation and GR training as shown in Figure 2(a). Subsequent
+Section 3.2 and Section 3.3 detail the Initial Assesment Phase (IAP)
+with listwise direct preference optimization and the Refined Scoring
+Phase (RSP) for more precise assesment in order. We further elabo-
+rate on the overall deployment pipeline with several engineering
+optimizations in Figure 3 of Section 3.4.
+3.1
+Problem Formulation
+In the context of recommender systems, there exists a set of users
+U = {𝑢1,𝑢2, · · · ,𝑢𝑁𝑢} and items I = {𝑖1,𝑖2, · · · ,𝑖𝑁𝑖}, with their
+respective cardinalities denoted as 𝑁𝑢and 𝑁𝑖, respectively. The
+goal of generative retrieval (GR) is to autoregressively decode the
+identifier of the next item based on the identifiers of the historical
+interactions. Unlike previous research [17, 37], which typically
+encodes each item using meaningless single-token identifiers, the
+advancement of generative models [2, 26] enables GR to encode
+each item 𝑖using rich multi-modal features H𝑖.
+As illustrated in Figure 2 (a), the features of item 𝑖are encoded
+into the semantic identifier (SID) composed of discriminative multi-
+level semantic codewords {𝑐𝑖
+1, . . . ,𝑐𝑖
+𝑚}1 through the residual quan-
+tized variational autoencoder (RQ-VAE) [36], where 𝑚denotes the
+number of codewords within SID. Formally, the encoding process
+of the 𝑙-th codeword 𝑐𝑖
+𝑙can be formulated as:
+𝑐𝑖
+𝑙= arg min
+𝑐∈[1,𝑚]
+H𝑖
+𝑙−𝑞𝑐
+𝑙
+,
+(1)
+where H𝑖
+𝑙is obtained as the residual between the input feature
+H𝑖
+𝑙−1 and the nearest vector 𝑞𝑐
+𝑙−1 from the previous codebook. At
+the first level (𝑙= 1), the initial residual is defined as H𝑖
+1 = H𝑖.
+Once the SIDs are allocated, they will be fixed, and GR can be
+trained over the entire dataset using the next-token prediction loss:
+LNTP = 1
+𝑁𝑢
+𝑁𝑢
+∑︁
+𝑗=1
+𝑇∑︁
+𝑡=1
+𝑚
+∑︁
+𝑘=1
+−log 𝑃𝜃,𝜏(𝑐𝑖(𝑡)
+𝑘
+| 𝑥𝑗
+<𝑡,𝑐𝑖(𝑡)
+<𝑘),
+(2)
+where 𝑇denotes the length of interaction for user 𝑢(𝑗) and 𝑖(𝑡) is
+the 𝑡-th interacted item. 𝑥𝑗
+<𝑡represents the concatenation of SIDs
+from the historical interactions of user 𝑗, and each 𝑥𝑗
+𝑡is made of
+an 𝑚-level SID [𝑐𝑖(𝑡)
+1
+,𝑐𝑖(𝑡)
+2
+, . . . ,𝑐𝑖(𝑡)
+𝑚]. Besides, 𝜃and 𝜏denote the
+parameters of the GR backbone model MGR and the tokenizer for
+codewords, respectively.
+3.2
+Initial Assesment Phase
+As described in Equation 2, the current training paradigm typically
+operates at the token and codeword level, thereby failing to explic-
+itly model the intensity of user preference for items composed of
+exactly 𝑚codewords. To address this, we propose the Initial Asses-
+ment Phase (IAP) based on the current GR schema in Equation 2 to
+capture the hierarchical structure of user preferences over items.
+3.2.1
+Item level modeling. Given the fact that each item 𝑖(𝑡) is
+represented by a sequence of 𝑚codewords {𝑐𝑖(𝑡)
+1
+, . . . ,𝑐𝑖(𝑡)
+𝑚}, the
+GR model would autoregressively generate a sequence of the cor-
+responding hidden states {ℎ𝑖(𝑡)
+1
+,ℎ𝑖(𝑡)
+2
+, . . . ,ℎ𝑖(𝑡)
+𝑚} for the next item
+prediction:
+ℎ𝑖(𝑡)
+𝑙
+= MGR(𝑥𝑗
+<𝑡,𝑐𝑖(𝑡)
+<𝑙), ∀𝑙∈[1,𝑚].
+(3)
+The hidden states are then used to compute the similarity across
+all codewords in this level. Specifically, the similarity between the
+hidden stateℎ𝑖(𝑡)
+𝑙
+and the corresponding codeword𝑐𝑖(𝑡)
+𝑙
+is computed
+via the inner product followed by softmax normalization:
+𝑝𝑙(𝑐𝑖(𝑡)
+𝑙
+) = softmax(ℎ𝑖(𝑡)
+𝑙
+⊤emb(𝑐𝑖(𝑡)
+𝑙
+)),
+(4)
+1In this paper, we use superscripts and subscripts to denote the 1st level (e.g., each
+item) and 2nd level classification (e.g., the codeword of items), separately.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+K Fu et al.
+Generation of Identifiers
+(a)
+(c) Refined Scoring Phase
+(b)
+Generative Retrieval Backbone
+LM Head
+Token
+Embedding
+SIDs
+Hidden
+State
+𝓛𝑳𝑫𝑷𝑶
+Positive 
+Samples
+Sigmoid
+Rank Head
+K
+V
+Initial Assessment Phase
+①
+②
+③
+④
+𝓛𝑪𝑬
+<a_1><b_1><a_7><b_6><a_5><b_2> <a_4><b_9>
+Token 
+Embedding
+Legend
+Tokenizer
+Encoder
+Decoder
+Waterproof 
+outdoor jacket
+Image
+Text
+Post Process
+<a_1>
+<b_1>
+Semantic 
+Embedding
+Target
+Item
+Hidden 
+State
+Pay & Click 
+& Expose
+Pseudo
+expose
+𝓛𝑩𝑪𝑬
+Item-1
+Item-2
+Item-K
+SID-1
+SID-2
+0.87
+0.77
+0.56
+0.64
+0.45
+0.45
+…
+×
+×
+×
+Q
+Top-K
+SIDs
+(2-level)
+…
+Target SIDs
+…
+…
+…
+Figure 2: Overview of the training of RankGR. (a) The generation process of semantic identifiers. (b) The initial assessment
+phase aims to capture both the sequential pattern and the partial order relations. (c) The refined scoring phase to provide a
+more accurate prediction of those candidates from the initial assesment.
+where emb(𝑐𝑖(𝑡)
+𝑙
+) denotes the vector representation of the ground-
+truth codeword at level 𝑙. Therefore, the final score for item 𝑖(𝑡) is
+defined as aggregating the log-probabilities across all layers:
+𝜋(𝑖(𝑡)) = log
+𝑚
+Ö
+𝑙=1
+𝑝𝑙(𝑐𝑖(𝑡)
+𝑙
+) =
+𝑚
+∑︁
+𝑙=1
+log𝑝𝑙(𝑐𝑖(𝑡)
+𝑙
+).
+(5)
+3.2.2
+Listwise direct preference optimization. Although user pref-
+erence alignment [19, 31] has been successfully applied to existing
+methods [4, 7, 41], we argue that they commonly rely on training a
+reward model to achieve the alignment process, which hinders the
+possibility of end-to-end training and is unfavorable for iterative
+optimization in real-world production. Moreover, these approaches
+typically utilize only pairwise loss to guide learning, limiting their
+ability to model the prevalent partial order relationships inherent
+in recommendation systems.
+To address these limitations, we propose Listwise Direct Prefer-
+ence Optimization (LDPO), which directly leverages high-quality
+user feedback data of each session as supervision signals to guide
+the learning process. As illustrated in Figure 2, we model the partial-
+order signals at four hierarchical levels G4, G3, G2, and G1: purchase,
+click, exposure without click, and pseudo-exposure (i.e., items se-
+lected by the ranking module but not actually shown to users).
+During training, LDPO requires that the scores for items within
+one of the four levels are strictly smaller than those of items with a
+higher level, which is beyond the widely adopted pair-wise loss.
+Formally, given the historical sequence 𝑥𝑗with length𝑇for user
+𝑗in Equation 2, we modified it as follows to enable the efficient
+calculation towards different preferences in a single sample:
+𝑥𝑗
+train = [𝑐𝑖(1)
+1
+, . . . ,𝑐𝑖(1)
+𝑚, . . . ,𝑐𝑖(𝑇)
+1
+, . . . ,𝑐𝑖(𝑇)
+𝑚
+|                                     {z                                     }
+User History
+,𝑐𝑝1
+1 , . . . ,𝑐𝑝1
+𝑚, . . . ,𝑐𝑝𝐾
+𝑚
+|                   {z                   }
+Target Items
+],
+(6)
+where 𝑝𝑘denote the items from different levels G𝑘. Each target item
+of different hierarchies is modelled with respect to the historical
+interactions without any mutual interference. Therefore, to ensure
+that the model does not attend to other target items of the same
+session, the attention mask is modified as:
+𝑀𝑡𝑖𝑡𝑗=
+(
+0,
+if 𝑡𝑗≤𝑡𝑖∧(𝑡𝑗∈𝑥𝑗∨∃𝑘, {𝑡𝑖,𝑡𝑗} ⊆𝑝𝑘)
+−∞,
+otherwise
+.
+(7)
+The mask 𝑀𝑡𝑖𝑡𝑗allows attention from query 𝑡𝑖to key 𝑡𝑗if and only
+if the key position 𝑗precedes or equals the query position 𝑖(𝑗≤𝑖),
+and the key 𝑡𝑗either belongs to the historical sequence or belongs
+to the same target item as the query 𝑡𝑖.
+The LDPO loss is then applied over items from all four preference
+levels G1, . . . , G4, with the following formulation:
+LLDPO = −
+3
+∑︁
+𝑗=1
+∑︁
+𝑘∈G𝑗+1
+log
+ 
+𝑒𝛽𝜋(𝑘)
+𝑒𝛽𝜋(𝑘) + Í
+𝑖∈G1∪···∪G𝑗𝑒𝛽𝜋(𝑖)
+!
+,
+(8)
+where 𝜋(𝑘) is the IAP score of item 𝑘defined in Equation 5.
+In addition to the LDPO loss, the sequence of Equation 6 can
+also be used for the NTP loss defined in Equation 2 with minor
+modifications. Specifically, we broaden the definition of positive
+labels to encompass purchase, click, exposure without click, and
+pseudo-exposure:
+Gpos = {G1, G2, G3, G4}.
+(9)
+The NTP loss is then computed as:
+LNTP = 1
+𝑁𝑢
+𝑁𝑢
+∑︁
+𝑗=1
+∑︁
+𝑝∈Gpos
+𝑚
+∑︁
+𝑙=1
+−log 𝑃𝜃,𝜏(𝑐𝑝
+𝑙| 𝑥𝑗,𝑐𝑝
+<𝑙).
+(10)
+To prevent GR from the overemphasis on preference alignment, we
+train the NTP and LDPO objectives in a unified manner:
+LIAP = LNTP + 𝛼· LLDPO,
+(11)
+
+RankGR: Rank-Enhanced Generative Retrieval with Listwise Direct Preference Optimization in Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+with 𝛼being a hyperparameter. Another benefit is that the co-
+optimization could leverage the full set of user interactions, rather
+than relying on a small subset of users to approximate global be-
+havior. This prevents the model from learning spurious patterns or
+biases that may be specific to certain subpopulations and do not
+generalize well to broader user scenarios [4, 41].
+3.3
+Refined Scoring Phase
+Despite the effectiveness to model the partial order of user pref-
+erences, IAP still relies on an approximation through the inner
+product between each codeword and the hidden state {ℎ𝑖(𝑡)
+𝑙
+}𝑚
+𝑙=1 in
+Equation 4. To overcome this limitation, we introduce the Refined
+Scoring Phase (RSP) with a lightweight module to refine the initial
+scores by enabling deep interaction between each candidate and
+the rich semantic information in the input sequence.
+3.3.1
+Candidate-Centric Interaction. Specifically, given the input
+sequence {𝑥𝑗
+<𝑇,𝑐𝑖(𝑇)
+<𝑙} as input, we build upon Equation 3 to acquire
+the next hidden stateℎ𝑖(𝑇)
+𝑙
+, where𝑖(𝑇) here denotes the𝑇-th item in
+the sequence and corresponds to the target item. Unlike the standard
+inner product approach in IAP and vanilla GRs, in Figure 2(c) we
+further exploit the multi-level preference signals introduced by IAP
+and retain the Top-𝜆𝑙codewords at level 𝑙as C𝑖(𝑇)
+𝑙
+:
+C𝑖(𝑇)
+𝑙
+= Top-K
+
+Softmax(ℎ𝑖(𝑇)
+𝑙
+,𝜏), 𝐾= 𝜆𝑙
+
+, ∀𝑙∈[1,𝑚]
+(12)
+where the {𝜆𝑙}𝑚
+𝑙=1 are hyperparameters to control the number of
+codewords preserved in each level. The codeword set C𝑖(𝑇)
+𝑙
+is then
+used to perform a comprehensive interaction between these can-
+didates and all previously generated hidden states to refine the
+estimation in IAP. To prevent the information loss of current hid-
+den state ℎ𝑖(𝑇)
+𝑙
+, we would update it into H in advance:
+H =
+n
+ℎ𝑖(0)
+2
+, . . . ,ℎ𝑖(𝑇−1)
+1
+, . . . ,ℎ𝑖(𝑇)
+𝑙−1 ,ℎ𝑖(𝑇)
+𝑙
+o
+.
+(13)
+Subsequently, the rank head made of a target attention operation
+is performed over H, treating it as the set of key-value pairs (𝐾,𝑉),
+while using each codeword ˜𝑐𝑙∈C𝑖(𝑇)
+𝑙
+itself as the query vector.
+Formally, the attention output with full interaction between
+candidate codeword and input sequences is computed as:
+˜ℎ𝑖(𝑇)
+𝑙,˜𝑐𝑙
+= Attention(𝑄= emb( ˜𝑐𝑙), 𝐾= H,𝑉= H), ∀˜𝑐𝑙∈C𝑖(𝑇)
+𝑙
+. (14)
+The resulting vector ˜ℎ𝑖(𝑇)
+𝑙,˜𝑐𝑙
+is then passed through a multi-layer
+perceptron (MLP) followed by a sigmoid function 𝜎to produce a
+score indicating the relevance of the codeword at this timestamp:
+𝑠𝑇
+𝑙,˜𝑐𝑙= 𝜎(MLP( ˜ℎ𝑖(𝑇)
+𝑙,˜𝑐𝑙)) ∈(0, 1), ∀˜𝑐𝑙∈C𝑖(𝑇)
+𝑙
+,
+(15)
+where 𝜎denotes the sigmoid function. This procedure is repeated
+𝑚times to obtain scores for all 𝑚levels using the corresponding
+level-specific hidden state ℎ𝑖(𝑇)
+𝑙
+.
+During training, we employ the binary cross-entropy (BCE) loss
+to train the model:
+LBCE = −1
+𝑁𝑢
+𝑁𝑢
+∑︁
+𝑗=1
+𝑚
+∑︁
+𝑙=1
+∑︁
+˜𝑐𝑙∈C𝑖(𝑇)
+𝑙
+𝑦𝑇
+𝑙,˜𝑐𝑙log(𝑠𝑇
+𝑙,˜𝑐𝑙) + (1−𝑦𝑇
+𝑙,˜𝑐𝑙) log(1−𝑠𝑇
+𝑙,˜𝑐𝑙),
+(16)
+where 𝑦𝑇
+𝑙,˜𝑐𝑙∈{0, 1} is the ground truth label, which equals 1 if ˜𝑐𝑙is
+the true target item at level 𝑙based on Equation 9, and 0 otherwise.
+To support the continuous updating of GRs in an online produc-
+tion, the IAP and RSP stages will be jointly optimized. The overall
+loss function is defined as follows:
+L = LBCE + LIAP.
+(17)
+3.3.2
+Inference Procedure. During inference, the proposed RankGR
+framework follows a two-stage decoding pipeline. In the first stage,
+IAP generates candidate codewords at each level 𝑙∈[1,𝑚] and re-
+tains the top-𝜆𝑙candidates based on their IAP scores. These selected
+codewords are then passed to RSP for further measurement.
+At each level 𝑙, the top-B𝑙codewords with the highest refined
+scores are retained as partial candidates for beam search, where B𝑙
+denotes the beam size at that level. As illustrated in Figure 2(c), the
+overall score of an item is computed as the product of the per-level
+codeword scores:
+𝑠𝑇( ˜𝑐1, . . . , ˜𝑐𝑚) = log
+𝑚
+Ö
+𝑙=1
+𝑠𝑇
+𝑙,˜𝑐𝑙=
+𝑚
+∑︁
+𝑙=1
+log𝑠𝑇
+𝑙,˜𝑐𝑙.
+(18)
+3.4
+System Deployment
+Streaming 
+Training
+Recommendation 
+Engine
+Retrieval
+Engine
+Precompute 
+Engine
+Message 
+Queue
+Streaming 
+Processing
+Redis
+LLM
+Inference
+Platform
+Real-time
+Request
+Asynchronous
+Request
+Request
+Cache 
+Result
+①
+②
+③
+④
+Prompt 
+Construction
+Real-time
+Sample
+Stream
+Hourly Model
+Update
+Figure 3: Detailed deployment process of RankGR.
+The detailed deployment architecture of the proposed RankGR
+framework is illustrated in Figure 3. To address the inherent latency
+challenges of LLMs in real-time recommendation scenarios, we
+design an asynchronous architecture that separates heavy model
+inference from online serving, while maintaining model freshness
+through streaming training.
+3.4.1
+Asynchronous Pre-computation Architecture. To reconcile the
+high inference cost of LLMs with the strict low-latency require-
+ments of online serving, RankGR adopts an asynchronous pre-
+computation strategy. The core innovation lies in the latency mask-
+ing technique within the workflow:
+• Early Triggering: The Recommendation Engine initiates the
+Asynchronous Request immediately at the onset of the user re-
+quest lifecycle. This strategic placement creates a critical time
+window (typically > 100ms) where LLM inference runs in parallel
+with other system tasks (e.g., request parsing, feature extraction).
+• Prompt Construction: Upon receiving the signal, the Precom-
+pute Engine constructs context-aware prompts. Since this occurs
+asynchronously, it allows for sophisticated prompt engineering
+without blocking the main request thread.
+• LLM Inference: The constructed prompts are dispatched to
+the LLM Inference Platform. To strictly adhere to the real-time
+constraints, we optimize the engine using the RTP-LLM frame-
+work [1]. Techniques such as load balance, KV cache reuse, and
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+K Fu et al.
+kernel-level fusion are employed to reduce the inference latency
+to 60ms, ensuring generation within the reserved time window.
+• Caching Strategy: The candidate items generated by IAP and
+RSP of RankGR are stored in Redis. By the time the main recom-
+mendation pipeline reaches the Retrieval Engine, the generated
+items are already populated in the cache, enabling pseudo-real-
+time retrieval.
+3.4.2
+Real-time Retrieval and Serving. For online requests, the sys-
+tem prioritizes responsiveness. The Recommendation Engine issues
+a Real-time Request to the Retrieval Engine. Instead of invoking
+RankGR directly—which would incur unacceptable delays—the Re-
+trieval Engine fetches the pre-computed results from Redis. This
+design effectively decouples the inference latency from the query-
+time latency, ensuring the system remains responsive even under
+high concurrency.
+3.4.3
+Streaming Training and Model Updates. To capture shifting
+user preferences and evolving data distributions, RankGR incorpo-
+rates a closed-loop online learning mechanism:
+• Data Ingestion: Real-time interaction data flows into a Message
+Queue and is processed to generate a Real-time Sample Stream.
+• Online Learning: These samples feed into the Streaming Train-
+ing module, which performs incremental updates of RankGR.
+• Model Synchronization: The system executes an Hourly Model
+Update, synchronizing the fine-tuned weights back to the LLM
+Inference Platform. This ensures that the deployment remains
+robust and adaptive to temporal distribution shifts.
+4
+Experiment
+In this section, we conduct a series of offline experiments on both
+research and industrial datasets, as well as an online A/B test in the
+"Guess You Like" section of Taobao’s homepage recommendation
+to demonstrate the effectiveness of the proposed RankGR.
+Table 1: Statistics of the dataset.
+#users
+#Items
+#Interactions
+Sparsity
+Amazon
+2,524,981
+714,957
+12,530,806
+99.98%
+Taobao
+0.2 billion
+1.0 billion
+0.9 trillion
+99.99%
+4.1
+Experimental Setting
+4.1.1
+Dataset. We evaluate RankGR on two datasets of varying
+sizes, with their statistical characteristics summarized in Table 1.
+Amazon Clothing_Shoes_and_Jewelry2 contains user reviews col-
+lected from Amazon in 2023 by McAuley Lab, where each user-item
+interaction contains a user-id, an item-id, and the corresponding
+timestamp [13]. The Taobao dataset is derived from industrial sce-
+narios on Taobao. We randomly sampled data from traffic logs
+of Taobao from January 11th to January 18th, 2026, forming the
+Taobao dataset, which is suitable for large-scale distributed training
+models and better reflects real-world recommendation tasks.
+2https://amazon-reviews-2023.github.io/
+4.1.2
+Baselines. To provide a reliable comparison, we select six
+traditional retrieval-based methods and three generative retrieval-
+based methods to serve as additional baselines:
+• YouTubeDNN [6] models user preferences by aggregating his-
+torical item embeddings through average pooling, forming a
+compact user representation for efficient candidate generation.
+• SASRec [14] proposes to model user behavior sequences with
+the self-attention mechanisms in the Transformer framework,
+capturing complex dependencies among items effectively.
+• Bert4Rec [24] extends the BERT pre-training strategy to sequen-
+tial recommendation by masking and reconstructing items in the
+sequence, thereby learning rich contextual representations.
+• Caser [25] employs convolutional operations over user interac-
+tions to capture both local and global patterns, making it flexible
+to model short-term and long-term interests.
+• NextItNet [35] utilizes dilated convolutions to model long-range
+dependencies in sequence, providing an efficient alternative to
+recurrent-based architectures for next-item prediction.
+• CORE [12] introduces an encoder that generates session repre-
+sentations via a linear weighted sum of item embeddings, ensur-
+ing consistency between session and item representations within
+the same latent space.
+• HSTU [37] reformulates the standard retrieval task as a sequen-
+tial transduction problem, enabling systematic use of feature
+redundancies and enhancing overall efficiency.
+• TIGER [23] pioneers generative retrieval in recommendation
+that leverages semantic identifiers and sequence-to-sequence
+models to predict the next item a user might interact with.
+• FORGE [9] optimizes the generation of semantic identifiers from
+the perspective of collaborative information and ID collisions,
+thus preserving the effectiveness and utilization of SIDs.
+4.1.3
+Implementation Details. The SID generation in RankGR is
+implemented based on the recently proposed FORGE framework [9].
+For generative retrieval tasks on both the Amazon and Taobao
+datasets, we utilize the pretrained Qwen2.5-0.5B-Instruct [27] as
+the base model. The historical user behaviors are truncated to a
+maximum length of 2000 tokens. The model is fine-tuned on the
+respective dataset with a maximum token limit of 2304, where
+the source and target sequence lengths are set to 2048 and 256,
+respectively. For the Amazon and Taobao datasets, the training is
+carried out for five and one epochs, respectively, using a per-device
+batch size of 40 with 32 in-house PPU-ZW810E GPUs. A linear
+learning rate scheduler is employed with a base learning rate of
+5 × 10−5, and all training procedures are conducted in bfloat16
+precision to improve computational efficiency. During inference,
+we apply the dynamic beam search to the two-level SIDs, where
+the beam sizes are configured as {500, 1400}. Notably, for the RSP
+stage, we fix the hyperparameter {𝜆𝑙}2
+𝑙=1 to {1400, 1400} to perform
+more rigorous Top-𝜆selection.
+4.1.4
+Evaluation Metrics. Following prior work, we adopt the Hit
+Rate (HR) as the primary evaluation metric to assess the perfor-
+mance of the retrieval model [9, 20, 29], which is formulated as:
+HR@K =
+1
+|U|
+|U|
+∑︁
+𝑗=1
+𝐼𝑗
+𝐾∩𝐼𝑗
+truth
+𝐼𝑗
+truth
+,
+(19)
+
+RankGR: Rank-Enhanced Generative Retrieval with Listwise Direct Preference Optimization in Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 2: The performance of evaluated methods on the Taobao dataset.
+Method
+Click
+PV
+HR@20 HR@100 HR@500 HR@1000 HR@2000 HR@20 HR@100 HR@500 HR@1000 HR@2000
+Traditional Retrieval Methods
+YoutubeDNN
+2.46%
+5.36%
+9.28%
+11.01%
+12.62%
+0.28%
+1.91%
+5.29%
+6.77%
+7.49%
+SASRec
+3.72%
+8.34%
+13.01%
+15.72%
+18.18%
+0.40%
+2.02%
+7.42%
+12.40%
+16.40%
+Bert4Rec
+3.73%
+8.38%
+13.12%
+15.80%
+18.35%
+0.31%
+2.13%
+7.95%
+12.96%
+16.75%
+Caser
+3.17%
+7.96%
+11.80%
+14.67%
+16.88%
+0.29%
+1.89%
+6.98%
+11.73%
+15.42%
+NextItNet
+3.58%
+8.16%
+12.64%
+15.44%
+17.82%
+0.32%
+1.97%
+7.10%
+11.90%
+15.80%
+CORE
+4.20%
+9.18%
+15.90%
+18.85%
+21.60%
+0.39%
+2.34%
+8.10%
+13.20%
+17.40%
+Generative Retrieval Methods
+HSTU
+4.28%
+9.26%
+16.10%
+19.00%
+21.80%
+0.57%
+2.64%
+9.04%
+14.25%
+19.67%
+TIGER
+7.57%
+16.51%
+28.61%
+33.91%
+38.88%
+1.81%
+6.40%
+17.85%
+23.89%
+31.31%
+FORGE
+9.54%
+20.59%
+36.98%
+43.92%
+50.19%
+2.37%
+7.96%
+20.66%
+28.10%
+35.66%
+RankGR
+12.28%
+26.79%
+46.42%
+55.03%
+63.10%
+2.87%
+10.11%
+26.53%
+36.07%
+45.83%
+where 𝐼𝑗
+𝐾and 𝐼𝑗
+truth refer to the top-K retrieved items and the true
+interactions, respectively. To further evaluate the capability of cap-
+turing hierarchical user intents, the experiments on the Taobao
+dataset typically report hit rates over different levels: click and
+page view (PV). These metrics are denoted as HR_Click and HR_PV,
+respectively. For brevity, we omit the common prefix and refer to
+them as Click and PV throughout the paper.
+Table 3: The performance of evaluated methods on the Ama-
+zon dataset.
+Method
+HR@20
+HR@50
+HR@100
+HR@500
+Traditional Retrieval Methods
+YoutubeDNN
+1.74%
+2.68%
+3.85%
+8.56%
+SASRec
+1.81%
+2.82%
+4.09%
+9.22%
+Bert4Rec
+1.80%
+2.84%
+4.10%
+9.23%
+Caser
+1.73%
+2.65%
+3.81%
+8.50%
+NextItNet
+1.71%
+2.64%
+3.78%
+8.51%
+CORE
+1.47%
+2.67%
+3.85%
+9.29%
+Generative Retrieval Methods
+HSTU
+1.82%
+2.85%
+4.16%
+9.43%
+TIGER
+1.02%
+1.98%
+2.47%
+5.71%
+FORGE
+2.12%
+3.04%
+4.56%
+9.79%
+RankGR
+2.27%
+3.13%
+4.68%
+9.96%
+4.2
+Overall Performance
+In this section, we evaluate the effectiveness of RankGR on both the
+Taobao and Amazon datasets through the comparison with retrieval
+baselines. The detailed results are summarized in Table 2 and Table 3,
+from which we can conclude the following observations: i) More
+sophisticated neural architectures could lead to better perfor-
+mance. Among traditional retrieval models, YouTubeDNN achieves
+significantly lower performance across all metrics, which can be
+attributed to its relatively simple model structure that fails to cap-
+ture sequential user patterns effectively. In contrast, more advanced
+models like SASRec, Bert4Rec, and CORE demonstrate better perfor-
+mance by leveraging sequence modeling and attention mechanisms.
+ii) Semantic identifiers do benefit the retrieval task compared
+with the single token identifiers. On the Taobao dataset, the
+semantic identifier-based approaches TIGER and FORGE achieve
+superior results compared to HSTU with single-token item identi-
+fiers. This indicates the advantage of using semantic identifiers in
+modeling fine-grained item-related interactions. However, on the
+Amazon dataset, TIGER underperforms HSTU, which we attribute
+to potential noise or inconsistency in the multi-modal information
+associated with items in Amazon. In contrast, FORGE performs well
+on both datasets, indicating that further optimization of SIDs can ef-
+fectively mitigate such issues and improve robustness. iii) RankGR
+achieves state-of-the-art performance across all evaluation
+metrics on both datasets. Compared to existing retrieval methods,
+RankGR shows significant improvements across all metrics on both
+datasets. This improvement validates the necessity of our two-phase
+design: the Initial Assessment Phase enables coarse-grained prefer-
+ence alignment via listwise direct preference optimization, while
+the Refined Scoring Phase refines the relevance scores through deep
+interaction between candidates and historical sequences. Notably,
+on the Amazon dataset, RankGR achieves the most significant im-
+provements in top-𝐾metrics with smaller 𝐾, which indicates that
+RSP effectively refines item scores and promotes relevant items to
+higher ranks. These results demonstrate the capability of RankGR
+to identify items that users are more likely to interact.
+Table 4: Ablation study of different model variants on the
+Taobao dataset.
+Metric
+RankGR
+w.o. IAP
+w.o. RSP
+w.o. Both
+Click
+HR@20
+12.28%
+10.04%
+-18.28%
+10.99%
+-10.44%
+9.54%
+-22.34%
+HR@100
+26.79%
+21.44%
+-19.96%
+24.72%
+-7.72%
+20.59%
+-23.14%
+HR@500
+46.42%
+38.41%
+-17.23%
+44.36%
+-4.42%
+36.05%
+-20.33%
+HR@1000
+55.03%
+46.00%
+-16.41%
+52.93%
+-3.82%
+43.92%
+-20.19%
+HR@2000
+63.10%
+52.75%
+-16.40%
+60.95%
+-3.40%
+50.19%
+-20.46%
+PV
+HR@20
+2.87%
+2.47%
+-13.98%
+2.62%
+-8.71%
+2.37%
+-17.42%
+HR@100
+10.11%
+8.46%
+-16.32%
+9.24%
+-8.65%
+7.96%
+-21.23%
+HR@500
+26.53%
+21.83%
+-17.72%
+24.41%
+-7.99%
+20.66%
+-22.11%
+HR@1000
+36.07%
+29.62%
+-18.10%
+33.57%
+-6.95%
+28.10%
+-22.10%
+HR@2000
+45.83%
+37.46%
+-18.26%
+43.19%
+-5.75%
+35.66%
+-22.19%
+4.3
+Ablation Study
+To further assess the contribution of each component in RankGR, we
+conduct ablation experiments on the Taobao dataset by separately
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+K Fu et al.
+removing IAP, RSP, or both. The results are summarized in Table 4,
+from which our key observations are as follows:
+i) w/o IAP removes the listwise preference modeling. Despite
+retaining codeword-level autoregressive decoding and the refined
+assesment in RSP, the performance drops significantly across all
+metrics. For example, HR@20 for Click decreases by 18.28%, indi-
+cating that hierarchical user preferences play a significant role in
+the usage of GRs in recommendation.
+ii) w/o RSP disables the deep interaction between candidate
+items and historical sequences. While this variant could benefit
+from the partial-order modelling of IAP, lacking the inherent inter-
+actions between the input sequence and candidate codewords in
+RSP could still introduce substantial performance degradation. As
+we discovered in Table 2, the performance degradation becomes
+more severe as 𝐾decreases, providing further evidence that RSP
+indeed promotes interesting items to higher ranks with the scoring
+module.
+iii) w/o Both completely removes both IAP and RSP, reverting
+to a basic GR model. This leads to more than 20% performance
+degradation, demonstrating the complementary roles of IAP and
+RSP in achieving strong recommendation performance.
+1400
+480
+240
+120
+60
+Retained Codewords for RSP
+53.5
+54.0
+54.5
+55.0
+Hit Rate (%)
+55.03%
+54.97%
+54.88%
+54.61%
+53.63%
+1400
+480
+240
+120
+60
+Retained Codewords for RSP
+35.0
+35.2
+35.5
+35.8
+36.0
+36.2
+Hit Rate (%)
+36.07%
+36.06%
+35.99%
+35.80%
+35.21%
+Click Rate
+PV Rate
+Figure 4: Performance of RankGR in terms of HR@1000 with
+respect to the number of retaining codewords for RSP.
+4.4
+In-depth Analysis
+4.4.1
+Analysis of the number of retaining codewords in RSP. We
+evaluate the impact of different numbers of top codewords (𝜆2)
+retained from IAP during RSP. The analysis of 𝜆1 for the first code-
+word is omitted, as preliminary experiments showed that its value
+has little impact on RSP and it typically represents broad categories
+(e.g., electronics, clothing). As shown in Figure 4, both Click and
+PV rates increase once we increase 𝜆2, indicating that a larger can-
+didate space is beneficial for capturing diverse and relevant items.
+In contrast, the performance degradation at lower 𝜆2 values (e.g.,
+60) suggests that preserving too few candidates from IAP may lead
+to premature pruning of potentially relevant items, demonstrating
+the limitations of IAP. This result highlights the importance of
+maintaining appropriately codewords from IAP for RSP to balance
+accuracy and efficiency.
+4.4.2
+Analysis of the hyperparameter for the NTP and LDPO loss.
+To investigate how the hyperparameter 𝛼affects the training dy-
+namics in IAP and balances the contributions of listwise preference
+optimization LLDPO and next-token prediction LNTP, we vary the
+corresponding value of 𝛼and plot the impact in Figure 5. As 𝛼
+0.5
+1
+5
+10
+Hyper parameter 
+52.0
+52.8
+53.6
+54.4
+55.2
+Hit Rate (%)
+54.62%
+55.03%
+53.26%
+52.54%
+0.5
+1
+5
+10
+Hyper parameter 
+33.6
+34.4
+35.2
+36.0
+Hit Rate (%)
+35.98%
+36.07%
+34.65%
+33.67%
+Click Rate
+PV Rate
+Figure 5: Performance of RankGR in terms of HR@1000 on
+the Taobao dataset with respect to the hyperparameter 𝛼.
+increases from 0.5 to 1, both Click and PV rates improve, showing
+that a stronger emphasis on LDPO enhances the ability of GRs to
+capture hierarchical user preferences. However, when 𝛼exceeds 1,
+the performance starts to decline. We attribute this phenomenon
+to the overemphasis on preference alignment that undermines the
+basic autoregressive generation objective.
+Table 5: Online experiments from 20st Jan to 27th Jan.
+Model
+PVR
+IPV
+Transaction Count
+Base
+36.79%
+-
+-
+RankGR 49.88% +1.08%
++0.57%
+4.5
+Online Study
+We conduct online A/B testing of RankGR in the "Guess You Like"
+section on Taobao for the homepage recommendation, one of the
+most prominent recommendation scenarios of e-commerce in China.
+This deployment replaces the existing GR model (i.e., GRs without
+IAP and RSP) with our RankGR.
+The results from January 20th to January 27th are shown in
+Table 5. With a traffic coverage of 5%, RankGR brings significant
+improvements over the online production retrieval-ranking frame-
+work across multiple key online metrics. Specifically, with the asyn-
+chronous pre-computation architecture and streaming training pro-
+posed in Section 3.4, RankGR captures 49.88% of total exposures,
+indicating that it successfully retrieves about half of the exposed
+items among all deployed retrieval methods. Additionally, Item
+Page Views (IPV) and Transaction Count are improved by +1.08%
+and +0.57%, respectively. These improvements consistently confirm
+the effectiveness of RankGR in enhancing user engagement and
+commercial performance in real-world industrial settings.
+5
+Conclusion
+In this paper, we present RankGR, a novel method that leverages list-
+wise direct preference optimization and an additional lightweight
+rank head to enhance the training of GRs towards the hierarchy of
+user interests and in-depth modeling between candidate semantic
+identifiers and user sequences. Extensive comparisons with other
+methods and subsequent in-depth analysis on several real-world
+datasets demonstrate the effectiveness of RankGR. Notably, we fur-
+ther validate its effectiveness by deploying it in the "Guess You
+Like" section of Taobao and observing the commercial advantages
+it brings.
+
+RankGR: Rank-Enhanced Generative Retrieval with Listwise Direct Preference Optimization in Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+References
+[1] Alibaba. 2025. RTP-LLM: A High-Performance LLM Inference Engine. https:
+//github.com/alibaba/rtp-llm.
+[2] Jinze Bai, Shuai Bai, Shusheng Yang, Shijie Wang, Sinan Tan, Peng Wang, Junyang
+Lin, Chang Zhou, and Jingren Zhou. 2023. Qwen-VL: A Versatile Vision-Language
+Model for Understanding, Localization, Text Reading, and Beyond. arXiv preprint
+arXiv:2308.12966 (2023).
+[3] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan,
+Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+Askell, et al. 2020. Language models are few-shot learners. Advances in neural
+information processing systems 33 (2020), 1877–1901.
+[4] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong Xiao,
+Bowen Xue, Xuxin Zhang, Ying Yang, et al. 2025. OneSearch: A Preliminary
+Exploration of the Unified End-to-End Generative Framework for E-commerce
+Search. arXiv preprint arXiv:2509.03236 (2025).
+[5] Sayak Ray Chowdhury, Anush Kini, and Nagarajan Natarajan. 2024. Provably
+robust DPO: aligning language models with noisy feedback. In Proceedings of the
+41st International Conference on Machine Learning. 42258–42274.
+[6] Paul Covington, Jay Adams, and Emre Sargin. 2016. Deep neural networks
+for youtube recommendations. In Proceedings of the 10th ACM conference on
+recommender systems. 191–198.
+[7] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[8] Shuaishuai Feng, Junyan Meng, and Jiaxing Zhang. 2021. News recommendation
+systems in the era of information overload. Journal of web engineering 20, 2
+(2021), 459–470.
+[9] Kairui Fu, Tao Zhang, Shuwen Xiao, Ziyang Wang, Xinming Zhang, Chenchi
+Zhang, Yuliang Yan, Junjun Zheng, Yu Li, Zhihong Chen, et al. 2025. Forge:
+Forming semantic identifiers for generative retrieval in industrial datasets. arXiv
+preprint arXiv:2509.20904 (2025).
+[10] Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma,
+Mincong Huang, Xiaoguang Li, Chunzhen Jing, et al. 2025. Mtgr: Industrial-
+scale generative recommendation framework in meituan. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+5731–5738.
+[11] Xiangnan He, Lizi Liao, Hanwang Zhang, Liqiang Nie, Xia Hu, and Tat-Seng
+Chua. 2017. Neural collaborative filtering. In Proceedings of the 26th international
+conference on world wide web. 173–182.
+[12] Yupeng Hou, Binbin Hu, Zhiqiang Zhang, and Wayne Xin Zhao. 2022. Core:
+simple and effective session-based recommendation within consistent represen-
+tation space. In Proceedings of the 45th international ACM SIGIR conference on
+research and development in information retrieval. 1796–1801.
+[13] Yupeng Hou, Jiacheng Li, Zhankui He, An Yan, Xiusi Chen, and Julian McAuley.
+2024. Bridging Language and Items for Retrieval and Recommendation. arXiv
+preprint arXiv:2403.03952 (2024).
+[14] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[15] Minu Kim, Yongsik Lee, Sehyeok Kang, Jihwan Oh, Song Chong, and Se-Young
+Yun. 2024. Preference alignment with flow matching. Advances in Neural Infor-
+mation Processing Systems 37 (2024), 35140–35164.
+[16] Chao Li, Zhiyuan Liu, Mengmeng Wu, Yuchi Xu, Huan Zhao, Pipei Huang,
+Guoliang Kang, Qiwei Chen, Wei Li, and Dik Lun Lee. 2019. Multi-interest
+network with dynamic routing for recommendation at Tmall. In Proceedings of
+the 28th ACM international conference on information and knowledge management.
+2615–2623.
+[17] Zida Liang, Changfa Wu, Dunxian Huang, Weiqiang Sun, Ziyang Wang, Yuliang
+Yan, Jian Wu, Yuning Jiang, Bo Zheng, Ke Chen, et al. 2025. TBGRecall: A
+Generative Retrieval Model for E-commerce Recommendation Scenarios. arXiv
+preprint arXiv:2508.11977 (2025).
+[18] Enze Liu, Bowen Zheng, Cheng Ling, Lantao Hu, Han Li, and Wayne Xin Zhao.
+2025. Generative recommender with end-to-end learnable item tokenization.
+In Proceedings of the 48th International ACM SIGIR Conference on Research and
+Development in Information Retrieval. 729–739.
+[19] Keliang Liu, Dingkang Yang, Ziyun Qian, Weijie Yin, Yuchi Wang, Hongsheng
+Li, Jun Liu, Peng Zhai, Yang Liu, and Lihua Zhang. 2025. Reinforcement learning
+meets large language models: A survey of advancements and applications across
+the llm lifecycle. arXiv preprint arXiv:2509.16679 (2025).
+[20] Yue Meng, Cheng Guo, Xiaohui Hu, Honghu Deng, Yi Cao, Tong Liu, and Bo
+Zheng. 2025. User Long-Term Multi-Interest Retrieval Model for Recommenda-
+tion. In Proceedings of the Nineteenth ACM Conference on Recommender Systems.
+1112–1116.
+[21] Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela
+Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. 2022.
+Training language models to follow instructions with human feedback. Advances
+in neural information processing systems 35 (2022), 27730–27744.
+[22] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano
+Ermon, and Chelsea Finn. 2023. Direct preference optimization: Your language
+model is secretly a reward model. Advances in neural information processing
+systems 36 (2023), 53728–53741.
+[23] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[24] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential recommendation with bidirectional encoder rep-
+resentations from transformer. In Proceedings of the 28th ACM international
+conference on information and knowledge management. 1441–1450.
+[25] Jiaxi Tang and Ke Wang. 2018. Personalized top-n sequential recommenda-
+tion via convolutional sequence embedding. In Proceedings of the eleventh ACM
+international conference on web search and data mining. 565–573.
+[26] Qwen Team. 2024. Qwen2 technical report. arXiv preprint arXiv:2407.10671
+(2024).
+[27] Qwen Team. 2024. Qwen2.5: A Party of Foundation Models. https://qwenlm.
+github.io/blog/qwen2.5/
+[28] Chaoqi Wang, Zhuokai Zhao, Chen Zhu, Karthik Abinav Sankararaman, Michal
+Valko, Xuefei Cao, Zhaorun Chen, Madian Khabsa, Yuxin Chen, Hao Ma, et al.
+2024. Preference Optimization with Multi-Sample Comparisons. arXiv preprint
+arXiv:2410.12138 (2024).
+[29] Shaoqing Wang, Yingcai Ma, Kairui Fu, Ziyang Wang, Dunxian Huang, Yuliang
+Yan, and Jian Wu. 2026. PI2I: A Personalized Item-Based Collaborative Filtering
+Retrieval Framework. arXiv preprint arXiv:2601.16815 (2026).
+[30] Tao Wang, Xun Luo, Jinlong Guo, Yuliang Yan, Jian Wu, Yuning Jiang, and Bo
+Zheng. 2025. Beyond Existing Retrievals: Cross-Scenario Incremental Sample
+Learning Framework. arXiv preprint arXiv:2512.06381 (2025).
+[31] Junkang Wu, Yuexiang Xie, Zhengyi Yang, Jiancan Wu, Jinyang Gao, Bolin
+Ding, Xiang Wang, and Xiangnan He. 2024. $\beta$-DPO: Direct Preference
+Optimization with Dynamic $\beta$. In The Thirty-eighth Annual Conference
+on Neural Information Processing Systems.
+https://openreview.net/forum?id=
+ZfBuhzE556
+[32] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng,
+Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. 2025. Qwen3 technical
+report. arXiv preprint arXiv:2505.09388 (2025).
+[33] Xiaoyong Yang, Yadong Zhu, Yi Zhang, Xiaobo Wang, and Quan Yuan. 2020.
+Large scale product graph construction for recommendation in e-commerce.
+arXiv preprint arXiv:2010.05525 (2020).
+[34] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, et al. 2025. Sparse meets dense: Unified generative
+recommendations with cascaded sparse-dense representations. arXiv preprint
+arXiv:2503.02453 (2025).
+[35] Fajie Yuan, Alexandros Karatzoglou, Ioannis Arapakis, Joemon M Jose, and Xi-
+angnan He. 2019. A simple convolutional generative network for next item
+recommendation. In Proceedings of the twelfth ACM international conference on
+web search and data mining. 582–590.
+[36] Neil Zeghidour, Alejandro Luebs, Ahmed Omran, Jan Skoglund, and Marco
+Tagliasacchi. 2021. Soundstream: An end-to-end neural audio codec. IEEE/ACM
+Transactions on Audio, Speech, and Language Processing 30 (2021), 495–507.
+[37] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Michael He, et al. 2024. Actions speak louder than words:
+Trillion-parameter sequential transducers for generative recommendations. arXiv
+preprint arXiv:2402.17152 (2024).
+[38] Zhaoqi Zhang, Haolei Pei, Jun Guo, Tianyu Wang, Yufei Feng, Hui Sun, Shaowei
+Liu, and Aixin Sun. 2025. OneTrans: Unified Feature Interaction and Sequence
+Modeling with One Transformer in Industrial Recommender. arXiv preprint
+arXiv:2510.26104 (2025).
+[39] Zuowu Zheng, Ze Wang, Fan Yang, Jiangke Fan, Teng Zhang, Yongkang Wang,
+and Xingxing Wang. 2025. EGA-V2: An End-to-end Generative Framework for
+Industrial Advertising. arXiv preprint arXiv:2505.17549 (2025).
+[40] Han Zhong, Guhao Feng, Wei Xiong, Xinle Cheng, Li Zhao, Di He, Jiang Bian,
+and Liwei Wang. [n. d.]. DPO Meets PPO: Reinforced Token Optimization for
+RLHF. In ICML 2024 Workshop on Models of Human Feedback for AI Alignment.
+[41] Guorui Zhou, Hengrui Hu, Hongtao Cheng, Huanjie Wang, Jiaxin Deng, Jinghao
+Zhang, Kuo Cai, Lejian Ren, Lu Ren, Liao Yu, et al. 2025. OneRec-V2 Technical
+Report. arXiv preprint arXiv:2508.20900 (2025).
+[42] Jie Zhu, Zhifang Fan, Xiaoxie Zhu, Yuchen Jiang, Hangyu Wang, Xintian Han,
+Haoran Ding, Xinmin Wang, Wenlin Zhao, Zhen Gong, et al. 2025. Rankmixer:
+Scaling up ranking models in industrial recommenders. In Proceedings of the
+34th ACM International Conference on Information and Knowledge Management.
+6309–6316.

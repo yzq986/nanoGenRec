@@ -1,0 +1,2253 @@
+arXiv:2507.00715v1  [cs.IR]  1 Jul 2025
+EARN: Efficient Inference Acceleration for LLM-based Generative
+Recommendation by Register Tokens
+Chaoqun Yang
+chaoqun@yang.email.cn
+Tsinghua University
+Beijing, China
+Xinyu Lin∗
+xylin1028@gmail.com
+National University of Singapore
+Singapore, Singapore
+Wenjie Wang∗
+wenjiewang96@gmail.com
+University of Science and Technology
+of China
+Hefei, China
+Yongqi Li
+liyongqi0@gmail.com
+The Hong Kong Polytechnic
+University
+Hong Kong, China
+Teng Sun
+stbestforever@gmail.com
+Shandong University
+Qingdao, China
+Xianjing Han
+hanxianjing2018@gmail.com
+National University of Singapore
+Singapore, Singapore
+Tat-Seng Chua
+dcscts@nus.edu.sg
+National University of Singapore
+Singapore, Singapore
+Abstract
+Large Language Model-based generative recommendation (LLM-
+Rec) has achieved notable success, but it suffers from high infer-
+ence latency due to massive computational overhead and memory
+pressure of KV Cache. Existing KV Cache reduction methods face
+critical limitations: cache compression offers marginal acceleration
+given recommendation tasks’ short decoding steps, while prompt
+compression risks discarding vital interaction history. Through
+systematic analysis of attention patterns in LLMRec, we uncover
+two pivotal insights: 1) layer-wise attention sparsity inversion where
+early layers retain dense informative patterns while later layers
+exhibit high redundancy, and 2) dual attention sinks phenomenon
+where attention scores concentrate on both head and tail tokens of
+input sequences. Motivated by these insights, we propose EARN,
+an efficient inference framework that leverages the early layers
+to compress information into register tokens placed at the input
+sequence boundaries, then focuses solely on these tokens in the
+subsequent layers. Extensive experiments on three datasets, two
+LLMRec methods and two LLM architectures demonstrate EARN’s
+superiority, achieving up to 3.79x speedup and 80.8% KV Cache re-
+duction with better accuracy than the general finetuning approach.
+Our work bridges the efficiency-effectiveness gap in LLMRec, offer-
+ing practical deployment advantages for industrial scenarios.
+∗Corresponding authors. This research is supported by the National Research Founda-
+tion, Singapore under its National Large Language Models Funding Initiative (AISG
+Award No: AISG-NMLP-2024-002). Any opinions, findings and conclusions or recom-
+mendations expressed in this material are those of the author(s) and do not reflect the
+views of National Research Foundation, Singapore.
+This work is licensed under a Creative Commons Attribution 4.0 International License.
+KDD ’25, Toronto, ON, Canada
+© 2025 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-1454-2/2025/08
+https://doi.org/10.1145/3711896.3736919
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+LLM-based Recommendation, Inference Acceleration, KV Cache
+ACM Reference Format:
+Chaoqun Yang, Xinyu Lin, Wenjie Wang, Yongqi Li, Teng Sun, Xianjing Han,
+and Tat-Seng Chua. 2025. EARN: Efficient Inference Acceleration for LLM-
+based Generative Recommendation by Register Tokens. In Proceedings of
+the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining
+V.2 (KDD ’25), August 3–7, 2025, Toronto, ON, Canada. ACM, New York, NY,
+USA, 12 pages. https://doi.org/10.1145/3711896.3736919
+KDD Availability Link:
+The source code of this paper has been made publicly available at https:
+//doi.org/10.5281/zenodo.15553291.
+1
+Introduction
+Recently, Large Language Model (LLM)-based generative recom-
+mendation (LLMRec) has shown great potential due to its superior
+reasoning capabilities [10, 16, 20–22, 36, 38]. However, it suffers
+from high inference latency due to its massive model architecture
+and auto-regressive decoding paradigm, which severely limits its
+application in practical recommendation scenarios [12, 37, 44]. For
+instance, platforms like YouTube, which serve hundreds of millions
+of users daily with billions of interactions, require millisecond-level
+response times1. This highlights the stark efficiency gap between
+current LLMRec implementations and real-world application re-
+quirements. Therefore, enhancing the inference efficiency of LLM-
+Rec is a crucial issue for industrial applications.
+For efficient inference of LLMRec, caching computed Key-Value
+state pairs (i.e., KV Cache) is a popular choice. Technically, the
+inference pipeline with KV Cache typically consists of two distinct
+1https://affmaven.com/youtube-statistics/
+
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Chaoqun Yang et al.
+Figure 1: The inference process of LLMRec. In the prefilling
+stage, LLM computes the initial KV Cache and generates the
+first token of the output; in the decoding stage, LLM updates
+the KV Cache and generates subsequent tokens one by one.
+stages. As shown in Figure 1, given the input token sequence (user
+profile, historical interactions, etc.), the first is the prefilling stage,
+where LLM generates the first token of the output and caches com-
+puted Key-Value state pairs of all layers for every token. The second
+is the decoding stage, where LLM generates subsequent tokens auto-
+regressively using pre-computed KV Cache, and updates KV Cache
+in each decoding step. As the input sequence length increases, the
+computational overhead of KV Cache grows greatly, significantly
+prolonging the inference latency. And when the KV Cache size is
+large, each decoding step requires accessing a substantial amount
+of memory, which can severely slow down the inference. In light
+of the above, the key to accelerating the inference of LLMRec lies
+in reducing the size of KV Cache.
+To address this challenge, some research has been proposed. One
+of the representative works is cache compression [27, 44]. It selec-
+tively removes less important KV pairs to reduce KV Cache size
+during decoding. However, recommendation tasks typically require
+few decoding steps to generate short output token sequences, such
+as item identifiers (around 1 to 5 tokens), limiting their acceler-
+ation potential in decoding. Another method is prompt compres-
+sion [17, 44], which reduces initial KV Cache size during prefilling
+by condensating the input sequences, for instance, deleting unim-
+portant tokens [14] or compressing the token sequence into a few
+tokens [18]. This technique not only decreases the computational
+load in prefilling but also alleviates the memory pressure in decod-
+ing. Although this method has achieved success in NLP [17, 44],
+it struggles to balance efficiency and accuracy in the context of
+LLMRec. In LLMRec, it is difficult to distinguish between important
+and unimportant items, which makes prompt compression method
+prone to discard crucial user interaction information, resulting in
+severe accuracy losses, or fail to achieve satisfactory acceleration
+in an effort to retain information. Hence, there is an urgent need
+for a method that enhances inference efficiency while preserving
+recommendation effectiveness.
+To this end, we identify which information can be safely com-
+pressed in LLMRec, by inspecting the attention score distribu-
+tions [40] in LLMRec. Along two critical dimensions: layer order
+Figure 2: The attention distributions of different layers on
+the NLP task (reading comprehension QA) and the LLMRec
+task (LC-Rec on Beauty dataset) on Head 0 of Llama model.
+In the LLMRec task, the first three layers are relatively dense,
+while subsequent layers are sparse, with sinking occurring
+on the head and tail tokens.
+and token position, we observe two key characteristics of LLM-
+Rec across three diverse datasets, two mainstream LLMRec meth-
+ods, and two distinct LLM architectures. For example, as shown
+in Figure 2, on the Llama model and Beauty dataset, we found the
+following (more similar evidence can be found in Appendix A.1):
+• Layer-wise attention sparsity inversion. Along the layer or-
+der dimension, we observe distinct sparsity between the NLP
+task and the LLMRec task. In the NLP task, the attention score
+distribution is sparse in the initial layers, but becomes relatively
+less sparse in the later layers (Sparsity: 0.06 →0.03). Conversely,
+in the LLMRec task, the initial layers exhibit a relatively denser
+attention distribution, while the subsequent layers are highly
+sparse (Sparsity: 0.01 →0.07).
+• Dual attention sinks phenomenon. Along the token position
+dimension, while both the NLP task and the LLMRec task exhibit
+attention sinks [40], which means attention scores are highly
+concentrated on specific token positions, their distributions differ
+significantly. In the NLP task, sinks primarily emerge at the initial
+positions and a broad range of later tokens. In contrast, LLMRec
+demonstrates a distinctive dual concentration pattern - strong
+attention sinks at both head positions and a narrow tail region.
+These findings suggest that in LLMRec: 1) In terms of the layer order,
+the early layers contain richer information, while the middle tokens
+in the later layers are redundant. In fact, previous studies have
+shown that the early layers of LLMs are capable of summarizing
+required information and important tokens [32], while the later
+layers tend to be increasingly redundant, and pruning of redundant
+parts has minimal impact on performance [13]. 2) In terms of the
+token position, the head and tail tokens carry the most important
+information. As explained in prior studies [7, 40], head tokens can
+absorb excess attention. Meanwhile, tail tokens interact with all
+previous tokens, which suggests that tail tokens of the prompt may
+possess the potential to summarize the preceding user interaction
+information.
+Inspired by the above observations, we propose EARN, an Efficient
+inference Acceleration method for LLM-based Recommendation
+by register tokens (Figure 3), to enhance inference efficiency while
+maintaining recommendation effectiveness. Specifically, EARN in-
+troduces prefix and suffix register tokens - several learnable virtual
+tokens placed at the beginning and end of the input sequence, and
+
+EARN: Efficient Inference Acceleration for LLM-based Generative Recommendation by Register Tokens
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+leverages the first k layers of LLM to compress the user’s historical
+interaction information into register tokens. During inference, we
+use only register tokens for computation after k layers, thereby
+reducing the computational load and memory footprint of the KV
+Cache. We instantiate EARN on two mainstream LLMRec meth-
+ods with two distinct LLM architectures, and conduct extensive
+experiments on three real-world datasets, validating the superiority
+of EARN in terms of both efficiency and accuracy. The code and
+datasets are available at https://github.com/transcend-0/EARN.
+The contributions of our work are manifold:
+• We identify the layer-wise attention sparsity inversion and dual
+attention sinks phenomenon in LLMRec, revealing that early
+layers as well as both head and tail tokens, retain the most critical
+information for LLMRec.
+• We propose an efficient and effective method that leverages reg-
+ister tokens to compress user historical interactions and prune
+redundant computations in later layers, striking a delicate balance
+between inference efficiency and recommendation effectiveness.
+• We validate the effectiveness of EARN through extensive exper-
+iments conducted on three real-world datasets, demonstrating
+the superiority of EARN in achieving both high inference speed
+and recommendation accuracy.
+2
+Preliminary
+2.1
+LLM-based Generative Recommendation
+In this work, we primarily discuss the LLM-based generative rec-
+ommendation. The main idea of LLM-based generative recommen-
+dation is using LLMs as the core recommender model, i.e., taking
+the task instruction and a user’s historical interactions as the input
+prompt to generate item identifiers, such as typical item IDs. For-
+mally, given a user’s historical interactions 𝐻= (𝑖1, · · · ,𝑖𝑇) in the
+chronological order, where 𝑖1 to 𝑖𝑇represent the items the user has
+interacted with in the past, LLM-based generative recommendation
+predicts the next item 𝑖𝑇+1 the user is likely to interact with, i.e.,
+𝑓(𝐻) = 𝑃(𝑖𝑇+1 | 𝑖1, · · · ,𝑖𝑇) ,
+(1)
+where 𝑓is the LLM, 𝑃is the probability distribution of the items.
+2.2
+Inference of LLMRec
+LLM-based generative recommendation follows an auto-regressive
+decoding paradigm to generate item identifiers, which comprises
+two distinct computational stages: prefilling and decoding. Each
+stage exhibits unique inference characteristics and optimization
+requirements.
+2.2.1
+Prefilling. In this stage, the input prompt (containing the
+task instruction and the user’s historical interactions) is tokenized
+into the token sequence and fed into the transformer decoder. The
+most pivotal component is the multi-head attention module that
+exists in each layer of the model. Within each attention head, the
+input hidden states 𝑿∈R𝑛×𝑑(𝑛denotes the sequence length, and
+𝑑denotes the hidden dimension) undergo linear transformations:
+𝑸= 𝑿𝑾𝑸,
+𝑲= 𝑿𝑾𝑲,
+𝑽= 𝑿𝑾𝑽.
+(2)
+Subsequently, the attention mechanism computes the attention
+output as follows:
+𝑶= 𝑆𝑜𝑓𝑡𝑚𝑎𝑥
+ 𝑸𝑲𝑇
+√
+𝑑
+
+𝑽.
+(3)
+where 𝑶∈R𝑛×𝑑is the attention output, 𝑸, 𝑲, 𝑽∈R𝑛×𝑑corre-
+spond to query states, key states, and value states, respectively.
+Since the generation of subsequent tokens utilizes key states 𝑲and
+value states 𝑽of preceding tokens, it is common practice to cache
+𝑲and 𝑽for subsequent use, i.e., KV Cache. This caching strategy
+is crucial for maintaining the efficiency of the inference process.
+During the prefilling stage, 𝑸, 𝑲and 𝑽are all matrices, and
+matrix-matrix multiplication is compute-bound, meaning that the
+inference speed is primarily determined by the number of floating-
+point operations (FLOPs). Reducing the computational load can
+effectively accelerate the prefilling stage. For instance, shortening
+the input token sequence length can help decrease the quadratic
+computational complexity 𝑂(𝑛2𝑑) of the attention mechanism. Be-
+sides, a shorter token sequence also reduces the size of KV Cache,
+thereby contributing to accelerating the decoding stage.
+2.2.2
+Decoding. In this stage, subsequent tokens are generated
+one by one, with the KV Cache being expanded accordingly. At
+each decoding step 𝑡, the model first computes 𝑸𝑡, 𝑲𝑡, 𝑽𝑡∈R1×𝑑,
+then updates the KV Cache:
+𝑲1:𝑡= 𝐶𝑜𝑛𝑐𝑎𝑡(𝑲1:𝑡−1, 𝑲𝑡),
+𝑽1:𝑡= 𝐶𝑜𝑛𝑐𝑎𝑡(𝑽1:𝑡−1, 𝑽𝑡) .
+(4)
+Next, the attention output is calculated via 𝑸𝑡𝑲𝑇
+1:𝑡.
+Unlike the prefilling stage, during the decoding stage, 𝑸is a vec-
+tor, while 𝑲and 𝑽are matrices. The vector-matrix multiplication
+is memory-bound, meaning that the inference speed is primarily
+limited by the efficiency of memory access rather than the compu-
+tational capacity. The latency is thus predominantly determined by
+the efficiency of memory access to the growing KV Cache rather
+than FLOPs. In other words, reducing the size of KV Cache allows
+the GPU computing cores to access them more rapidly, which is
+the key to accelerating inference in the decoding stage.
+3
+Method
+In order to improve the inference efficiency while ensuring the
+recommendation effectiveness, we proposed EARN, which achieves
+inference acceleration through register tokens. The overview of
+our method is presented in Figure 3.
+3.1
+Register Tokens
+3.1.1
+Prefix Register. We introduce the prefix register, i.e., a set
+of learnable virtual tokens placed at the beginning of the input
+prompt. These tokens are designed to learn task-specific instruc-
+tions, effectively signaling to the LLM that the current task is a
+recommendation problem. This method is inspired by the head
+sinks of the dual attention sinks phenomenon as elaborated in
+Section 1. Head sinks suggest that the head tokens can effectively
+divert attention away from task-irrelevant tokens in the subsequent
+layers. Drawing on the practice of prompt tuning [25, 26], where
+learnable virtual tokens are used to represent task instructions,
+we replace the BOS token, which the attention always sinks into,
+
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Chaoqun Yang et al.
+Figure 3: Overview of the proposed EARN. During training,
+the prefix register and the suffix register are also trainable.
+During inference, after layer 𝒌, EARN removes the prompt
+tokens to achieve acceleration.
+with the learnable prefix register. This substitution not only ful-
+fills the attention-diverting function of the BOS token, but also
+serves the role of task indication to tell the model that this is a
+recommendation task.
+3.1.2
+Suffix Register. We introduce the suffix register, i.e., a set
+of learnable virtual tokens placed at the end of the input prompt,
+designed to summarize historical interactions and extract key in-
+formation. This method is inspired by the tail sinks of the dual
+attention sinks phenomenon as elaborated in Section 1. The final
+tokens in a sequence have visibility over all preceding tokens, en-
+dowing them with summarization capabilities. Prior studies have
+observed that semantically meaningless tokens can effectively sum-
+marize preceding information during LLM inference [2, 30]. The
+occurrence of the tail sink phenomenon in the LLMRec task further
+corroborates this point. Building on this insight, we place learnable
+virtual tokens at the end of the input prompt and leverage the first
+𝑘layers of the LLM to amplify this summarization capability.
+3.2
+Overall Pipeline
+3.2.1
+Training. During training, we employ next token predic-
+tion to train our model, computing the loss on the target item
+identifier, i.e., minimizing the negative log-likelihood loss between
+the predicted next-item probabilities and the ground truth items.
+Formally, given a chronological sequence of user interactions 𝐻=
+[𝑖1,𝑖2, ...,𝑖𝑇+1], we construct the input sequence as:
+𝑋= [𝑅prefix; 𝑃rompt;𝑅suffix] ,
+(5)
+𝑌= [𝑖𝑇+1] ,
+(6)
+where 𝑅prefix and 𝑅suffix denote the prefix register and the suffix
+register, respectively. 𝑃rompt is the user historical interactions
+[𝑖1,𝑖2, ...,𝑖𝑇] with the task instruction, and 𝑌is the target item
+identifier 𝑖𝑇+1. The loss function is formulated as,
+L = −
+|𝑌|
+∑︁
+𝑗=1
+log 𝑃(𝑌𝑗| 𝑋,𝑌<𝑗) ,
+(7)
+where 𝑋is the input sequence of the sample, 𝑌is the corresponding
+item identifier, 𝑌𝑗is the 𝑗-th token in the item identifier 𝑌, and 𝑌<𝑗
+denotes the tokens preceding 𝑌𝑗in the item identifier.
+When calculating the loss function, the main difference between
+our method and ordinary finetuning is the calculation of attention,
+where we exclude prompt tokens after layer 𝑘, i.e.,
+• For layer 𝑙≤𝑘: All tokens participate in the attention calculation.
+• For layer 𝑙> 𝑘: Only register and generated tokens participate
+in the attention calculation.
+3.2.2
+Inference. During inference, for a model with 𝑁layers, the
+generation of each token consists of two processes:
+(1) Full Computation Process (First𝑘Layers): All tokens includ-
+ing task instructions, user historical interactions, prefix register
+and suffix register participate in the model computation. The
+model processes the complete input sequence to establish rich
+contextual representations.
+(2) Register-Focused Process (Remaining 𝑁−𝑘Layers): After
+𝑘layers, we remove the original prompt tokens (task instruc-
+tions and historical interactions), retaining only the register
+tokens and newly generated tokens. The attention mechanism
+in subsequent layers only operates on this reduced set of tokens:
+• In the prefilling stage, the input hidden state of layer 𝑘is
+transformed from 𝑿= [𝑿prefix; 𝑿Prompt; 𝑿suffix] to 𝑿′ =
+[𝑿prefix; 𝑿suffix], significantly reducing the computational
+load and the initial KV Cache size.
+• In the decoding stage, the input hidden state of layer 𝑘is
+transformed from 𝑿= [𝑿prefix; 𝑿Prompt; 𝑿suffix; 𝑿generated]
+to 𝑿′ = [𝑿prefix; 𝑿suffix; 𝑿generated], significantly reducing
+KV Cache that needs to be accessed during decoding.
+This approach maintains the model’s ability to leverage historical
+information through the learned register representations while
+avoiding redundant computations on lengthy prompt tokens.
+3.3
+Efficiency Analysis
+Due to the removal of prompt tokens in the subsequent layers, we
+can significantly reduce both the computational load and memory
+footprint. Assume the model has 𝑁layers, 𝑛ℎheads, an attention
+dimension of𝑑𝑎, a hidden state dimension of𝑑ℎ, and an intermediate
+dimension of 𝑑𝑓. The length of the input prompt is 𝐿, and the
+number of register tokens is 𝑟≪𝐿. If we remove the prompt
+tokens after 𝑘layers, the efficiency promotion can be analyzed
+through three key aspects:
+• Computation Complexity: The FLOPs of the vanilla LLM
+are 𝑁𝐹𝐿𝑂𝑃𝑠𝐿𝐿𝑀𝑙𝑎𝑦𝑒𝑟= 4𝑁𝐿[𝑛ℎ𝑑𝑎(2𝑑ℎ+ 𝐿) + 𝑑ℎ𝑑𝑓] (see Ap-
+pendix A.2 for detailed derivation). In our EARN, it becomes
+𝑘𝐹𝐿𝑂𝑃𝑠𝐿𝐿𝑀𝑙𝑎𝑦𝑒𝑟+ (𝑁−𝑘) 𝐹𝐿𝑂𝑃𝑠𝑅𝑒𝑔𝑖𝑠𝑡𝑒𝑟𝑙𝑎𝑦𝑒𝑟. Thus, the at-
+tention complexity ratio 𝛾attn becomes:
+Γ𝑎𝑡𝑡𝑛=
+𝑘𝐹𝐿𝑂𝑃𝑠𝐿𝐿𝑀𝑙𝑎𝑦𝑒𝑟+ (𝑁−𝑘) 𝐹𝐿𝑂𝑃𝑠𝑅𝑒𝑔𝑖𝑠𝑡𝑒𝑟𝑙𝑎𝑦𝑒𝑟
+𝑁𝐹𝐿𝑂𝑃𝑠𝐿𝐿𝑀𝑙𝑎𝑦𝑒𝑟
+= 𝑘
+𝑁+ (1 −𝑘
+𝑁)
+𝑟[𝑛ℎ𝑑𝑎(2𝑑ℎ+ 𝑟) + 𝑑ℎ𝑑𝑓]
+𝐿[𝑛ℎ𝑑𝑎(2𝑑ℎ+ 𝐿) + 𝑑ℎ𝑑𝑓]
+≈𝑘
+𝑁.
+(8)
+• KV Cache Size: The memory size of the KV Cache is 𝑀𝐾𝑉𝑁𝐾𝑉,
+where 𝑀𝐾𝑉represents the memory size of each KV pair, and
+𝑁𝐾𝑉denotes the total number of KV pairs. The original 𝑁𝐾𝑉
+would be 𝑛ℎ𝑁𝐿, whereas now it becomes 𝑛ℎ(𝑘𝐿+ (𝑁−𝑘)𝑟) .
+
+EARN: Efficient Inference Acceleration for LLM-based Generative Recommendation by Register Tokens
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Specifically, the KV Cache can be shrunk to 𝑘𝐿+(𝑁−𝑘)𝑟
+𝑁𝐿
+of its
+original size, reduced by (𝑁−𝑘) (𝐿−𝑟)
+𝑁𝐿
+. That is to say, the KV
+cache size reduction ratio 𝛾cache is:
+Γ𝑐𝑎𝑐ℎ𝑒= 1 −𝑘𝐿+ (𝑁−𝑘)𝑟
+𝑁𝐿
+= (𝑁−𝑘)(𝐿−𝑟)
+𝑁𝐿
+≈𝑁−𝑘
+𝑁
+.
+(9)
+• Theoretical Speedup: Assuming that FLOPS of the device is 𝑣𝑐,
+and HBM rate is 𝑣𝑚. The estimated time cost is
+𝑇= 𝑇𝑃+𝑇𝐷= 𝑇𝑃+ 𝑛𝑔𝑒𝑛𝑒𝑟𝑎𝑡𝑒𝑇𝑑,
+(10)
+where
+𝑇𝑃=
+𝐹𝐿𝑂𝑃𝑠𝑝𝑟𝑒𝑓𝑖𝑙𝑙𝑖𝑛𝑔
+𝑣𝑐
+,
+(11)
+𝑇𝑑= 𝑚𝑎𝑥(𝐶𝑎𝑐ℎ𝑒
+𝑣𝑚
+, 𝐹𝐿𝑂𝑃𝑠𝑎𝑡𝑡𝑛
+𝑣𝑐
+) + 𝐹𝐿𝑂𝑃𝑠𝐹𝐹𝑁
+𝑣𝑐
+.
+(12)
+The theoretical speedup is
+Ω = 𝑇𝑣𝑎𝑛𝑖𝑙𝑙𝑎
+𝑇𝐸𝐴𝑅𝑁
+≈𝑁
+𝑘.
+(13)
+For typical values (𝑁= 32, 𝑛ℎ= 32, 𝑑𝑎= 128, 𝑑ℎ= 4096,𝑑𝑓=
+11008, 𝐿= 512, 𝑘= 8, 𝑟= 2), EARN reduces the KV Cache size to
+75% of the original, and the speedup ratio can reach 4x.
+4
+Experiment
+In this section, we conduct extensive experiments to answer the
+following research questions:
+• RQ1: How does our proposed EARN perform compared to com-
+mon inference acceleration methods?
+• RQ2: How is the efficiency scalability of EARN under different
+batch sizes and sequence lengths?
+• RQ3: How do different hyper-parameters affect the trade-off
+between inference efficiency and recommendation effectiveness
+of EARN?
+• RQ4: How do different components contribute to EARN?
+4.1
+Experimental Settings
+4.1.1
+Models and Datasets. We conduct experiments on two
+mainstream LLMRec methods: LC-Rec [43] and TIGER [31], with
+two distinct LLM architectures: Llama-7B [35] using multi-head
+attention and Qwen2.5-7B [34] using grouped-query attention. We
+test EARN on three real-world recommendation datasets: 1) Beauty
+contains user interactions with the beauty products. 2) Games cov-
+ers user interactions with the video games. 3) MovieLens-1M col-
+lects user interactions with movies. More details of the datasets and
+experimental implementation details can be found in Appendix A.3.
+4.1.2
+Baselines. We compare our approach against commonly
+used practices and existing SOTA methods, serving as our baselines:
+• Basic Methods
+– Finetune: Standard full finetuning of the model.
+– SkipLayers: Skipping redundant subsequent layers.
+• Prompt Compression: Methods targeting the prefilling stage.
+– POD [11]: Distilling task instructions in the prompt into few
+virtual tokens.
+– 500xCompressor [18]: Compressing the context (user historical
+interactions in our scenario) within the prompt into one single
+special token, by employing frozen original LLM and trainable
+additional LoRA parameters.
+• Cache Compression: Methods targeting the decoding stage.
+– StreamingLLM [40]: Statically retaining initial tokens and fixed-
+length recent tokens.
+– SnapKV [15]: Dynamically caching clustered important tokens.
+• Gist Methods: Methods using the register token idea.
+– Gist [28]: Employing LLM itself to compress task instructions
+in the prompt into few gist tokens.
+– AnLLM [30]: Employing LLM itself to compress segmented
+sentences into the anchor token at the end of the sentence.
+4.1.3
+Evaluation Metrics. Referring to previous work in the field
+of recommendation systems and LLM inference acceleration[8], we
+use the following metrics to evaluate our method:
+• Time Efficiency
+– Walltime Speedup 𝜔: The actual test speedup relative to vanilla
+auto-regressive decoding by comparing the wall clock time.
+– Throughput 𝜏: The number of new tokens that the model gen-
+erates per second.
+• Space Efficiency
+– KV Cache Reduction 𝛾: The empirically measured percentage
+reduction of the KV Cache.
+– KV Cache Memory 𝜎: The average GPU memory usage (GB) of
+the KV Cache when generating the last token.
+• Recommendation Effectiveness
+– Recall@K (R@K): A widely used measure of the model’s ability
+to retrieve relevant items, which is defined as the proportion of
+relevant items that are recommended out of the total number
+of relevant items available.
+– NDCG@K (N@K): Normalized Discounted Cumulative Gain
+(NDCG) is a measure that takes into account both the order of
+relevant items and the relevance score of each item.
+4.2
+Overall Performance (RQ1)
+The overall results of baselines and EARN instantiated on LC-Rec
+on three datasets and two LLM models are presented in Table 1.
+The results instantiated on TIGER are similar, which are moved to
+Appendix A.4. We draw a few observations as follows:
+• Qwen-based implementations outperform Llama-based imple-
+mentations in both inference efficiency and recommendation
+effectiveness. This superiority arises from: 1) Qwen’s grouped-
+head attention architecture achieves a smaller KV Cache and
+lower inference latency while maintaining semantic capability;
+2) Qwen’s expanded tokenizer vocabulary (151,851 vs. Llama’s
+32,000) that shortens input prompts, reducing semantic frag-
+mentation; 3) Qwen is trained on a more massive dataset with
+approximately 18 trillion tokens, which provides it with a richer
+knowledge base and better language understanding capabilities.
+• Among all inference acceleration baselines, although cache com-
+pression methods (StreamingLLM and SnapKV) achieve the high-
+est cache reduction (over 90%), their end-to-end speedup is not
+as significant as prompt compression methods. This is because
+cache compression methods do not optimize the prefilling stage,
+
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Chaoqun Yang et al.
+Table 1: Overall performance comparison between the baselines and EARN instantiated on LC-Rec. The best results are
+highlighted in bold and the second-best results are underlined.
+Dataset
+Model
+Method
+Time Efficiency
+Space Efficiency
+Recommendation Effectiveness
+𝝎
+𝝉
+𝜸
+𝝈
+R@10
+R@20
+N@10
+N@20
+Beauty
+Llama
+Finetune
+1.00
+505.2
+0.0
+85.45
+0.0145
+0.0225
+0.0084
+0.0108
+SkipLayers
+1.79
+895.4
+44.4
+47.50
+0.0013
+0.0013
+0.0013
+0.0013
+POD
+1.15
+585.0
+14.7
+72.87
+0.0045
+0.0074
+0.0032
+0.0041
+500xCompressor
+2.31
+1168.6
+74.8
+21.55
+0.0005
+0.0006
+0.0002
+0.0003
+StreamingLLM
+1.22
+611.2
+96.4
+3.09
+0.0005
+0.0005
+0.0004
+0.0004
+SnapKV
+1.20
+600.7
+94.5
+4.73
+0.0054
+0.0061
+0.0030
+0.0032
+Gist
+1.18
+597.6
+17.5
+70.50
+0.0048
+0.0077
+0.0028
+0.0036
+AnLLM
+1.24
+625.1
+92.2
+6.70
+0.0000
+0.0000
+0.0000
+0.0000
+EARN
+3.79
+1844.8
+80.5
+16.68
+0.0167
+0.0265
+0.0095
+0.0124
+Qwen
+Finetune
+1.00
+622.1
+0.0
+14.08
+0.0145
+0.0248
+0.0087
+0.0117
+SkipLayers
+1.73
+1056.1
+58.0
+5.92
+0.0000
+0.0000
+0.0000
+0.0000
+POD
+1.09
+679.3
+8.4
+12.90
+0.0082
+0.0127
+0.0047
+0.0061
+500xCompressor
+2.56
+1587.1
+91.1
+1.26
+0.0003
+0.0003
+0.0001
+0.0001
+StreamingLLM
+1.05
+652.6
+92.0
+1.12
+0.0088
+0.0147
+0.0058
+0.0075
+SnapKV
+1.02
+634.5
+69.5
+4.29
+0.0097
+0.0165
+0.0058
+0.0077
+Gist
+1.15
+715.4
+20.0
+11.30
+0.0084
+0.0161
+0.0050
+0.0074
+AnLLM
+1.06
+659.3
+80.5
+2.70
+0.0000
+0.0000
+0.0000
+0.0000
+EARN
+2.71
+1662.6
+75.2
+3.49
+0.0155
+0.0265
+0.0091
+0.0122
+Games
+Llama
+Finetune
+1.00
+571.4
+0.0
+78.10
+0.0167
+0.0273
+0.0106
+0.0138
+SkipLayers
+1.85
+1045.3
+45.0
+42.93
+0.0002
+0.0002
+0.0003
+0.0003
+POD
+1.09
+623.3
+15.9
+65.69
+0.0088
+0.0147
+0.0052
+0.0070
+500xCompressor
+2.11
+1205.3
+72.5
+21.45
+0.0014
+0.0021
+0.0009
+0.0011
+StreamingLLM
+1.23
+702.5
+96.0
+3.13
+0.0013
+0.0013
+0.0014
+0.0014
+SnapKV
+1.22
+688.5
+93.5
+5.04
+0.0102
+0.0110
+0.0070
+0.0072
+Gist
+1.12
+639.9
+18.0
+64.00
+0.0091
+0.0146
+0.0053
+0.0070
+AnLLM
+1.25
+715.5
+91.6
+6.60
+0.0003
+0.0003
+0.0003
+0.0003
+EARN
+3.53
+1930.6
+80.8
+14.98
+0.0180
+0.0291
+0.0107
+0.0142
+Qwen
+Finetune
+1.00
+568.1
+0.0
+13.03
+0.0193
+0.0316
+0.0127
+0.0155
+SkipLayers
+1.52
+858.4
+57.3
+5.57
+0.0000
+0.0000
+0.0000
+0.0000
+POD
+1.35
+767.5
+8.1
+11.98
+0.0129
+0.0209
+0.0075
+0.0100
+500xCompressor
+2.60
+1475.4
+97.1
+0.38
+0.0013
+0.0023
+0.0008
+0.0011
+StreamingLLM
+1.05
+594.7
+98.4
+0.21
+0.0129
+0.0202
+0.0075
+0.0098
+SnapKV
+1.02
+576.2
+67.9
+4.19
+0.0138
+0.0226
+0.0083
+0.0110
+Gist
+1.41
+801.3
+22.9
+10.00
+0.0121
+0.0154
+0.0077
+0.0088
+AnLLM
+1.09
+616.9
+95.2
+0.60
+0.0003
+0.0003
+0.0003
+0.0003
+EARN
+3.11
+1711.3
+75.1
+3.24
+0.0197
+0.0312
+0.0122
+0.0157
+MovieLens
+Llama
+Finetune
+1.00
+704.3
+0.0
+55.39
+0.0247
+0.0449
+0.0197
+0.0288
+SkipLayers
+2.52
+1302.9
+67.6
+17.93
+0.0022
+0.0022
+0.0043
+0.0043
+POD
+1.17
+827.4
+18.0
+45.40
+0.0066
+0.0118
+0.0062
+0.0087
+500xCompressor
+1.92
+1352.8
+61.1
+21.54
+0.0004
+0.0005
+0.0003
+0.0003
+StreamingLLM
+1.20
+836.2
+95.2
+2.66
+0.0000
+0.0000
+0.0000
+0.0000
+SnapKV
+1.19
+829.2
+91.9
+4.50
+0.0000
+0.0000
+0.0000
+0.0000
+Gist
+1.01
+711.3
+22.3
+43.10
+0.0232
+0.0421
+0.0118
+0.0250
+AnLLM
+1.20
+846.9
+89.5
+5.80
+0.0006
+0.0008
+0.0005
+0.0006
+EARN
+3.21
+2250.2
+79.7
+11.26
+0.0259
+0.0452
+0.0247
+0.0341
+Qwen
+Finetune
+1.00
+752.9
+0.0
+10.71
+0.0289
+0.0421
+0.0247
+0.0315
+SkipLayers
+1.87
+1124.7
+76.6
+2.50
+0.0000
+0.0000
+0.0000
+0.0000
+POD
+1.41
+1061.7
+40.1
+6.42
+0.0139
+0.0177
+0.0115
+0.0131
+500xCompressor
+2.09
+1577.8
+77.6
+2.40
+0.0006
+0.0009
+0.0006
+0.0007
+StreamingLLM
+1.05
+766.8
+88.9
+1.19
+0.0258
+0.0372
+0.0197
+0.0244
+SnapKV
+1.00
+731.9
+76.5
+2.52
+0.0248
+0.0428
+0.0192
+0.0266
+Gist
+1.06
+799.0
+30.0
+7.50
+0.0287
+0.0441
+0.0244
+0.0305
+AnLLM
+1.03
+772.4
+75.9
+2.60
+0.0022
+0.0022
+0.0043
+0.0043
+EARN
+2.84
+2136.7
+66.7
+3.56
+0.0298
+0.0591
+0.0252
+0.0382
+whereas prompt compression methods (POD and 500xCompres-
+sor) reduce the input sequence length in the prefilling stage,
+thereby improving both computational and memory efficiency.
+This highlights the greater potential for acceleration in the pre-
+filling stage for LLMRec. However, despite the notable inference
+efficiency gains of the baselines, they suffer from catastrophic
+recommendation effectiveness degradation. This highlights that
+user historical interactions in recommendation scenarios cannot
+be simply compressed at a high ratio using NLP methods.
+• Although gist methods (Gist and AnLLM) also employ the idea
+of register tokens, they fail to achieve a significant speedup. This
+is because they utilize all layers of the LLM to compress infor-
+mation, resulting in substantial computational costs. In contrast,
+EARN only uses the first 𝑘layers, significantly reducing the
+
+EARN: Efficient Inference Acceleration for LLM-based Generative Recommendation by Register Tokens
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Figure 4: Efficiency under different batch sizes.
+Figure 5: Efficiency under different sequence lengths.
+computational burden. In terms of space efficiency, Gist only
+compresses the task instruction within the input sequence, thus
+saving only about 20% of cache memory. Although AnLLM can
+reduce cache memory by 90%, it comes at the cost of catastrophic
+loss in recommendation effectiveness. AnLLM’s recommendation
+effectiveness is nearly zero. This is due to its attempt to compress
+the intricate user interaction history into a single token, which
+is highly challenging and leads to severe information loss and
+poor performance. Gist shows a decline in recommendation ef-
+fectiveness. This is because Gist compresses the task instruction
+in isolation within the language space, while the items in recom-
+mendations are not within the LLM’s language space. Without
+direct interaction between the task instruction and historical
+items, the LLM struggles to understand the recommendation
+task’s requirements to predict items outside its vocabulary. This
+impedes the method’s applicability to recommendation tasks.
+• EARN significantly achieves SOTA time efficiency (2.71-3.79x
+speedup) with excellent space efficiency (66.7-80.8% cache reduc-
+tion), and also demonstrates a notable improvement over Fine-
+tune in terms of recommendation effectiveness. This suggests
+that the register tokens used in EARN can effectively summarize
+useful information, thereby ensuring that recommendation effec-
+tiveness is maintained while inference efficiency is improved.
+4.3
+Efficiency Scalability (RQ2)
+To investigate the efficiency scalability of EARN, we evaluate the in-
+ference efficiency of EARN as compared to Finetune under varying
+batch sizes and sequence lengths.
+4.3.1
+Efficiency under Different Batch Sizes. To verify the
+acceleration effect of EARN under different batch sizes, we test the
+inference efficiency of EARN and Finetune with batch size in {1,
+4, 8, · · · , 24} on Llama and {1, 8, 16, · · · , 48} on Qwen. As shown
+in Figure 4, EARN maintains significantly higher throughput than
+Finetune across all batch sizes. The speedup of EARN over Finetune
+Figure 6: Effect of register layer depth 𝒌.
+increases as the batch size grows. Moreover, EARN can handle a
+larger batch size, which is particularly useful for practical scenarios.
+For example, on Llama, Finetune runs into out-of-memory (OOM)
+errors when the batch size exceeds 8, while EARN can still support
+larger batch sizes. The results clearly demonstrate that EARN signif-
+icantly improves efficiency compared to Finetune across different
+batch sizes. Its ability to maintain high throughput on large batch
+sizes highlights its superior efficiency and practical inference ca-
+pabilities. This makes EARN a more suitable choice for real-world
+applications where efficient and scalable inference is crucial.
+4.3.2
+Efficiency under Different Sequence Lengths. In indus-
+trial settings, user interaction histories can be extensive. Therefore,
+it is essential to assess the efficiency of EARN on longer sequences.
+To simulate this scenario, we pad our dataset to specific lengths (1K,
+5K, · · ·, 20K) to test the acceleration effects. From Figure 5, we can
+see EARN consistently uses significantly less KV Cache than Fine-
+tune across all sequence lengths. Moreover, the larger the sequence
+length, the more significant the acceleration effect, achieving a
+speedup of up to 7x when the sequence length is 20K on Llama.
+This is highly desirable in practice, especially for long-term sequen-
+tial recommendation, where user historical interaction sequences
+are stored for a long time, thus learning user preferences compre-
+hensively. The results clearly demonstrate that EARN significantly
+improves efficiency compared to Finetune across different sequence
+lengths. Its ability to maintain a low KV Cache size and achieve
+higher speedup, especially for longer sequences, highlights its su-
+perior efficiency and practical inference capabilities. This makes
+EARN a more suitable choice for real-world applications where
+efficient and scalable inference is crucial, particularly when dealing
+with long sequences.
+4.4
+Hyper-parameter Analysis (RQ3)
+To investigate the trade-off between inference efficiency and recom-
+mendation effectiveness caused by variations in hyper-parameters,
+we train and evaluate EARN with different register layer depth 𝑘
+and register token number 𝑛.
+4.4.1
+Effect of Register Layer Depth 𝒌. Figure 6 reveals the
+trade-off between inference efficiency and recommendation effec-
+tiveness when varying the register layer depth 𝑘: 1) Too shallow:
+When the register layer depth is too shallow (e.g., < 4 on Llama,
+and < 7 on Qwen), although the speedup is high, the recall suffers
+a significant loss. 2) Optimal range: In the range of 𝑘= 4 −7, EARN
+strikes a balance between speedup and recall. The speedup remains
+reasonably high, while Recall@20 improves notably. This suggests
+
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Chaoqun Yang et al.
+Figure 7: Effect of register token number 𝒏.
+that the model can effectively capture the necessary information for
+recommendations without a substantial loss in inference efficiency.
+3) Too deep: When the register layer depth is too deep (e.g., 𝑘≥13),
+the speedup decreases significantly, but Recall@20 does not show
+a proportional improvement. For example, on Qwen, the speedup
+drops sharply when 𝑘= 13 or 𝑘= 20, while Recall@20 does not in-
+crease substantially. This indicates that increasing the register layer
+depth beyond a certain point leads to diminishing returns in terms
+of recommendation effectiveness while significantly compromising
+inference efficiency.
+4.4.2
+Effect of Register Token Number 𝒏. Figure 7 reveals the
+trade-off between inference efficiency and recommendation effec-
+tiveness when varying the register token number 𝑛, from which we
+can observe that: 1) For both the prefix register and the suffix regis-
+ter, as the register token number 𝑛varies from 1 to 3, the speedup
+gradually decreases. This is primarily because, as the register token
+number increases, the size of the KV Cache that needs to be com-
+puted and cached also grows, leading to increased inference latency.
+2) There is a decline in Recall@20 as the register token number 𝑛
+increases for both the prefix register and the suffix register. This
+phenomenon may be attributed to the interactions among multiple
+tokens in the later layers of the model, which can lead to a pro-
+gressive distortion of the summarized information. The impact of
+this accuracy degradation is relatively minor for the prefix register
+but more pronounced for the suffix register. This discrepancy is
+likely due to the fact that user interaction history summarized by
+the suffix register is more complex and challenging to condense
+compared to task instructions summarized by the prefix register.
+Although the above results show that a single register token is
+optimal, as prompt length increases, the optimal number of register
+tokens may need to be adjusted to maintain the performance. There-
+fore, we conduct further experiments to investigate how EARN
+performs under different prompt lengths and whether the optimal
+number of register tokens should be adjusted as the prompt length
+increases. We segmented the dataset into three groups based on
+prompt length (50-100, 100-150, and 150-200 tokens) to evaluate our
+Figure 8: Effect of register token number 𝒏under different
+prompt length.
+EARN’s performance across different prompt lengths. As shown in
+Figure 8, EARN consistently outperforms the Finetune baseline, and
+a single register token remains optimal across all prompt lengths.
+However, we observed an interesting trend for the suffix register to-
+ken: the performance gap between 1 and 2 register tokens narrows
+as prompt length increases. This suggests that the optimal number
+of register tokens may rise for very long prompts. Nevertheless,
+experimental results on three real-world datasets (Table 1) demon-
+strate that employing a single suffix register token could achieve
+excellent recommendation performance, which is applicable to the
+majority of recommendation scenarios.
+4.4.3
+Hyper-parameter Recommendation. We experimentally
+validated that EARN’s hyper-parameters can be selected through
+simple heuristics rather than exhaustive tuning. And we validated
+that setting the register layer and using a single register token at
+one-fourth achieves significant acceleration without accuracy loss
+on three real-world datasets. This configuration is broadly applica-
+ble for most recommendation tasks. Detailed analysis is as follows:
+1) Register layer depth 𝑘: Firstly, the lower the register layer 𝑘, the
+greater the acceleration effect achieved. Secondly, our sensitivity
+analysis indicates that there is essentially no loss in recommenda-
+tion effectiveness when 𝑘is set to at least one-fourth of the total
+layers. 2) Register token number 𝑛: Across two distinct LLM models
+(Llama and Qwen), we consistently found that one register token
+is optimal. Additionally, to assess if the number needs adjustment
+as prompt length increases, we conducted grouped experiments
+by length, and found that a single register token remains optimal
+under different prompt lengths. Thus, for most LLMRec scenarios,
+we propose a default configuration:
+(1) 𝒌: One-fourth of the total layers as the register layer depth.
+(2) 𝒏: One prefix register token and one suffix register token.
+This setting could achieve a favorable speedup and KV Cache
+reduction while maintaining strong recommendation performance.
+And it’s easily adjustable for various deployment scenarios.
+4.5
+Ablation Studies (RQ4)
+To study the contribution of each component of the proposed EARN,
+we conduct ablation studies on the register training strategy and
+the register token.
+4.5.1
+Effect of Register Training. We first investigate the ne-
+cessity of register training by comparing it with direct register
+inference on fully finetuned models. As shown in Table 2, models
+without RT suffer significant performance degradation across all
+metrics. Specifically for Llama with 𝑘= 7, removing RT leads to 72%
+
+EARN: Efficient Inference Acceleration for LLM-based Generative Recommendation by Register Tokens
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Table 2: Ablation study of the register training (RT).
+Model
+𝒌
+Method
+R@10
+R@20
+N@10
+N@20
+Llama
+Finetune
+0.0145
+0.0225
+0.0084
+0.0108
+7
+EARN
+0.0174
+0.0273
+0.0098
+0.0127
+w/o RT
+0.0048
+0.0060
+0.0021
+0.0025
+15
+EARN
+0.0168
+0.0286
+0.0093
+0.0127
+w/o RT
+0.0053
+0.0083
+0.0029
+0.0038
+Qwen
+Finetune
+0.0145
+0.0248
+0.0087
+0.0117
+7
+EARN
+0.0155
+0.0265
+0.0091
+0.0122
+w/o RT
+0.0074
+0.0093
+0.0044
+0.0050
+13
+EARN
+0.0156
+0.0263
+0.0098
+0.0129
+w/o RT
+0.0072
+0.0095
+0.0043
+0.0050
+Table 3: Ablation study of the prefix register (PR) and the
+suffix register (SR).
+Model
+𝒌
+Method
+R@10
+R@20
+N@10
+N@20
+Llama
+7
+EARN
+0.0174
+0.0273
+0.0098
+0.0127
+w/o PR
+0.0172
+0.0252
+0.0108
+0.0132
+w/o SR
+0.0041
+0.0075
+0.0021
+0.0031
+15
+EARN
+0.0168
+0.0286
+0.0093
+0.0127
+w/o PR
+0.0166
+0.0260
+0.0103
+0.0131
+w/o SR
+0.0074
+0.0119
+0.0035
+0.0047
+Qwen
+7
+EARN
+0.0155
+0.0265
+0.0091
+0.0122
+w/o PR
+0.0153
+0.0217
+0.0097
+0.0116
+w/o SR
+0.0044
+0.0071
+0.0023
+0.0031
+13
+EARN
+0.0156
+0.0263
+0.0098
+0.0129
+w/o PR
+0.0153
+0.0230
+0.0102
+0.0124
+w/o SR
+0.0065
+0.0106
+0.0036
+0.0049
+relative drop in R@10 (from 0.0174 to 0.0048) and 80% reduction in
+N@20 (from 0.0127 to 0.0025). This demonstrates that directly apply-
+ing register inference without dedicated training fails to effectively
+capture task-specific knowledge. With RT, both models achieve
+consistent improvements over Finetune. Llama with 𝑘= 7 gains
+17% higher R@10 (0.0174 vs. 0.0145) and 15% better N@20 (0.0127
+vs. 0.0108). This indicates that register training enables the model
+to summarize key information from user historical interactions into
+the register token.
+4.5.2
+Effect of Prefix Register and Suffix Register. We further
+dissect the contribution of the prefix register and the suffix reg-
+ister through component-wise ablation. Table 3 reveals three key
+observations: 1) Suffix register dominates performance: Removing
+the suffix register (w/o SR) causes significant performance collapse
+for both Llama and Qwen. This confirms our design intuition that
+summarizing historical interactions in the suffix register is crucial
+for recommendation tasks. 2) Prefix register enhances task aware-
+ness: Though not as severe as removing the suffix register (w/o SR),
+removing the prefix register (w/o PR) still leads to a certain degree
+of performance degradation. This suggests the prefix register effec-
+tively primes the model for recommendation task identification. 3)
+Layer-depth interaction: The impact of removing the suffix regis-
+ter is more pronounced in the lower layers (e.g., 𝑘= 7 exhibits a
+greater performance drop than 𝑘= 15 on Llama), indicating that the
+suffix register plays a more significant summarization role in the
+lower layers. The lower layers rely more heavily on the compressed
+historical interaction information encoded in the suffix register.
+5
+Related Work
+•
+Inference Acceleration of LLMRec. While LLM-based gen-
+erative recommendations have shown remarkable performance
+[10, 16, 20–22, 36, 38], their practical application is hindered by
+high inference latency [12, 37, 44]. To tackle this issue, various re-
+search has been proposed. Several techniques leverage knowledge
+distillation to transfer comprehensible knowledge [4] or abstract
+knowledge [33] from a teacher LLM to a smaller student language
+model. Additionally, some methods apply speculative decoding
+to achieve lossless decoding acceleration [23, 39]. Besides, some
+approaches attempt to design efficient attention mechanisms to re-
+duce computational complexity, such as sparse attention [6], linear
+attention [24], and slimming architecture [19].
+•
+KV Cache Reduction. It’s common practice to utilize KV
+Cache to reduce redundant computations during LLM inference.
+However, the use of KV Cache introduces new challenges. KV Cache
+will increase linearly with the length of the sequence, and the mem-
+ory required will become larger and larger. To address this challenge,
+diverse methods have been proposed to reduce KV Cache, including
+two primary groups of work, i.e., prompt compression and cache
+compression. Prompt compression reduces the initial KV Cache size
+during prefilling by shortening the input token sequence. Hard com-
+pression methods like SelectiveContext [14] and LLMLingua [9]
+filter redundant tokens while preserving natural language syntax,
+albeit at the cost of fluency. Soft compression techniques, such as
+AutoCompressor [3] and 500xCompressor [18], encode prompts
+into dense latent tokens, achieving higher compression ratios but
+sacrificing human interpretability. Cache compression reduces KV
+cache during decoding. Existing work employs eviction or merg-
+ing strategies. Evict-based methods like StreamingLLM [40] and
+SnapKV [15] selectively evict less important KV Cache through spe-
+cific rules. Merge-based approaches (e.g., CAM [42] and DMC [29])
+adaptively merge to-be-evicted caches into the remaining ones.
+6
+Conclusion
+In this work, we address the critical challenge of inference effi-
+ciency in LLM-based recommendation systems (LLMRec), where
+the massive computational overhead and memory pressure of KV
+Cache severely hinders practical deployment. Through systematic
+analysis of LLMRec’s attention patterns, we identify two pivotal
+characteristics: 1) layer-wise attention sparsity inversion, where in
+early layers retain dense informative patterns while later layers ex-
+hibit high redundancy, and 2) the dual attention sinks phenomenon,
+where attention scores concentrate on both head and tail tokens
+of input sequences. These insights motivate our proposed EARN
+method, which introduces prefix and suffix register tokens to com-
+press task instructions and user interaction histories, implementing
+layer-wise computation pruning. EARN achieves an 80% reduc-
+tion of KV Cache while maintaining essential information integrity.
+Extensive experiments conducted on three benchmark datasets
+and two distinct LLM architectures reveal that our EARN attains
+3.79x inference acceleration with superior accuracy compared to
+conventional finetuning approaches. This breakthrough effectively
+reconciles the longstanding trade-off between inference efficiency
+and recommendation quality in LLMRec, presenting tangible de-
+ployment benefits for industrial-scale recommendation services.
+
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Chaoqun Yang et al.
+References
+[1] Beidi Chen, Tri Dao, Eric Winsor, Zhao Song, Atri Rudra, and Christopher Ré.
+2021. Scatterbrain: Unifying sparse and low-rank attention. Advances in Neural
+Information Processing Systems 34 (2021), 17413–17426.
+[2] Guoxuan Chen, Han Shi, Jiawei Li, Yihang Gao, Xiaozhe Ren, Yimeng Chen, Xin
+Jiang, Zhenguo Li, Weiyang Liu, and Chao Huang. 2024. SepLLM: Accelerate
+large language models by compressing one segment into one separator. arXiv
+preprint arXiv:2412.12094 (2024).
+[3] Alexis Chevalier, Alexander Wettig, Anirudh Ajith, and Danqi Chen. 2023. Adapt-
+ing language models to compress contexts. In Proceedings of the 2023 Conference
+on Empirical Methods in Natural Language Processing. 3829–3846.
+[4] Yu Cui, Feng Liu, Pengbo Wang, Bohao Wang, Heng Tang, Yi Wan, Jun Wang, and
+Jiawei Chen. 2024. Distillation matters: empowering sequential recommenders
+to match the performance of large language models. In Proceedings of the 18th
+ACM Conference on Recommender Systems. 507–517.
+[5] Yichuan Deng, Zhao Song, Jing Xiong, and Chiwun Yang. 2024. How Sparse
+Attention Approximates Exact Attention? Your Attention is Naturally 𝑛𝐶-Sparse.
+arXiv preprint arXiv:2404.02690 (2024).
+[6] Xinyan Fan, Zheng Liu, Jianxun Lian, Wayne Xin Zhao, Xing Xie, and Ji-Rong
+Wen. 2021. Lighter and better: low-rank decomposed self-attention networks for
+next-item recommendation. In Proceedings of the 44th International ACM SIGIR
+Conference on Research and Development in Information Retrieval. 1733–1737.
+[7] Xiangming Gu, Tianyu Pang, Chao Du, Qian Liu, Fengzhuo Zhang, Cunxiao
+Du, Ye Wang, and Min Lin. 2025. When attention sink emerges in language
+models: An empirical view. In The 13th International Conference on Learning
+Representations.
+[8] Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn
+Song, and Jacob Steinhardt. 2021. Measuring massive multitask language under-
+standing. In The 9th International Conference on Learning Representations.
+[9] Huiqiang Jiang, Qianhui Wu, Chin-Yew Lin, Yuqing Yang, and Lili Qiu. 2023.
+LLMLingua: Compressing prompts for accelerated inference of large language
+models. In Proceedings of the 2023 Conference on Empirical Methods in Natural
+Language Processing. 13358–13376.
+[10] Sein Kim, Hongseok Kang, Seungyoon Choi, Donghyun Kim, Minchul Yang, and
+Chanyoung Park. 2024. Large language models meet collaborative filtering: An
+efficient all-round LLM-based recommender system. In Proceedings of the 30th
+ACM SIGKDD Conference on Knowledge Discovery and Data Mining. 1395–1406.
+[11] Lei Li, Yongfeng Zhang, and Li Chen. 2023. Prompt distillation for efficient LLM-
+based recommendation. In Proceedings of the 32nd ACM International Conference
+on Information and Knowledge Management. 1348–1357.
+[12] Lei Li, Yongfeng Zhang, Dugang Liu, and Li Chen. 2024. Large language models for
+generative recommendation: A survey and visionary discussions. In Proceedings
+of the 2024 Joint International Conference on Computational Linguistics, Language
+Resources and Evaluation (LREC-COLING 2024). 10146–10159.
+[13] Pengxiang Li, Lu Yin, and Shiwei Liu. 2025. Mix-LN: Unleashing the power
+of deeper layers by combining Pre-LN and Post-LN, In The 13th International
+Conference on Learning Representations. arXiv preprint arXiv:2412.13795.
+[14] Yucheng Li, Bo Dong, Frank Guerin, and Chenghua Lin. 2023. Compressing
+context to enhance inference efficiency of large language models. In Proceedings
+of the 2023 Conference on Empirical Methods in Natural Language Processing.
+6342–6353.
+[15] Yuhong Li, Yingbing Huang, Bowen Yang, Bharat Venkitesh, Acyr Locatelli,
+Hanchen Ye, Tianle Cai, Patrick Lewis, and Deming Chen. 2024. SnapKV: LLM
+knows what you are looking for before generation. Advances in Neural Informa-
+tion Processing Systems 37 (2024), 22947–22970.
+[16] Yongqi Li, Xinyu Lin, Wenjie Wang, Fuli Feng, Liang Pang, Wenjie Li, Liqiang Nie,
+Xiangnan He, and Tat-Seng Chua. 2024. A survey of generative search and recom-
+mendation in the era of large language models. arXiv preprint arXiv:2404.16924
+(2024).
+[17] Zongqian Li, Yinhong Liu, Yixuan Su, and Nigel Collier. 2024. Prompt compression
+for large language models: A survey. In Proceedings of the 2025 Conference of the
+Nations of the Americas Chapter of the Association for Computational Linguistics:
+Human Language Technologies (Volume 1: Long Papers). 7182–7195.
+[18] Zongqian Li, Yixuan Su, and Nigel Collier. 2024. 500xCompressor: Generalized
+prompt compression for large language models. arXiv preprint arXiv:2408.03094
+(2024).
+[19] Jianghao Lin, Xinyi Dai, Rong Shan, Bo Chen, Ruiming Tang, Yong Yu, and
+Weinan Zhang. 2025. Large language models make sample-efficient recommender
+systems. Frontiers of Computer Science 19, 4 (2025), 194328.
+[20] Jianghao Lin, Xinyi Dai, Yunjia Xi, Weiwen Liu, Bo Chen, Hao Zhang, Yong Liu,
+Chuhan Wu, Xiangyang Li, Chenxu Zhu, et al. 2025. How can recommender
+systems benefit from large language models: A survey. ACM Transactions on
+Information Systems 43, 2 (2025), 1–47.
+[21] Xinyu Lin, Wenjie Wang, Yongqi Li, Fuli Feng, See-Kiong Ng, and Tat-Seng Chua.
+2024. Bridging items and language: A transition paradigm for large language
+model-based recommendation. In Proceedings of the 30th ACM SIGKDD Conference
+on Knowledge Discovery and Data Mining. 1816–1826.
+[22] Xinyu Lin, Wenjie Wang, Yongqi Li, Shuo Yang, Fuli Feng, Yinwei Wei, and
+Tat-Seng Chua. 2024. Data-efficient fine-tuning for LLM-based recommendation.
+In Proceedings of the 47th International ACM SIGIR Conference on Research and
+Development in Information Retrieval. 365–374.
+[23] Xinyu Lin, Chaoqun Yang, Wenjie Wang, Yongqi Li, Cunxiao Du, Fuli Feng,
+See-Kiong Ng, and Tat-Seng Chua. 2025. Efficient inference for large language
+model-based generative recommendation. In The 13th International Conference
+on Learning Representations.
+[24] Langming Liu, Liu Cai, Chi Zhang, Xiangyu Zhao, Jingtong Gao, Wanyu Wang,
+Yifu Lv, Wenqi Fan, Yiqi Wang, Ming He, et al. 2023. Linrec: Linear attention
+mechanism for long-term sequential recommender systems. In Proceedings of
+the 46th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 289–299.
+[25] Xiao Liu, Kaixuan Ji, Yicheng Fu, Weng Tam, Zhengxiao Du, Zhilin Yang, and
+Jie Tang. 2022. P-tuning v2: Prompt tuning can be comparable to fine-tuning
+universally across scales and tasks. In Proceedings of the 60th Annual Meeting of
+the Association for Computational Linguistics (Volume 2: Short Papers). 61–68.
+[26] Xiao Liu, Yanan Zheng, Zhengxiao Du, Ming Ding, Yujie Qian, Zhilin Yang, and
+Jie Tang. 2024. GPT understands, too. AI Open 5 (2024), 208–215.
+[27] Shi Luohe, Hongyi Zhang, Yao Yao, Zuchao Li, et al. 2024. Keep the cost down:
+A review on methods to optimize LLM’s KV-Cache consumption. In The 1st
+Conference on Language Modeling (COLM).
+[28] Jesse Mu, Xiang Li, and Noah Goodman. 2023. Learning to compress prompts
+with gist tokens. Advances in Neural Information Processing Systems 36 (2023),
+19327–19352.
+[29] Piotr Nawrot, Adrian Łańcucki, Marcin Chochowski, David Tarjan, and
+Edoardo M Ponti. 2024. Dynamic memory compression: retrofitting LLMs for
+accelerated inference. In The 41st International Conference on Machine Learning.
+37396–37412.
+[30] Jianhui Pang, Fanghua Ye, Derek Wong, Xin He, Wanshun Chen, and Longyue
+Wang. 2024. Anchor-based large language models. In Findings of the Association
+for Computational Linguistics. 4958–4976.
+[31] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[32] Zhenmei Shi, Yifei Ming, Xuan-Phi Nguyen, Yingyu Liang, and Shafiq Joty. 2024.
+Discovering the gems in early layers: Accelerating long-context LLMs with 1000x
+input token reduction. arXiv preprint arXiv:2409.17422 (2024).
+[33] Wenqi Sun, Ruobing Xie, Junjie Zhang, Wayne Xin Zhao, Leyu Lin, and Ji-Rong
+Wen. 2024. Distillation is all you need for practically using different pre-trained
+recommendation models. arXiv preprint arXiv:2401.00797 (2024).
+[34] Qwen Team. 2024. Qwen2.5: A party of foundation models. https://qwenlm.
+github.io/blog/qwen2.5/
+[35] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne
+Lachaux, Timothée Lacroix, Baptiste Rozière, Naman Goyal, Eric Hambro, Faisal
+Azhar, et al. 2023. Llama: Open and efficient foundation language models. arXiv
+preprint arXiv:2302.13971 (2023).
+[36] Wenjie Wang, Xinyu Lin, Fuli Feng, Xiangnan He, and Tat-Seng Chua. 2023.
+Generative recommendation: Towards next-generation recommender paradigm.
+arXiv preprint arXiv:2304.03516 (2023).
+[37] Haotian Wu, Yingpeng Du, Zhu Sun, Tianjun Wei, Jie Zhang, and Ong Yew Soon.
+2024. A survey on efficient solutions of large language models for recommenda-
+tion. Authorea Preprints (2024).
+[38] Likang Wu, Zhi Zheng, Zhaopeng Qiu, Hao Wang, Hongchao Gu, Tingjia Shen,
+Chuan Qin, Chen Zhu, Hengshu Zhu, Qi Liu, et al. 2024. A survey on large
+language models for recommendation. World Wide Web 27, 5 (2024), 60.
+[39] Yunjia Xi, Hangyu Wang, Bo Chen, Jianghao Lin, Menghui Zhu, Weiwen Liu,
+Ruiming Tang, Weinan Zhang, and Yong Yu. 2025. Efficiency unleashed: Inference
+acceleration for LLM-based recommender systems with speculative decoding.
+arXiv preprint arXiv:2408.05676 (2025).
+[40] Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, and Mike Lewis. 2024.
+Efficient streaming language models with attention sinks. In The 12th International
+Conference on Learning Representations.
+[41] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Jiayuan He, et al. 2024. Actions speak louder than
+words: trillion-parameter sequential transducers for generative recommendations.
+In The 41st International Conference on Machine Learning. 58484–58509.
+[42] Yuxin Zhang, Yuxuan Du, Gen Luo, Yunshan Zhong, Zhenyu Zhang, Shiwei
+Liu, and Rongrong Ji. 2024. CaM: Cache merging for memory-efficient LLMs
+inference. In The 41st International Conference on Machine Learning. 58840–58850.
+[43] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting large language models by integrating
+collaborative semantics for recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). 1435–1448.
+[44] Zixuan Zhou, Xuefei Ning, Ke Hong, Tianyu Fu, Jiaming Xu, Shiyao Li, Yuming
+Lou, Luning Wang, Zhihang Yuan, Xiuhong Li, et al. 2024. A survey on efficient
+inference for large language models. arXiv preprint arXiv:2404.14294 (2024).
+
+EARN: Efficient Inference Acceleration for LLM-based Generative Recommendation by Register Tokens
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+A
+Appendix
+A.1
+Detailed Analysis of Attention Score
+Distributions
+In this section, we provide a systematic analysis of attention score
+distributions in LLMRec through quantitative measurements across
+two critical dimensions: layer order and token position. To ensure
+comprehensive insights, we conduct experiments across 13 NLP
+tasks and three real-world recommendation datasets, two main-
+stream LLMRec methods, and two distinct LLM architectures. Ta-
+ble 4 presents the overall results. More detailed quantitative results
+and visual figures can be found in our GitHub repository2. Our
+findings reveal fundamental differences in attention patterns be-
+tween NLP tasks and LLMRec tasks, offering critical guidance for
+designing efficient compression strategies.
+Quantitative Measurements of Attention Score Distribu-
+tions. Given a sequence’s attention scores [𝑝1, 𝑝2, · · · , 𝑝𝑛], we test
+its sparsity by threshold-based sparsity ratio adapted from prior
+studies [1, 5]:
+𝑆𝑝𝑎𝑟𝑠𝑖𝑡𝑦= 1
+𝑛
+𝑛
+∑︁
+𝑖=1
+I(𝑝𝑖> 𝜖) ,
+(14)
+where 𝜖is the threshold. Here we set 𝜖= 0.05, according to the
+distribution characteristics of attention scores.
+We test its sink by position-based total attention scores:
+𝑆𝑖𝑛𝑘ℎ𝑒𝑎𝑑=
+𝑇ℎ
+∑︁
+𝑖=1
+𝑝𝑖,
+𝑆𝑖𝑛𝑘𝑡𝑎𝑖𝑙=
+𝑛
+∑︁
+𝑖=𝑇𝑡
+𝑝𝑖,
+(15)
+where𝑇ℎand𝑇𝑡is the position of the head and tail respectively. Here
+we set𝑇ℎ= 3,𝑇𝑡= 𝑛−3, according to the distribution characteristics
+of attention scores.
+Attention Differences across Layer Orders. As measured in
+Table 4, we identify a layer-wise attention sparsity inversion
+between NLP tasks and LLMRec tasks. In NLP tasks, the atten-
+tion sparsity is high in early layers, but decreases in later layers
+(𝑆𝑝𝑒𝑎𝑟𝑙𝑦> 𝑆𝑝𝑙𝑎𝑡𝑡𝑒𝑟). Conversely, LLMRec tasks display an inverted
+pattern: the attention sparsity is relatively low in early layers, but
+increases in later layers (𝑆𝑝𝑒𝑎𝑟𝑙𝑦< 𝑆𝑝𝑙𝑎𝑡𝑡𝑒𝑟). This indicates that the
+less sparse early layers in LLMRec retain more user preference in-
+formation, while high sparsity in later layers suggests redundancy.
+Attention Differences across Token Positions. Table 4 re-
+veals a dual attention sinks phenomenon that distinguishes
+LLMRec from NLP tasks. There is significant 𝑆𝑖𝑛𝑘ℎ𝑒𝑎𝑑for both
+tasks, while LLMRec exhibits a larger 𝑆𝑖𝑛𝑘𝑡𝑎𝑖𝑙(𝑆𝑖𝑛𝑘𝑡𝑎𝑖𝑙(LLMRec) >
+𝑆𝑖𝑛𝑘𝑡𝑎𝑖𝑙(NLP)). This indicates that both head and tail tokens in
+LLMRec are crucial for recommendation performance.
+Implications for Compression Strategy. These findings indi-
+cate that in LLMRec, the early layers contain richer information,
+while the middle tokens in the later layers are redundant. Our ap-
+proach takes into account the unique attention score distributions
+in LLMRec and formulates a reasonable compression scheme from
+a global perspective. It focuses on preserving information from
+critical token positions and early layers while pruning redundant
+parts in later layers. This ensures that it can improve efficiency
+while maintaining accuracy.
+2https://github.com/transcend-0/EARN/blob/main/attentions.md
+Table 4: Measurements of attention sink and sparsity (av-
+eraged across 13 NLP tasks, 3 real-world recommendation
+datasets, 2 LLMRec backbones, and 2 LLM models). Here,
+𝑺𝒑𝒆𝒂𝒓𝒍𝒚denotes 𝑺𝒑𝒂𝒓𝒔𝒊𝒕𝒚𝒆𝒂𝒓𝒍𝒚𝒍𝒂𝒚𝒆𝒓𝒔, and 𝑺𝒑𝒍𝒂𝒕𝒕𝒆𝒓denotes
+𝑺𝒑𝒂𝒓𝒔𝒊𝒕𝒚𝒍𝒂𝒕𝒕𝒆𝒓𝒍𝒂𝒚𝒆𝒓𝒔.
+Model
+Task
+𝑺𝒑𝒆𝒂𝒓𝒍𝒚
+𝑺𝒑𝒍𝒂𝒕𝒕𝒆𝒓
+𝑺𝒊𝒏𝒌𝒉𝒆𝒂𝒅
+𝑺𝒊𝒏𝒌𝒕𝒂𝒊𝒍
+Llama
+NLP
+0.064
+0.026
+0.73
+0.07
+LLMRec
+0.025
+0.048
+0.56
+0.09
+Qwen
+NLP
+0.074
+0.046
+0.30
+0.15
+LLMRec
+0.047
+0.059
+0.30
+0.24
+A.2
+Computational Complexity of LLM
+For a decoder-only LLM with 𝑁decoder layers, the computational
+operations comprise three components: embedding, 𝑁stacked de-
+coder layers, and de-embedding. Since embedding and de-embedding
+mainly involve lightweight lookup and projection steps, the com-
+putational bottleneck lies in the decoder layers. Specifically, each
+decoder layer consists of two core components: Multi-Head Atten-
+tion (MHA) and Feed-Forward Network (FFN), whose FLOPs are
+analyzed as follows:
+Multi-Head Attention (MHA). Let 𝐿denote the sequence
+length, 𝑑ℎthe hidden dimension, 𝑑𝑎the attention head dimen-
+sion, and 𝑛ℎthe number of attention heads. We approximate the
+FLOPs of matrix multiplication 𝑿𝐿×𝑑ℎ× 𝑾𝑑ℎ×𝑑𝑎as 2𝐿𝑑ℎ𝑑𝑎. For a
+single attention head, the FLOPs include: 1) Projections for 𝑸, 𝑲
+and 𝑽: 2𝐿𝑑ℎ𝑑𝑎× 3 = 6𝐿𝑑ℎ𝑑𝑎; 2) Attention computation for 𝑸𝑲𝑇
+and (·)𝑽: 2𝐿2𝑑𝑎+ 2𝐿2𝑑𝑎= 4𝐿2𝑑𝑎. Aggregating across 𝑛ℎheads,
+plus 2𝐿𝑛ℎ𝑑𝑎𝑑ℎFLOPs of the final output projection, the total MHA
+FLOPs per decoder layer are:
+𝐹𝐿𝑂𝑃𝑠𝑀𝐻𝐴= 𝑛ℎ(8𝐿𝑑ℎ𝑑𝑎+ 4𝐿2𝑑𝑎) .
+(16)
+Feed-Forward Network (FFN). The FFN module involves two
+projections with intermediate dimension𝑑𝑓: 1) Up-projection: 2𝐿𝑑ℎ𝑑𝑓;
+2) Down-projection: 2𝐿𝑑𝑓𝑑ℎ. This yields total FFN FLOPs of:
+𝐹𝐿𝑂𝑃𝑠𝐹𝐹𝑁= 4𝐿𝑑ℎ𝑑𝑓.
+(17)
+Total FLOPs. Combining both components, the FLOPs for a
+single decoder layer are:
+𝐹𝐿𝑂𝑃𝑠𝐿𝐿𝑀𝑙𝑎𝑦𝑒𝑟= 𝑛ℎ(8𝐿𝑑ℎ𝑑𝑎+ 4𝐿2𝑑𝑎) + 4𝐿𝑑ℎ𝑑𝑓
+= 4𝐿[𝑛ℎ𝑑𝑎(2𝑑ℎ+ 𝐿) + 𝑑ℎ𝑑𝑓] .
+(18)
+A.3
+Experimential Details
+Datasets Details. For all three datasets, all historical interactions
+are sorted according to the global timestamps, and then split into
+training, validation, and testing sets with the ratio of 8:1:1. For the
+item identifier, we follow LC-Rec [43] and TIGER [31] to set the
+length 𝐿= 4, i.e., the token sequence length of a generated item
+would be 4.
+Implementation details. All training and inference experi-
+ments are conducted on a single NVIDIA H100 80GB GPU. For the
+training setup, we employ full finetuning with AdamW optimizer
+and an overall batch size of 128 by leveraging gradient accumula-
+tion. The learning rate is set to 0.001, and is adjusted dynamically
+by a cosine learning rate scheduler with a warmup ratio of 0.02.
+For the inference setup, we set the beam size to 20 and use the
+maximum batch size that the GPU could accommodate. For the
+
+KDD ’25, August 3–7, 2025, Toronto, ON, Canada
+Chaoqun Yang et al.
+Table 5: Overall performance comparison between the base-
+lines and EARN instantiated on TIGER.
+Method
+Time Efficiency Space Efficiency
+Recommendation Effectiveness
+𝝎
+𝝉
+𝜸
+𝝈R@10 R@20 N@10 N@20
+Beauty, Llama
+Finetune
+1.00
+602.50
+0.0
+68.18 0.0108
+0.0198
+0.0071
+0.0096
+SkipLayers
+1.78
+1069.7 44.5
+37.87 0.0010
+0.0010
+0.0011
+0.0011
+POD
+1.17
+701.7 14.8
+58.11 0.0033
+0.0065
+0.0027
+0.0039
+500xCompressor 2.31
+1389.1 74.8
+17.16 0.0003
+0.0003
+0.0001
+0.0001
+StreamingLLM
+1.21
+730.0 96.4
+2.44 0.0003
+0.0005
+0.0005
+0.0003
+SnapKV
+1.19
+718.1 94.5
+3.76 0.0041
+0.0053
+0.0027
+0.0031
+EARN
+3.44
+1972.4 80.9
+13.04 0.0115 0.0199 0.0075 0.0098
+Beauty, Qwen
+Finetune
+1.00
+714.3
+0.0
+12.72 0.0095
+0.0162
+0.0061
+0.0081
+SkipLayers
+1.69
+1208.1 57.9
+5.35 0.0000
+0.0000
+0.0000
+0.0000
+POD
+1.10
+784.4
+8.4
+11.65 0.0056
+0.0084
+0.0032
+0.0044
+500xCompressor 2.55
+1819.2 91.4
+1.09 0.0003
+0.0005
+0.0002
+0.0005
+StreamingLLM
+1.05
+751.6 91.7
+1.06 0.0057
+0.0096
+0.0040
+0.0052
+SnapKV
+1.02
+728.7 69.6
+3.87 0.0063
+0.0110
+0.0043
+0.0055
+EARN
+2.58
+1805.9 75.5
+3.11 0.0104 0.0164 0.0065 0.0089
+Games, Llama
+Finetune
+1.00
+695.8
+0.0
+61.40 0.0126 0.0216 0.0080
+0.0107
+SkipLayers
+1.83
+1272.4 45.0
+33.76 0.0001
+0.0001
+0.0003
+0.0003
+POD
+1.08
+757.8 15.8
+51.67 0.0054
+0.0098
+0.0032
+0.0045
+500xCompressor 2.11
+1470.2 72.5
+16.88 0.0010
+0.0015
+0.0007
+0.0008
+StreamingLLM
+1.22
+850.7 96.0
+2.46 0.0010
+0.0010
+0.0010
+0.0009
+SnapKV
+1.21
+837.6 93.5
+3.98 0.0064
+0.0075
+0.0045
+0.0045
+EARN
+3.12
+2062.7 81.2
+11.56 0.0138 0.0212 0.0085 0.0108
+Games, Qwen
+Finetune
+1.00
+673.2
+0.0
+10.81 0.0131
+0.0224
+0.0085
+0.0113
+SkipLayers
+1.51
+1014.3 57.0
+4.65 0.0000
+0.0000
+0.0000
+0.0000
+POD
+1.36
+912.1
+8.5
+9.88 0.0087
+0.0150
+0.0050
+0.0073
+500xCompressor 2.60
+1752.0 96.7
+0.35 0.0002
+0.0004
+0.0001
+0.0001
+StreamingLLM
+1.06
+708.8 98.4
+0.17 0.0088
+0.0145
+0.0050
+0.0072
+SnapKV
+1.02
+686.4 67.6
+3.50 0.0094
+0.0161
+0.0056
+0.0081
+EARN
+2.86
+1841.3 72.1
+3.02 0.0137 0.0231 0.0086 0.0119
+MovieLens, Llama
+Finetune
+1.00
+852.50
+0.0
+39.79 0.0245
+0.0446
+0.0244
+0.0323
+SkipLayers
+1.85
+1577.0 67.6
+12.89 0.0022
+0.0024
+0.0059
+0.0051
+POD
+1.18
+1003.9 18.1
+32.57 0.0068
+0.0122
+0.0088
+0.0103
+500xCompressor 1.93
+1640.0 61.1
+15.48 0.0004
+0.0006
+0.0004
+0.0003
+StreamingLLM
+1.18
+1007.9 95.2
+1.89 0.0000
+0.0000
+0.0000
+0.0000
+SnapKV
+1.18
+1002.50 91.8
+3.28 0.0000
+0.0000
+0.0000
+0.0000
+EARN
+2.85
+2437.4 77.7
+8.87 0.0269 0.0544 0.0221 0.0340
+MovieLens, Qwen
+Finetune
+1.00
+897.4
+0.0
+7.75 0.0238
+0.0455
+0.0224
+0.0312
+SkipLayers
+1.49
+1340.5 76.9
+1.79 0.0002
+0.0002
+0.0002
+0.0002
+POD
+1.41
+1260.9 39.8
+4.66 0.0114
+0.0192
+0.0106
+0.0131
+500xCompressor 2.10
+1882.1 77.9
+1.71 0.0004
+0.0009
+0.0005
+0.0007
+StreamingLLM
+1.01
+912.2 88.3
+0.91 0.0213
+0.0402
+0.0180
+0.0241
+SnapKV
+0.97
+872.4 76.5
+1.82 0.0204
+0.0464
+0.0174
+0.0263
+EARN
+2.56
+2292.8 45.5
+4.23 0.0274 0.0474 0.0273 0.0355
+Table 6: Overall comparison between baselines and EARN
+instantiated on HSTU. Here, the unit of 𝝈is MB.
+Method
+Time Efficiency Space Efficiency
+Recommendation Effectiveness
+𝝎
+𝝉
+𝜸
+𝝈R@10 R@20 N@10 N@20
+Beauty
+Finetune
+1.00
+2735.5
+0.0
+439.5 0.0446 0.0693 0.0269
+0.0328
+SkipLayers 1.72
+4685.6 27.8
+317.5 0.0248
+0.0322
+0.0116
+0.0136
+EARN
+2.01
+5414.9 49.5
+222.0 0.0520 0.0594 0.0311 0.0329
+Games
+Finetune
+1.00
+3425.2
+0.0
+532.9 0.0557 0.0846 0.0362 0.0435
+SkipLayers 1.69
+5797.2 27.9
+384.4 0.0371
+0.0520
+0.0200
+0.0237
+EARN
+1.97
+6770.9 50.3
+264.9 0.0586 0.0735 0.0384 0.0421
+MovieLens
+Finetune
+1.00
+3187.9
+0.0
+546.9 0.0756
+0.1073
+0.0405
+0.0485
+SkipLayers 1.75
+5602.4 34.6
+357.7 0.0780
+0.1207
+0.0429
+0.0536
+EARN
+2.06
+6555.8 50.5
+270.6 0.0793 0.1268 0.0429 0.0551
+Table 7: Overall performance comparison between Finetune
+and EARN with different register layer 𝑘on Llama (total 32
+layers) on MMLU.
+RegisterLayer 𝒌
+𝝎
+𝝉
+𝜸
+𝝈
+Accuracy
+Finetune
+1.0
+76.0
+0.0
+266.0
+0.51
+4
+6.9
+523.6
+83.3
+44.5
+0.27
+7
+4.3
+331.3
+73.3
+71.0
+0.28
+11
+2.9
+219.0
+61.3
+103.0
+0.28
+15
+2.2
+163.4
+49.3
+135.0
+0.46
+19
+1.7
+130.3
+38.2
+164.5
+0.50
+23
+1.4
+104.3
+26.1
+196.5
+0.50
+27
+1.2
+91.6
+14.2
+228.3
+0.50
+hyper-parameters of EARN in Table 1, EARN on Llama uses 𝑘= 4
+and 𝑛= 1, and EARN on Qwen uses 𝑘= 7 and 𝑛= 1.
+A.4
+Additional Results on TIGER
+Table 5 shows the overall performance comparison between the
+baselines and EARN instantiated on TIGER. Our EARN achieves the
+best performance in terms of time efficiency and recommendation
+effectiveness, while also demonstrating excellent space efficiency.
+These results further validate the effectiveness of EARN.
+A.5
+Additional Results on HSTU
+We also conduct experiments on HSTU [41], the first industry-
+deployed generative recommendation system. As shown in Table 6,
+our EARN is also effective for HSTU, demonstrating excellent time
+and space efficiency (2x speedup and 50% memory savings), with
+minimal impact on recommendation effectiveness. It is important
+to note that HSTU differs from other popular LLM-based genera-
+tive recommendation methods (e.g., LC-Rec). Specifically, in HSTU
+model, there are no textual inputs and no concept of prompts as
+seen in NLP tasks. And HSTU directly generates the predicted item
+embeddings, akin to generating only one token, which means it
+only has the prefilling stage and no decoding stage. These render
+that the baselines of prompt compression, cache compression, and
+gist methods in NLP are not applicable. Therefore, we primarily
+compared Finetune, SkipLayer, and EARN.
+A.6
+Additional Results on NLP Tasks
+To validate the generalizability of EARN beyond recommendation
+tasks, we conducted experiments on MMLU dataset [8]—a general
+NLP dataset spanning 57 tasks (e.g., math, science, and humanities).
+Results in Table 7 demonstrate EARN’s effectiveness: 1) Efficiency-
+accuracy trade-off: As the register layer 𝑘decreases, EARN achieves
+higher speedup and cache reduction at the cost of reduced accu-
+racy. However, when 𝑘≥15, the accuracy loss remains within 10%,
+indicating that EARN can still deliver satisfactory performance for
+general NLP tasks. 2) Comparison with LLMRec tasks: Unlike LLM-
+Rec tasks, where EARN incurs no accuracy loss at 𝑘≥4 and even
+boosts accuracy by pruning noisy information (refer to Figure 6),
+NLP tasks require a higher 𝑘to curb accuracy degradation.
+In summary, while optimal 𝑘varies across tasks, it consistently
+enables efficient inference with controlled accuracy trade-offs, show-
+casing its broader applicability beyond recommendation tasks.

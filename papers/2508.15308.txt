@@ -1,0 +1,1857 @@
+REG4Rec: Reasoning-Enhanced Generative Model
+for Large-Scale Recommendation Systems
+1st Haibo Xing
+Alibaba Group
+Hangzhou, China
+xinghaibo.xhb@alibaba-inc.com
+1st Hao Deng
+Alibaba Group
+Beijing, China
+denghao.deng@alibaba-inc.com
+1st Yucheng Mao
+Alibaba Group
+Hangzhou, China
+maoyucheng.myc@alibaba-inc.com
+2nd Lingyu Mu
+Alibaba Group
+Beijing, China
+moulingyu.mly@alibaba-inc.com
+3rd Jinxin Hu*
+Alibaba Group
+Beijing, China
+jinxin.hjx@alibaba-inc.com
+4th Yi Xu
+Alibaba Group
+Beijing, China
+xy397404@alibaba-inc.com
+5th Hao Zhang
+Alibaba Group
+Beijing, China
+zh138764@alibaba-inc.com
+6th Jiahao Wang
+Alibaba Group
+Beijing, China
+wjh177423@alibaba-inc.com
+7th Shizhun Wang
+Alibaba Group
+Beijing, China
+shaoan.wsz@taobao.com
+8th Yu Zhang
+Alibaba Group
+Beijing, China
+daoji@alibaba-inc.com
+9th Xiaoyi Zeng
+Alibaba Group
+Beijing, China
+yuanhan@taobao.com
+10th Jing Zhang*
+Wuhan University
+Wuhan, China
+jingzhang.cv@gmail.com
+Abstract—In large-scale e-commerce platforms, sequential rec-
+ommendation must address diverse user behaviors driven by
+distinct shopping intents. Users may engage in routine purchases,
+flash sale shopping, cross-category exploration, or long-term de-
+cision, each requiring tailored interaction understanding. While
+traditional methods struggle with these complexities, generative
+models offer improved prediction capabilities. To better capture
+intent diversity in e-commerce scenarios, recent studies have
+introduced a reasoning process into generative recommendation.
+However, these approaches are constrained by the singularity of
+item semantic representations, facing challenges such as limited
+diversity in reasoning pathways and insufficient reliability in the
+reasoning process. To tackle these issues, we introduce REG4Rec,
+a reasoning-enhanced generative model that constructs multiple
+dynamic semantic reasoning paths alongside a self-reflection
+process, ensuring high-confidence recommendations. Specifically,
+REG4Rec utilizes an MoE-based parallel quantization codebook
+(MPQ) to generate multiple unordered semantic tokens for each
+item, thereby constructing a larger-scale diverse reasoning space.
+Furthermore, to enhance the reliability of reasoning, we propose a
+training reasoning enhancement stage, which includes Preference
+Alignment for Reasoning (PARS) and a Multi-Step Reward
+Augmentation (MSRA) strategy. PARS uses reward functions
+tailored for recommendation to enhance reasoning and reflection,
+while MSRA introduces future multi-step actions to improve
+overall generalization. During inference, we further incorporate
+Consistency-Oriented Self-Reflection for Pruning (CORP) to cor-
+rect or discard inconsistent reasoning paths, thereby mitigating
+noise and preventing the propagation of erroneous reasoning.
+Lastly, we develop an efficient offline training strategy for large-
+scale recommendation.
+Lastly, we develop an efficient offline training strategy tai-
+lored for large-scale recommendation pipelines. This strategy
+combines dynamic embedding data management, compiler, and
+a layer-adaptive dynamic quantization controller (LADQ) to
+reduce training time and overall hardware cost while preserv-
+* Corresponding authors
+ing model accuracy for post-training refinement. Experiments
+on actual datasets have verified that REG4Rec has achieved
+outstanding performance, realizing a performance gain of up to
+16.59%. Online experiments demonstrate its substantial practical
+value, including a live deployment and A/B test on Alibaba
+Group’s online advertising platform.
+Index Terms—Generative Recommendation, Reasoning Pro-
+cess, Self-Reflection
+I. INTRODUCTION
+Sequential recommendation (SR), due to its ability to predict
+users’ next actions and uncover latent intentions by analyzing
+historical behavior patterns [12], is widely applied to platforms
+such as e-commerce websites [5], [11], video streaming ser-
+vices [9], and news portals [8]. Recently, generative models
+have achieved significant breakthroughs in sequential recom-
+mendation [13]. Generative Recommendation (GR) replaces
+traditional numeric item IDs with fixed, unique sequences of
+semantic tokens for item representation. By leveraging the
+semantic token’s content representation capability and gener-
+ative models’ intent understanding capacity, GR dynamically
+generates items consistent with users’ latent preferences and
+has quickly emerged as a new paradigm [10], [18].
+Recently, several studies have integrated intermediate rea-
+soning process into GR (Figure 1(a)), generating item se-
+mantic tokens to construct paths toward final predictions
+and achieving significant performance gains [3], [4], [10].
+However, existing models face several limitations. First, each
+item is deterministically encoded into a fixed sequence of
+semantic tokens, producing rigid representations that conflict
+with the inherent uncertainty of reasoning. Since inference
+paths are constructed from these fixed item representations,
+the singularity of the representations directly results in a lack
+arXiv:2508.15308v4  [cs.IR]  9 Feb 2026
+
+…
+…
+…
+…
+Flexible and Diverse Paths
+Fixed Order and Single Path 
+Retrival
+User 1
+User 2
+consistent?
+Reflection
+User 1
+User 2
+Stop
+Comparison of 
+Reasoning Path for Item
+(b) REG4Rec with flexible and reliable Reasoning Process
+(a) GR with a Limited Reasoning Process
+Reasoning Process
+Retrival
+Reasoning Process
+Fig. 1.
+Comparison of reasoning in GR: (a) GR with a limited reasoning
+process; (b) our REG4Rec enables diverse and reliable reasoning process to
+better capture the variety of users’ intents.
+of diversity in the exploration space of reasoning pathways.
+Items have multi-dimensional attributes such as brand, style,
+and color, while different users may have diverse reasons
+for interest in the same item. Consequently, the constrained
+reasoning space of existing models fails to adequately capture
+this diversity of user intents, ultimately leading to suboptimal
+recommendation performance. Second, current methods lack
+mechanisms to assess or calibrate the reliability of reasoning
+paths, which may introduce uncontrolled noise during the
+reasoning process and reduce recommendation accuracy. To
+overcome these limitations, we aim to develop a reliable GR
+reasoning framework that supports diverse reasoning paths. To
+this end, we propose two research problems:
+• (RQ1) How can we design flexible reasoning paths to
+accommodate diverse user intents?
+• (RQ2) How can we ensure a reliable reasoning process
+to enhance recommendation quality?
+To address these questions, we draw on core mechanisms of
+Large Language Models (LLMs). Their success in complex
+tasks stems from two advances: adopting dynamic, multi-
+step reasoning beyond linear thought, and incorporating self-
+reflective critique to improve output reliability [19], [33], [34].
+Building on these ideas, we introduce REG4Rec, a reasoning-
+enhanced generative recommendation model (Figure 1 (b)).
+To design flexible reasoning paths (RQ1), we introduce the
+Mixture-of-Experts (MoE)–based Parallel Quantization Code-
+books (MPQ) for each item. Given multimodal inputs, MPQ
+uses parallel autoencoder experts to generate distinct, un-
+ordered semantic codebooks, each representing a different
+facet of the item. At each step, REG4Rec generates parallel
+predictions from all codebooks and dynamically selects the
+token with the highest confidence, enabling a vast combina-
+torial variety of paths. To ensure a reliable reasoning process
+(RQ2), we propose a comprehensive framework for training
+and inference. Specifically, we design a Preference Alignment
+Reward for Selection (PARS) using reinforcement learning
+(RL) [22] to guide the model in selecting inference paths with
+high consistency and confidence. Furthermore, we propose
+Multi-Step Reward Augmentation (MSRA), which extends the
+reward horizon to future user actions, enabling better capture
+of long-term preferences and reducing noise from stochastic
+user behavior. During inference, we employ Consistency-
+Oriented Self-Reflection for Pruning (CORP) to identify and
+correct or discard inconsistent reasoning paths, thereby mit-
+igating noise and preventing the propagation of erroneous
+reasoning. To make these post-training refinements practical at
+industrial scale, we design an online Layer-Adaptive Dynamic
+Quantization Controller (LADQ) that periodically profiles
+per-layer sensitivity and assigns fp32/bf16/fp8 precision to
+minimize training time under an accuracy budget.
+We conduct extensive experiments on four datasets (three
+public datasets and a large-scale industrial dataset from an
+online advertising system), comparing REG4Rec with six
+state-of-the-art baselines, such as GR models with reasoning
+process like ReaRec and STREAM. REG4Rec consistently
+outperforms all baselines across every scenario, achieving
+performance gains of up to 16.59%. To validate its real-
+world effectiveness, we deploy REG4Rec on Alibaba’s large-
+scale commercial advertising platform. The subsequent online
+A/B test yielded a 5.60% increase in Advertising Revenue, a
+1.81% increase in Click-Through Rate (CTR), and a 3.29%
+increase in Gross Merchandise Volume (GMV). These results
+demonstrate the significant practical value and real-world
+impact of our model.
+Our main contributions are summarized as follows:
+• We propose REG4Rec, a reasoning-enhanced generative
+model that constructs dynamic and reliable reasoning paths
+for recommendation, offering a promising solution for GR.
+• We design the MoE-based parallel quantization codebooks
+to create a flexible and diverse combinatorial space of rea-
+soning paths. To ensure reliability, REG4Rec employs a RL-
+based post-training framework with Preference Alignment
+for Reasoning and Multi-Step Reward Augmentation to
+learn and select robust paths. During inference, we intro-
+duce Consistency-Oriented Self-Reflection Pruning method
+to remove inconsistent paths and reduce noise.
+• We conduct extensive experiments on both public and indus-
+trial datasets and deploy REG4Rec in an online advertising
+system, demonstrating its clear advantage over existing
+methods.
+II. RELATED WORK
+A. Sequential Recommendation
+Sequential recommendation is a fundamental task widely
+adopted in search, recommendation, and advertising systems
+[1], [5], [10]. It predicts a user’s next item based on their
+chronological interaction history. To uncover latent behav-
+ioral patterns, researchers have developed various sequential
+modeling methods, including CNNs [14], [15], RNNs [16],
+[17], and Transformers [2], [6], [7]. For instance, SASRec
+[2] and BERT4Rec [6] demonstrate that Transformer archi-
+tectures effectively track changes in users’ interests, while
+
+PinnerFormer [7] further extends this approach to model long-
+term preferences. While these models are effective, they often
+rely heavily on item identifiers. In large-scale recommen-
+dation scenarios, the presence of billions of distinct items
+can worsen the Matthew effect, resulting in poorly trained
+identifier parameters and restricted scalability [13]. To address
+this, several works have replaced massive item-ID vocabularies
+with compact semantic tokens in GR models. For instance,
+Google’s TIGER [18] employs a residual quantized variational
+autoencoder (RQ-VAE) to create semantic tokens instead of
+item IDs, these tokens are then fed into a GR model to
+predict subsequent token IDs. Similarly, OneRec [1] uses
+a residual k-means codebook to encode items and generate
+recommendation lists through preference alignment, while
+LIGER [24] and COBRA [10] leverages a multi-granularity
+GR framework that integrates semantic tokens with sparse item
+identifiers.
+Existing GR models, which generate recommendations in
+a single step, often overlook the reasoning needed to capture
+complex intents. In contrast, we propose a reasoning-enhanced
+model that adaptively selects reliable reasoning paths, deliv-
+ering more accurate and insightful recommendations.
+B. Reasoning-Enhanced Generation
+Reasoning is fundamental to solving complex problems
+[25], [26]. Recent breakthroughs in LLMs have moved beyond
+single-step generation, driven by two key advancements. First,
+LLMs create adaptive, structured reasoning flows. Instead of
+following a single linear path, models now explore a dynamic
+space of possibilities, either internally through branching
+thought-paths (e.g., Tree of Thoughts [34]) or externally by
+interacting with tools (e.g., ReAct [33]). Second, they inte-
+grate reflection mechanisms for self-critique [19], [20]. This
+involves a model drafting, evaluating, and iteratively correcting
+its own solutions, which significantly enhances output relia-
+bility. Inspired by these LLM advancements, researchers have
+begun to incorporate reasoning into recommendation systems
+[3], [4]. However, current approaches often implement these
+principles in a limited fashion. For instance, while ReaRec [3]
+generates intermediate outcomes, its implicit nature lacks the
+verifiable structure required for robust reasoning. Similarly,
+although STREAM [4] constructs explicit reasoning paths,
+its approach is overly rigid: it confines paths to textually
+similar items and represents each item with a fixed sequence
+of semantic tokens. This rigidity prevents the model from
+capturing the diverse intents users may have for the same item,
+which necessitates more adaptive reasoning.
+In this paper, our method generates diverse paths within
+a dynamic reasoning space, while a preference alignment
+strategy and a reflection-based inference mechanism work in
+tandem to ensure the most reliable paths are selected.
+III. METHODOLOGY
+A. Problem Formulation
+This section formalizes the GR task. Let I denote the set
+of all items. For a given user u, the historical interaction
+sequence is defined as Su = (i1, i2, . . . , iT ), where it ∈I is
+the item interacted with at time step t. The primary objective
+is to predict the user’s next interaction, iT +1 ∈I. Inspired
+by prior work [10], [18], we integrate the GR model into the
+retrieval stage of recommender systems. A common approach
+is to build an encoder-decoder GR model. The model takes
+Su as input and estimates a distribution p(i|Su) over i ∈I.
+During inference, the model retrieves the top-N items by
+sorting p(i|Su) in descending order.
+B. Overview of REG4Rec
+Figure 2 illustrates the overall architecture, which consists
+of three main phases: codebooks construction, training, and
+inference.
+To enable flexible reasoning, we introduce the MoE Multi-
+Path Quantization Codebooks (MPQ). At each step, REG4Rec
+treats the codebooks as parallel candidates, composing diverse
+reasoning paths. We also propose Confidence-based Reasoning
+Step Selection (CRSS), which dynamically chooses the most
+confident token across codebooks at each step, adapting the
+path to varying user intents.
+To enhance reasoning reliability, we adopt a two-stage train-
+ing procedure. During pre-training, alongside predicting the
+target item token, we include an auxiliary category-prediction
+task, whose output distribution serves as a proxy for the
+user’s primary intent and helps assess path reliability. Post-
+training refines reasoning via two strategies: Preference Align-
+ment for Reasoning (PARS) and Multi-Step Reward Aug-
+mentation (MSRA). During inference, Consistency-Oriented
+Self-Reflection Pruning (CORP) evaluates step-wise consis-
+tency of reasoning paths. It prunes low-confidence paths,
+preventing the propagation of errors in the reasoning process.
+Our method addresses three key objectives:
+• (i) designing flexible reasoning steps to accommodate di-
+verse user intents (Section IV).
+• (ii) enhancing reasoning reliability to improve recommen-
+dation performance (Sections V and VI-B).
+• (iii) introducing an efficient offline training strategy for
+large-scale recommendation (Section VI-A).
+IV. FLEXIBLE REASONING PATHS
+This section introduces two components that enable flexible
+reasoning in REG4Rec: the MoE-based parallel quantiza-
+tion codebooks and confidence-based reasoning step selection
+method. These components form the foundation of our frame-
+work.
+1) MPQ: Moe-based Parallel Quantization Codebooks:
+At the item tokenization stage, in contrast to traditional RQ
+codebooks [10], we propose the MPQ for the reasoning
+process in REG4Rec. MPQ uses multiple codebooks in par-
+allel, which are order-invariant. Each codebook captures a
+distinct semantic dimension of an item, yielding a factorized
+representation without a predefined hierarchy. Leveraging an
+MoE-style gating mechanism [23], MPQ enables information
+sharing across codebooks and adaptively adjusts their granu-
+larity and diversity to better capture semantics. As a result,
+
+REG4Rect
+REG4Rect+1
+< SEP>
+…
+< SEP>
+(a). The Architecture of MPQ
+Self-A'en)on
+Add & Token-wise Norm
+Feed Forward Network
+REG4Rec Encoder
+×N/2
+✖
+< t2_52 >
+< t0_85 >
+< t0_73 >
+< t1_59 >
+< t1_22 >
+< t3_26 >
+< t3_19 >
+Step-Hit Reward
+Preference Alignment for Reasoning(PARS)
+Casual Self-A'en)on
+Add & Token-wise Norm
+Feed Forward Network
+REG4Rec Decoder
+×N/2
+Cross-A'en)on
+< t0_73 >
+< t2_68 >
+< t1_58 >
+< t3_27 >
+< BOS >
+GRPO
+<t0_16>
+< t1_22 >
+< t2_95 >
+< t3_51 >
+<t0_51>
+< t1_96 >
+< t2_31 >
+< t3_08 >
+< t1_22 >
+< t2_68 >
+< t3_19 >
+<t0_73>
+…
+Mul7-Step Reward Augmenta7on Strategy (MSRA)
+Time
+Decay
+w1
+w2
+wN
+…
+User Sequence
+Future N-Step Window
+…
+< t0_16 >
+< t1_96 >
+< t1_59 >
+< t0_85 >
+✖
+✔
+< t3_08 >
+< t3_26 >
+Consistency-Oriented Self-Reﬂec7on for Pruning (CORP)
+is Consistent?
+✔
+<t1_96>
+< t0_16 >
+< t3_08 >
+< t2_95 >
+<EOS>
+<EOS>
+< t0_73 >
+< t2_68 >
+< t1_58 >
+<EOS>
+< t3_27 >
+Global Path Reward
+Category-Hit Reward
+Step-Consistency Reward
+Router
+k, v
+Path 1
+Path 2
+Path 3
+Path 4
+Is consistent?
+✔
+✔
+Codebook 1
+Codebook 2
+Codebook 3
+Codebook 4
+Conﬁdence-based Reasoning Step Selec7on (CRSS)
+Dynamic Reasoning Space
+Color
+Brand
+Price
+Encoder
+Encoder
+Encoder
+Encoder
+Decoder
+(b). Training Process
+(c). Inference Process
+Target item for example:
+Token:  < t0_1 >，< t1_2 >，< t2_3 >
+Cate:  < c27>，<c27>，< c27 >
+Path 1:
+Token:  < t0_1 >，< t1_20 >，< t2_3 >
+Cate:  < c12>，<c12>，< c12 >
+Reward: 2
+Path 2:
+Token:  < t0_10 >，< t1_2 >，< t2_30 >
+Cate:  < c12>，<c12>，< c12 >
+Reward: 1
+Path 3:
+Token:  < t0_1 >，< t1_2 >，< t2_3 >
+Cate:  < c12>，<c12>，< c12 >
+Reward: 1
+Path 4:
+Token:  < t0_20 >，< t1_20 >，< t2_20 >
+Cate:  < c12>，<c12>，< c12 >
+Reward: 0
+Path 5:
+Token:  < t0_20 >，< t1_20 >，< t2_20 >
+Cate:  < c30>，<c30>，< c27 >
+Reward: 1
+Path 6:
+Token:  < t0_20 >，< t1_20 >，< t2_20 >
+Cate:  < c27>，<c30>，< c27 >
+Reward: 2
+Path 7:
+Token:  < t0_20 >，< t1_20 >，< t2_20 >
+Cate:  < c30>，<c30>，< c30 >
+Reward: 2
+Path 8:
+Token:  < t0_20 >，< t1_20 >，< t2_20 >
+Cate:  < c27>，<c30>，< c30 >
+Reward: 1
+Fig. 2.
+REG4Rec introduces MPQ for generating flexible and reliable reasoning paths. During training, CRSS diversifies path combinations, while PARS
+selects consistent, confident paths. MSRA extends the reward horizon to capture long-term preferences and reduce noise caused by stochastic behavior. During
+inference, CORP prunes inconsistent paths, preventing the propagation of errors in the reasoning process.
+MPQ balances the information used at each reasoning step
+with the overall size of the reasoning space.
+Concretely, for an item i, its multi-modal features (e.g.,
+textual, visual, and behavioral) are extracted with a pretrained
+model [21] and concatenated into a unified feature vector vi.
+Let M denote the number of parallel autoencoder experts
+{Er}M
+r=1. Each expert Er is associated with a codebook
+Cr = {zr
+1, zr
+2, . . . , zr
+D}, where zr
+j is a codeword and D is
+the codebook size. Each expert operates independently, takes
+vi as input and projects it into a latent spaces er
+i = Er(vi).
+The experts then select the most similar codeword in Cr to
+er
+i , using its index to represent a semantic token for item i.
+Formally, the index ci
+r which is selected by the r-th expert
+represent the semantic token, is calculated as:
+ci
+r = arg min
+j
+∥er
+i −zr
+j ∥2,
+(1)
+where arg min returns the index of the codeword with the
+smallest L2 distance [41] to er
+i . After obtaining zr
+i from each
+expert, we employ a routing gate to aggregate the semantic
+contributions from all codebooks. The final encoding vector is
+qi = PM
+r=1 hr(vi)zr
+i , where hr(vi) denotes the routing weight
+assigned to expert r, based on the input feature vector vi.
+To ensure the semantic reliability and diversity of tokens in
+MPQ, we employ two reconstruction-oriented loss functions.
+Firstly, the codebooks reconstruction loss Lrecon, measures how
+effectively the selected codewords reconstruct the input:
+Lrecon = ∥vi −decoder(qi)∥2
+2 ,
+(2)
+where decoder(·) reconstructs an approximation of vi from
+qi. Additionally, we add an orthogonality regularizer on the
+encoder projections to promote diversity, enabling different
+codebooks to adaptively capture complementary dimensions of
+item features. Let {W1, . . . , WM} be the projection matrices
+for the M codebooks, and
+¯W be their column-wise L2-
+normalized concatenation. The orthogonality loss is:
+Lorth =
+( ¯W)⊤¯W −I
+2
+F ,
+(3)
+where I is the identity matrix and ∥· ∥2
+F denotes the squared
+Frobenius norm [42]. The overall objective combines these
+terms:
+L = Lrecon + αLorth,
+(4)
+In Eq. (4), α is a hyperparameter that controls the contribu-
+tion of the orthogonality loss. Leveraging the MoE and parallel
+quantization codebooks, MPQ establishes a robust foundation
+for designing flexible reasoning paths.
+2) CRSS: Confidence-based Reasoning Step Selection:
+The dynamic reasoning space constructed by MPQ utilizes
+multiple parallel codebooks to represent different facets of
+the item. To decode effectively within such a space, it is
+crucial to dynamically determine an ordering that balances
+both confidence and diversity during reasoning. To tackle this
+challenge, CRSS introduces a novel decoding strategy which
+dynamically selects the most informative token at each step
+using confidence scores computed from all active codebooks.
+Unlike approaches where a fixed codebook is predefined for
+each step, CRSS performs flexible decoding by utilizing M
+parallel codebooks throughout the reasoning process, enabling
+content-aware token selection. At each decoding step, CRSS
+computes a predicted token and its confidence score across all
+M parallel codebooks. The token with the highest confidence
+across all codebooks is then selected as the next output,
+ensuring informativeness and consistency in the reasoning
+process.
+
+Algorithm 1 Pre-training for Generative Recommendation
+Input: User-item interaction data D = {(u, Su)}, item feature
+vectors {vi}i∈I, number of parallel experts M, codebook size
+D, number of decoding steps M.
+Initialize: Parallel autoencoder experts {Er}M
+r=1, codebooks {Cr =
+{zr
+1, . . . , zr
+D}}M
+r=1, projection matrices {Wr}M
+r=1, shared de-
+coder, Transformer encoder-decoder model πθ, category clas-
+sifier fc, pre-trained feature extractors {ϕt, ϕv, ϕb}.
+Stage 1: Codebook Learning
+1: while not converged do
+2:
+for all item i ∈I do
+3:
+vi ←[ϕt(i), ϕv(i), ϕb(i)]
+4:
+for r = 1 to M do
+5:
+er
+i ←Er(vi)
+6:
+ci
+r ←arg minj ∥er
+i −zr
+j ∥2
+7:
+zr
+i ←zr
+cir
+8:
+end for
+9:
+Compute routing weights: hr(vi) ←MoE-gate(vi)
+10:
+qi ←PM
+r=1 hr(vi) · zr
+i
+11:
+Lrecon ←∥vi −decoder(qi)∥2
+2
+12:
+Normalize matrices: ¯
+W ←L2-norm([W1, . . . , WM])
+13:
+Lorth ←
+ ¯
+W ⊤¯
+W −I
+2
+F
+14:
+L ←Lrecon + α · Lorth
+15:
+Update {Er, Cr, Wr, πθ} via gradient descent on L
+16:
+end for
+17: end while
+Stage 2: Pre-training
+18: while not converged do
+19:
+Sample (u, Su) ∼D
+20:
+Encode history: H ←Encoder(Su)
+21:
+Decode token sequence y = [c1, . . . , cM]
+22:
+Compute token loss: Ltoken ←−PM
+i=1 log p(ci | c<i, H)
+23:
+Predict categories: ggr
+i ←fc(c<i, H), ∀i
+24:
+Compute category loss: Lcate ←−log ˜p(ggr
+i | c<i, H)
+25:
+Update πθ via gradient descent on Ltoken + λLcate
+26: end while
+Formally, let Cval = {C1, C2, . . . , CK} be the active code-
+books at step j, where K ≤M and Cval ⊂C. For each
+Ck ∈Cval, we compute a confidence score S(c) for each token
+c in Ck. The next token cj is chosen as the one with the highest
+confidence over all active codebooks:
+cj = arg max
+Ck∈Cval
+(arg max
+c∈Ck S(c)).
+(5)
+After selecting cj, its codebook is marked as used and
+removed from Cval to avoid redundancy and maintain diversity.
+This process repeats with the remaining K−1 codebooks until
+the active set is exhausted, yielding K tokens in total.
+CRSS leverages multiple parallel codebooks in MPQ and
+uses confidence scores as a proxy for reliability, balancing
+accuracy and exploration during reasoning. This approach is
+well-suited to GR tasks in recommendation systems, where
+user behavior is highly variable and non-stationary [32], and
+adaptive decoding is required to capture dynamic intents.
+V. TRAINING FOR RELIABLE REASONING PROCESS
+We adopt a two-stage training framework: pre-training
+and post-training. In pretraining, in addition to predicting the
+target item token, we add an auxiliary category-prediction
+task to support subsequent reliability assessment. In post-
+training, to improve the reliability and quality of the generated
+reasoning paths, we propose two complementary strategies:
+Preference Alignment for Reasoning and Multi-Step Reward
+Augmentation Strategy.
+1) Pretrain task: During pre-training, the encoder pro-
+cesses the token sets from a user’s historical items, and the
+decoder predicts the token set of the next item. Formally, the
+training objective aims to optimize the following probability:
+Ltoken = −
+M
+X
+c=1
+log p(cT +1
+i
+| cT +1
+<i , Su),
+(6)
+where cT +1
+i
+denotes the i-th token of the next item, and cT +1
+<i
+are previously generated tokens. To encourage consistency and
+improve reasoning accuracy, we add an auxiliary category
+prediction at each decoding step:
+Lcate = −log ˜p(ggr
+i | cT +1
+<i , Su),
+(7)
+where ggr
+i is the predicted category of the i-th decoding step.
+2) PARS: Preference Alignment for Reasoning: In this
+section, we introduce a RL framework designed to optimize
+reasoning paths. PARS frames item recommendation as a
+sequential decision-making: at each step, REF4Rec selects a
+token from MPQ’s parallel codebooks while exploring multi-
+ple potential paths to discover optimal reasoning paths. The
+objective is to learn a policy that generates reliable, semanti-
+cally coherent reasoning paths aligned with user preferences.
+Let πθ(y|Su) be the policy parameterized by θ, which
+generates a tokens sequence y = {c1, c2, . . . , cM} conditioned
+on the user’s history Su. During training, we collect a set of
+paths τ = {y1, y2, . . . , yG} sampled from earlier versions of
+the current policy. Here, G represents the number of paths,
+which are used to stabilize policy updates over time. These
+paths are used to estimate advantages Ai, which measure how
+well each generated path yi performs relative to others. The
+advantage function is defined as follows:
+Ai = ri −mean({r1, r2, ..., rG})
+std({r1, r2, ..., rG})
+,
+(8)
+where ri is the cumulative reward of path yi. Following
+GRPO algorithm [22], which employs policy optimization
+with Kullback-Leibler (KL) divergence [28] for stability, we
+define the objective function as follows:
+J(θ) = Esu∼D,{yi}G
+i=1∼πθold(·|su)
+"
+1
+G
+G
+X
+i=1
+min
+ πθ(yi|su)
+πθold(yi|su)Ai,
+clip
+ πθ(yi|su)
+πθold(yi|su), 1 −ϵ, 1 + ϵ
+
+Ai
+
+−βDKL(πθ∥πθref)] ,
+(9)
+where πθold denotes the reference policy, DKL(·||·) represents
+the KL divergence measuring the discrepancy between the
+current policy and the reference policy.
+
+To further enhance the quality of the generated reasoning
+paths, we design four reward functions to improve semantic
+consistency, diversity, and alignment with ground-truth pat-
+terns.
+Step-Hit Reward (γstep): This reward measures the pro-
+portion of generated tokens that belong to the target item’s
+ground-truth token set, ensuring semantic alignment between
+the reasoning path and the target item’s representation. Each
+item is associated with a predefined set of M tokens. We define
+the reward as:
+γstep = 1
+M
+M
+X
+i=1
+I(cgr
+i ∈Ci),
+(10)
+where M denotes the number of reasoning steps, cgr
+i is the i-th
+token generated by REG4Rec, and Ci is the ground-truth token
+set of the target item. The indicator function I(·) equals 1 if
+the generated token is in the ground-truth set and 0 otherwise.
+This reward treats the ground-truth token set as unordered,
+aggregating matches across all generated tokens. The token
+set of item in MPQ is unordered. This design encourages the
+model to explore diverse reasoning paths while maintaining
+semantic alignment.
+Category-Hit Reward (γcate): At each step i, REG4Rec
+predicts a category probability distribution via a pretrained
+classifier. The predicted category ggr
+i at step i is compared with
+the target item’s ground-truth label ggt. This evaluation serving
+as a metric for assessing how well the generated reasoning
+path remains aligned with the item’s ground-truth semantics
+across all steps, ensuring semantic consistency throughout the
+entire reasoning process. Formally, the category-hit reward is
+defined as:
+γcate = 1
+M
+M
+X
+i=1
+I(ggr
+i = ggt
+i ),
+(11)
+where the indicator function I(·) returns 1 if ggr
+i matches ggt
+i ,
+and 0 otherwise. This reward evaluates semantic consistency
+between predicted and ground-truth categories across reason-
+ing steps, promoting alignment with high-level item semantics.
+Step-Consistency Reward (γjs): To promote semantic co-
+herence across consecutive steps, we calculate the Jensen-
+Shannon (JS) divergence [35] between the predicted category
+distributions G at steps i and i + 1:
+JS(˜pi∥˜pi+1) = 1
+2DKL(˜pi∥m) + 1
+2DKL(˜pi+1∥m),
+(12)
+where m =
+1
+2(˜pi + ˜pi+1), and ˜pi denotes the predicted
+probability distribution over categories at step i, while ˜pi+1
+represents the corresponding distribution at step i + 1. Here,
+DKL(·∥·) denotes the Kullback-Leibler (KL) divergence, which
+measures the dissimilarity between two probability distribu-
+tions.
+To measure the overall consistency across the reasoning
+path, we aggregate the JS divergence values over all adjacent
+distribution pairs to compute a final step-consistency reward:
+γjs = 1 −
+1
+M −1
+M−1
+X
+i=1
+JS(˜pi∥˜pi+1).
+(13)
+In Eq. (13), by subtracting the above value from 1, the
+reward γjs increases as consecutive category distributions
+become more similar, promoting smooth transitions between
+reasoning steps.
+Global Path Reward (γpath): We evaluate path robustness
+with a progressive retrieval scheme that allows up to d tokens
+to be incorrect, testing the model’s ability to maintain retrieval
+performance under partial errors. For a reasoning path of
+length M, we build a cumulative sum of codebook represen-
+tation z using only the M −d correct tokens, z = PM−d
+m=1 zm,
+and perform top-N retrieval from the item pool to check
+whether the target item is still retrieved. The reward under
+d errors is:
+γpath =
+(
+1
+I(iT +1 ∈Top-N(z)),
+0
+otherwise.
+(14)
+In Eq. (14), the indicator function I(·) return 1 if the target
+item is ranked within the top-N retrieved candidates and 0
+otherwise.
+The overall reward for post-training is the sum of the
+above components, enabling jointly optimization of semantic
+alignment, path-level robustness, and step-wise consistency.
+Rather than restricting learning to a single ground-truth path,
+PARS encourages exploration of diverse reasoning path while
+ensuring semantic consistency and accuracy, improving adapt-
+ability and performance in recommendation tasks.
+3) MSRA: Multi-Step Reward Augmentation Strategy:
+Traditional reward designs align the model with a single next
+item iT +1. However, this strict one-step alignment often fails
+to capture the complexities of real-world sequential behaviors
+[5]. In real-world recommendation system, user intent emerges
+over short horizons and is noisy and dynamic. To address these
+challenges, we propose a MSRA Strategy that expands valid
+targets to future interactions within a short time window.
+MSRA treat the next h items it+1, it+2, . . . , it+h as valid
+representations of current interest. This captures broader tem-
+poral dependencies, allowing the model to explore diverse
+reasoning paths and generalize to varied user behaviors. Rather
+than strictly aligning with a single ground-truth item, we
+evaluate the generated path against all items in the h window
+and compute step-hit reward (γstep) and category-hit reward
+(γcate).
+To reflect the natural decline in the influence over time, we
+apply exponential decay when aggregating rewards. For each
+item it+j (j = 1, . . . , h), we assign an exponential weight
+wj−1, where the time-decay coefficient w ∈(0, 1) determines
+how quickly the influence diminishes as j increases. The
+final reward is computed as the normalized weighted average,
+ensuring that rewards are appropriately scaled and aggregated
+across the time window. The γmsra
+step is defined as:
+γmsra
+step =
+Ph
+j=1 wj−1γ(j)
+step
+Ph
+j=1 wj−1
+,
+(15)
+where γ(j)
+step denotes the step-hit reward of the generated
+reasoning path with respect to item it+j. The category-hit
+
+Algorithm 2 Post-training for Generative Reasoning
+Input: User-item sequences D = {(u, Su)}, MPQ codebooks
+{Cr}, decoding steps M, rollout number G, future window
+h, time-decay factor w ∈(0, 1), clip range ϵ, KL weight
+β
+Initialize: Policy πθ, old policy πθold ←πθ, reference policy
+πθref ←πθ, category classifier fc
+1: while not converged do
+2:
+Sample
+(u, Su)
+∼
+D,
+encode
+history
+H
+←
+Encoder(Su)
+3:
+Sample G rollouts: τ = {y1, . . . , yG} ∼πθold(· | H)
+4:
+for all yi = [c1, . . . , cM] ∈τ do
+5:
+Predict categories: ggr
+k ←fc(c<k, H), ∀k
+6:
+Candidate items: W = {it+1, . . . , it+h}
+7:
+Z ←Ph
+j=1 wj−1, initialize γmsra ←0
+8:
+for j = 1 to h do
+9:
+γ(j)
+step ←
+1
+M
+PM
+k=1 I(ck ∈Ck(it+j))
+10:
+γ(j)
+cate ←
+1
+M
+PM
+k=1 I(ggr
+k = ggt(it+j))
+11:
+z ←PM
+k=1 zk, I(j)
+path ←I(it+j ∈Top-N(z))
+12:
+γmsra += wj−1 ·
+
+γ(j)
+step + γ(j)
+cate + I(j)
+path
+
+13:
+end for
+14:
+Normalize MSRA rewards: γmsra ←γmsra/Z
+15:
+γjs ←1 −
+1
+M−1
+PM−1
+k=1 JS(˜pk∥˜pk+1)
+16:
+Total reward: ri ←γmsra + γjs
+17:
+end for
+18:
+Normalize advantages: Ai ←(ri −µr)/σr
+19:
+Compute ratio: ρi ←πθ(yi | H)/πθold(yi | H)
+20:
+Update πθ by gradient ascent on via Equation 9, then
+πθold ←πθ
+21: end while
+reward γmsra
+cate
+is defined analogously by replacing γstep with
+γcate.
+Additionally, We also extend the global path reward. Rather
+than requiring exact retrieval of the single target it+1, the
+augmented path reward is positive if the top-N results include
+any of the h candidate items {it+1, . . . , it+h}. This relaxation
+encourages the model to accommodate broader user intents.
+Formally, let Wt = {it+1, . . . , it+h} represent the set of h
+candidate items, and let Top-N(z) be the top-N retrieved items
+using the cumulative representation z of the generated path:
+γmsra
+path =
+Ph
+j=1
+ wj−1I(it+j ∈Top-N(z))
+
+Ph
+j=1 wj−1
+,
+(16)
+where I(·) denotes an indicator function that returns 1 if any
+item in the candidate set is included in the top-N results
+and 0 otherwise. By applying time-decayed weighting, MSRA
+prioritizes recent interactions while preserving sensitivity to
+long-term preferences, improving the robustness and diversity
+of the reasoning paths.
+VI. DEPLOYMENT OF REG4REC
+A. Efficient Training Strategy
+While post-training significantly improves model perfor-
+mance, it introduces substantial offline training costs, a critical
+concern in large-scale recommender systems. A common ac-
+celeration strategy is to reduce numerical precision. However,
+conventional pipelines typically adopt a uniform, fixed format
+for all layers, such as fp32 (full-precision floating point), bf16
+(half-precision floating point), or fp8 (an 8-bit floating-point
+format), ignoring the inherent heterogeneity and temporal
+dynamics of different model components [37], [38], [40].
+Our initial attempts to apply standard mixed-precision training
+(AMP) with BF16 resulted in noticeable accuracy degradation
+compared to the FP32 baseline. As shown in Figure 3, the loss
+trajectories for BF16 and FP8 plateaued prematurely in later
+training stages, while FP32 continued to converge.
+Fig. 3. Loss progression across precisions.
+Through investigation, we identified two root causes for
+this performance drop: (i) Quantization Sensitivity: Activations
+and gradients in certain layers are highly sensitive to low
+precision, frequently underflowing to zero in BF16 and causing
+information loss. (ii) Insufficient Gradient Scaling: The stan-
+dard gradient scaling in AMP was inadequate to compensate
+for the extremely small gradients in these sensitive layers.
+This motivated a more intelligent, fine-grained approach to
+quantization.
+To balance computational efficiency and model accuracy, we
+propose the Layer-Adaptive Dynamic Quantization Controller
+(LADQ). The core principle of LADQ is to dynamically
+allocate higher precision to quantization-sensitive layers while
+assigning lower precision to robust, computationally-intensive
+layers. To implement this, we first needed a reliable method
+to measure layer-wise sensitivity during training. We explored
+several candidate metrics traditionally used for post-training
+quantization, including the Hessian matrix [36], the Fisher
+matrix, and the K-FAC matrix [44], which are conventionally
+applied for quantization sensitivity measurement during infer-
+ence. We extended these approaches through sampling-based
+measurement during the training process.
+
+Through repeated sampling during training, we derived two
+key findings that inform LADQ’s design:
+• Dynamic Distribution: The set of quantization sensitive
+layers is not static but shifts across different training phases.
+• Hybrid Sensitivity: Layer-wise sensitivity varies signifi-
+cantly. For example, as illustrated in Figure 4, within our
+model’s transformer architecture, module 6 (the attention
+mechanism in the second layer) exhibited pronounced sen-
+sitivity, particularly during late-stage training.
+Fig. 4. K-FAC matrix trace sampling during training.
+To validate sensitivity metrics, we manually tested quanti-
+zation configurations. Results confirmed that preserving high
+precision for sensitive modules (e.g., module 6) minimized
+loss degradation. Among Hessian, Fisher, and K-FAC, K-
+FAC proved optimal due to its superior accuracy-computation
+tradeoff.
+Based on these insights, we designed the LADQ controller
+to automate precision allocation. This controller operates peri-
+odically throughout the training process, executing a three-step
+cycle:
+• (i). Computes per-layer sensitivity.
+• (ii). Calculates a reward score for each layer, which jointly
+considers sensitivity and contribution to overall training
+latency.
+• (iii). Dynamically assigns the optimal precision from the set
+{fp32, bf16, fp8} to each layer, prioritizing higher precision
+for high-reward (sensitive but critical) layers.
+By adapting precision at a layer-wise level based on dy-
+namic sensitivity, LADQ successfully accelerates the training
+phase while maintaining loss convergence on par with the full-
+precision baseline, providing a practical solution for resource-
+constrained environments.
+B. Inference with Reflection
+Inspired by the consistency-oriented rewards in our
+GRPO framework, we propose the Consistency Oriented
+Self-Reflection Pruning Strategy (CORP). This approach re-
+fines the standard beam search by incorporating a measure of
+reasoning consistency into the path selection process, thereby
+steering the generation towards more logically coherent se-
+quences and mitigating the introduction of noise.
+The core mechanism is as follows. During beam search, for
+each candidate path being extended, we do not only consider
+the probability of the next token. At every s-th step, the
+category predictor produces a probability distribution ˜pi over
+item categories, serving as a semantic signal for consistency
+checking. This distribution acts as a snapshot of the model’s
+understanding or reasoning focus at this step.
+Specifically, consistency is measured by JS divergence
+between consecutive distributions (Eq. (13)). If JS(˜pi∥˜pi+s)
+exceeds the self-reflection threshold θ, it signals potential
+inconsistency or low confidence. The model then triggers
+self-reflection, terminating the current path and rolling back
+to an earlier step for regeneration. This pruning preserves
+only semantically coherent and logically consistent paths,
+enhancing overall recommendation accuracy.
+VII. OFFLINE EXPERIMENTS
+In this section, we conduct extensive experiments on four
+datasets to demonstrate the performance of our proposed
+method and address the following research questions:
+• RQ1: How does REG4Rec perform in comparison with
+other state-of-the-art models?
+• RQ2: How does each component contribute to the overall
+performance of REG4Rec?
+• RQ3: How do hyperparameters influence the model perfor-
+mance?
+• RQ4: How does performance scale with the number of
+reasoning steps at inference?
+• RQ5: How effective is our proposed training strategy in
+REG4Rec, LADQ, in balancing training efficiency and
+model accuracy?
+• RQ6: Can REG4Rec deliver performance improvements in
+real-world online recommendation platforms?
+TABLE I
+STATISTICS OF PUBLIC AND INDUSTRIAL DATASETS. #USERS AND
+#ITEMS DENOTE THE NUMBER OF USERS AND ITEMS, RESPECTIVELY;
+#INTERACTIONS DENOTES THE TOTAL NUMBER OF USER–ITEM
+INTERACTIONS IN THE DATASET.
+Dataset
+Beauty
+Sports
+Toys
+Industrial Dataset
+#User
+22,363
+35,598
+35,598
+35,154,135
+#Item
+12,101
+18,357
+18,357
+48,106,880
+#Interaction
+198,360
+296,175
+167,526
+5,730,321,793
+A. Experimental Setup
+Dataset. Four datasets are used to demonstrate the perfor-
+mance of our proposed method. The first three are public
+datasets, while the fourth one is an in-house industrial dataset.
+Table I summarizes dataset statistics.
+• Amazon Product Reviews. We use three publicly available
+benchmarks from the Amazon Product Reviews dataset [29],
+which contains user reviews and item meta information
+from May 1996 to July 2014. For GR, we focus on three
+
+categories: ”Beauty”, ”Sports and Outdoors”, and ”Toys and
+Games”. We generate training sequences from users’ review
+histories, sorted by timestamp, and exclude users with fewer
+than five reviews to ensure sufficient interactions. We follow
+the standard leave-one-out evaluation protocol [2]: the last
+item is used for testing, the second-to-last for validation,
+and all preceding items for training.
+• Industrial Dataset. We construct the in-house offline
+dataset from sequential user behaviors and feedback logs
+collected on the Alibaba’s e-commerce advertising plat-
+form. The dataset spans diverse recommendation scenar-
+ios, including homepage recommendations, product detail
+pages, and interactive gaming sections, capturing varied user
+behaviors. It contains data from 30 million users and 40
+million advertisements collected between October 2024 and
+May 2025, offering a comprehensive view of real-world user
+behavior and ad content.
+Baselines. To evaluate the performance of our method, we
+compare REG4Rec against six representative baselines.
+These baselines are described as follows:
+• SASRec [2] : A transformer-based model that employs the
+self-attention mechanism to capture long-term dependencies.
+• S3-Rec [27] : A transformer-based model that integrates
+self-supervised learning to enhance representation learning.
+• TIGER [18] : A GR model built on an encoder-decoder
+structure, leveraging semantic IDs (based on RQ-VAE)
+and autoregressive decoder to improve the generalizable of
+recommended items.
+• COBRA [10] : A GR model with a decoder-only structure,
+incorporating semantic IDs (based on RQ-VAE) and dense
+vectors to capture semantic insights and collaborative sig-
+nals.
+• ReaRec [3] : A transformer-based model that extends
+SASRec to generate multiple implicit intermediate outcomes
+without explicitly defined inference paths.
+• STREAM [4] : A transformer-based model uses textually
+similar items as explicit reasoning steps, guided by the
+GRPO algorithm for reasoning.
+Evaluation Metrics. For evaluation, we adopt the Recall@K
+(R@K) and NDCG@K (N@K) as standard metrics for rec-
+ommendation, following [10], with K set to 5 and 10. These
+metrics assess both the accuracy of item retrieval and the
+quality of the ranking.
+Implementation Details. This section summarizes our imple-
+mentation settings. The training process is executed on a dis-
+tributed TensorFlow [30] platform, consisting of 10 parameter
+servers and 10 workers, each with 2 GPUs. To ensure a fair
+comparison with baselines, we configure the total number of
+transformer layers to 3, with one layer for the encoder and
+two layers for the decoder. The input dimension is 128 and
+the hidden size per transformer layer is 640. For MPQ, the
+hyperparameter α used in the training process of MPQ is
+set to 0.001. Because MPQ training is not the core focus
+and these weights have minimal impact once MPQ converges,
+we do not perform a sensitivity study on them. For flexible
+reasoning paths, MPQ uses 8 codebooks with 300 codewords
+each. The tokenizers process both text and image features
+for the industrial and public datasets. Text embeddings are
+generated using the pre-trained Qwen3-Embedding 7B model
+[31] and image embeddings are generated using the pre-trained
+Pailitao v8 model [43], both with a dimensionality of 256. We
+set the clipping parameter ϵ to 0.15 to balance exploration and
+exploitation. In MSRA, the number of future steps is h = 3
+and the time-decay coefficient is w = 0.8. In CORP, the self-
+reflection threshold is θ = 0.06. All other hyperparameters of
+these modules have been carefully tuned through sensitivity
+analysis, as detailed in Section VII-D.
+B. Experiment Performance (RQ1)
+Table II summarizes the overall performance of our
+REG4Rec against multiple baselines on both public and indus-
+trial datasets. The best results are highlighted in bold, while
+the second-best results are underlined. From these results, we
+make the following observations:
+• Our REG4Rec consistently outperforms all baseline meth-
+ods across the aforementioned datasets, achieving average
+relative improvements of 10.06% in R@5, 7.30% in N@5,
+11.01% in R@10 and 9.88% in N@10 compared to the
+best-performing baseline on each dataset.
+• S3-Rec significantly outperforms SASRec on most datasets.
+This improvement demonstrates the effectiveness of the
+transformer-based architecture in capturing diverse patterns.
+Similarly, our REG4Rec captures richer intent patterns
+through the incorporation of MPQ and further improves
+performance.
+• TIGER introduces an end-to-end GR model that directly
+generates semantic IDs for the target item, outperforming
+traditional transformer-based baselines across all metrics
+and datasets. Building upon this foundation, COBRA ex-
+pands the semantic space by integrating dense representa-
+tions with sparse IDs through a cascading generation pro-
+cess. This approach enables COBRA to outperform TIGER
+on all datasets, achieving state-of-the-art results among
+baselines on several datasets.
+• As an extension of SASRec, ReaRec improves average
+performance by more than 13.13% through an implicit
+multi-step reasoning, but it lacks explicit reasoning pro-
+cess and its paths are semantically ambiguous. In contrast,
+STEAM achieves leading performance among all baselines
+on the Sports and Industrial datasets by using textually simi-
+lar items as explicit reasoning steps and training with GRPO.
+However, the reasoning paths in STEAM are predetermined,
+which limits its ability to capture the diverse user interests.
+More fundamentally, existing methods also lack a mech-
+anism to validate path reliability, undermining the quality
+of their recommendations. In contrast, REG4Rec constructs
+flexible and reliable reasoning paths, enabling more dynamic
+and accurate preference modeling and delivering consistent
+gains over both public and industrial baselines.
+In summary, REG4Rec preserves the strengths of GR while
+enhancing reasoning with flexible and reliability-aware mech-
+
+TABLE II
+PERFORMANCE COMPARISON ACROSS BASELINES. THE BEST METRIC FOR EACH (DATASET, METRIC) PAIR IS HIGHLIGHTED IN BOLD, WHILE THE
+SECOND-BEST IS UNDERLINED. THE LAST COLUMN (IMPROV.) DENOTES THE RELATIVE IMPROVEMENT OF OUR REG4REC OVER THE BEST BASELINE.
+Dataset
+Metric
+SASRec
+S3-Rec
+TIGER
+COBRA
+ReaRec
+STREAM
+REG4Rec
+Improv.
+Beauty
+R@5
+0.0387
+0.0387
+0.0454
+0.0537
+0.0431
+0.0538
+0.0586
++8.92%
+N@5
+0.0249
+0.0244
+0.0321
+0.0395
+0.0276
+0.0388
+0.0416
++5.32%
+R@10
+0.0605
+0.0647
+0.0648
+0.0725
+0.0654
+0.0691
+0.0792
++9.24%
+N@10
+0.0318
+0.0327
+0.0384
+0.0456
+0.0375
+0.0422
+0.0493
++8.11%
+Sports
+R@5
+0.0233
+0.0251
+0.0264
+0.0305
+0.0256
+0.0324
+0.0372
++14.81%
+N@5
+0.0154
+0.0161
+0.0181
+0.0215
+0.0179
+0.0232
+0.0252
++8.62%
+R@10
+0.0350
+0.0385
+0.0400
+0.0434
+0.0393
+0.0452
+0.0527
++16.59%
+N@10
+0.0192
+0.0204
+0.0225
+0.0257
+0.0219
+0.0271
+0.0296
++9.23%
+Toys
+R@5
+0.0463
+0.0443
+0.0521
+0.0619
+0.0552
+0.0644
+0.0676
++4.97%
+N@5
+0.0306
+0.0294
+0.0371
+0.0462
+0.0374
+0.0442
+0.0493
++6.71%
+R@10
+0.0675
+0.0700
+0.0712
+0.0781
+0.0747
+0.0799
+0.0862
++7.88%
+N@10
+0.0374
+0.0376
+0.0432
+0.0515
+0.0435
+0.0502
+0.0574
++11.46%
+Industrial Dataset
+R@5
+0.0658
+0.0759
+0.0903
+0.0963
+0.0742
+0.0981
+0.1094
++11.52%
+N@5
+0.0453
+0.0530
+0.0594
+0.0646
+0.0517
+0.0680
+0.0738
++8.53%
+R@10
+0.0916
+0.1066
+0.1293
+0.1397
+0.0982
+0.1422
+0.1569
++10.34%
+N@10
+0.0564
+0.0628
+0.0715
+0.0785
+0.0603
+0.0804
+0.0890
++10.70%
+anisms, overcoming the limitations of existing methods and
+achieving state-of-the-art performance across all datasets.
+C. Ablation Study (RQ2)
+To assess the effectiveness of each component, we conduct
+ablation studies on the industrial dataset, which is the most
+complex and representative scenario on our recommendation
+platform. As shown in Table I, the industrial dataset is orders
+of magnitude larger than public datasets, providing a more
+realistic and challenging evaluation environment.
+• w/o MPQ: Replaces MPQ with the widely used RQ-VAE
+[4], [10]. To ensure a fair comparison, in RQ-VAE, both
+the number of codebooks and the size of each codebook
+are kept consistent with those in MPQ. Additionally, the
+same multimodal representations are used as input for
+both models. In RQ-VAE, since the token for the item is
+sequential, the codebook order is fixed at inference.
+• w/o CRSS: Disable dynamic ordering for parallel codebooks
+so codewords are generated in a fixed order.
+• w/o PARS: Remove the RL-based component for reasoning
+enhancement, reducing the model to a pre-trained one with
+MPQ and MSRA.
+• w/o MSRA: Remove the multi-step reward strategy.
+• w/o CORP: Remove the consistency-oriented reflection
+strategy so inconsistent paths are not filtered at inference.
+Table III presents the performance of these ablation exper-
+iments. We summarize the main observations below:
+• Replacing MPQ with RQ-VAE leads to an average perfor-
+mance drop of 5.03%, indicating that parallel tokenizers
+for the item are better suited to dynamic reasoning than the
+sequential RQ-VAE, which has limited semantic expressive-
+ness.
+• Removing CRSS causes an average drop of 2.84%, suggest-
+ing that the dynamic ordering mechanism in MPQ is crucial
+for effectiveness by expanding the exploration space.
+• PARS is our core contribution, as it incorporates reasoning
+ability into GR. Removing it leads to a significant average
+drop of 7.80%, which highlights the importance of guiding
+the model to select reasoning paths with high consistency.
+• Removing MSRA degrades all metrics, with larger drops on
+top-10 (5.73% on average) than top-5 (3.66% on average),
+indicating its role in capturing broader, more generalizable
+preferences.
+• Without CORP, there is a clear decline in model perfor-
+mance, with a more substantial decrease observed in the
+top-5 metrics (5.73% on average) than in the top-10 metrics
+(4.15% on average). This indicates that the reflection mech-
+anism is particularly effective in capturing users’ accurate
+interests.
+D. Sensitivity Analysis (RQ3)
+In this section, we investigate the sensitivity of four
+hyperparameters: the number of codewords in each codebook
+D, the time-decay coefficient α, the number of future steps
+h in MSRA and the self-reflection threshold θ of CORP
+used for early path pruning during the reasoning process. We
+run all experiments on the industrial dataset, varying each
+hyperparameter over five values: D ∈(100, 200, 300, 400,
+
+TABLE III
+ABLATION STUDY OF REG4REC.
+Method
+R@5
+N@5
+R@10
+N@10
+REG4Rec
+0.1094
+0.0738
+0.1569
+0.0890
+w/o MPQ
+0.1042
+0.0690
+0.1505
+0.0838
+w/o CRSS
+0.1068
+0.0706
+0.1538
+0.0857
+w/o PARS
+0.1010
+0.0677
+0.1455
+0.0819
+w/o MSRA
+0.1059
+0.0706
+0.1487
+0.0831
+w/o CORP
+0.1032
+0.0695
+0.1504
+0.0853
+Fig. 5. Sensitivity Analysis
+500), α ∈(0.6, 0.7, 0.8, 0.9, 1.0), h ∈(1, 2, 3, 4, 5) and
+θ ∈(0.04, 0.05, 0.06, 0.07, 0.08). Figure 5 illustrates the
+performance of these hyperparameter analysis experiments.
+We derive the following observations:
+• Codebook Size D: REG4Rec remains strong and stable as
+D increases from 200 to 500, with only a slight drop at
+D = 100, indicating that once the representation space is
+sufficiently large, performance is insensitive to D.
+• Time-decay coefficient w: As w decreases from 1.0 to 0.8,
+the performance of REG4Rec improves steadily (+1.66%
+on average), confirming the effectiveness of the time decay
+strategy in MSRA. However, further reducing w slightly
+hurts performance, because over-suppressing long-term sig-
+nals becomes harmful.
+• Number of future steps h: When h increases from 1 to 3,
+the performance of REG4Rec improves steadily, showing
+that incorporating a sufficient number of future behaviors
+is helpful for achieving optimal results. However, further
+increasing h yields diminishing returns, as the additional
+behavioral signals are increasingly contaminated by noise,
+eventually offsetting the benefits of the MSRA.
+• Self-reflection threshold θ: As θ decreases from 0.08, the
+consistency constraint becomes stricter. Model performance
+initially improves steadily and reaches its peak around
+θ = 0.06 (+3.07% on average). However, further reducing
+θ leads to a decline in performance, indicating that overly
+strict constraints are detrimental. This suggests that a mod-
+erate level of consistency constraints is sufficient to enhance
+inference quality.
+E. Reasoning Step Scaling (RQ4)
+In this section, we evaluate how performance scales with the
+number of reasoning steps at inference. To this end, we vary
+the number of codebooks M, which determines the maximum
+number of reasoning steps. As shown in Figure 6, consistently
+increasing the reasoning steps from 2 to 12 leads to monotonic
+gains in N@K and R@K. These results demonstrate that
+REG4Rec exhibits robust scaling properties with reasoning
+depth. REG4Rec effectively leverages longer reasoning chains
+to capture more refined preferences while maintaining both
+training efficiency and inference reliability.
+Fig. 6. The performance of REG4Rec across different numbers of reasoning
+steps.
+F. Efficient Training Performance (RQ5)
+We evaluate LADQ (Section VI-A) during training. Follow-
+ing prior work [40], we measure throughput as batch-samples
+per second (QPS) and report R@5 and N@5 for recommenda-
+tion quality. As shown in Table IV, on the industrial dataset,
+LADQ reaches 4.5 QPS, representing a 32.3% speedup over
+the fp32 baseline. This acceleration comes at a negligible
+cost to accuracy, with only a 1.3% relative drop in R@5
+and a 0.8% drop in N@5. In contrast, uniform quantization
+schemes (bf16 and fp8) offer higher QPS but incur larger
+
+accuracy degradation. Overall, LADQ offers a superior trade-
+off, achieving substantial training acceleration with minimal
+performance degradation.
+TABLE IV
+TRAINING PERFORMANCE UNDER DIFFERENT QUANTIZATION SCHEMES
+ON THE INDUSTRIAL DATASET. THE PERFORMANCE DIFFERENCES
+COMPARED TO THE BASELINE (FP32) ARE HIGHLIGHTED IN BOLD.
+Method
+QPS
+R@5
+N@5
+fp32
+3.4
+0.1108
+0.0744
+bf16
+5 (+47.1%)
+0.0723 (-34.7%)
+0.0476 (-36.0%)
+fp8
+6.3 (+85.3%)
+0.0467 (-57.9%)
+0.0296 (-60.2%)
+LADQ
+4.5 (+32.3%)
+0.1094 (-1.3%)
+0.0738 (-0.8%)
+VIII. ONLINE EXPERIMENTS (RQ6)
+To further validate our approach, we conducted an on-
+line A/B test on an advertising recommendation platform
+of Alibaba, a leading e-commerce company in Southeast
+Asia, from July 18 to 22, 2025. The control group is based
+on SASRec, whereas the experimental group employs our
+proposed REG4Rec. Both groups consisted of 15% randomly
+selected users. Specifically, we observed 5.60% increase in the
+Advertising Revenue, 1.81% increase in the Click-Through
+Rate (CTR) and 3.29% increase in the Gross Merchandise
+Volume (GMV). The results of the online experiment once
+again confirm the performance of our proposed REG4Rec.
+TABLE V
+RESULTS OF THE ONLINE A/B EXPERIMENT, WITH ALL PERFORMANCE
+GAINS BEING STATISTICALLY SIGNIFICANT AT p < 0.05.
+Method
+Advertising Revenue
+CTR
+GMV
+REG4Rec
++5.60%
++1.80%
++3.29%
+IX. CONCLUSION AND FUTURE WORK
+In this paper, we propose REG4Rec, a reasoning-enhanced
+GR model that addresses limitations of existing GR methods.
+REG4Rec employs a MoE-based parallel quantized codebook
+to construct a large-scale diverse reasoning pathway space,
+enabling adaptation to heterogeneous user intents. During
+training, we adopt the preference alignment for reasoning
+and multi-step reward augmentation strategies to dynamically
+select reasoning paths with high consistency and reliability.
+In the inference phase, a consistency-oriented self-reflection
+pruning strategy is introduced to accelerate online reason-
+ing, addressing online deployment challenges in large-scale
+recommendation systems. Extensive offline experiments on
+real-world datasets and an online deployment in a commercial
+advertising system demonstrate the effectiveness and practical
+value of REG4Rec. In summary, REG4Rec provides a novel
+and scalable solution for generative recommendation in large-
+scale systems, offering valuable insights for future research in
+this field.
+Nevertheless, several avenues remain unexplored. First,
+REG4Rec’s reasoning quality still depends on reward func-
+tions crafted for specific recommendation scenarios; develop-
+ing self-adaptive or learned reward mechanisms could enable
+broader applicability across domains without extensive man-
+ual tuning. Second, while our multi-path reasoning enriches
+diversity, its full potential for explainability, causal reason-
+ing, and user-controllable recommendations remains under-
+explored. Third, although REG4Rec is optimized for large-
+scale recommendation, extending its reasoning paradigm to
+multimodal signals, cross-domain transfer, or cold-start envi-
+ronments could greatly expand its impact. Finally, integrating
+human feedback more deeply into the reasoning-reflection
+loop may further enhance both reliability and user trust. Ad-
+dressing these aspects would not only strengthen REG4Rec’s
+scalability and adaptability but also push the boundaries of
+reasoning-enhanced generative recommendation in real-world
+applications.
+X. ETHICAL CONSIDERATIONS
+Throughout this research, we have strictly followed estab-
+lished ethical guidelines and best practices in data handling,
+experimentation, and system deployment. All experiments
+were conducted using widely available open-source datasets,
+as well as an anonymized industrial dataset, in which every
+piece of user-related information was thoroughly removed,
+masked, or aggregated to ensure full compliance with pri-
+vacy regulations and to protect individual identities. Special
+care was taken to prevent any possibility of re-identification,
+including the removal of indirect identifiers and sensitive
+behavioral traces. From a security and safety perspective,
+we implemented checks to ensure that the recommendations
+generated by REG4Rec pose no risk to user well-being, digital
+safety, or platform integrity. We also verified that no outputs
+promote harmful, misleading, or unsafe content. These mea-
+sures, together with our privacy-preserving practices, ensure
+REG4Rec contributes positively to both research and real-
+world applications.
+REFERENCES
+[1] J. Deng, S. Wang, K. Cai, L. Ren, Q. Hu, W. Ding, Q. Luo, and G. Zhou,
+“Onerec: Unifying retrieve and rank with generative recommender and
+iterative preference alignment,” arXiv preprint arXiv:2502.18965, 2025.
+[2] W.-C. Kang and J. McAuley, “Self-attentive sequential recommenda-
+tion,” in 2018 IEEE international conference on data mining (ICDM).
+IEEE, 2018, pp. 197–206.
+[3] J. Tang, S. Dai, T. Shi, J. Xu, X. Chen, W. Chen, W. Jian, and Y. Jiang,
+“Think before recommend: Unleashing the latent reasoning power for
+sequential recommendation,” arXiv preprint arXiv:2503.22675, 2025.
+[4] J. Zhang, B. Zhang, W. Sun, H. Lu, W. X. Zhao, Y. Chen, and J.-R.
+Wen, “Slow thinking for sequential recommendation,” arXiv preprint
+arXiv:2504.09627, 2025.
+[5] H. Deng, H. Xing, K. Matsuyama, Y. Huang, J. Hu, H. Wen, J. Xu,
+Z. Chen, Y. Zhang, X. Zeng et al., “Heterrec: Heterogeneous information
+transformer for scalable sequential recommendation,” in Proceedings
+of the 48th International ACM SIGIR Conference on Research and
+Development in Information Retrieval, 2025, pp. 3020–3024.
+[6] F. Sun, J. Liu, J. Wu, C. Pei, X. Lin, W. Ou, and P. Jiang, “Bert4rec:
+Sequential recommendation with bidirectional encoder representations
+from transformer,” in Proceedings of the 28th ACM international confer-
+ence on information and knowledge management, 2019, pp. 1441–1450.
+
+[7] N. Pancha, A. Zhai, J. Leskovec, and C. Rosenberg, “Pinnerformer:
+Sequence modeling for user representation at pinterest,” in Proceedings
+of the 28th ACM SIGKDD conference on knowledge discovery and data
+mining, 2022, pp. 3702–3712.
+[8] J. Li, J. Zhu, Q. Bi, G. Cai, L. Shang, Z. Dong, X. Jiang, and Q. Liu,
+“Miner: Multi-interest matching network for news recommendation,” in
+Findings of the association for computational linguistics: ACL 2022,
+2022, pp. 343–352.
+[9] X. Wang, J. Cao, Z. Fu, K. Gai, and G. Zhou, “Home: Hierarchy of
+multi-gate experts for multi-task learning at kuaishou,” in Proceedings
+of the 31st ACM SIGKDD Conference on Knowledge Discovery and
+Data Mining V. 1, 2025, pp. 2638–2647.
+[10] Y. Yang, Z. Ji, Z. Li, Y. Li, Z. Mo, Y. Ding, K. Chen, Z. Zhang,
+J. Li, S. Li et al., “Sparse meets dense: Unified generative recom-
+mendations with cascaded sparse-dense representations,” arXiv preprint
+arXiv:2503.02453, 2025.
+[11] J. Lin, S. Yadav, F. Liu, N. Rossi, P. R. Suram, S. Chembolu, P. Chan-
+dran, H. Mohapatra, T. Lee, A. Magnani et al., “Enhancing relevance of
+embedding-based retrieval at walmart,” in Proceedings of the 33rd ACM
+International Conference on Information and Knowledge Management,
+2024, pp. 4694–4701.
+[12] T. F. Boka, Z. Niu, and R. B. Neupane, “A survey of sequential
+recommendation systems: Techniques, evaluation, and future directions,”
+Information Systems, vol. 125, p. 102427, 2024.
+[13] J. Zhai, L. Liao, X. Liu, Y. Wang, R. Li, X. Cao, L. Gao, Z. Gong,
+F. Gu, M. He et al., “Actions speak louder than words: Trillion-parameter
+sequential transducers for generative recommendations,” arXiv preprint
+arXiv:2402.17152, 2024.
+[14] Q. Chen, G. Li, Q. Zhou, S. Shi, and D. Zou, “Double attention
+convolutional neural network for sequential recommendation,” ACM
+Transactions on the Web, vol. 16, no. 4, pp. 1–23, 2022.
+[15] A. Yan, S. Cheng, W.-C. Kang, M. Wan, and J. McAuley, “Cosrec:
+2d convolutional neural networks for sequential recommendation,” in
+Proceedings of the 28th ACM international conference on information
+and knowledge management, 2019, pp. 2173–2176.
+[16] B. Hidasi, A. Karatzoglou, L. Baltrunas, and D. Tikk, “Session-
+based recommendations with recurrent neural networks,” arXiv preprint
+arXiv:1511.06939, 2015.
+[17] B. Hidasi and A. Karatzoglou, “Recurrent neural networks with top-
+k gains for session-based recommendations,” in Proceedings of the
+27th ACM international conference on information and knowledge
+management, 2018, pp. 843–852.
+[18] S. Rajput, N. Mehta, A. Singh, R. Hulikal Keshavan, T. Vu, L. Heldt,
+L. Hong, Y. Tay, V. Tran, J. Samost et al., “Recommender systems
+with generative retrieval,” Advances in Neural Information Processing
+Systems, vol. 36, pp. 10 299–10 315, 2023.
+[19] D. Guo, D. Yang, H. Zhang, J. Song, R. Zhang, R. Xu, Q. Zhu, S. Ma,
+P. Wang, X. Bi et al., “Deepseek-r1: Incentivizing reasoning capability
+in llms via reinforcement learning,” arXiv preprint arXiv:2501.12948,
+2025.
+[20] A. Jaech, A. Kalai, A. Lerer, A. Richardson, A. El-Kishky, A. Low,
+A. Helyar, A. Madry, A. Beutel, A. Carney et al., “Openai o1 system
+card,” arXiv preprint arXiv:2412.16720, 2024.
+[21] H. Xing, K. Matsuyama, H. Deng, J. Hu, Y. Zhang, and X. Zeng, “Esans:
+Effective and semantic-aware negative sampling for large-scale retrieval
+systems,” in Proceedings of the ACM on Web Conference 2025, 2025,
+pp. 462–471.
+[22] Z. Shao, P. Wang, Q. Zhu, R. Xu, J. Song, X. Bi, H. Zhang, M. Zhang,
+Y. Li, Y. Wu et al., “Deepseekmath: Pushing the limits of mathematical
+reasoning in open language models,” arXiv preprint arXiv:2402.03300,
+2024.
+[23] J. Ma, Z. Zhao, X. Yi, J. Chen, L. Hong, and E. H. Chi, “Modeling task
+relationships in multi-task learning with multi-gate mixture-of-experts,”
+in Proceedings of the 24th ACM SIGKDD international conference on
+knowledge discovery & data mining, 2018, pp. 1930–1939.
+[24] L. Yang, F. Paischer, K. Hassani, J. Li, S. Shao, Z. G. Li, Y. He, X. Feng,
+N. Noorshams, S. Park et al., “Unifying generative and dense retrieval
+for sequential recommendation,” arXiv preprint arXiv:2411.18814,
+2024.
+[25] C. D. Manning, “Human language understanding & reasoning,”
+Daedalus, vol. 151, no. 2, pp. 127–138, 2022.
+[26] Z. Wu, Q. Zeng, Z. Zhang, Z. Tan, C. Shen, and M. Jiang, “Large
+language models can self-correct with key condition verification,” arXiv
+preprint arXiv:2405.14092, 2024.
+[27] K. Zhou, H. Wang, W. X. Zhao, Y. Zhu, S. Wang, F. Zhang, Z. Wang,
+and J.-R. Wen, “S3-rec: Self-supervised learning for sequential recom-
+mendation with mutual information maximization,” in Proceedings of
+the 29th ACM international conference on information & knowledge
+management, 2020, pp. 1893–1902.
+[28] S. Kullback and R. A. Leibler, “On information and sufficiency,” The
+annals of mathematical statistics, vol. 22, no. 1, pp. 79–86, 1951.
+[29] R. He and J. McAuley, “Ups and downs: Modeling the visual evolution
+of fashion trends with one-class collaborative filtering,” in Proceedings
+of the 25th International Conference on World Wide Web, ser. WWW
+’16.
+Republic and Canton of Geneva, CHE: International World Wide
+Web Conferences Steering Committee, 2016, p. 507–517.
+[30] M. Abadi, P. Barham, J. Chen, Z. Chen, A. Davis, J. Dean, M. Devin,
+S. Ghemawat, G. Irving, M. Isard et al., “Tensorflow: a system for
+large-scale machine learning,” in 12th USENIX symposium on operating
+systems design and implementation (OSDI 16), 2016, pp. 265–283.
+[31] Y. Zhang, M. Li, D. Long, X. Zhang, H. Lin, B. Yang, P. Xie,
+A. Yang, D. Liu, J. Lin, F. Huang, and J. Zhou, “Qwen3 embedding:
+Advancing text embedding and reranking through foundation models,”
+arXiv preprint arXiv:2506.05176, 2025.
+[32] C. Zhang, R. Chen, X. Zhao, Q. Han, and L. Li, “Denoising and prompt-
+tuning for multi-behavior recommendation,” in Proceedings of the ACM
+web conference 2023, 2023, pp. 1355–1363.
+[33] S. Yao, J. Zhao, D. Yu, N. Du, I. Shafran, K. Narasimhan, and Y. Cao,
+“React: Synergizing reasoning and acting in language models,” in
+International Conference on Learning Representations (ICLR), 2023.
+[34] S. Yao, D. Yu, J. Zhao, I. Shafran, T. Griffiths, Y. Cao, and
+K. Narasimhan, “Tree of thoughts: Deliberate problem solving with large
+language models,” Advances in neural information processing systems,
+vol. 36, pp. 11 809–11 822, 2023.
+[35] J. Lin, “Divergence measures based on the shannon entropy,” IEEE
+Transactions on Information theory, vol. 37, no. 1, pp. 145–151, 2002.
+[36] Z. Dong, Z. Yao, D. Arfeen, A. Gholami, M. W. Mahoney, and
+K. Keutzer, “Hawq-v2: Hessian aware trace-weighted quantization of
+neural networks,” Advances in neural information processing systems,
+vol. 33, pp. 18 518–18 529, 2020.
+[37] M. Li, Z. Huang, L. Chen, J. Ren, M. Jiang, F. Li, J. Fu, and C. Gao,
+“Contemporary advances in neural network quantization: A survey,”
+in 2024 International Joint Conference on Neural Networks (IJCNN).
+IEEE, 2024, pp. 1–10.
+[38] B. D. Rouhani, R. Zhao, A. More, M. Hall, A. Khodamoradi, S. Deng,
+D. Choudhary, M. Cornea, E. Dellinger, K. Denolf et al., “Microscaling
+data formats for deep learning,” arXiv preprint arXiv:2310.10537, 2023.
+[39] Y. C. Liu and M. Q. Huang, “Examining the matthew effect on
+youtube recommendation system,” in 2021 International Conference on
+Technologies and Applications of Artificial Intelligence (TAAI).
+IEEE,
+2021, pp. 146–148.
+[40] N. Wang, J. Choi, D. Brand, C.-Y. Chen, and K. Gopalakrishnan,
+“Training deep neural networks with 8-bit floating point numbers,”
+Advances in neural information processing systems, vol. 31, 2018.
+[41] S. P. Boyd and L. Vandenberghe, Convex optimization.
+Cambridge
+university press, 2004.
+[42] G. H. Golub and C. F. Van Loan, Matrix computations.
+JHU press,
+2013.
+[43] Y. Zhang, P. Pan, Y. Zheng, K. Zhao, Y. Zhang, X. Ren, and R. Jin,
+“Visual search at alibaba,” in Proceedings of the 24th ACM SIGKDD
+international conference on knowledge discovery & data mining, 2018,
+pp. 993–1001.
+[44] J. Martens and R. Grosse, “Optimizing neural networks with kronecker-
+factored approximate curvature,” in Proc. 32nd Int. Conf. Mach. Learn.
+(ICML), Lille, France, 2015, pp. 2408–2417.

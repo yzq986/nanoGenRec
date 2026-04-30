@@ -1,0 +1,1233 @@
+Preprint.
+Grounded Token Initialization for New Vocabulary in LMs
+for Generative Recommendation
+Daiwei Chen1,2∗Zhoutong Fu2,
+Chengming Jiang2,
+Haichao Zhang3,
+Ran Zhou2
+Tan Wang2,
+Chunnan Yao2,
+Guoyao Li2,
+Rui Cai4,
+Yihan Cao2,
+Ruijie Jiang2,
+Fedor Borisyuk2,
+Jianqiang Shen2,
+Jingwei Wu2,
+Ramya Korlakai Vinayak1
+1University of Wisconsin-Madison
+2LinkedIn Corporation
+3Northeastern University
+4University of California, Davis
+Abstract
+Language models (LMs) are increasingly extended with new learnable vo-
+cabulary tokens for domain-specific tasks, such as Semantic-ID tokens in
+generative recommendation. The standard practice initializes these new
+tokens as the mean of existing vocabulary embeddings, then relies on
+supervised fine-tuning to learn their representations. We present a system-
+atic analysis of this strategy: through spectral and geometric diagnostics,
+we show that mean initialization collapses all new tokens into a degener-
+ate subspace, erasing inter-token distinctions that subsequent fine-tuning
+struggles to fully recover. These findings suggest that token initialization is
+a key bottleneck when extending LMs with new vocabularies. Motivated
+by this diagnosis, we propose the Grounded Token Initialization Hypothesis:
+linguistically grounding novel tokens in the pretrained embedding space
+before fine-tuning better enables the model to leverage its general-purpose
+knowledge for novel-token domains. We operationalize this hypothesis as
+GTI (Grounded Token Initialization), a lightweight grounding stage that,
+prior to fine-tuning, maps new tokens to distinct, semantically meaningful
+locations in the pretrained embedding space using only paired linguistic su-
+pervision. Despite its simplicity, GTI outperforms both mean initialization
+and existing auxiliary-task adaptation methods in the majority of evalu-
+ation settings across multiple generative recommendation benchmarks,
+including industry-scale and public datasets. Further analyses show that
+grounded embeddings produce richer inter-token structure that persists
+through fine-tuning, corroborating the hypothesis that initialization quality
+is a key bottleneck in vocabulary extension.
+1
+Introduction
+Pretrained language models (LMs) are increasingly adapted to specialized domains by
+extending their vocabulary with new learnable tokens. A prominent example is generative
+retrieval, where items (Rajput et al., 2023; Deldjoo et al., 2024) or documents (Tay et al., 2022)
+are assigned discrete semantic codes and generated autoregressively by the LM; similar
+challenges arise whenever domain-specific symbols must be integrated into a pretrained
+vocabulary. These systems introduce thousands of new tokens into the model’s vocabulary,
+and a fundamental challenge is how to incorporate them into the pretrained embedding
+space so that the LM can transfer its general-purpose knowledge to the novel-token domain.
+The prevailing practice initializes new token embeddings as the mean of the existing
+vocabulary embeddings (Hewitt, 2021). This heuristic is widely adopted because it is
+simple, places new tokens on the pretrained embedding manifold, and provides a tighter
+KL-divergence upper bound on output probabilities. However, it collapses all new tokens
+into a single point in embedding space, erasing inter-token distinctions and stripping
+domain-level semantics. An existing alternative (Zheng et al., 2024) employs auxiliary-task
+∗Work done during internship at LinkedIn Corporation. Correspondence to: dchen365@wisc.edu
+1
+arXiv:2604.02324v1  [cs.CL]  2 Apr 2026
+
+Preprint.
+Figure 1: Overview of the GTI grounding stage. The LM backbone and original vocabulary
+embeddings are frozen (snowflake); only the newly introduced Semantic-ID (SID) token
+embeddings (|VSID|×D parameters, fire) are trained. Paired prompts map between natural
+language descriptions and SID tokens in both directions, grounding the new tokens in the
+pretrained embedding space. This stage is inserted before standard end-to-end fine-tuning
+(see Section 3).
+adaptation of the full LM to induce linguistic signals for new tokens, but the multi-task
+training introduces an objective mismatch: the auxiliary losses are not aligned with the
+target downstream task, resulting in limited and inconsistent gains.
+In this paper, we identify token-embedding misalignment as a fundamental limitation when
+extending pretrained LMs with new vocabulary, and propose the Grounded Token Initialization
+Hypothesis: linguistically grounding novel tokens in an LM’s pretrained embedding space,
+before fine-tuning, better enables the model to leverage its general-purpose knowledge
+for novel-token domains. The intuition is that pretrained LM embeddings encode rich
+linguistic structure, semantically related tokens occupy nearby regions (Levy & Goldberg,
+2014), and the model’s attention and feed-forward layers have learned to exploit this
+geometry (Gao et al., 2019). If new tokens are placed meaningfully within this structure, the
+LM can immediately leverage its existing representations to process them in context, rather
+than relying on fine-tuning alone to recover from a degenerate starting point. This motivates
+framing vocabulary extension as a token-grounding problem: new token embeddings
+should be grounded in linguistically meaningful representations while remaining coherent
+with the pretrained LM’s embedding geometry.
+Building on this hypothesis, we introduce GTI, a simple and effective grounded token
+initialization method. Before downstream fine-tuning, GTI freezes the LM backbone and
+grounds newly introduced token embeddings using paired supervision between natural
+language descriptions and the corresponding new tokens (Figure 1). This grounding stage
+resolves the mismatch between well-trained vocabulary embeddings and newly initialized
+tokens, providing the LM with a semantically structured starting point for subsequent
+end-to-end fine-tuning of the full model for target downstream tasks.
+We validate GTI on Generative Recommendation (GR) (Rajput et al., 2023; Zhai et al.,
+2024), a challenging and practically important application of vocabulary extension. GRs
+have attracted growing attention in both academia and industry (Ding et al., 2026; Han
+et al., 2025; Chen et al., 2025a; Deng et al., 2025), as they dramatically simplify retrieval by
+autoregressively generating item identifiers token-by-token from user interaction histories,
+replacing the expensive user–item inner products required by traditional dense-embedding
+methods (Koren et al., 2009; He et al., 2017; 2020; Wang et al., 2019). GRs can further exploit
+scaling-law behavior as model size and data increase (Han et al., 2025), offering a clear
+path to continued improvement. The GR setting is a particularly demanding testbed for
+grounded token initialization: large sets of new learnable Semantic-ID (SID) tokens must
+be incorporated into pretrained LMs, each encoding fine-grained item-level semantics and
+hierarchical codebook structure that should be properly grounded in the LM’s embedding
+space to support effective retrieval.
+2
+
+Preprint.
+Contributions.
+1. Diagnosis. Through spectral and geometric analysis, we characterize the token-
+embedding misalignment caused by mean initialization: all new learnable tokens
+collapse into a degenerate, low-rank subspace that does not fully recover under
+subsequent fine-tuning. This motivates the Grounded Token Initialization Hypothesis:
+linguistically grounding new tokens before fine-tuning better enables the LM to
+leverage its pretrained knowledge for the new domain.
+2. Methodology. We introduce GTI, a simple and effective grounding stage that freezes
+the LM backbone and learns new token embeddings via paired linguistic supervi-
+sion before standard fine-tuning, providing a semantically structured starting point
+for downstream adaptation.
+3. Finding. On generative recommendation benchmarks, spanning industry-scale and
+public datasets, GTI consistently outperforms both direct supervised fine-tuning
+and LC-Rec (Zheng et al., 2024), an existing approach that jointly adapts the full
+model via auxiliary tasks. These results suggest that token initialization is a key
+bottleneck in vocabulary extension.
+2
+Token-Embedding Misalignment
+We formalize the vocabulary extension problem in the context of generative retrieval, our
+primary application domain, and then use spectral and geometric diagnostics to charac-
+terize a systematic token-embedding misalignment that arises from standard initialization
+practices when new tokens are added to a pretrained language model.
+Generative Retrieval.
+We adopt the framework of Rajput et al. (2023). Each item Ii ∈I has
+content features (title, description, etc.) that a pretrained text encoder maps to a semantic
+embedding zi ∈Rd. An RQ-VAE (Lee et al., 2022) with L codebook levels of K entries
+each discretizes zi into a Semantic ID (c1, . . . , cL), cl ∈{1, . . . , K}, via recursive residual
+quantization:
+r1 := zi;
+cl = arg min
+k
+rl −q(l)
+k
+
+2,
+rl+1 := rl −q(l)
+cl ,
+l = 1, . . . , L,
+where
+
+q(l)
+k
+	K
+k=1 ⊂Rd is the level-l codebook. The K×L SID codes1 are appended to
+the LM’s original vocabulary Vtext as new tokens VSID. Given a context x, either a user’s
+interaction history (retrieval) or a natural language query (search), the LM generates the
+target Semantic ID autoregressively:
+Pθ(c1, . . . , cL | x) =
+L
+∏
+t=1
+Pθ(ct | c<t, x).
+Mean-of-Vocabulary Initialization.
+Standard practice initializes all novel token embed-
+dings to the mean of the existing vocabulary embeddings (Hewitt, 2021):
+ec :=
+1
+|Vtext| ∑
+v∈Vtext
+ev,
+∀c ∈VSID,
+(1)
+where ev denotes the input embedding of token v.
+Diagnosing the misalignment.
+Under mean-of-vocabulary initialization (Eq. 1), every
+new token receives an identical embedding, 1) collapsing all inter-token distinctions and
+2) discarding the semantic structure each token should encode (Fig. 2, left). This heuristic
+is nonetheless widely adopted (Wolf et al., 2020) because it places new tokens on the
+pretrained manifold and yields a tighter KL-divergence upper bound on output probabilities
+compared with random initialization (Hewitt, 2021). Random initialization, conversely,
+1SID tokens are labeled by level to encode codebook membership, e.g., <a 1>, <b 1>, <c 1>..
+3
+
+Preprint.
+Figure 2: Token-embedding collapse under mean initialization and the effect of ground-
+ing. (a) Left: Mean initialization maps all SID tokens (white triangles) to a single point,
+collapsing inter-token distinctions. Top-right: GTI grounds SID tokens (colored triangles)
+into distinct regions by training only the |VSID|×d embedding parameters while freezing the
+backbone. Bottom-right: Fine-tuning without grounding does not fully resolve the collapse
+(see Figure 7). (b)&(c) GTI initialization yields higher effective rank and preserves blockwise
+hierarchical structure among SID tokens after downstream task supervised finetuning.
+assigns distinct vectors to each token but places them without coherent relation to the
+pretrained manifold, providing no linguistic prior for the model to build on. Pairwise cosine
+similarities among token embeddings (Fig. 5) confirm that mean initialization produces
+a near-uniform similarity block across all SID tokens, while random initialization yields
+unstructured noise.
+We examine whether supervised fine-tuning recovers the structure lost under mean ini-
+tialization. The pairwise similarity among SID embeddings (Fig.2 (c) and Fig.6 Left&Mid)
+and the singular-value decomposition of the SID embedding matrix ESID ∈R|VSID|×d after
+supervised fine-tuning from the mean-initialized state (Fig.2 (b) and Fig.7) reveals rapid
+spectral decay and low effective rank, confirming that supervised fine-tuning alone does
+not recover the inter-token structure lost at mean or random initialization. Taken together,
+these analyses show that neither strategy provides a suitable starting point: mean initial-
+ization places tokens on the pretrained manifold but erases discrimination, while random
+initialization preserves discrimination but lacks linguistic grounding.
+Grounded Token Initialization (GTI) Hypothesis.
+These observations motivate our central
+hypothesis: linguistically grounding novel tokens in an LM’s pretrained embedding space,
+before downstream fine-tuning, better enables the model to leverage its general-purpose
+knowledge for novel-token domains. Rather than relying on fine-tuning alone to recover
+from a degenerate initialization, we propose inserting a simple and efficient grounding
+stage that learns new token embeddings via linguistic supervision with the backbone frozen,
+before proceeding to standard end-to-end fine-tuning. We operationalize this hypothesis in
+Section 3 and verify its effectiveness empirically in Section 4.
+3
+GTI: Grounded Token Initialization Stage
+The diagnosis in Section 2 motivates a straightforward modification to the standard training
+pipeline: before downstream fine-tuning, insert a grounding stage that freezes the LM
+backbone and only learns new token embeddings via paired linguistic supervision. This
+design builds on the established principle of training new token embeddings within a
+frozen LM (Hao et al., 2024; Nguyen et al., 2024). We term the resulting procedure GTI.
+Despite its simplicity, we show that this additional stage yields consistent improvements
+4
+
+Preprint.
+across multiple benchmarks, including both public and industry-scale datasets (Section 4),
+suggesting that token initialization is a key bottleneck in vocabulary extension.
+Algorithm.
+Let V = Vtext ∪Vnew denote the extended vocabulary, where Vnew are the
+newly added domain tokens. Given a pretrained autoregressive LM with input-embedding
+matrix E ∈R|V|×d, we partition E into the pretrained rows Etext and the new rows Enew ∈
+R|Vnew|×d. Each domain entity is associated with a natural-language description xi (e.g., title
+or definition) and a canonical new-token sequence yi = (ci,1, . . . , ci,L). We instantiate GTI in
+the generative recommendation setting, where Vnew = VSID, xi is an item title/description,
+and yi is the corresponding SID sequence.
+We construct a grounding corpus Dground = {(xi, yi)}n
+i=1 pairing each description with its
+new token sequence, along with reversed pairs {(yi, xi)} that require the model to generate
+descriptions from new tokens2. Using an instruction-style prompt template prompt(x)
+(Listing as follows), we minimize the negative log-likelihood over Enew:
+min
+Enew
+∑
+(x,y)∈Dground
+|y|
+∑
+t=1
+−log Pθ
+ yt
+y<t, prompt(x)
+
+(2)
+where θ denotes all LM parameters. During this stage, all parameters except Enew are held
+fixed, including Etext and the LM head, which shares weights with E via the standard tied-
+embedding parameterization. This weight tying means the grounding stage simultaneously
+shapes how the model reads and generates new tokens. After grounding, we retain the
+learned Enew as initialization and proceed with standard supervised fine-tuning of all model
+parameters θ. Implementation details are provided in Algorithm 1.
+PROMPT
+Item Title/Description →Semantic IDs (Text→New Vocabulary Tokens)
+<system>
+You are a helpful assistant.
+<user>
+What item is called {{title}} and described as {{description}}?
+<assistant>
+{{ITEM SEMANTIC_ID}}
+4
+Experiments
+We evaluate GTI within the highly demanding domain of generative recommendation. This
+domain serves as an ideal testbed for the initialization bottleneck, as it requires incorporating
+thousands of new Semantic-ID (SID) tokens into a pretrained language model. To empirically
+validate whether aligning these tokens with the model’s pre-existing linguistic geometry can
+prevent semantic collapse, we evaluate across two diverse environments: an industrial-scale
+candidate retrieval system and the public Vibrent Clothes Rental benchmark.
+4.1
+Setup
+Datasets.
+We evaluate across two distinct scales and domains.
+(1) Industrial candidate retrieval.3 This dataset consists of job requirement–candidate pairs
+from a world-leading recruitment platform. Each pair is categorized into three relevance
+levels (good, good&maybe, and not match) by an internal LLM evaluator according to how
+2Bidirectional training encourages new token embeddings to encode semantics in both the input
+and output directions; see ablation in Section 4.3 and template details in Appendix 7.2.
+3Data access and use complied with internal privacy and security frameworks. Member profile
+attributes were processed in accordance with applicable member controls and visibility settings, and
+analyses were conducted on de-identified datasets with results reported in aggregate only.
+5
+
+Preprint.
+many job requirements a candidate satisfies. Due to data-sharing constraints, we report
+only relative performance gains over the SFT baseline for this dataset.
+(2) Vibrent Clothes Rental. To validate generalizability, we adapt the public Vibrent Clothes
+Rental Dataset (Borgersen, 2024) into a generative retrieval task, treating users as queries
+and clothing items as candidates based on historical rental transactions.
+Baselines.
+To strictly isolate the initialization bottleneck, all methods share an identical
+Qwen3-0.6B backbone and RQ-VAE tokenization structure, differing only in how they
+introduce novel tokens.
+(1) Vanilla SFT: New SID tokens are mean-initialized (Eq. 1), inducing a semantic collapse.
+The model relies entirely on downstream fine-tuning to disambiguate tokens from this
+degenerate starting point.
+(2) LC-Rec (Zheng et al., 2024): A recent multi-task approach that begins from the same
+collapsed state but attempts to recover semantic structure by applying auxiliary natural
+language alignment objectives during fine-tuning.
+(3) GTI (Ours): Using the grounding stage described in Section 3, we ground the new SID
+tokens into distinct, semantically meaningful regions of the frozen LM’s embedding space,
+providing a structurally rich starting point for the subsequent SFT procedure.
+Evaluation Metrics.
+We measure retrieval accuracy using Top-K Precision, Recall, and
+NDCG. For the industrial dataset, we sample 200 jobs as evaluation queries (retrieving 200
+candidates each). To comply with data-sharing constraints, we isolate the direct performance
+uplift of our grounding stage by reporting results strictly as a relative percentage gain over
+the standard SFT baseline, formulated as (Mmethod −MBaseline)/MBaseline. For the public
+Vibrent dataset, we adopt the standard leave-one-out sequence splitting strategy (Kang &
+McAuley, 2018; Geng et al., 2023).
+Implementation Details.
+Across both datasets, we employ Qwen3-0.6B as the backbone
+language model. Semantic IDs are constructed via RQ-VAE, following the formulation in
+Rajput et al. (2023). For GTI, the grounding stage freezes all parameters except Enew and
+trains for 8,000 steps with batch size 128; all parameters are then unfrozen for an additional
+8,000 steps at the same batch size, followed by the standard SFT procedure used for the
+baseline. All experiments use four NVIDIA H100 GPUs.
+Table 1: Relative Precision@K gain (%) over SFT baseline on a real-world candidate retrieval
+dataset. Bold and underline denote the best result.
+Methodology
+Precision@K (Good Match)
+Precision@K (Good & Maybe Match)
+P@5
+P@10
+P@20
+P@50
+P@100
+P@5
+P@10
+P@20
+P@50
+P@100
+MI+Vanilla SFT (Baseline)
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+MI+Multi-task SFT (LC-Rec)
++6.38%
++5.20%
++3.87%
++3.00%
++3.47%
++5.63%
++5.35%
++2.98%
++3.32%
++3.05%
+GTI+Multi-task SFT (Ours)
++21.63%
++13.59%
++8.16%
++6.35%
++4.25%
++15.83%
++10.89%
++5.74%
++5.87%
++4.10%
+GTI: extra gain over LC-Rec (∆)
++15.25%
++8.39%
++4.29%
++3.35%
++0.78%
++10.20%
++5.54%
++2.76%
++2.55%
++1.05%
+Figure 3: Relative gain versus candidate pool size. Left/Middle: Relative Precision@K gain
+under Good Match and Good & Maybe Match; Right: Relative NDCG@K gain (Composite).
+GTI consistently outperforms both baselines across all pool sizes, with the largest gains at
+small K. Shaded areas denote variability across runs.
+6
+
+Preprint.
+Table 2: Relative NDCG@K (Composite) gain (%) over SFT baseline on a real-world candi-
+date retrieval dataset. Bold and underline denote the best result.
+Methodology
+NDCG@K (Composite)
+@5
+@10
+@20
+@50
+@100
+MI+Vanilla SFT (Baseline)
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+MI+Multi-task SFT (LC-Rec)
++6.94%
++4.38%
++1.94%
++1.95%
++1.01%
+GTI+Multi-task SFT (Ours)
++17.88%
++12.03%
++6.90%
++4.99%
++2.89%
+GTI: extra gain over LC-Rec (∆)
++10.94%
++7.65%
++4.96%
++3.04%
++1.88%
+Industrial dataset. Candidate-level semantic representations are obtained by fine-tuning
+Mistral-E5 in a two-tower architecture with recruiter engagement signals, producing 1024-
+dimensional embeddings. The RQ-VAE uses L = 3 codebook levels with K = 8,192 codes
+per level. The subsequent SFT baseline trains with a batch size of 512 for 1,600 steps.
+Public dataset.
+Item-level semantic representations are derived using the off-the-shelf
+Qwen3-Embedding-0.6B encoder, yielding 1024-dimensional vectors. The RQ-VAE uses a
+3-layer MLP encoder–decoder with ReLU activations, L = 4 codebook levels with K = 256
+codes per level (32-dimensional codes), and the diversity regularizer of Wang et al. (2024) to
+encourage balanced codebook utilization. The RQ-VAE is trained for 20K epochs. The SFT
+baseline trains with batch size 512 for 1,600 steps.
+4.2
+Overall Performance Analysis
+Tables 1 & 2 and Figure 3 detail the overall performance on the industrial-scale dataset.
+The effectiveness of GTI Initialization. Across all cutoffs, evaluation metrics, and relevance
+thresholds (Good Match and Good & Maybe Match), GTI outperforms both baselines. Under
+the strict Good Match criterion, GTI achieves +21.63% relative gain at P@5 over vanilla
+SFT, compared to +6.38% for LC-Rec, yielding an extra gain ∆of 15.25% attributable to
+the grounding stage. This pattern is consistent across evaluation settings: under Good &
+Maybe Match, GTI maintains a clear advantage (+15.83% vs. +5.63% at P@5), and NDCG@5
+exhibits the same trend (+17.88% vs. +6.94%). Sweeping the candidate pool size from 5 to
+200 (Figure 3) further confirms that the improvement is robust across retrieval scales.
+Evidence for the GTI hypothesis. The comparison between LC-Rec and GTI provides a
+controlled test of our hypothesis, as both methods introduce linguistic supervision for new
+tokens but differ in when it is applied: LC-Rec incorporates auxiliary language modeling
+objectives during fine-tuning while retaining mean initialization, whereas GTI addresses the
+initialization directly through a grounding stage that precedes fine-tuning. The consistent
+performance gap (extra gain ∆) between the two methods, despite sharing the same down-
+stream SFT procedure, suggests that grounding new tokens before fine-tuning provides a
+more effective starting point than relying on auxiliary objectives alone, consistent with the
+Grounded Token Initialization hypothesis.
+Table 3: Relative Recall@K and NDCG@K (%) over SFT baseline on Vibrent Dataset.
+Methodology
+Recall@K
+NDCG@K
+@5
+@10
+@20
+@50
+@100
+@5
+@10
+@20
+@50
+@100
+MI+Vanilla SFT (Baseline)
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+0.00%
+MI+Multi-task SFT (LC-Rec)
++7.69%
++11.86%
++13.41%
++12.03%
++15.73%
++8.47%
++10.74%
++11.30%
++11.18%
++13.26%
+GTI+Vanilla SFT (Ours)
++1.71%
++22.03%
++26.02%
++21.55%
++18.54%
+-5.19%
++8.02%
++12.23%
++12.83%
++12.46%
+Figure 4: Relative gain versus candidate pool size. Left: Relative Recall@K gain; Right:
+Relative NDCG@K gain. Shaded areas denote variability across runs.
+7
+
+Preprint.
+0
+50
+100
+0
+50
+100
+Random Initialization
+0
+50
+100
+0
+50
+100
+Mean Initialization
+0
+50
+100
+0
+50
+100
+Grounded Token Initialization
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Figure 5: Pairwise cosine-similarity matrices under three initialization strategies. Each
+matrix shows similarities between 50 pretrained tokens (upper-left block) and 50 SID tokens
+(bottom-right block)5. Random initialization (left) yields noninformative SID embeddings.
+Mean initialization (middle) collapses SID tokens into a near-uniform block. GTI (right)
+produces differentiated intra-SID structure with meaningful affinities to pretrained tokens.
+<a_0>
+<a_138>
+<a_177>
+<a_214>
+<a_253>
+<a_61>
+<a_9>
+<b_138>
+<b_177>
+<b_214>
+<b_253>
+<b_60>
+<b_9>
+<c_138>
+<c_176>
+<c_214>
+<c_253>
+<c_60>
+<c_9>
+<d_137>
+<d_176>
+<d_214>
+<d_252>
+<d_60>
+<d_9>
+Token Index
+<a_0>
+<a_138>
+<a_177>
+<a_214>
+<a_253>
+<a_61>
+<a_9>
+<b_138>
+<b_177>
+<b_214>
+<b_253>
+<b_60>
+<b_9>
+<c_138>
+<c_176>
+<c_214>
+<c_253>
+<c_60>
+<c_9>
+<d_137>
+<d_176>
+<d_214>
+<d_252>
+<d_60>
+<d_9>
+Token Index
+LM Token Embeddings
+ Random Initialization
+<a_0>
+<a_138>
+<a_177>
+<a_214>
+<a_253>
+<a_61>
+<a_9>
+<b_138>
+<b_177>
+<b_214>
+<b_253>
+<b_60>
+<b_9>
+<c_138>
+<c_176>
+<c_214>
+<c_253>
+<c_60>
+<c_9>
+<d_137>
+<d_176>
+<d_214>
+<d_252>
+<d_60>
+<d_9>
+Token Index
+0
+200
+400
+600
+800
+1000
+LM Token Embeddings
+ Mean Initialization
+<a_0>
+<a_138>
+<a_177>
+<a_214>
+<a_253>
+<a_61>
+<a_9>
+<b_138>
+<b_177>
+<b_214>
+<b_253>
+<b_60>
+<b_9>
+<c_138>
+<c_176>
+<c_214>
+<c_253>
+<c_60>
+<c_9>
+<d_137>
+<d_176>
+<d_214>
+<d_252>
+<d_60>
+<d_9>
+Token Index
+0
+200
+400
+600
+800
+1000
+LM Token Embeddings
+ Grounded Token Initialization
+0.2
+0.4
+0.6
+0.8
+1.0
+Cosine Similarity (abs)
+Figure 6: Pairwise SID similarity after fine-tuning (public dataset). We visualize the
+pairwise cosine similarity matrix of SID embeddings at the fine-tuned checkpoint. GTI is the
+only initialization strategy that preserves a clear blockwise hierarchical semantics among
+SID tokens, suggesting improved preservation of semantic geometry. By contrast, mean and
+random initialization produce flat or noisy similarity patterns even after SFT stage.
+Controlled comparison on public dataset.
+To disentangle the effect of grounded initializa-
+tion from that of multi-task adaptation and assess the generalization of our method beyond
+the proprietary dataset, we compare GTI+Vanilla SFT against LC-Rec (Multi-task SFT) on
+the public Vibrent dataset (Table 4 and Figure 4). Even without auxiliary objectives during
+fine-tuning, GTI achieves substantially higher Recall at K ≥10 (e.g., +26.02% vs. +13.41% at
+Recall@20) and comparable NDCG, indicating that the grounding stage alone accounts for a
+large portion of the downstream improvement.
+4.3
+Further Analysis
+The preceding results establish that grounded initialization improves downstream perfor-
+mance; we now investigate why. We use spectral and geometric diagnostics on the SID
+embedding subspace, both at initialization and after fine-tuning. These analyses provide
+direct evidence to the Grounded Token Initialization Hypothesis (Section 2).
+Grounded initialization produces differentiated embedding geometry.
+Figure 5 visu-
+alizes pairwise cosine similarities among pretrained vocabulary tokens and SID tokens
+under three initialization strategies. Random initialization avoids uniformity but yields
+unstructured noise with no coherent affinity to the pretrained manifold. Mean initialization
+produces a uniform SID block, confirming the collapse diagnosed in Section 2. In contrast,
+GTI produces rich, differentiated structure within the SID block together with coherent
+cross-block affinities to relevant lexical tokens.
+5For better visualization, we randomly choose 50 tokens separately from pretrained tokens or
+Semantic-ID tokens
+8
+
+Preprint.
+Figure 7: (a) Singular-Value Spectra of SID embedding matrix after SFT: GTI initialization
+yields slower spectral decay and higher effective rank than mean initialization. (b) Rep-
+resentational Similarity Analysis (RSA) of SID embeddings after SFT: We compare the
+pairwise geometry of the ground-truth RQ-VAE codebook vectors and the learned SID em-
+beddings using Pearson r and Spearman ρ. GTI initialization achieves the highest correlation
+under both metrics, indicating better preservation of the semantic structure among SID
+embeddings than mean or random initialization.
+Grounded structure persists through fine-tuning.
+We next examine whether the structure
+induced by grounding persists through fine-tuning. (1) Pairwise cosine similarities among
+SID embeddings after fine-tuning on the public dataset (Figure 6) show that only the GTI-
+initialized model preserves the blockwise hierarchical structure encoded by the RQ-VAE;
+mean and random initialization produce flat or noisy similarity patterns. (2) The singular-
+value spectrum of ESID ∈R|VSID|×d after fine-tuning on the industrial dataset (Figure 7a)
+shows that mean initialization leads to rapid spectral decay and low effective rank, while
+grounded initialization yields slower decay and higher effective rank, indicating a non-
+degenerate subspace with multiple active directions along which items differ (see Appendix
+for extended SVD analysis of the industrial dataset).(3) Representational similarity analysis
+(RSA) between the learned SID embeddings and the ground-truth RQ-VAE codebook vectors
+(Figure 7b) shows that GTI-initialized embeddings better preserve the original semantic
+structure through training. Taken together, these results suggest that the grounding stage
+seeds embedding structure that persists through fine-tuning, corroborating the downstream
+performance gains.
+5
+Related Work
+Vocabulary Extension in Language Models.
+Extending a pretrained LM’s vocabulary
+with new tokens is a recurring challenge. Standard approaches initialize new embeddings at
+the vocabulary mean (Hewitt, 2021) or randomly, then rely on fine-tuning. ToolkenGPT (Hao
+et al., 2024) and Yo’LLaVA (Nguyen et al., 2024) show that training only new token embed-
+dings against a frozen LM can be effective for tool invocation and visual concept grounding,
+respectively. GTI reframes this mechanism as an initialization strategy: by grounding new
+tokens before fine-tuning, the learned structure serves as a starting point that benefits
+arbitrary downstream tasks, rather than being tied to a specific end use.
+Generative Recommendation.
+We adopt generative recommendation as our primary
+evaluation domain, as it requires injecting thousands of novel tokens into a pretrained LM,
+making it a demanding testbed for vocabulary extension. This paradigm frames retrieval
+as autoregressive decoding of Semantic IDs (SIDs) discretized via RQ-VAE (van den Oord
+et al., 2018; Lee et al., 2022; Rajput et al., 2023; Zheng et al., 2024). We provide an extended
+discussion in Appendix 7.5.
+6
+Conclusion
+Through spectral and geometric diagnostics, we show that mean-of-vocabulary initialization
+collapses new tokens into a degenerate subspace that fine-tuning does not fully recover.
+Motivated by this diagnosis, we propose GTI, a lightweight grounding stage that learns only
+9
+
+Preprint.
+the new token embeddings via paired linguistic supervision before standard fine-tuning. On
+generative recommendation benchmarks spanning industrial-scale and public datasets, GTI
+consistently outperforms both mean initialization and auxiliary-task adaptation, with further
+analyses confirming that grounded structure persists through fine-tuning. These findings
+support the Grounded Token Initialization Hypothesis. As the grounding mechanism makes
+no assumptions about the downstream task, an important direction for future work is to
+test its generality in broader vocabulary-extension settings beyond recommendation.
+References
+Karl Audun Kagnes Borgersen. Vibrent clothes rental dataset. https://www.kaggle.com/
+datasets/kaborg15/vibrent-clothes-rental-dataset, 2024. Kaggle dataset, accessed
+March 22, 2026.
+Rui Cai, Chao Wang, Qianyi Cai, Dazhong Shen, and Hui Xiong. Boosting knowledge graph-
+based recommendations through confidence-aware augmentation with large language
+models. arXiv preprint arXiv:2502.03715, 2025.
+Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong Xiao, Bowen Xue,
+Xuxin Zhang, Ying Yang, Huangyu Dai, Xing Xu, Tong Zhao, Mingcan Peng, Xiaoyang
+Zheng, Chao Wang, Qihang Zhao, Zhixin Zhai, Yang Zhao, Bochao Liu, Jingshan Lv,
+Jing Chen, Xiao Liang, Yuqing Ding, Chenyi Lei, Wenwu Ou, Han Li, and Kun Gai.
+Onesearch: A preliminary exploration of the unified end-to-end generative framework
+for e-commerce search, 2025a. URL https://arxiv.org/abs/2509.03236.
+Daiwei Chen, Yi Chen, Aniket Rege, Zhi Wang, and Ramya Korlakai Vinayak. Pal: Sample-
+efficient personalized reward modeling for pluralistic alignment. In The Thirteenth Interna-
+tional Conference on Learning Representations, 2025b. URL https://openreview.net/forum?
+id=1kFDrYCuSu.
+Yashar Deldjoo, Zhankui He, Julian McAuley, Anton Korikov, Scott Sanner, Arnau Ramisa,
+Ren´e Vidal, Maheswaran Sathiamoorthy, Atoosa Kasirzadeh, and Silvia Milano. A review
+of modern recommender systems using generative models (gen-recsys), 2024. URL
+https://arxiv.org/abs/2404.00579.
+Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang Luo,
+and Guorui Zhou. Onerec: Unifying retrieve and rank with generative recommender
+and iterative preference alignment. arXiv preprint arXiv:2502.18965, 2025. URL https:
+//arxiv.org/abs/2502.18965.
+Yijie Ding, Zitian Guo, Jiacheng Li, Letian Peng, Shuai Shao, Wei Shao, Xiaoqiang Luo,
+Luke Simon, Jingbo Shang, Julian McAuley, and Yupeng Hou. How well does generative
+recommendation generalize?, 2026. URL https://arxiv.org/abs/2603.19809.
+Jun Gao, Di He, Xu Tan, Tao Qin, Liwei Wang, and Tie-Yan Liu. Representation degeneration
+problem in training natural language generation models. In International Conference on
+Learning Representations, 2019.
+Shijie Geng, Shuchang Liu, Zuohui Fu, Yingqiang Ge, and Yongfeng Zhang. Recommen-
+dation as language processing (rlp): A unified pretrain, personalized prompt & predict
+paradigm (p5), 2023. URL https://arxiv.org/abs/2203.13366.
+Ruidong Han, Bin Yin, Shangyu Chen, He Jiang, Fei Jiang, Xiang Li, Chi Ma, Mincong
+Huang, Xiaoguang Li, Chunzhen Jing, et al. Mtgr: Industrial-scale generative recommen-
+dation framework in meituan. arXiv preprint arXiv:2505.18654, 2025.
+Shibo Hao, Tianyang Liu, Zhen Wang, and Zhiting Hu. Toolkengpt: Augmenting frozen
+language models with massive tools via tool embeddings, 2024. URL https://arxiv.
+org/abs/2305.11554.
+Xiangnan He, Lizi Liao, Hanwang Zhang, Liqiang Nie, Xia Hu, and Tat-Seng Chua. Neural
+collaborative filtering. In Proceedings of the 26th International Conference on World Wide Web
+(WWW ’17), pp. 173–182, 2017. doi: 10.1145/3038912.3052569.
+10
+
+Preprint.
+Xiangnan He, Kuan Deng, Xiang Wang, Yan Li, Yongdong Zhang, and Meng Wang. Lightgcn:
+Simplifying and powering graph convolution network for recommendation, 2020. URL
+https://arxiv.org/abs/2002.02126.
+John Hewitt. Initializing new word embeddings for pretrained language models. https:
+//nlp.stanford.edu/∼johnhew/vocab-expansion.html, 2021.
+HuggingFace.
+Trl documentation: Quickstart.
+https://huggingface.co/docs/trl/en/
+quickstart, 2025. Accessed: 2025-09-23.
+Ruijie Jiang, Thuan Nguyen, Shuchin Aeron, and Prakash Ishwar. Hard-negative sampling
+for contrastive learning: Optimal representation geometry and neural-vs dimensional-
+collapse. Transactions on Machine Learning Research, 2024.
+Li Jing, Pascal Vincent, Yann LeCun, and Yuandong Tian. Understanding dimensional
+collapse in contrastive self-supervised learning. arXiv preprint arXiv:2110.09348, 2021.
+Wang-Cheng Kang and Julian McAuley. Self-attentive sequential recommendation. In 2018
+IEEE International Conference on Data Mining (ICDM), pp. 197–206, 2018. doi: 10.1109/
+ICDM.2018.00035.
+Yehuda Koren, Robert Bell, and Chris Volinsky. Matrix factorization techniques for recom-
+mender systems. Computer, 42(8):30–37, 2009. doi: 10.1109/MC.2009.263.
+Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. Autoregressive
+image generation using residual quantization, 2022. URL https://arxiv.org/abs/2203.
+01941.
+Omer Levy and Yoav Goldberg. Neural word embedding as implicit matrix factorization.
+In Advances in Neural Information Processing Systems, volume 27, 2014.
+Thao Nguyen, Haotian Liu, Yuheng Li, Mu Cai, Utkarsh Ojha, and Yong Jae Lee. Yo’llava:
+Your personalized language and vision assistant, 2024. URL https://arxiv.org/abs/
+2406.09400.
+Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan H. Keshavan, Trung Vu,
+Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah Samost, Maciej Kula, Ed H. Chi,
+and Maheswaran Sathiamoorthy. Recommender systems with generative retrieval, 2023.
+URL https://arxiv.org/abs/2305.05065.
+Aniket Rege, Aditya Kusupati, Sharan Ranjit S, Alan Fan, Qingqing Cao, Sham Kakade,
+Prateek Jain, and Ali Farhadi. Adanns: A framework for adaptive semantic search.
+In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine (eds.), Ad-
+vances in Neural Information Processing Systems, volume 36, pp. 76311–76335. Curran
+Associates, Inc., 2023. URL https://proceedings.neurips.cc/paper files/paper/2023/
+file/f062da1973ac9ac61fc6d44dd7fa309f-Paper-Conference.pdf.
+Yi Tay, Vinh Tran, Mostafa Dehghani, Jianmo Ni, Dara Bahri, Harsh Mehta, Zhen Qin, Kai
+Hui, Zhe Zhao, Jai Gupta, et al. Transformer memory as a differentiable search index. In
+Advances in Neural Information Processing Systems, 2022.
+Aaron van den Oord, Oriol Vinyals, and Koray Kavukcuoglu. Neural discrete representation
+learning, 2018. URL https://arxiv.org/abs/1711.00937.
+Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-Kiong Ng,
+and Tat-Seng Chua. Learnable item tokenization for generative recommendation, 2024.
+URL https://arxiv.org/abs/2405.07314.
+Xiang Wang, Xiangnan He, Meng Wang, Fuli Feng, and Tat-Seng Chua. Neural graph
+collaborative filtering. In Proceedings of the 42nd International ACM SIGIR Conference
+on Research and Development in Information Retrieval (SIGIR ’19), pp. 165–174, 2019. doi:
+10.1145/3331184.3331267.
+11
+
+Preprint.
+Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue, Anthony
+Moi, Pierric Cistac, Tim Rault, Remi Louf, Morgan Funtowicz, Joe Davison, Sam Shleifer,
+Patrick von Platen, Clara Ma, Yacine Jernite, Julien Plu, Canwen Xu, Teven Le Scao,
+Sylvain Gugger, Mariama Drame, Quentin Lhoest, and Alexander Rush. Transformers:
+State-of-the-art natural language processing. In Proceedings of the 2020 Conference on
+Empirical Methods in Natural Language Processing: System Demonstrations, pp. 38–45, 2020.
+Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhaojie
+Gong, Fangda Gu, Jiayuan He, Yinghai Lu, and Yu Shi. Actions speak louder than words:
+Trillion-parameter sequential transducers for generative recommendations. In Ruslan
+Salakhutdinov, Zico Kolter, Katherine Heller, Adrian Weller, Nuria Oliver, Jonathan
+Scarlett, and Felix Berkenkamp (eds.), Proceedings of the 41st International Conference on
+Machine Learning, volume 235 of Proceedings of Machine Learning Research, pp. 58484–58509.
+PMLR, 21–27 Jul 2024. URL https://proceedings.mlr.press/v235/zhai24a.html.
+Haichao Zhang and Yun Fu. VQToken: Neural discrete token representation learning for
+extreme token reduction in video large language models. In The Thirty-ninth Annual
+Conference on Neural Information Processing Systems, 2025. URL https://openreview.net/
+forum?id=X8oEu4Gs3W.
+Haichao Zhang, Yao Lu, Lichen Wang, Yunzhe Li, Daiwei Chen, Yunpeng Xu, and Yun Fu.
+Linkedout: Linking world knowledge representation out of video llm for next-generation
+video recommendation. arXiv preprint arXiv:2512.16891, 2025.
+Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming Chen, and
+Ji-Rong Wen. Adapting large language models by integrating collaborative semantics for
+recommendation, 2024. URL https://arxiv.org/abs/2311.09049.
+Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qigen Wang,
+Qianqian Hu, Rui Huang, Shiyao Wang, et al. Onerec technical report. arXiv preprint
+arXiv:2506.13695, 2025. URL https://arxiv.org/abs/2506.13695.
+12
+
+Preprint.
+7
+Appendix
+7.1
+Datasets
+7.1.1
+Retrieval Dataset
+Industrial Candidate Retrieval Dataset.
+The industrial-scale candidate retrieval dataset6
+consists of job requirement–candidate pairs collected in 2025 from a world-leading pro-
+fessional networking platform with global user coverage and evaluated by our internal
+LLM judge. According to product policy, which measures how many job requirements
+a candidate satisfies, each pair is assigned to one of three relevance levels: good match,
+good&maybe match, and not match. We use the good match pairs for supervised fine-tuning
+(SFT).
+The member profile dataset contains profiles of users who provide at least one of the follow-
+ing attributes: geographic location, job positions, education history, or skill information.
+Vibrent Dataset.
+The Vibrent Clothes Rental Dataset is a publicly available dataset from
+Kaggle. To complement our industrial dataset with a publicly available benchmark, we also
+evaluate our method on it. The dataset contains anonymized user–item rental transactions
+from a clothing rental platform. We construct a candidate retrieval task by treating users as
+queries and clothing items as candidates, where observed rental interactions are considered
+positive relevance signals, and non-interacted items are treated as negatives during training.
+7.2
+Prompt Templates
+7.2.1
+Prompt Template: Auxiliary Task (Item Title/Description ↔New Vocabulary
+Tokens)
+PROMPT
+Item Title/Description →Semantic IDs7(Title→New Vocabulary Tokens)
+<system>
+You are a helpful assistant.
+<user>
+Which item has the title: {{title}}?
+<assistant>
+{{ITEM SEMANTIC_ID}}
+PROMPT
+Item Title/Description →Semantic IDs (Description→New Vocabulary Tokens)
+<system>
+You are a helpful assistant.
+<user>
+Can you tell me what item is described as {{description}}?
+<assistant>
+{{ITEM SEMANTIC_ID}}
+PROMPT
+Item Title/Description →Semantic IDs (Title+Description→New Vocabulary Tokens)
+<system>
+You are a helpful assistant.
+<user>
+What item is called {{title}} and described as {{description}}?
+<assistant>
+{{ITEM SEMANTIC_ID}}
+6Data access and use complied with internal privacy and security frameworks. Member profile
+attributes were processed in accordance with applicable member controls and visibility settings, and
+analyses were conducted on de-identified datasets with results reported in aggregate only.
+13
+
+Preprint.
+PROMPT
+Semantic IDs →Item Title/Description (New Vocabulary Tokens→Title)
+<system>
+You are a helpful assistant.
+<user>
+Could you please tell me what item {{ITEM SEMANTIC_ID}} is called?
+<assistant>
+{{title}}
+PROMPT
+Semantic IDs →Item Title/Description (New Vocabulary Tokens→Description)
+<system>
+You are a helpful assistant.
+<user>
+Briefly describe item {{ITEM SEMANTIC_ID}}.
+<assistant>
+{{description}}
+PROMPT
+Semantic IDs →Item Title/Description (New Vocabulary Tokens→Title+Description)
+<system>
+You are a helpful assistant.
+<user>
+What is the title and description of item {{ITEM SEMANTIC_ID}}?
+<assistant>
+{{title}}\n\n{{description}}
+7.2.2
+Prompt Template: Search Query Task
+PROMPT
+Candidate Description →Semantic Id Alignment Prompt 8
+<user>
+Instruction: Predict the candidate SID. Input:
+{{candidate headline}}
+{{candidate profile description}}
+{{candidate job title}}
+{{candidate education}}
+{{candidate employment history}}
+{{candidate location}}
+{{candidate skills}}
+{{candidate company}}
+<assistant>
+{{CANDIDATE SEMANTIC_ID}}
+PROMPT
+Semantic Id →Candidate Description Alignment Prompt
+<user>
+Instruction: Recover the candidate text. Input: {{CANDIDATE SEMANTIC_ID}}
+<assistant>
+{{candidate headline}}
+{{candidate profile description}}
+{{candidate job title}}
+{{candidate education}}
+{{candidate employment history}}
+{{candidate location}}
+{{candidate skills}}
+7Most of Item Title/Description ↔Semantic IDs prompts and retrieval prompts are adapted
+from (Zheng et al., 2024).
+14
+
+Preprint.
+PROMPT
+{{candidate company}}
+PROMPT
+Search Query →Candidate Semantic Id Alignment Prompt
+<user>
+Instruction: Predict the relevant candidate SID that matches job requirements as
+much as possible. If there are no candidates that meet the criteria, return the
+candidate SID that prioritizes the matching required requirements then
+matching the preferred requirements. Input:
+{{required requirements}}
+{{preferred requirements}}
+<assistant>
+{{ITEM SEMANTIC_ID}}
+7.2.3
+Prompt Template: Retrieval Task
+PROMPT
+Retrieval Prompt (Template 1)
+<system>
+You are a helpful assistant.
+<user>
+The user has interacted with items {{inters}} in chronological order. Can you
+predict the next possible item that the user may expect?
+<assistant>
+{{ITEM SEMANTIC_ID}}
+PROMPT
+Retrieval Prompt (Template 2)
+<system>
+You are a helpful assistant.
+<user>
+Based on the items that the user has interacted with: {{inters}}, can you determine
+what item would be recommended to the user next?
+<assistant>
+{{ITEM SEMANTIC_ID}}
+PROMPT
+Retrieval Prompt (Template 3)
+<system>
+You are a helpful assistant.
+<user>
+Here is the item interaction history of the user: {{inters}}, what to recommend to
+the user next?
+<assistant>
+{{ITEM SEMANTIC_ID}}
+7.3
+Implementation Details
+We utilize the pre-trained Qwen3-Embedding-0.6B encoder to extract semantic representations
+for items. The encoder processes item metadata including titles and descriptions to generate
+1024-dimensional dense vectors that capture semantic similarities between items. We process
+text features of products by concatenating them as: [TITLE] [DESCRIPTION]. We set the
+maximum input sequence length as 2048. The final outputs are dense semantic embeddings:
+zi ∈R1024 for item i.
+8For brevity, we illustrate only three representative prompting templates.
+15
+
+Preprint.
+Our Residual Quantized Variational Autoencoder (RQ-VAE) follows the TIGER (Rajput
+et al., 2023) framework with carefully designed architectural specifications to ensure ef-
+fective quantization of semantic representations. The encoder architecture consists of a
+3-layer Multi-Layer Perceptron (MLP) with hidden dimensions of [1024, 512, 256], utilizing
+ReLU activation functions and applying a dropout rate of 0.1 between layers. The resid-
+ual quantization mechanism employs four codebook layers, each containing 256 entries
+with 32-dimensional codes. This hierarchical quantization approach enables fine-grained
+representation of semantic information while maintaining discrete tokenization proper-
+ties essential for language model integration. We trained the model for 20,000 epochs to
+achieve a high codebook utilization rate and minimize collision rates. To further prevent
+collisions where multiple items map to identical sequences of semantic IDs, we employed
+the Sinkhorn-Knopp trick used by LC-Rec (Zheng et al., 2024), which ensures uniform
+distribution of item semantics across codebook embeddings in the final layer.
+The base language model employs Qwen3-0.6B with hidden dimension of 1024. The model
+architecture comprises 28 transformer layers supporting a maximum context length of
+32,768 tokens. This configuration provides sufficient capacity for processing sequential
+recommendation tasks while maintaining computational efficiency. Parameter-efficient
+fine-tuning is implemented through Quantized Low-Rank Adaptation (QLoRA) with a rank
+of 8 and alpha value of 32. The LoRA adaptation applies a dropout rate of 0.05 and targets
+key projection matrices including q proj, k proj, v proj, o proj, gate proj, up proj, and
+down proj. We also set LoRA modules to be saved as embed tokens and lm head, so that
+only the embedding layer and the language modeling head are preserved during training
+while other modules can remain frozen. This configuration enables efficient adaptation
+while preserving pre-trained knowledge.
+We implement the token-embedding grounding stage of GTI by extending the Hugging Face
+TRL (HuggingFace, 2025) SFTTrainer to update only the Semantic-ID embedding matrix
+while freezing the LM backbone; the trainer consumes paired (title/description, SemID)
+examples and optimizes the embeddings as outlined in the pseudo code below. Unless
+otherwise stated, we train for 10 epochs with a learning rate of 1e-3 and a batch size 16.
+Algorithm 1: GTI Grounding Stage
+Input: Pretrained model M with embedding matrix E ∈RV×d; new token indices
+T ⊆{0, . . . , V −1}; paired corpus D = {(textj, tokenj)}
+Output: Model M with grounded embeddings for tokens in T
+// Setup: freeze all parameters except new token embeddings
+Freeze all parameters of M
+Construct binary mask m ∈{0, 1}V where mi = 1 iff i ∈T
+M ←m ⊗1d
+// Broadcast to RV×d
+// Training: update only new token embeddings via masked gradients
+for each batch B ⊂D do
+L ←LM LOSS(M, B)
+// Forward pass
+∇E ←∇EL
+// Compute gradients
+E ←E −η · (∇E ⊙M)
+// Update only new token embeddings
+end
+7.4
+Analysis Details
+Representation Similarity Analysis (RSA).
+To quantitatively measure whether the learned
+representations preserves the semantic structure of SID new vocabulary tokens, we perform
+representational similarity analysis. Given the well-trained RQ-VAE codebooks, which
+encode the compressed representation of SID new vocabulary tokens, we define the oracle
+semantic embeddings as X = {x1, ..., xn}, xi ∈R32. And let the corresponding learned
+16
+
+Preprint.
+token embeddings from language model as ˆX = { ˆx1, ..., ˆxn}, xi ∈Rd, where d depends
+on the language model dimensionality. We construct pairwise token similarity matrices
+SX, S ˆX ∈Rn×n, where:
+(SX)i,j = cos(xi, xj),
+(S ˆX)i,j = cos( ˆxi, ˆxj).
+We then vectorize the upper-triangular entries of SX and S ˆX and compute their correlation
+(We implement both Spearman correlation and Pearson correlation to capture complemen-
+tary aspects of representational alignment). This yields an RSA score that quantifies the
+extent to which the learned representation space preserves the pairwise semantic relations
+of the oracle space. Since RSA compares representational geometry rather than coordinates
+directly, it is well suited to our setting where the oracle and learned embeddings live in
+different ambient dimensions (32 vs. d).
+Extended SVD analysis of the industrial dataset.
+The slower spectral decay and higher
+effective rank observed with GTI initialization suggest that this method preserves a more ex-
+pressive and diverse feature space throughout the SFT process, preventing the dimensional
+collapse often associated with mean initialization.
+0
+200
+400
+600
+800
+1000
+Singular Value Index
+10
+1
+100
+101
+Singular Value
+SVD of Token Embeddings
+Industrial Dataset
+MI + Vanilla SFT Baseline
+MI + Multi-Task SFT (LC-Rec)
+GTI + Multi-Task SFT (Ours)
+Figure 8: Singular-Value Spectra of SID embedding matrix after SFT for Industrial dataset.
+7.5
+Full Related Work
+RQ-VAE and Semantic IDs.
+Vector-quantized autoencoders (van den Oord et al., 2018;
+Zhang & Fu, 2025) learn discrete item representations by mapping continuous embeddings
+to codebook entries. Residual Quantized VAEs (RQ-VAE) (Lee et al., 2022) extend this
+Table 4: Additional retrieval results on the Vibrent dataset. We report Recall@K and
+NDCG@K for Baseline (MI+Vanilla SFT), LC-Rec (MI+Multi-task SFT), and our method
+GTI+Vanilla SFT. GTI+Vanilla SFT achieves the best performance on most Recall@K metrics
+and remains competitive on NDCG@K, further supporting the effectiveness of grounded
+token initialization for generative retrieval.
+Methodology
+Recall@K
+NDCG@K
+@5
+@10
+@20
+@50
+@100
+@5
+@10
+@20
+@50
+@100
+MI+Vanilla SFT (Baseline)
+0.0226
+0.0342
+0.0475
+0.0771
+0.1031
+0.0150
+0.0188
+0.0222
+0.0280
+0.0322
+MI+Multi-task SFT (LC-Rec)
+0.0243
+0.0382
+0.0539
+0.0863
+0.1194
+0.0163
+0.0208
+0.0247
+0.0311
+0.0365
+GTI+Vanilla SFT (Ours)
+0.0230
+0.0417
+0.0599
+0.0937
+0.1222
+0.0143
+0.0203
+0.0249
+0.0316
+0.0362
+17
+
+Preprint.
+with a hierarchy of residual codebooks, producing multi-level Semantic IDs (SIDs) that
+capture progressively finer semantic distinctions. Unlike conventional item IDs, SIDs carry
+compositional structure amenable to autoregressive generation, making them a standard
+component in generative recommendation (Rajput et al., 2023; Zheng et al., 2024; Han et al.,
+2025). Crucially, each codebook entry becomes a new token in the LM vocabulary, and how
+these tokens are initialized is precisely the bottleneck our work addresses.
+Generative Recommendation.
+Generative retrieval reframes recommendation as autore-
+gressive decoding of item identifiers rather than nearest-neighbor search in embedding
+space (Rege et al., 2023; Chen et al., 2025b). TIGER (Rajput et al., 2023) introduced RQ-
+VAE-learned SIDs as generation targets, and LC-Rec (Zheng et al., 2024) added auxiliary
+linguistic objectives during fine-tuning to improve SID representations. Several systems
+have demonstrated industrial-scale deployment: MTGR (Han et al., 2025) integrates gener-
+ative retrieval with DLRM cross-feature signals; OneSearch (Chen et al., 2025a) combines
+keyword-enhanced quantization with preference-aware rewards; and OneRec (Deng et al.,
+2025; Zhou et al., 2025) unifies retrieval and ranking via session-wise generation. Comple-
+mentary directions include LLM-driven knowledge-graph recommenders (Cai et al., 2025)
+and MLLM-based world-knowledge integration (Zhang et al., 2025). All of these systems
+must inject novel tokens into a pretrained LM; our work addresses a step that is upstream of
+and complementary to their contributions, namely how those tokens should be initialized.
+Connection to Dimensional Collapse.
+The initialization collapse we diagnose is related
+to dimensional collapse in contrastive and self-supervised learning (Jing et al., 2021; Jiang
+et al., 2024), where learned representations are restricted to a low-dimensional subspace,
+eliminating fine-grained distinctions (Figure 2). Mean-of-vocabulary initialization induces a
+similar effect: all new tokens start at the same point, forming a rank-deficient configuration.
+Jiang et al. (2024) show that appropriate initialization can mitigate dimensional collapse
+in contrastive learning, which parallels our finding that grounding new tokens before
+fine-tuning preserves a higher-rank, more differentiated embedding subspace.
+18

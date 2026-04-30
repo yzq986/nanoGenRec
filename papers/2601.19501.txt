@@ -1,0 +1,1895 @@
+Masked Diffusion Generative Recommendation
+Lingyu Mu∗
+Alibaba International
+Digital Commerce Group
+Beijing, China
+mulingyu@iie.ac.cn
+Hao Deng∗
+Alibaba International
+Digital Commerce Group
+Beijing, China
+denghao.deng@alibaba-
+inc.com
+Haibo Xing
+Alibaba International
+Digital Commerce Group
+Hangzhou, China
+xinghaibo.xhb@alibaba-
+inc.com
+Jinxin Hu†
+Alibaba International
+Digital Commerce Group
+Beijing, China
+jinxin.hjx@alibaba-
+inc.com
+Yu Zhang
+Alibaba International
+Digital Commerce Group
+Beijing, China
+daoji@alibaba-inc.com
+Xiaoyi Zeng
+Alibaba International
+Digital Commerce Group
+Hangzhou, China
+yuanhan@taobao.com
+Jing Zhang†
+Wuhan University
+Wuhan, China
+jingzhang.cv@gmail.com
+Abstract
+Generative recommendation (GR) typically first quantizes contin-
+uous item embeddings into multi-level semantic IDs (SIDs), and
+then generates the next item via autoregressive decoding. Although
+existing methods are already competitive in terms of recommenda-
+tion performance, directly inheriting the autoregressive decoding
+paradigm from language models still suffers from three key lim-
+itations: (1) autoregressive decoding struggles to jointly capture
+global dependencies among the multi-dimensional features asso-
+ciated with different positions of SID; (2) using a unified, fixed
+decoding path for the same item implicitly assumes that all users
+attend to item attributes in the same order; (3) autoregressive decod-
+ing is inefficient at inference time and struggles to meet real-time
+requirements. To tackle these challenges, we propose MDGR, a
+Masked Diffusion Generative Recommendation framework that
+reshapes the GR pipeline from three perspectives: codebook, train-
+ing, and inference. (1) We adopt a parallel codebook to provide a
+structural foundation for diffusion-based GR. (2) During training,
+we adaptively construct masking supervision signals along both the
+temporal and sample dimensions. (3) During inference, we develop
+a warm-up–based two-stage parallel decoding strategy for efficient
+generation of SIDs. Extensive experiments on multiple public and
+industrial-scale datasets show that MDGR outperforms ten state-
+of-the-art baselines by up to 10.78%. Furthermore, by deploying
+MDGR on a large-scale online advertising platform, we achieve a
+1.20% increase in revenue, demonstrating its practical value.
+CCS Concepts
+• Information systems →Retrieval models and ranking.
+∗Contributed equally to this research.
+†Corresponding authors.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference’17, Washington, DC, USA
+© 2026 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+Keywords
+Generative Recommendation, Masked Diffusion Model
+ACM Reference Format:
+Lingyu Mu, Hao Deng, Haibo Xing, Jinxin Hu, Yu Zhang, Xiaoyi Zeng,
+and Jing Zhang. 2026. Masked Diffusion Generative Recommendation. In .
+ACM, New York, NY, USA, 11 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+In recent years, generative recommendation (GR) based on semantic
+IDs (SIDs) has attracted extensive attention in both academia and
+industry [33, 47]. Unlike traditional recommender systems (RSs)
+[8, 21, 27, 39, 40, 43], which assign each item a unique ID and learn
+a dedicated embedding for it, GR typically leverages pre-trained
+models to map an item’s content features (such as title, description,
+and image) into a continuous semantic space, and then applies
+vector quantization [11] to compress each item into a set of discrete
+tokens, i.e., SIDs. As illustrated in Figure 1(a), different tokens in a
+SID often correspond to the item’s different characteristics [15, 26,
+54], such as category, brand, and price, while the combination of all
+tokens determines the item’s overall position in the semantic space.
+By indexing items with shared semantic tokens instead of IDs, GR
+represents a large item corpus with a compact token vocabulary
+[41], thereby improving scalability and memory efficiency.
+Existing GR can be roughly divided into two types: autoregres-
+sive decoding with residual codebooks and single-step decoding
+with parallel codebooks. The former follows the modeling paradigm
+of language models. It constructs hierarchical SIDs for items via
+multi-level residual quantization [19], and then generates tokens
+one by one from left to right, achieving competitive performance.
+However, this paradigm has two limitations: (1) The objective of
+GR is whether the final generated SIDs corresponds to the target
+item [42, 50], not the specific generation order. Yet autoregressive
+models can only condition on the left prefix when predicting each
+token [38], limiting their ability to enforce global consistency across
+tokens [15]. (2) Users’ click interests are inherently heterogeneous
+[44, 48, 51]: different users may attend to an item’s attributes in
+different orders. A fixed, user-agnostic decoding path implicitly as-
+sumes a shared attention order, contradicting this heterogeneity. To
+better model global consistency, single-step decoding with parallel
+codebooks decomposes item semantics into multiple sub-codebooks
+arXiv:2601.19501v2  [cs.IR]  29 Jan 2026
+
+Conference’17, July 2017, Washington, DC, USA
+Lingyu Mu, Hao Deng, Haibo Xing, Jinxin Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang
+Self-Attention Decoder
+s
+2
+1
+3
+4
+2
+1
+3
+MASK
+(d) Discrete Diffusion based GR
+(b) Autoregressive GR
+Title
+Description
+Review
+2
+1
+3
+4
+Encoder
+Brand
+Price
+Size
+Category
+Semantic ID
+2
+1
+3
+4
+Add Noise
+(a) Item Semantic ID
+Self-Attention Decoder
+2
+1
+3
+4
+….
+User History
+Bidirectional-Attention
+Diffusion Decoder
+1
+MASK
+MASK
+MASK
+4
+MASK
+MASK
+Self-Attention Encoder
+….
+User History
+(c) Parallel GR
+Self-Attention Encoder
+….
+User History
+Target Item
+Figure 1: (a) The codebook quantizes the multimodal informa-
+tion of an item into a sequence of semantic tokens, i.e., SIDs.
+(b) Autoregressive GR generates SIDs in a fixed left-to-right
+order. (c) Parallel GR generates all tokens in a single step.
+(d) Our masked diffusion GR denoises multiple positions in
+parallel, flexibly filling tokens without a fixed order.
+and predicts all codewords simultaneously in one forward pass, en-
+abling synchronized modeling of semantic dimensions and improv-
+ing overall consistency compared with autoregressive decoding.
+Nevertheless, this paradigm still has two drawbacks. (1) The one-
+shot decision process tends to overlook finer-grained correlations
+and constraints among local attributes. (2) Its decoding process still
+fails to resolve the mismatch between heterogeneous user interests
+and the fixed decoding order. Therefore, under the premise of using
+parallel codebooks, we aim to design a new decoding paradigm
+that meets the following three requirements: (1) Order-agnostic:
+the generation order of semantic IDs can be adjusted according
+to the user’s interest structure. (2) Multi-step refinement: SIDs
+can be progressively refined over multiple iterations to improve
+generation accuracy. (3) Parallel generation: multiple positions
+are updated simultaneously at each step to ensure efficiency.
+To address the above issues, inspired by recent advances in dis-
+crete diffusion models [10, 23, 24, 45, 52], we explore incorporating
+the idea of masked diffusion [1] into GR. As shown in Figure 1(d),
+the masked diffusion model treats generation as a multi-step mask-
+ing–denoising process. Starting from a sequence of [MASK] tokens,
+it iteratively selects positions to recover into concrete SIDs using
+bidirectional attention. This order-free mechanism supports grad-
+ual refinement of token semantics and parallel denoising of multiple
+positions at each step, reducing decoding steps while maintaining
+a flexible decoding path. However, directly applying discrete dif-
+fusion to recommendation faces several challenges. (1) Standard
+masked diffusion models use a fixed noise schedule and inject noise
+uniformly at random [32]. In GR, however, SID tokens differ in
+importance and difficulty, so such SID-agnostic masking weak-
+ens modeling of the true interest structure. (2) Existing diffusion
+methods generate only a single sequence [3], whereas GR retrieval
+requires a mechanism to produce diverse candidates like beam
+search. Since beam search is designed for autoregressive step-wise
+decoding and cannot be directly used for parallel decoding, we need
+a new decoding mechanism for diffusion-based GR.
+To tackle the above challenges, we propose MDGR, a Masked
+Diffusion Generative Recommendation framework that reshapes
+both the training and inference procedures. Specifically, in the
+training stage, we dynamically control the noise distribution along
+both the temporal and sample dimensions to provide more effective
+supervision for multi-step generation:
+• Temporal Dimension. Inspired by curriculum learning [4], we
+further propose a global curriculum noise scheduling strat-
+egy, where the masking ratio is gradually increased as training
+progresses, exposing the model to increasingly challenging re-
+construction tasks.
+• Sample Dimension. Given the sampled number of masks, we
+further propose a history-aware masking allocation strategy
+that prioritizes masking semantic tokens that are rare in the
+user’s history, thereby exposing the model to harder examples.
+In the inference stage, we adopt a warm-up–based two-stage par-
+allel decoding: a few steps of single-position decoding are first used
+to stabilize key semantic anchors, after which we switch to parallel
+prediction over multiple token groups, which can be combined with
+beam search [38] for efficient candidate SID generation.
+We conduct extensive experiments on two public datasets and
+one industrial dataset to evaluate MDGR, and compare it with ten
+state-of-the-art (SOTA) baselines (e.g., TIGER [33], Cobra [47]).
+MDGR achieves the best performance across all comparison set-
+tings, with up to 10.78% improvement in performance. Moreover,
+we deploy MDGR on a large commercial advertising platform. On-
+line A/B testing shows that advertising revenue increases by 1.20%
+and gross merchandise volume (GMV) increases by 3.69%.
+Our contributions can be summarized as follows:
+• We propose MDGR, a masked diffusion GR that models SID gen-
+eration as a masking–denoising process, enabling bidirectional
+modeling across token dimensions and parallel prediction.
+• During training, we design a dynamic global noise scheduling
+strategy along both the temporal and sample dimensions, pro-
+gressively constructing hard missing-position supervision signals
+tailored to users’ heterogeneous click interests. During inference,
+we develop a warm-up–based two-stage parallel decoding strat-
+egy to efficiently generate SIDs.
+• We achieve SOTA results on multiple datasets, with 7.17%–10.78%
+improvement over both discriminative and generative baselines,
+demonstrating that diffusion GR is an effective new paradigm.
+2
+Related Work
+2.1
+Generative Recommendation
+GR maps item content (e.g., text, images) into a continuous seman-
+tic space and then applies vector quantization to obtain discrete
+SIDs [14, 17]. TIGER [33] is the earliest SID-based GR model, using
+RQ-VAE to quantize text features and an autoregressive Trans-
+former to generate SIDs token by token. Cobra [47] augments SIDs
+with continuous vectors and alternates between generating dis-
+crete codes and continuous embeddings to bridge generation and
+retrieval. RPG [15] further improves codebook expressiveness via
+optimized product quantization [9]. It splits an item’s semantic
+vector into multiple subspaces and quantizes each independently
+
+Masked Diffusion Generative Recommendation
+Conference’17, July 2017, Washington, DC, USA
+to form a longer SID with finer-grained semantics. Despite these
+advances in SID and codebook design, most GR methods still fol-
+low a standard language-modeling paradigm. They use next-token
+prediction as supervision and generate SIDs autoregressively in
+a fixed order. This limits their ability to model multidimensional
+user interest heterogeneity and to meet the decoding-efficiency
+requirements of recommendation scenarios.
+2.2
+Discrete Diffusion Models
+Diffusion models initially achieved great success in continuous
+spaces (such as image generation) by gradually injecting Gaussian
+noise into data in the forward process and learning a reverse de-
+noising process to approximate the data distribution [22, 25, 35, 46].
+To extend this idea to discrete sequences, a series of discrete diffu-
+sion models (DDMs) has emerged in recent years. These methods
+typically define noise as a form of discrete perturbation. For exam-
+ple, masked diffusion models (MDMs) [29, 34] construct a Markov
+diffusion process in a finite state by replacing tokens with a special
+[MASK] symbol or randomly substituting them from the vocabulary,
+and then training a model to restore masked positions at different
+noise levels. LLaDA [28] is the first diffusion-based language model.
+By masking data and restoring it in the reverse process, LLaDA
+achieves performance comparable to autoregressive models and alle-
+viates the reversal curse problem. LLaDA 1.5 [56] further introduces
+reinforcement learning, significantly improving the performance of
+MDM alignment. Most existing DDMs target image or text genera-
+tion [5, 6, 49], whereas SIDs in GR are unordered multi-token item
+identifiers with distinct structural constraints. Inspired by multi-
+step noising and gradual denoising, we adapt discrete diffusion to
+SIDs by designing training-time corruption schemes, enabling the
+model to complete full SID sequences under varying information
+completeness. Recently, concurrent studies also apply diffusion to
+GR [36, 53], mainly by directly adopting generic MDMs architec-
+tures with minimal adaptation to recommendation. In contrast, we
+introduce recommendation-specific adaptations to the diffusion
+process and empirically validate their effectiveness in Sec. 5.4.
+3
+Preliminaries
+3.1
+Generative Recommendation
+Let I be the item set and U be the user set. For each user 𝑢∈U,
+the historical interaction sequence is 𝑠𝑢= (𝑖1,𝑖2, ...,𝑖𝑇). GR treats
+recommendation as a generation problem: given 𝑠𝑢, the model gen-
+erates a discrete identifier representing the target item. Specifically,
+we define 𝐿discrete vocabularies {𝑉ℓ}𝐿
+ℓ=1. Each 𝑉ℓis associated
+with a codebook matrix 𝐶ℓ∈R|𝑉ℓ|×𝑑ℓthat stores the codeword
+of each index. Given these codebooks, each item 𝑖is represented
+by a length-𝐿token sequence 𝑐𝑖= (𝑐1
+𝑖, . . . ,𝑐𝐿
+𝑖), where each token
+𝑐ℓ
+𝑖∈𝑉ℓis the index of a codeword in the ℓ-th codebook 𝐶ℓ. The
+objective of GR is to learn the conditional distribution 𝑝𝜃(𝑐|𝑠𝑢), i.e.,
+generating a SID 𝑐conditioned on the user history 𝑠𝑢, and then
+mapping it back to a concrete item 𝑖via codebook-based retrieval.
+During training, given 𝑠𝑢and the next target item 𝑖+, we use 𝑐𝑖+
+as supervision and maximize max𝜃E(𝑢,𝑖+) [log𝑝𝜃(𝑐𝑖+ | 𝑠𝑢)]. Under
+the autoregressive paradigm, this conditional distribution is:
+𝑝𝜃(𝑐𝑖+ | 𝑠𝑢) =
+𝐿
+Ö
+ℓ=1
+𝑝𝜃
+ 𝑐ℓ
+𝑖+ | 𝑐<ℓ
+𝑖+ ,𝑠𝑢
+,
+(1)
+and the model is trained via next-token prediction, i.e., by mini-
+mizing the negative log-likelihood of the ground-truth target SIDs:
+LAR = −
+𝐿
+∑︁
+ℓ=1
+log𝑝𝜃
+ 𝑐ℓ
+𝑖+ | 𝑐<ℓ
+𝑖+ ,𝑠𝑢
+.
+(2)
+3.2
+Discrete Diffusion Models
+DDMs define a Markov chain [34] over a discrete space that grad-
+ually adds noise to a target sequence and then learns the reverse
+process to recover it. Let 𝑧∈𝑉𝐿be a discrete sequence of length 𝐿.
+The forward process defines a Markov chain from 𝑡= 0 to 𝑡= 𝑇:
+𝑞(z0:𝑇| z0) =
+𝑇
+Ö
+𝑡=1
+𝑞(z(𝑡) | z(𝑡−1)),
+(3)
+where 𝑧(0) = 𝑧, and 𝑧(𝑇) approaches a high-noise discrete-state
+distribution. Correspondingly, the reverse process reconstructs
+𝑧(0) = 𝑧from any intermediate noisy state 𝑧(𝑡):
+𝑝𝜃(z0:𝑇) = 𝜋(z(𝑇))
+𝑇
+Ö
+𝑡=1
+𝑝𝜃
+ z(𝑡−1) | z(𝑡), y,
+(4)
+where y is the condition, 𝜋(z(𝑇)) is usually set to a simple prior
+distribution (e.g., the fully masked state), and 𝑝𝜃is the parameter-
+ized model to be learned. In our setting, 𝑧corresponds to the SID
+of the target item and y denotes the user interaction sequence. We
+instantiate 𝑞(·) as a masking-based corruption process over SIDs
+and train 𝑝𝜃to predict the ground-truth tokens on the corrupted
+positions. Concretely, let 𝑥0 be the target item’s SID, 𝑥𝜏∼𝑞𝜏(· | 𝑥0)
+be the noisy SID at timestep 𝜏, and M𝜏be the set of masked posi-
+tions. The model takes (𝑥𝜏,𝑠𝑢,𝜏) as input and outputs a distribution
+over the codebook at each position. The training objective is the
+cross-entropy loss on masked positions:
+LDDM = E(𝑢,𝑖+) E𝜏∼𝑝(𝜏) E𝑥𝜏∼𝑞𝜏(·|𝑥0)
+"
+−
+∑︁
+ℓ∈M𝜏
+log𝑝𝜃
+ 𝑥ℓ
+0 | 𝑥𝜏,𝜏,𝑠𝑢
+
+#
+, (5)
+where (𝑢,𝑖+) denotes a positive user-item pair, 𝑥𝑙
+0is the ground-
+truth token of the target SID at position ℓ, 𝑝(𝜏) is the sampling
+distribution over timesteps, and 𝑞𝜏(· | 𝑥0) is the forward noising
+distribution at timestep 𝜏conditioned on 𝑥0.
+4
+Method
+4.1
+Overview
+This section introduces MDGR. As shown in Figure 2, it consists
+of three parts. (i) Parallel codebook. Each item’s semantic vec-
+tor is split into subspaces and quantized independently, yielding
+a multi-token SID for parallel semantic modeling. (ii) Training.
+We view SID generation as a masked diffusion process, where a
+temporal curriculum gradually increases the masking ratio, and
+token-preference–based masking with a difficulty vector enables
+global difficulty control and sample-specific noise. (iii) Inference.
+From a fully masked SID, we adopt a two-stage decoding strategy.
+The warm-up stage first captures coarse semantics, and the subse-
+quent parallel stage accelerates multi-position prediction. Finally,
+beam search yields complete SIDs, which are mapped back to items
+for Top-𝐾recommendation.
+
+Conference’17, July 2017, Washington, DC, USA
+Lingyu Mu, Hao Deng, Haibo Xing, Jinxin Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang
+xw
+Item Embedding
+Title
+Description
+Category
+2
+1
+3
+4
+Decoder
+Encoder
+2
+Code
+Book 1
+1
+Code
+Book 2
+3
+Code
+Book 3
+4
+Code
+Book 4
+Codebook
+1
+5
+1
+4
+2
+1
+6
+Original path
+m = 𝟐, 𝑩= 𝟐
+5
+1
+6
+2
+1
+4
+0.15
+0.3
+0.67
+0.44
+MDGR Decoder
+Warmup Stage I
+1
+Global Max
+Confidence
+Codebook 2
+1
+MDGR Decoder
+Parallel Stage II
+4
+2
+Codebook 1
+Codebook 4
+1
+Codebook 2
+Training Step
+Step 100
+Step 200
+Step 500
+Step 1000
+Global Curriculum Noise Scheduling Step1- Mask Count
+…….
+2
+1
+7
+4
+1
+1
+5
+6
+2
+1
+3
+4
+…….
+1
+1
+7
+4
+User History Semantic ID
+Target Item
+2
+3
+History-aware Mask Position Allocation
+𝒎= 𝟐
+𝑭𝒓𝒆𝒒𝒖𝒆𝒏𝒄𝒚
+Step2-Mask Position
+…….
+User History Semantic ID
+Encoder-Decoder Architecture
+2
+1
+3
+4
+Difficulty Emb
+…
+2
+3
+[MASK]
+Self- Attention
+FFN
+Add & Norm
+Encoder
+2
+1
+3
+4
+Step1
+2
+3
+Step2
+Training Stage
+Codebook 3 Codebook 4
+Codebook 1
+ReMask
+t = 1
+t = 0
+3
+Codebook 3
+𝜏= 0
+𝜏= t
+Timestep 𝐭
+MASK Count
+MASK Positions
+…….
+SID Emb
+…….
+Position
+Cross- Attention
+FFN
+Add & Norm
+Bidirectional-Attention
+Decoder
+k/v
+Inference Stage
+Beam Search based Generation
+Figure 2: The overview of MDGR: a masked diffusion generative recommendation. (1) Codebook: we adopt an OPQ-based
+parallel codebook to obtain SIDs for items. (2) Training: we use an encoder–decoder architecture. Based on the current training
+stage, we first determine the number of masks via global curriculum noise scheduling, and then derive the masked positions
+for each sample using history-aware mask allocation. (3) Inference: we employ a warm-up–based two-stage parallel decoding
+strategy, combined with beam search, to jointly generate Top-B candidate items across multiple codebooks.
+4.2
+Parallel Codebook
+Existing works commonly adopt residual quantization [19, 33],
+where codebooks are constructed by sequentially quantizing resid-
+ual vectors. Although this design achieves a high compression rate,
+lower-level tokens only encode residual semantics conditioned on
+higher-level tokens, which naturally biases the generation process
+toward a fixed hierarchical order. This conflicts with our goal of
+leveraging bidirectional context and parallel denoising. Therefore,
+we instead build item SIDs using OPQ-based parallel codebooks,
+where each token resides in a relatively independent semantic sub-
+space and all tokens jointly determine the item.
+Concretely, given an item content representation e𝑖∈R𝑑from a
+pretrained encoder, we project it into 𝐿subspaces:
+eℓ
+𝑖= 𝑓ℓ(e𝑖) ∈R𝑑ℓ,
+ℓ= 1, . . . , 𝐿,
+(6)
+where 𝑓ℓis a linear projection layer for the ℓ-th subspace. For each
+ℓ, we maintain a codebook 𝐶ℓ∈R|𝑉ℓ|×𝑑ℓ. We then assign eℓ
+𝑖to its
+nearest codeword by:
+𝑐ℓ
+𝑖= arg min
+𝑗∈𝑉ℓ
+eℓ
+𝑖−𝐶ℓ[𝑗]
+2
+2 ,
+(7)
+where 𝐶ℓ[𝑗] denotes the 𝑗-th codeword and 𝑐ℓ
+𝑖is its index in 𝑉ℓ.
+Collecting the indices from all subspaces yields the parallel SID
+𝑐𝑖= (𝑐1
+𝑖, . . . ,𝑐𝐿
+𝑖) for item 𝑖, which naturally supports bidirectional
+modeling and independent masking across semantic dimensions.
+4.3
+Training Stage
+We adopt a standard encoder–decoder architecture, where the en-
+coder encodes the user’s interaction history as external context
+for the decoder. On the decoder side, we replace the traditional
+causal self-attention with bidirectional attention to accommodate
+the discrete diffusion process. Beyond the architecture, we dynam-
+ically control the noise distribution along both the temporal and
+sample dimensions to adapt to different training stages and sam-
+ple characteristics. Overall, given a user history 𝑠𝑢and the target
+SID 𝑐𝑖+ of the target item, we first sample the number of masked
+positions (temporal dimension), then select which tokens to mask
+(sample dimension). The model is trained to reconstruct the original
+tokens from the partially masked ˜𝑐𝑖+, with a difficulty-aware vector
+indicating the current noise level.
+4.3.1
+Temporal dimension: global curriculum noise scheduling strat-
+egy. To enable the model to gradually learn reconstruction under
+noise, we design a global curriculum noise schedule based on train-
+ing progress. At the beginning of training, the model capacity is
+limited, so we assign easier instances with fewer masked positions
+and gradually increase the masking rate as training proceeds. Specif-
+ically, let 𝑁be the total number of training steps and 𝑛the current
+step. We first normalize the training progress as 𝜏= min(1,𝑛/𝑁),
+and map 𝜏to a noise difficulty scalar via a smooth cosine schedule
+inspired by diffusion models. We then apply a power transformation
+to this scalar to obtain the stretched difficulty 𝛿.
+𝛿=
+√︂
+1 −cos2
+ 𝜋
+2 (1 −𝜏)
+𝛾
+,
+(8)
+where 𝛾is a hyperparameter that controls how fast 𝛿decreases
+from 1 to 0.
+
+Masked Diffusion Generative Recommendation
+Conference’17, July 2017, Washington, DC, USA
+Given the maximum number of masked positions 𝐿, we aim to
+decide at how many positions to mask based on the current difficulty
+level 𝛿∈[0, 1]. Early in training we prefer easier cases with fewer
+masks, while later in training we gradually shift towards harder
+cases with more masks. Formally, we consider all possible mask
+counts 𝑘∈{1, 2, . . . , 𝐿} and construct a 𝛿-dependent distribution
+over them. We first define two monotonic scoring functions over 𝑘:
+𝑓low(𝑘), which decreases with 𝑘and thus favors small mask counts,
+and 𝑓high(𝑘) which increases with 𝑘and thus favors large mask
+counts.1 We then interpolate between these two scores using 𝛿:
+𝑠(𝑘) = (1 −𝛿) 𝑓high(𝑘) + 𝛿𝑓low(𝑘),
+𝑘= 1, . . . , 𝐿.
+(9)
+When 𝛿is large (early training), 𝑠(𝑘) is dominated by 𝑓low(𝑘) and
+assigns higher scores to small 𝑘. As 𝛿decreases (later training), the
+influence of 𝑓high(𝑘) = 𝑘grows, and the scores shift towards larger
+𝑘. We normalize these scores to obtain a probability distribution
+over the mask count:
+P𝑡𝑖𝑚𝑒(𝑘) =
+𝑠(𝑘)
+Í𝐿
+𝑗=1 𝑠(𝑗)
+,
+𝑘= 1, . . . , 𝐿.
+(10)
+Finally, we sample the number of masked positions for each training
+instance as 𝑘∼𝑃𝑡𝑖𝑚𝑒(𝑘). Thus, as 𝛿decreases from 1 to 0 over
+training, the probability mass of 𝑃𝑡𝑖𝑚𝑒(𝑘) gradually moves from
+small to large 𝑘, implementing a curriculum from easy to hard
+masking patterns.
+To make the decoder aware of how much noise is applied at
+each step, we introduce a learnable difficulty-aware embedding.
+Specifically, given the sampled number of masked positions 𝑘, we
+treat 𝑘as a discrete difficulty index and retrieve a difficulty-aware
+embedding d𝑘from an embedding table D ∈R𝐿×𝐷. We then add d𝑘
+to every input token embedding, providing a global conditioning
+signal on instance difficulty and stabilizing curriculum training.
+4.3.2
+Sample dimension: history-aware mask position allocation.
+After determining the number of masked positions for each sample,
+we further decide where to place these masks so that training better
+aligns with the user’s personalized interest structure. To this end, we
+propose a history-aware mask allocation strategy that dynamically
+selects positions to mask according to how frequently each token
+of the target item appears in the user’s history. Specifically, for user
+𝑢and target item 𝑖+, let 𝑐𝑖+ = (𝑐1
+𝑖+,𝑐2
+𝑖+, ...,𝑐𝐿
+𝑖+) be the target SID and
+𝑠𝑢be the user’s interaction history. We count how many times the
+tokens at each position of the 𝑐𝑖+ appear in the history:
+𝑓ℓ= #{ 𝑗∈𝑠𝑢| 𝑐ℓ
+𝑗= 𝑐ℓ
+𝑖+},
+ℓ= 1, . . . , 𝐿,
+(11)
+where #{·} denotes the number of elements in the set. Based on
+this, we construct a normalized distribution that reflects prediction
+difficulty, where tokens with lower frequency are regarded as harder
+to predict. Let P𝑝𝑜𝑠= (𝑝1
+𝑝𝑜𝑠, . . . , 𝑝𝐿
+𝑝𝑜𝑠) denote the resulting position-
+wise sampling distribution, defined as:
+𝑤ℓ=
+1
+𝑓ℓ+ 𝜀,
+Pℓ
+𝑝𝑜𝑠=
+𝑤ℓ
+Í𝐿
+𝑚=1 𝑤𝑚,
+ℓ= 1, . . . , 𝐿,
+(12)
+where 𝜀is a small positive constant. Given the mask count 𝑘for
+a sample, we sample a mask position set M ⊆{1, . . . , 𝐿} with
+|M| = 𝑘according to the position-wise distribution Ppos, i.e., M ∼
+Ppos. With this strategy, more mask budget is assigned to semantic
+dimensions that appear less frequently in the user’s history and
+1In practice, we use simple linear functions, e.g., 𝑓low(𝑘) = 𝐿+1 −𝑘and 𝑓high(𝑘) = 𝑘,
+but other monotonic forms also work.
+are thus harder to predict, focusing supervision on challenging
+semantics. We then replace tokens at positions in M with a shared
+placeholder symbol [MASK], while keeping tokens at unmasked
+positions as their original tokens:
+˜𝑐ℓ
+𝑖+ =
+(
+[MASK],
+ℓ∈M,
+𝑐ℓ
+𝑖+,
+ℓ∉M,
+ℓ= 1, . . . , 𝐿.
+(13)
+Overall, MDGR can be viewed as a discrete-time absorbing Markov
+process over the target SID 𝑐𝑖+ = (𝑐1
+𝑖+, . . . ,𝑐𝐿
+𝑖+). Let {𝑐𝑡}𝑇
+𝑡=0 denote
+the latent corrupted SIDs with 𝑐0 = 𝑐𝑖+ and 𝑐ℓ
+𝑡∈𝑉ℓ∪{[MASK]}.
+At each Markov timestep 𝑡, every semantic dimension ℓindepen-
+dently either stays unchanged or is absorbed into the [MASK] state
+according to the following single-dimension transition kernel:
+𝑞(𝑐ℓ
+𝑡+1 | 𝑐ℓ
+𝑡,𝑢,𝑖+) =
+
+
+1,
+𝑐ℓ
+𝑡= [MASK], 𝑐ℓ
+𝑡+1 = [MASK],
+𝛼𝑡,ℓ(𝑢,𝑖+),
+𝑐ℓ
+𝑡≠[MASK], 𝑐ℓ
+𝑡+1 = [MASK],
+1 −𝛼𝑡,ℓ(𝑢,𝑖+),
+𝑐ℓ
+𝑡≠[MASK], 𝑐ℓ
+𝑡+1 = 𝑐ℓ
+𝑡,
+0,
+otherwise,
+(14)
+where 𝛼𝑡,ℓ(𝑢,𝑖+) ∈[0, 1] is the masking rate of semantic dimension
+ℓat timestep 𝑡. The full transition kernel factorizes over dimensions
+as 𝑞(𝑐𝑡+1 | 𝑐𝑡,𝑢,𝑖+) = Î𝐿
+ℓ=1 𝑞(𝑐ℓ
+𝑡+1 | 𝑐ℓ
+𝑡,𝑢,𝑖+). In practice, these
+effective masking rates 𝛼𝑡,ℓ(𝑢,𝑖+) are not parameterized explicitly;
+instead, they are implicitly induced by our global curriculum noise
+schedule Ptime and history-aware mask allocation P𝑝𝑜𝑠.
+At each training step we sample a mask count 𝑘∼Ptime(𝑘) and
+a mask position set M ∼Ppos(· | 𝑘,𝑢,𝑖+) to construct the noised
+SID with positions in M. Given user history 𝑠𝑢and difficulty-aware
+embedding d𝑘, the decoder acts as a denoiser that reconstructs
+masked tokens, yielding a masked training objective over SIDs:
+L = E(𝑢,𝑖+)E𝑘∼Ptime (·)EM∼P𝑝𝑜𝑠(·|𝑘,𝑢,𝑖+)
+"
+−
+∑︁
+ℓ∈M
+log𝑝𝜃
+ 𝑐ℓ
+𝑖+ | ˜c𝑖+, s𝑢, d𝑘
+
+#
+,
+(15)
+4.4
+Inference Stage
+During inference, for each user 𝑢, we start from a fully masked
+SID x(0) = ([MASK], . . . , [MASK]) and iteratively denoise it condi-
+tioned on the user history 𝑠𝑢and the initial difficulty vector d(𝐿),
+corresponding to the maximum mask count. Since recommenda-
+tion requires a Top-𝐵set of items rather than a single sequence,
+we adopt a parallel beam-search decoding procedure. At each step,
+we (i) decide how many positions to update, (ii) select the specific
+positions according to model confidence, and (iii) perform beam
+search expansion on these positions. We next describe these three
+components in detail.
+4.4.1
+Warm-up-based two-stage position scheduling strategy. To
+efficiently decode SIDs, a straightforward idea is to update multiple
+positions in each iteration. However, since inference starts from
+a fully noised state, decoding multiple positions at the beginning
+is problematic. The model has not yet identified the key semantic
+dimensions, prediction confidence is generally low across positions,
+and incorrect tokens are likely to be filled in early. To address this,
+we adopt a warm-up–based two-stage position scheduling strategy.
+We set a warm-up step hyperparameter 𝑅𝑤𝑎𝑟𝑚< 𝐿. At decoding
+step 𝑟, the number of positions to be updated in this step 𝑚is:
+𝑚=
+(
+1,
+𝑟< 𝑅warm,
+𝑚𝑝𝑎𝑟,
+𝑟≥𝑅warm,𝑚𝑝𝑎𝑟> 1.
+(16)
+
+Conference’17, July 2017, Washington, DC, USA
+Lingyu Mu, Hao Deng, Haibo Xing, Jinxin Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang
+In the first 𝑅warm steps, we decode only one position, always choos-
+ing the unfilled position with the highest confidence so that a few
+initial steps lock the strongest global semantic constraints. Note
+that position selection remains globally free rather than left-to-
+right. After this warm-up stage, we switch to the parallel stage. At
+each step, multiple highest-confidence positions 𝑚𝑝𝑎𝑟are selected
+and denoised simultaneously, greatly reducing the decoding steps.
+4.4.2
+Confidence-guided token position selection. After determin-
+ing the number of positions to decode 𝑚at step 𝑟, we need to select
+the specific positions. For any current path x(𝑟), let its set of unfilled
+positions be M(𝑟). We feed x(𝑟), 𝑠𝑢and d(r) into the MDGR, and
+obtain the predicted distributions over the codebook for all unfilled
+positions xℓ
+(𝑟):
+𝑝𝜃
+ xℓ
+(𝑟) = 𝑐| x(𝑟), s𝑢, d(𝑟)
+,
+ℓ∈M(𝑟), 𝑐∈Vℓ.
+(17)
+To decide at which positions to actually generate tokens in this
+step, we first compute confidence scores over positions. For each
+unfilled position ℓ, we take the probability of the most likely token
+at that position as its confidence:
+conf(ℓ) = max
+𝑐∈Vℓ𝑝𝜃
+ xℓ
+(𝑟) = 𝑐| x(𝑟), s𝑢, d(𝑟)
+.
+(18)
+Then, among all unfilled positions on this path, we select the 𝑚
+positions with the highest confidence as the tokens to be decoded
+in this step for this path:
+S(𝑟) = {ℓ1, . . . , ℓ𝑚} ⊂M(𝑟),
+(19)
+4.4.3
+Beam Search-based candidate item generation. After deter-
+mining the position set S(𝑟) to be updated for this path at step 𝑟,
+we expand this path at these positions using a unified beam width
+𝐵, and keep 𝐵paths as candidate items. Before decoding, each beam
+𝑏∈{1, . . . , 𝐵} maintains a SID sequence x(𝑟),𝑏= (𝑐1
+(𝑟),𝑏, . . . ,𝑐𝐿
+(𝑟),𝑏)
+(with some positions still masked) together with an accumulated
+log-score 𝑣(𝑟),𝑏. Given S(𝑟), the decoder predicts a distribution over
+the corresponding codebook at each selected position ℓ∈S(𝑟). For
+position ℓ, we retain the Top-𝐵candidate tokens:
+{( ˜𝑐ℓ,𝑗
+(𝑟),𝑏, ˜𝑝ℓ,𝑗
+(𝑟),𝑏)}𝐵
+𝑗=1,
+(20)
+where ˜𝑐ℓ,𝑗
+(𝑟),𝑏denotes the 𝑗-th candidate token at position ℓfor beam
+𝑏, and ˜𝑝ℓ,𝑗
+(𝑟),𝑏is its predicted probability.
+We then jointly expand the 𝑚positions. For every index tuple
+(𝑗1, . . . , 𝑗𝑚) with 𝑗𝑘∈{1, . . . , 𝐵}, we construct a new candidate
+sequence x(𝑟+1),(𝑗1,..,𝑗𝑚) by replacing 𝑐ℓ
+(𝑟),𝑏with ˜𝑐ℓ,𝑗𝑘
+(𝑟),𝑏at ℓ:
+x(𝑟+1),(𝑗1,..,𝑗𝑚) =
+(
+˜𝑐ℓ,𝑗𝑘
+(𝑟),𝑏,
+ℓ∈S(𝑟),𝑘= 1, . . . ,𝑚,
+𝑐ℓ
+(𝑟),𝑏,
+otherwise.
+(21)
+Its log-score is updated as
+𝑣(𝑟+1),(𝑗1,...,𝑗𝑚) = 𝑣(𝑟),𝑏+
+𝑚
+∑︁
+𝑘=1
+log ˜𝑝ℓ,𝑗𝑘
+(𝑟),𝑏.
+(22)
+Thus, each original beam 𝑏is expanded into 𝐵𝑚candidate beams at
+step 𝑟. Collecting all candidates across beams, we select the Top-𝐵
+according to ˜𝑣to form the beam set for the next step:
+x(𝑟+1) = Top𝐵
+n x(𝑟+1),(𝑗1,..,𝑗𝑚), 𝑣(𝑟+1),(𝑗1,...,𝑗𝑚)
+o
+(𝑟+1), (𝑗1,...,𝑗𝑚) .
+(23)
+Table 1: Asymptotic computational complexity of autoregres-
+sive GR, parallel GR, and MDGR in training and inference.
+Stage
+Autoregressive
+Parallel
+MDGR
+Training
+𝑂(𝐻· 𝐿2 · 𝑑)
+𝑂(𝐻· 𝐿2 · 𝑑)
+𝑂(𝐻· 𝐿2 · 𝑑)
+Inference
+𝑂(𝐵· 𝐻· 𝐿3 · 𝑑)
+𝑂(𝐵· 𝐻· 𝐿2 · 𝑑)
+𝑂(𝑅· 𝐵· 𝐻· 𝐿2 · 𝑑)
+At each diffusion step, only positions in S(𝑟) are updated, while
+the remaining positions stay masked and can be revised later. The
+procedure terminates when all positions are filled or a maximum
+number of steps is reached, yielding 𝐵complete SIDs for each user,
+which are finally mapped back to items.
+4.5
+Complexity Analysis
+In this section, we analyze the training and inference complexity
+of diffusion-based GR as shown in Table 1, and in the experiments
+we further study the trade-off between performance and efficiency
+from a numerical perspective (Sec. 5.3).
+4.5.1
+Complexity of Training. During training, our model performs
+a single masked diffusion-style reconstruction per sample. Let SID
+length be 𝐿, decoder depth 𝐻, and hidden dimension 𝑑. A forward
+pass through the Transformer decoder has complexity 𝑂(𝐻· 𝐿2 ·𝑑),
+as in a standard Transformer. MDGR’s one-step denoising uses
+one forward and one backward pass, so the per-step complexity
+remains 𝑂(𝐻·𝐿2 ·𝑑), comparable to an autoregressive Transformer
+of similar size. Curriculum noise scheduling and history-aware
+masking introduce only 𝑂(𝐿) extra operations (e.g., sampling noise
+levels and mask locations), which is negligible compared with 𝑂(𝐻·
+𝐿2 ·𝑑). Thus, compared with autoregressive and parallel GRs of the
+same scale, our method maintains the same asymptotic training
+complexity while using difficulty-aware noise scheduling to provide
+more informative supervision at almost no extra cost.
+4.5.2
+Complexity of Inference. In autoregressive GR with beam
+search, the decoder must generate a length-𝐿SID sequentially,
+deciding one position per step. Let the beam width be 𝐵. At each step,
+a forward pass over the 𝐵candidate sequences dominates the cost,
+with complexity𝑂(𝐵·𝐻·𝐿2·𝑑) from self-attention and feed-forward
+layers, while beam scoring and pruning are negligible. Because all 𝐿
+positions are decoded in sequence, the overall inference complexity
+is 𝑂(𝐵· 𝐻· 𝐿3 · 𝑑). For standard parallel GR, the model predicts
+all 𝐿positions in one shot for each decoding step, so the single-
+step complexity is 𝑂(𝐵· 𝐻· 𝐿2 · 𝑑). In contrast, our model can fill
+multiple groups of tokens in parallel at each step of parallel stage,
+and completes generation within 𝑅= 𝑅𝑤𝑎𝑟𝑚+ 𝐿−𝑅𝑤𝑎𝑟𝑚
+𝑚𝑝𝑎𝑟
+denoising
+steps, with a time complexity of 𝑂(𝑅·𝐵·𝐻·𝐿2 ·𝑑). Therefore, under
+the same model size and beam width, our parallel denoising reduces
+the decoding cost to approximately 𝑅
+𝐿of that of autoregressive GR.
+5
+Experiments
+To comprehensively evaluate MDGR, we design experiments to
+answer the following questions:
+• RQ1 Performance comparison: Does our method achieve bet-
+ter performance than existing discriminative models and genera-
+tive recommenders?
+
+Masked Diffusion Generative Recommendation
+Conference’17, July 2017, Washington, DC, USA
+Table 2: Performance comparison on the Amazon Electronics, Amazon Books and Industrial datasets. "Improv." shows the
+relative improvement (%) over the base model. Best results are in bold and second-best are underlined.
+Methods
+Amazon Electronics
+Amazon Books
+Industry
+Recall@5
+NDCG@5
+Recall@10
+NDCG@10
+Recall@5
+NDCG@5
+Recall@10
+NDCG@10
+Recall@5
+NDCG@5
+Recall@10
+NDCG@10
+Item ID-based Discriminative Recommendation
+SASRec
+0.0321
+0.0213
+0.0490
+0.0309
+0.0506
+0.0297
+0.0697
+0.0391
+0.1413
+0.0909
+0.1695
+0.1080
+BERT4Rec
+0.0324
+0.0214
+0.0495
+0.0311
+0.0509
+0.0299
+0.0699
+0.0394
+0.1421
+0.0911
+0.1693
+0.1079
+S3Rec
+0.0320
+0.0211
+0.0489
+0.0307
+0.0514
+0.0302
+0.0704
+0.0396
+0.1456
+0.0934
+0.1722
+0.1101
+PinnerFormer
+0.0330
+0.0220
+0.0502
+0.0316
+0.0525
+0.0307
+0.0716
+0.0401
+0.1483
+0.0950
+0.1766
+0.1132
+HeterRec
+0.0336
+0.0221
+0.0510
+0.0319
+0.0522
+0.0306
+0.0712
+0.0398
+0.1592
+0.1014
+0.1890
+0.1208
+DiffuRec
+0.0334
+0.0220
+0.0507
+0.0317
+0.0531
+0.0311
+0.0722
+0.0403
+0.1586
+0.1013
+0.1889
+0.1207
+VQ-Rec
+0.0331
+0.0217
+0.0498
+0.0312
+0.0517
+0.0301
+0.0687
+0.0384
+0.1520
+0.0975
+0.1843
+0.1177
+Semantic ID-based Generative Recommendation
+TIGER
+0.0348
+0.0230
+0.0524
+0.0324
+0.0552
+0.0315
+0.0731
+0.0408
+0.1620
+0.1049
+0.1943
+0.1244
+Cobra
+0.0359
+0.0237
+0.0544
+0.0338
+0.0576
+0.0330
+0.0763
+0.0426
+0.1659
+0.1059
+0.1996
+0.1285
+RPG
+0.0357
+0.0236
+0.0543
+0.0339
+0.0581
+0.0332
+0.0762
+0.0427
+0.1679
+0.1076
+0.2018
+0.1296
+Ours
+MDGR
+0.0394
+0.0258
+0.0583
+0.0367
+0.0631
+0.0361
+0.0826
+0.0463
+0.1856
+0.1192
+0.2210
+0.1422
+Improv.
++9.75%
++8.86%
++7.17%
++8.26%
++8.61%
++8.73%
++8.26%
++8.43%
++10.45%
++10.78%
++9.54%
++9.72%
+• RQ2 Efficiency and effectiveness trade-off: Under different
+inference settings, how does the model balance recommendation
+quality and inference cost?
+• RQ3 Component contribution: What is the role of each mod-
+ule in the MDGR?
+• RQ4 Hyperparameter sensitivity: How do different hyperpa-
+rameter choices affect recommendation performance?
+• RQ5 Online effectiveness: How well does the model perform
+in online environments?
+5.1
+Experimental Setup
+5.1.1
+Datasets and Evaluation Metrics. We evaluate our approach
+on two public datasets and one industrial dataset. The public datasets
+are two subsets of the Amazon Product Review corpus, Electronics
+and Books [12]. Electronics contains about 250K users, 90K items,
+and 2.1M interactions, while Books contains about 110K users, 180K
+items, and 3.1M interactions. The industrial dataset consists of in-
+ternal interaction logs from a major Southeast Asian e-commerce
+platform. It contains over 1 billion user–item interactions from 18M
+users and 25M items, collected between May and December 2025,
+providing a realistic view of large-scale user behavior in produc-
+tion. For each user, we record behavior sequences (including clicks
+and conversions) with an average length of 128 interactions. Each
+item is associated with rich multimodal content, including prod-
+uct images, titles, and textual descriptions. For the public datasets,
+following prior work [33], we remove users with fewer than five in-
+teractions, sort each user’s interactions chronologically, and cap the
+maximum sequence length at 20. We train with a sliding-window
+next-item prediction setup, where the model observes a prefix and
+predicts the subsequent item. For evaluation, we use the leave-one-
+out protocol [18]: the most recent interaction is used for testing,
+the second most recent for validation, and the rest for training.
+We evaluate recommendation performance using two standard
+metrics: Recall@5/10 (R@5/10) and NDCG@5/10 (N@5/10) [16, 33].
+5.1.2
+Baseline Models. To ensure a comprehensive evaluation, we
+compare our method with both traditional ID-based approaches
+and the latest SID-based GRs. ID-based methods: (1) SASRec [18]
+uses a unidirectional self-attention network for sequence modeling.
+(2) HeterRec [7] employs a dual-tower hierarchical Transformer
+to model multi-modal item features, together with a multi-step list-
+wise prediction loss. (3) Pinnerformer [30] uses a causally masked
+Transformer to model long-term user behaviors. (4) S3Rec [55] en-
+hances representations via self-supervised learning. (5) Bert4Rec
+[37] adopts a bidirectional Transformer to capture contextual user
+interests. (6) DiffuRec [20] introduces diffusion models into se-
+quential recommendation, replacing fixed item embeddings with
+distributional representations that can model uncertainty. (7) VQ-
+Rec [13] builds an item codebook with VQ-VAE and obtains item
+representations via pooling. SID-based GRs: (1) TIGER [33] con-
+structs a codebook with RQ-VAE [19] and autoregressively gener-
+ates tokens using an encoder–decoder architecture. (2) RPG [15]
+proposes a parallel generation framework for long SIDs, leveraging
+multi-token prediction and graph constraints for parallel decoding.
+(3) Cobra [47] integrates sparse SIDs with dense vectors to alleviate
+the information loss caused by directly using semantic tokens in
+generative recommendation.
+5.1.3
+Implementation Details. Our experiments are conducted on a
+distributed PyTorch platform [31] with 2 parameter servers and 10
+workers, each equipped with a single Nvidia A100 GPU. (1) Code-
+book construction: we use a pretrained Qwen3-8B [2] model to
+encode the content modality of items and obtain their representa-
+tion vectors. For the parallel codebook, we use 8 separate codebooks,
+each of size 300 with 256-dimensional code vectors, resulting in an
+8-token SID for each item. (2) Training Stage: we adopt a standard
+encoder–decoder architecture [38]. On the encoder side, a 6-layer
+Transformer with hidden size 256 and 8 attention heads is used to
+model click sequences. On the decoder side, we use bidirectional
+attention. The parameter 𝛾is set to 2.0 and the training objective
+
+Conference’17, July 2017, Washington, DC, USA
+Lingyu Mu, Hao Deng, Haibo Xing, Jinxin Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang
+Table 3: Impact of 𝑅𝑤𝑎𝑟𝑚and 𝑚𝑝𝑎𝑟on performance and effi-
+ciency, where Recall@10 represents recommendation per-
+formance and QPS represents inference efficiency.
+Rwarm
+mpar
+Total step
+Recall@10
+QPS
+QPS uplift
+Base Setting
+0
+1
+8
+0.2219
+2.212
+–
+Impact of 𝑅𝑤𝑎𝑟𝑚
+0
+2
+4
+0.2127
+3.015
++36.30%
+2
+2
+5
+0.2199
+2.741
++23.92%
+4
+2
+6
+0.2210
+2.527
++14.24%
+6
+2
+7
+0.2213
+2.365
++6.92%
+Impact of 𝑚𝑝𝑎𝑟
+4
+3
+6
+0.2205
+2.526
++14.19%
+4
+4
+5
+0.2204
+2.739
++23.82%
+is the standard cross-entropy loss as defined in the Eq.(15). (3) In-
+ference Stage: the initial SID is set to an all [MASK] sequence. We
+set 𝑅𝑤𝑎𝑟𝑚to 4, i.e., in the first 4 steps we decode only one position
+per step, always choosing the position with the highest confidence.
+The subsequent 4 steps switch to parallel mode with 𝑚𝑝𝑎𝑟set to
+2. We set the beam width to 𝐵= 50 for all experiments. Decoding
+stops once all positions are filled. For the generated SIDs, we map
+each SID back to the concrete item set using the offline-constructed
+codebook index [44].
+5.2
+Overall Performance (RQ1)
+We compare MDGR with existing ID-based discriminative models
+and GRs on 2 public datasets and a real-world industrial dataset.
+The results are reported in Table 2, from which we observe that:
+• Our method achieves the best performance on all datasets and
+metrics. On the industrial dataset, for example, MDGR improves
+over the strongest baseline by 10.45%/10.78% in R@5/N@5 and
+9.54%/9.72% in R@10/N@10, indicating that the diffusion-based
+GR framework can more accurately decode users’ dynamic and
+heterogeneous interests.
+• Compared with existing GRs, MDGR achieves 7.17%–10.78% rela-
+tive gains across all metrics. We do not substantially modify the
+way codebooks are constructed; instead, we mainly redesign the
+training supervision and decoding mechanism. This suggests that
+the discrete diffusion learning process is better suited for GR and
+enforces stronger global consistency across multiple semantic
+dimensions than autoregressive decoding. By reformulating rec-
+ommendation as a discrete mask denoising task and introducing
+curriculum-style noise scheduling and history-aware masking,
+MDGR better captures user preferences under different missing
+patterns, leading to the observed improvements.
+5.3
+The trade-off between efficiency and
+performance
+In this section, we focus on how key hyperparameters at inference
+time affect the trade-off between efficiency and performance in the
+industrial dataset, specifically: (i) the number of warm-up steps
+with single-position decoding 𝑅𝑤𝑎𝑟𝑚; (ii) the number of positions
+decoded per step in the parallel stage 𝑚𝑝𝑎𝑟.
+Table 4: Ablation study of MDGR on the industrial dataset.
+Setting
+Recall@5
+Improv.
+NDCG@5
+Improv.
+Base Setting
+MDGR
+0.1856
+0
+0.1192
+0
+Impact of Codebook
+RQ-VAE
+0.1829
+-1.46%
+0.1175
+-1.43%
+RQ-KMeans
+0.1830
+-1.40%
+0.1176
+-1.34%
+Ablation of Training Stage
+Random quantity
+0.1831
+-1.35%
+0.1179
+-1.09%
+Random positions
+0.1822
+-1.83%
+0.1168
+-2.01%
+Vanilla mask
+0.1792
+-3.45%
+0.1154
+-3.19%
+w/o d𝑘
+0.1837
+-1.02%
+0.1179
+-1.09%
+Ablation of Inference Stage
+w/o confidence
+0.1820
+-1.94%
+0.1170
+-1.85%
+5.3.1
+The impact of 𝑅𝑤𝑎𝑟𝑚. We first fix 𝑚𝑝𝑎𝑟= 2 and vary 𝑅𝑤𝑎𝑟𝑚
+to examine the changes in queries per second (QPS, reflecting in-
+ference speed) and Recall@10 (reflecting model performance). We
+set 𝑅𝑤𝑎𝑟𝑚∈{0, 2, 4, 6, 8}, where 𝑅𝑤𝑎𝑟𝑚= 0 means no warm-up, i.e.,
+decoding 2 tokens in every step from the beginning. The results are
+shown in Table 3, where the first row (baseline) corresponds to the
+MDGR without parallel decoding acceleration, i.e., decoding only
+one position at each step. Under the no–warm-up setting, inference
+becomes much faster, with QPS improved by 36.30%, indicating
+that the parallel strategy can substantially accelerate decoding com-
+pared with step-wise serial decoding. However, recommendation
+performance drops 4.15% in this case. As we increase 𝑅𝑤𝑎𝑟𝑚, the
+performance gradually recovers and eventually approaches or even
+matches that of full single-position decoding. In addition, the per-
+formance is stable when 𝑅𝑤𝑎𝑟𝑚∈{4, 6}, suggesting that using only
+a few warm-up steps to stabilize key semantic pivots is sufficient to
+enable accurate parallel decoding and mitigate error amplification.
+5.3.2
+The impact of 𝑚𝑝𝑎𝑟. We further study the impact of the num-
+ber of positions decoded per step in the parallel stage 𝑚𝑝𝑎𝑟. To this
+end, we fix 𝑅𝑤𝑎𝑟𝑚= 4 and vary 𝑚𝑝𝑎𝑟∈{1, 2, 3, 4}, recording the
+changes in QPS and R@10. As 𝑚𝑝𝑎𝑟increases, QPS consistently
+improves, while recommendation performance degrades noticeably.
+When 𝑚𝑝𝑎𝑟= 2, the combinatorial space expanded at each step is
+smaller, allowing beam search to better cover high-probability paths
+under a fixed beam width, thus Recall@10 is almost unchanged
+compared with full single-position decoding, with only minor fluc-
+tuations. As 𝑚𝑝𝑎𝑟increases, QPS keeps increasing. However, the
+number of combinations 𝐵𝑚𝑝𝑎𝑟expanded at each step grows sharply.
+Under a fixed beam width, the search space becomes much more
+compressed, causing some high-quality paths to be pruned, which
+in turn reduces Recall@10.
+In summary, we find that a suitable choice of 𝑅𝑤𝑎𝑟𝑚=4 and
+𝑚𝑝𝑎𝑟= 2 can usually strike a better balance between inference
+speed and recommendation performance. We adopt this setting as
+the default decoding configuration in subsequent experiments.
+
+Masked Diffusion Generative Recommendation
+Conference’17, July 2017, Washington, DC, USA
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Training progress 
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+= 0.5
+= 1.0
+= 1.5
+= 2.0
+= 2.5
+= 3.0
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+3.5
+4.0
+Training steps (×104)
+1
+2
+3
+4
+5
+6
+7
+8
+Masked token count k
+0.22
+0.20
+0.18
+0.16
+0.12
+0.10
+0.07
+0.05
+0.20
+0.18
+0.17
+0.14
+0.13
+0.10
+0.08
+0.07
+0.16
+0.17
+0.14
+0.13
+0.11
+0.11
+0.09
+0.09
+0.13
+0.13
+0.14
+0.13
+0.13
+0.12
+0.11
+0.11
+0.11
+0.12
+0.11
+0.12
+0.13
+0.13
+0.13
+0.13
+0.09
+0.10
+0.10
+0.12
+0.13
+0.13
+0.15
+0.15
+0.05
+0.07
+0.08
+0.11
+0.12
+0.14
+0.17
+0.19
+0.04
+0.04
+0.08
+0.09
+0.12
+0.16
+0.20
+0.21
+0.050
+0.075
+0.100
+0.125
+0.150
+0.175
+0.200
+Probability
+Figure 3: (a) Effect of the 𝛾on the global difficulty schedule.
+(left). (b) Empirical distribution of masked-token counts 𝑘
+over training steps when 𝛾= 2 (right).
+5.4
+Ablation Study (RQ3)
+In this subsection, we conduct ablation studies to evaluate the con-
+tribution of each component on the industrial dataset from three
+perspectives: codebook, training, and inference. (1) Codebook
+structure. We replace our parallel codebook with two typical resid-
+ual quantization schemes, RQ-VAE [19] and RQ-KMeans [54], and
+compare their differences in semantic representation capability and
+downstream recommendation performance. (2) Training strat-
+egy. To study the effect of curriculum-style noise scheduling and
+history-aware mask allocation, we construct the following variants:
+• Random noise quantity: we keep the history-aware allocation of
+mask positions, but no longer use curriculum scheduling along
+the temporal dimension; instead, the number of masked tokens
+is sampled from a uniform distribution.
+• Random noise positions: we keep only the total number of masks
+given by curriculum scheduling, but at the sample level we uni-
+formly sample mask positions over all locations.
+• Vanilla mask: both the number and positions of masks are sam-
+pled from a uniform distribution, corresponding to a vanilla
+masked diffusion (MDM-style) scheme without adapting the cor-
+ruption pattern to user-interest structure or task difficulty.
+In addition, while keeping curriculum scheduling and history-aware
+allocation, we remove the difficulty-aware vector d𝑘to assess its
+additional gain. (3) Inference. Section 5.3 has analyzed the effect of
+warm-up and parallel filling. Here, we further replace confidence-
+based position selection with random selection from unfilled posi-
+tions, to examine the role of confidence-guided position choice in
+the parallel denoising process.
+5.4.1
+Codebook structure. According to Table 4, the parallel code-
+book consistently outperforms both alternatives on all metrics. This
+is because the parallel codebook does not impose strict dependen-
+cies in its structure. Each sub-codebook corresponds to a relatively
+independent semantic dimension, allowing the decoder to perform
+denoising predictions at arbitrary positions and in arbitrary orders,
+which better matches the heterogeneous interest structure of users.
+In contrast, residual quantization ties lower-level tokens to the
+residuals of upper levels, making it prone to error accumulation
+under the diffusion process.
+5.4.2
+Training stage. (1) Removing the global curriculum noise
+scheduling (Random quantity) leads to a 1.35%/1.09% drop in Re-
+call@5/NDCG@5, showing that gradually increasing noise diffi-
+culty is more effective than sampling mask counts uniformly from
+the beginning. (2) Randomly assigning mask positions (Random
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+Curriculum exponent 
+0.18
+0.19
+0.20
+0.21
+0.22
+Recall
+= 2
+Recall@5
+Recall@10
+0.5
+1.0
+1.5
+2.0
+2.5
+3.0
+Curriculum exponent 
+0.115
+0.120
+0.125
+0.130
+0.135
+0.140
+NDCG
+= 2
+NDCG@5
+NDCG@10
+Figure 4: (a) Effect of the curriculum exponent 𝛾on Recall
+(left). (b) Effect of 𝛾on NDCG (right).
+positions) further degrades performance by 1.83%/2.01%, and fully
+random masking (Vanilla mask), i.e., standard MDM-style uniform
+masking over both mask counts and positions, yields the largest
+degradation (3.45%/3.19%). This pattern indicates that naive dis-
+crete diffusion with uniform masking is less capable of capturing
+users’ heterogeneous interests and maintaining multi-attribute con-
+sistency. (3) Dropping the difficulty-aware vector leads to a small
+decline, suggesting that explicitly encoding corruption difficulty
+helps stabilize optimization and slightly improves final accuracy.
+5.4.3
+Inference stage. According to Table 4, randomly selecting
+decoding positions leads to a clear performance drop, showing
+that the choice of positions in each parallel denoising step affects
+the final result. Updating the most confident positions first helps
+the model quickly fix key semantic anchors and provides reliable
+context for later decoding, whereas random updates may introduce
+early errors at uncertain positions that beam search can hardly
+correct, reducing the overall consistency of the generated SID.
+5.5
+Analysis Experiments (RQ4)
+This section studies how the exponent 𝛾shapes the global noise
+schedule and influences recommendation quality. We visualize the
+resulting difficulty and masking patterns over training, and then
+conduct an ablation on different 𝛾values to measure their effect on
+Recall and NDCG in the industrial dataset.
+5.5.1
+Visualization. We first visualize how 𝛾reshapes the global
+difficulty schedule in Eq. (8). Figure 3 (a) plots 𝛿as a function of
+training progress for different 𝛾. Larger 𝛾flattens the curve in early
+stages and makes difficulty grow faster later, yielding a more conser-
+vative curriculum. To understand the resulting masking behavior,
+Figure 3 (b) shows, for 𝛾= 2, a heatmap of the empirical distribu-
+tion of the masked-token count 𝑘∈{1, ..., 8} at training steps. As
+training proceeds, probability mass gradually shifts from small to
+large 𝑘, confirming that the model is exposed to increasingly harder
+SID reconstruction tasks (with more heavily masked tokens).
+5.5.2
+Impact of 𝛾. We further study how 𝛾affects performance. As
+shown in Figure 4, performance first improves and then degrades
+as 𝛾increases. A too small 𝛾(0.5–1.0) makes the curriculum overly
+aggressive, yielding lower Recall and NDCG, while a too large
+𝛾(2.5–3.0) slows down exposure to hard samples and again harms
+performance. 𝛾= 2 achieves the best results on all metrics, and is
+therefore adopted as the default setting.
+5.6
+Online Experiments (RQ5)
+We further evaluate MDGR through an online A/B test on the adver-
+tising recommendation platform of a leading e-commerce company
+
+Conference’17, July 2017, Washington, DC, USA
+Lingyu Mu, Hao Deng, Haibo Xing, Jinxin Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang
+in Southeast Asia, conducted from Jan 5 to 12, 2026. The baseline
+system in production is TIGER [33], which serves as the control
+group, while the experimental group replaces it with our proposed
+MDGR. Each group contains 20% of users sampled uniformly at
+random. Compared with the control, MDGR delivers a 1.20% lift
+in advertising revenue, a 3.69% increase in gross merchandise
+volume (GMV), and a 2.36% improvement in click-through rate
+(CTR), all statistically significant under a two-sided test (𝑝< 0.05).
+These online gains demonstrate the practical effectiveness of MDGR
+in a large-scale industrial environment.
+6
+Conclusion
+In this work, we propose MDGR, a masked diffusion generative
+recommendation framework that departs from the traditional au-
+toregressive paradigm. We identify three key limitations of au-
+toregressive methods: difficulty in modeling global dependencies
+among multi-dimensional semantics, inability to adapt to heteroge-
+neous user interests, and low inference efficiency. MDGR redesigns
+GR from three aspects: codebook, training, and inference. It uses
+a parallel codebook to quantize item embeddings into multiple
+semantic subspaces, enabling multi-position parallel generation.
+In training, MDGR introduces a discrete diffusion noise schedule
+along temporal and sample dimensions. In inference, it adopts a
+warm-up–based two-stage parallel decoding scheme for efficient
+generation. Experiments on multiple datasets show that MDGR
+outperforms both discriminative and generative baselines, suggest-
+ing that masked diffusion is a competitive new paradigm for GR.
+In future work, we will further improve diffusion-based GR with
+better noise sampling and interest-aligned decoding strategies.
+References
+[1] Jacob Austin, Daniel D Johnson, Jonathan Ho, Daniel Tarlow, and Rianne Van
+Den Berg. 2021. Structured denoising diffusion models in discrete state-spaces.
+Advances in neural information processing systems 34 (2021), 17981–17993.
+[2] Jinze Bai, Shuai Bai, Yunfei Chu, Zeyu Cui, Kai Dang, Xiaodong Deng, Yang Fan,
+Wenbin Ge, Yu Han, Fei Huang, et al. 2023. Qwen technical report. arXiv preprint
+arXiv:2309.16609 (2023).
+[3] Fan Bao, Shen Nie, Kaiwen Xue, Yue Cao, Chongxuan Li, Hang Su, and Jun Zhu.
+2023. All are worth words: A vit backbone for diffusion models. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition. 22669–22679.
+[4] Yoshua Bengio, Jérôme Louradour, Ronan Collobert, and Jason Weston. 2009.
+Curriculum learning. In Proceedings of the 26th annual international conference
+on machine learning. 41–48.
+[5] Huiwen Chang, Han Zhang, Jarred Barber, AJ Maschinot, Jose Lezama, Lu Jiang,
+Ming-Hsuan Yang, Kevin Murphy, William T Freeman, Michael Rubinstein, et al.
+2023. Muse: Text-to-image generation via masked generative transformers. arXiv
+preprint arXiv:2301.00704 (2023).
+[6] Huiwen Chang, Han Zhang, Lu Jiang, Ce Liu, and William T Freeman. 2022.
+Maskgit: Masked generative image transformer. In Proceedings of the IEEE/CVF
+conference on computer vision and pattern recognition. 11315–11325.
+[7] Hao Deng, Haibo Xing, Kanefumi Matsuyama, Yulei Huang, Jinxin Hu, Hong Wen,
+Jia Xu, Zulong Chen, Yu Zhang, Xiaoyi Zeng, et al. 2025. Heterrec: Heterogeneous
+information transformer for scalable sequential recommendation. In Proceedings
+of the 48th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 3020–3024.
+[8] Hao Deng, Haibo Xing, Kanefumi Matsuyama, Moyu Zhang, Jinxin Hu, Hong
+Wen, Yu Zhang, Xiaoyi Zeng, and Jing Zhang. 2025. CSMF: Cascaded Selective
+Mask Fine-Tuning for Multi-Objective Embedding-Based Retrieval. In Proceedings
+of the 48th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 2122–2131.
+[9] Tiezheng Ge, Kaiming He, Qifa Ke, and Jian Sun. 2013. Optimized product
+quantization. IEEE transactions on pattern analysis and machine intelligence 36, 4
+(2013), 744–755.
+[10] Alex Graves, Rupesh Kumar Srivastava, Timothy Atkinson, and Faustino Gomez.
+2023. Bayesian flow networks. arXiv preprint arXiv:2308.07037 (2023).
+[11] Robert Gray. 1984. Vector quantization. IEEE Assp Magazine 1, 2 (1984), 4–29.
+[12] Ruining He and Julian McAuley. 2016. Ups and Downs: Modeling the Visual Evo-
+lution of Fashion Trends with One-Class Collaborative Filtering. In Proceedings of
+the 25th International Conference on World Wide Web (Montréal, Québec, Canada)
+(WWW ’16). International World Wide Web Conferences Steering Committee,
+Republic and Canton of Geneva, CHE, 507–517. doi:10.1145/2872427.2883037
+[13] Yupeng Hou, Zhankui He, Julian McAuley, and Wayne Xin Zhao. 2023. Learning
+vector-quantized item representation for transferable sequential recommenders.
+In Proceedings of the ACM Web Conference 2023. 1162–1171.
+[14] Yupeng Hou, Jiacheng Li, Zhankui He, An Yan, Xiusi Chen, and Julian McAuley.
+2024. Bridging language and items for retrieval and recommendation. arXiv
+preprint arXiv:2403.03952 (2024).
+[15] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating Long
+Semantic IDs in Parallel for Recommendation. arXiv preprint arXiv:2506.05781
+(2025).
+[16] Yupeng Hou, Shanlei Mu, Wayne Xin Zhao, Yaliang Li, Bolin Ding, and Ji-Rong
+Wen. 2022. Towards universal sequence representation learning for recommender
+systems. In Proceedings of the 28th ACM SIGKDD conference on knowledge discovery
+and data mining. 585–593.
+[17] Wenyue Hua, Shuyuan Xu, Yingqiang Ge, and Yongfeng Zhang. 2023. How to
+index item ids for recommendation foundation models. In Proceedings of the
+Annual International ACM SIGIR Conference on Research and Development in
+Information Retrieval in the Asia Pacific Region. 195–204.
+[18] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining (ICDM). IEEE,
+197–206.
+[19] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive image generation using residual quantization. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition. 11523–11532.
+[20] Zihao Li, Aixin Sun, and Chenliang Li. 2023. Diffurec: A diffusion model for
+sequential recommendation. ACM Transactions on Information Systems 42, 3
+(2023), 1–28.
+[21] Juexin Lin, Sachin Yadav, Feng Liu, Nicholas Rossi, Praveen R Suram, Satya Chem-
+bolu, Prijith Chandran, Hrushikesh Mohapatra, Tony Lee, Alessandro Magnani,
+et al. 2024. Enhancing Relevance of Embedding-based Retrieval at Walmart. In
+Proceedings of the 33rd ACM International Conference on Information and Knowl-
+edge Management. 4694–4701.
+[22] Xinyu Lin, Haihan Shi, Wenjie Wang, Fuli Feng, Qifan Wang, See-Kiong Ng, and
+Tat-Seng Chua. 2025. Order-agnostic Identifier for Large Language Model-based
+Generative Recommendation. arXiv preprint arXiv:2502.10833 (2025).
+[23] Zhenghao Lin, Yeyun Gong, Yelong Shen, Tong Wu, Zhihao Fan, Chen Lin, Nan
+Duan, and Weizhu Chen. 2023. Text generation with diffusion language models:
+A pre-training approach with continuous paragraph denoise. In International
+Conference on Machine Learning. PMLR, 21051–21064.
+[24] Aaron Lou and Stefano Ermon. 2023. Reflected diffusion models. In International
+Conference on Machine Learning. PMLR, 22675–22701.
+[25] Aaron Lou, Chenlin Meng, and Stefano Ermon. 2023. Discrete diffusion language
+modeling by estimating the ratios of the data distribution. (2023).
+[26] Lingyu Mu, Hao Deng, Haibo Xing, Kaican Lin, Zhitong Zhu, Yu Zhang, Xiaoyi
+Zeng, Zhengxiao Liu, Zheng Lin, and Jinxin Hu. 2025. Synergistic Integration
+and Discrepancy Resolution of Contextualized Knowledge for Personalized Rec-
+ommendation. arXiv preprint arXiv:2510.14257 (2025).
+[27] Lingyu Mu, Zhengxiao Liu, Zhitong Zhu, and Zheng Lin. 2025. Trust-GRS:
+A Trustworthy Training Framework for Graph Neural Network Based Recom-
+mender Systems Against Shilling Attacks. In Proceedings of the AAAI Conference
+on Artificial Intelligence, Vol. 39. 12408–12416.
+[28] Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou,
+Yankai Lin, Ji-Rong Wen, and Chongxuan Li. 2025. Large language diffusion
+models. arXiv preprint arXiv:2502.09992 (2025).
+[29] Jingyang Ou, Shen Nie, Kaiwen Xue, Fengqi Zhu, Jiacheng Sun, Zhenguo Li,
+and Chongxuan Li. 2024. Your absorbing discrete diffusion secretly models the
+conditional distributions of clean data. arXiv preprint arXiv:2406.03736 (2024).
+[30] Nikil Pancha, Andrew Zhai, Jure Leskovec, and Charles Rosenberg. 2022. Pinner-
+former: Sequence modeling for user representation at pinterest. In Proceedings
+of the 28th ACM SIGKDD conference on knowledge discovery and data mining.
+3702–3712.
+[31] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory
+Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, et al. 2019.
+Pytorch: An imperative style, high-performance deep learning library. Advances
+in neural information processing systems 32 (2019).
+[32] William Peebles and Saining Xie. 2023. Scalable diffusion models with transform-
+ers. In Proceedings of the IEEE/CVF international conference on computer vision.
+4195–4205.
+[33] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+
+Masked Diffusion Generative Recommendation
+Conference’17, July 2017, Washington, DC, USA
+[34] Subham Sahoo, Marianne Arriola, Yair Schiff, Aaron Gokaslan, Edgar Marroquin,
+Justin Chiu, Alexander Rush, and Volodymyr Kuleshov. 2024. Simple and effective
+masked diffusion language models. Advances in Neural Information Processing
+Systems 37 (2024), 130136–130184.
+[35] Jiaxin Shi, Kehang Han, Zhe Wang, Arnaud Doucet, and Michalis Titsias. 2024.
+Simplified and generalized masked diffusion for discrete data. Advances in neural
+information processing systems 37 (2024), 103131–103167.
+[36] Teng Shi, Chenglei Shen, Weijie Yu, Shen Nie, Chongxuan Li, Xiao Zhang, Ming
+He, Yan Han, and Jun Xu. 2025. LLaDA-Rec: Discrete Diffusion for Parallel Seman-
+tic ID Generation in Generative Recommendation. arXiv preprint arXiv:2511.06254
+(2025).
+[37] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential recommendation with bidirectional encoder rep-
+resentations from transformer. In Proceedings of the 28th ACM international
+conference on information and knowledge management. 1441–1450.
+[38] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. Advances in neural information processing systems 30 (2017).
+[39] Hanbing Wang, Xiaorui Liu, Wenqi Fan, Xiangyu Zhao, Venkataramana Kini,
+Devendra Yadav, Fei Wang, Zhen Wen, Jiliang Tang, and Hui Liu. 2024. Rethinking
+large language model architectures for sequential recommendations. arXiv
+preprint arXiv:2402.09543 (2024).
+[40] Shoujin Wang, Longbing Cao, Yan Wang, Quan Z Sheng, Mehmet A Orgun,
+and Defu Lian. 2021. A survey on session-based recommender systems. ACM
+Computing Surveys (CSUR) 54, 7 (2021), 1–38.
+[41] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable item tokenization for generative
+recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management. 2400–2409.
+[42] Wenjie Wang, Xinyu Lin, Fuli Feng, Xiangnan He, and Tat-Seng Chua. 2023.
+Generative recommendation: Towards next-generation recommender paradigm.
+arXiv preprint arXiv:2304.03516 (2023).
+[43] Xu Wang, Jiangxia Cao, Zhiyi Fu, Kun Gai, and Guorui Zhou. 2025. Home:
+Hierarchy of multi-gate experts for multi-task learning at kuaishou. In Proceedings
+of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining V.
+1. 2638–2647.
+[44] Haibo Xing, Hao Deng, Yucheng Mao, Jinxin Hu, Yi Xu, Hao Zhang, Jiahao
+Wang, Shizhun Wang, Yu Zhang, Xiaoyi Zeng, et al. 2025. Reg4rec: Reasoning-
+enhanced generative model for large-scale recommendation systems. arXiv
+preprint arXiv:2508.15308 (2025).
+[45] Kaiwen Xue, Yuhao Zhou, Shen Nie, Xu Min, Xiaolu Zhang, Jun Zhou, and
+Chongxuan Li. 2024. Unifying bayesian flow networks and diffusion models
+through stochastic differential equations. arXiv preprint arXiv:2404.15766 (2024).
+[46] Ling Yang, Zhilong Zhang, Yang Song, Shenda Hong, Runsheng Xu, Yue Zhao,
+Wentao Zhang, Bin Cui, and Ming-Hsuan Yang. 2023. Diffusion models: A
+comprehensive survey of methods and applications. ACM computing surveys 56,
+4 (2023), 1–39.
+[47] Yuhao Yang, Zhi Ji, Zhaopeng Li, Yi Li, Zhonglin Mo, Yue Ding, Kai Chen, Zijian
+Zhang, Jie Li, Shuanglong Li, et al. 2025. Sparse meets dense: Unified generative
+recommendations with cascaded sparse-dense representations. arXiv preprint
+arXiv:2503.02453 (2025).
+[48] Lina Yao, Quan Z Sheng, Anne HH Ngu, and Xue Li. 2016. Things of interest
+recommendation by leveraging heterogeneous relations in the internet of things.
+ACM Transactions on Internet Technology (TOIT) 16, 2 (2016), 1–25.
+[49] Zebin You, Jingyang Ou, Xiaolu Zhang, Jun Hu, Jun Zhou, and Chongxuan Li.
+2025. Effective and efficient masked image generation models. arXiv preprint
+arXiv:2503.07197 (2025).
+[50] An Zhang, Yuxin Chen, Leheng Sheng, Xiang Wang, and Tat-Seng Chua. 2024.
+On generative agents in recommendation. In Proceedings of the 47th international
+ACM SIGIR conference on research and development in Information Retrieval. 1807–
+1817.
+[51] Haidong Zhang, Wancheng Ni, Xin Li, and Yiping Yang. 2016. Modeling the
+heterogeneous duration of user interest in time-dependent recommendation: A
+hidden semi-Markov approach. IEEE Transactions on Systems, Man, and Cyber-
+netics: Systems 48, 2 (2016), 177–194.
+[52] Ruixiang Zhang, Shuangfei Zhai, Yizhe Zhang, James Thornton, Zijing Ou, Joshua
+Susskind, and Navdeep Jaitly. 2025. Target concrete score matching: A holistic
+framework for discrete diffusion. arXiv preprint arXiv:2504.16431 (2025).
+[53] Xinpeng Zhao, Zhaochun Ren, Yukun Zhao, Zhenyang Li, Mengqi Zhang, Jun
+Feng, Ran Chen, Ying Zhou, Zhumin Chen, Shuaiqiang Wang, et al. 2025. DiffuGR:
+Generative Document Retrieval with Diffusion Language Models. arXiv preprint
+arXiv:2511.08150 (2025).
+[54] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv preprint arXiv:2506.13695 (2025).
+[55] Kun Zhou, Hui Wang, Wayne Xin Zhao, Yutao Zhu, Sirui Wang, Fuzheng Zhang,
+Zhongyuan Wang, and Ji-Rong Wen. 2020. S3-rec: Self-supervised learning for se-
+quential recommendation with mutual information maximization. In Proceedings
+of the 29th ACM international conference on information & knowledge management.
+1893–1902.
+[56] Fengqi Zhu, Rongzhen Wang, Shen Nie, Xiaolu Zhang, Chunwei Wu, Jun Hu, Jun
+Zhou, Jianfei Chen, Yankai Lin, Ji-Rong Wen, et al. 2025. LLaDA 1.5: Variance-
+Reduced Preference Optimization for Large Language Diffusion Models. arXiv
+preprint arXiv:2505.19223 (2025).

@@ -1,0 +1,1713 @@
+OneVision: An End-to-End Generative Framework for
+Multi-view E-commerce Vision Search
+Zexin Zheng∗, Huangyu Dai∗, Lingtao Mao∗, Xinyu Sun, Zihan Liang,
+Ben Chen†, Yuqing Ding, Chenyi Lei†, Wenwu Ou, Han Li, Kun Gai
+Kuaishou Technology
+Beijing, China
+Abstract
+Traditional vision search, similar to search and recommendation
+systems, follows the multi-stage cascading architecture (MCA) par-
+adigm to balance efficiency and conversion. Specifically, the query
+image undergoes feature extraction, recall, pre-ranking, and rank-
+ing stages, ultimately presenting the user with semantically similar
+products that meet their preferences. This multi-view represen-
+tation discrepancy of the same object in the query and the opti-
+mization objective collide across these stages, making it difficult to
+achieve Pareto optimality in both user experience and conversion.
+In this paper, an end-to-end generative framework, OneVision,
+is proposed to address these problems. OneVision builds on VRQ,
+a vision-aligned residual quantization encoding, which can align
+the vastly different representations of an object across multiple
+viewpoints while preserving the distinctive features of each prod-
+uct as much as possible. Then a multi-stage semantic alignment
+scheme is adopted to maintain strong visual similarity priors while
+effectively incorporating user-specific information for personalized
+preference generation. In offline evaluations, OneVision performs
+on par with online MCA, while improving inference efficiency by
+21% through dynamic pruning; In A/B tests, it achieves significant
+online improvements: +2.15% item CTR, +2.27% CVR, and +3.12%
+order volume. These results demonstrate that a semantic ID cen-
+tric, generative architecture can unify retrieval and personalization
+while simplifying the serving pathway.
+Keywords
+Vision Search, End-to-End Generative Retrieval, Hierarchical Se-
+mantic Encoding
+ACM Reference Format:
+Zexin Zheng∗, Huangyu Dai∗, Lingtao Mao∗, Xinyu Sun, Zihan Liang,, Ben
+Chen†, Yuqing Ding, Chenyi Lei†, Wenwu Ou, Han Li, Kun Gai. 2025. OneVi-
+sion: An End-to-End Generative Framework for Multi-view E-commerce
+Vision Search. In Proceedings of Make sure to enter the correct conference title
+from your rights confirmation email (Conference acronym ’XX). ACM, New
+York, NY, USA, 11 pages. https://doi.org/XXXXXXX.XXXXXXX
+*Equal Contribution.
+† Corresponding author.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2025 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+Candidates
+ç
+Multi-stage Cascading Architecture
+User Query
+IMG
+Detection Module
+Cropped IMG
+Candidates
+Decoder
+Generative Model
+End-to-End Generative Framework
+ Vision Search System
+...
+...
+Cropped IMG
+Candidates
+Recall
+Pre-rank
+Encoder
+Rank
+Candidates
+Feature Extraction
+Figure 1: Comparison between the proposed end-to-end gen-
+erative framework and the traditional multi-stage cascading
+architecture in e-commerce vision search.
+1
+Introduction
+A vision search system takes an image as the input query and re-
+trieves results with high visual relevance. Similar to other search en-
+gines, such systems are typically organized as a multi-stage pipeline,
+as depicted in Figure 1: (i) feature extraction, which obtains com-
+prehensive visual representations from regions of interest; (ii) the
+recall stage, which constructs a large pool of relevant candidates
+by retrieving items with high visual similarity; (iii) the pre-ranking
+stage, which further filters and refines the candidate pool; and (iv)
+the ranking stage, which orders the remaining candidates to deliver
+personalized retrieval results. Unlike text search systems, where
+semantic relevance and user personalization can often be optimized
+jointly from the start, vision search must first ensure that the re-
+called candidates are highly visually similar before user-specific
+signals can be effectively applied at the ranking stage.
+Recent years have witnessed substantial progress in vision search,
+propelled by advances across multiple fronts, including object de-
+tection [1–3], category prediction [4–6], and visual representation
+learning [7–11]. These developments have driven the construction
+of large-scale industrial systems, with major e-commerce platforms
+such as eBay [12] and Alibaba [13, 14] deploying comprehensive
+vision search pipelines to support production-scale applications.
+Despite these advances, traditional pipelines in vision search still
+face structural limitations: (i) Difficulty in handling multi-view
+discrepancy. Query images and product images often differ sig-
+nificantly in viewpoint, making it hard for conventional retrieval
+pipelines to align their visual representations and recall the correct
+products. (ii) Stage-wise objective misalignment. The optimization
+arXiv:2510.05759v4  [cs.CV]  8 Jan 2026
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+goals across three stages collide, making it difficult to reach Pareto
+optimality in both user experience and conversion. (iii) Heavy multi-
+stage overhead. The multi-stage architecture introduces substantial
+computational cost and cross-module communication, increasing
+latency and complicating system maintenance.
+Over the past two years, generative retrieval (GR) has emerged
+as a new paradigm for large-scale search, reframing retrieval as a
+sequence-to-sequence generation. Instead of relying on multi-stage
+matching, GR models directly generate discrete item identifiers
+from a query and user-behaviour sequence, thereby alleviating
+the limitations of traditional retrieval architectures. OneRec [15]
+delivers a single-stage industrial recommender that unifies recall,
+pre-ranking, and ranking in one model. In e-commerce search,
+OneSearch [16] provides the first end-to-end generative retrieval
+framework with superior performance for high-quality recall and
+ranking. For image retrieval specifically, IRGen [17] formulates
+image retrieval as seq2seq generation of nearest-neighbor IDs. GE-
+NIUS [18] adopts modality-decoupled semantic quantization and a
+query augmentation to enhance generalization. However, IRGen
+and GENIUS overlook multi-view discrepancies of the same object
+and ignore user-specific information, limiting their effectiveness in
+industrial vision search applications.
+To address the limitations of traditional MCA pipelines and the is-
+sues neglected by current GR, in this paper, we propose OneVision,
+an end-to-end vision search system for the e-commerce scenario
+that effectively integrates the feature extraction, recall, pre-ranking,
+and ranking stages. Our framework effectively captures multi-view
+representations of the same object in e-commerce scenarios and
+incorporates user-specific behaviours, ensuring that the generated
+candidates are both visually relevant and user-preferred. Specifi-
+cally, Onevision includes the following components:
+1) Vision-aligned residual quantization (VRQ) encoding.
+VRQ aligns the diverse visual representations of the same object
+across multiple viewpoints while preserving product-specific dis-
+criminative features for residual encoding. A multi-view contrastive
+objective guides residual quantization in the shallow codebook lay-
+ers. At deeper layers, VRQ retains fine-grained residuals and inte-
+grates statistical business attributes, and OPQ is applied to jointly
+quantize these item-specific residual features. Category informa-
+tion is incorporated to enforce category–code consistency. This
+design achieves coarse semantic alignment while preserving the
+fine-grained visual distinctions for accurate product representation.
+2) Multi-stage pipeline and personalized generation. A
+multi-stage pipeline for generative training with user behavior en-
+ables the model to generate candidates that are both visually similar
+and well aligned with individual user preferences. The training pro-
+cess consists of three stages: Pretraining, Supervised Fine-Tuning
+(SFT), and Direct Preference Optimization (DPO). Pretraining is
+used for initial semantic alignment among product images, tex-
+tual information, and semantic IDs (SID). SFT facilitates multi-view
+collaborative feature learning to better capture the semantic rela-
+tionships between the query image and candidate items. Finally,
+user behavioral sequences are constructed to model preferences,
+and list-wise DPO is applied for personalized generation.
+3) Dynamic pruning for efficient inference. To address
+redundancy and inefficiency in image tokens, dynamic pruning
+preserves only the most semantically informative visual tokens.
+  (a) Frame Search                      (b) Photo Search                     (c) Similar Search
+Figure 2: The major vision search scenarios in e-commerce
+on the Kuaishou Platform.
+Specifically, tokens are compressed before the decoder using K-
+means++ clustering, and potential performance degradation is mit-
+igated via curriculum learning and distillation. This accelerates
+inference while maintaining accuracy and lowering compute cost.
+Extensive offline evaluations and ablation studies show that
+OneVision matches the performance of the online MCA, while dy-
+namic pruning boosts inference latency by 21%. Large-scale online
+A/B tests on Kuaishou’s search platform further reveal notable im-
+provements: CTR +2.15%, CVR +2.27%, OPM +3.60%, Clicks +1.80%,
+and Orders +3.12%. It demonstrates that OneVision effectively uni-
+fies retrieval and personalization, delivering measurable gains while
+simplifying the traditional serving pipeline.
+2
+Related Works
+2.1
+Vision Search System
+Modern image-based search systems have advanced considerably
+with progress across core computer vision tasks such as object de-
+tection [1–3], category prediction [4–6], and representation learn-
+ing [7–11]. These advances have substantially improved feature
+extraction, enabling the generation of compact and discriminative
+visual embeddings from regions of interest. Building on such fea-
+tures, large-scale approximate nearest neighbor (ANN) retrieval is
+used to construct candidate pools, which are subsequently refined
+and personalized through pre-ranking and ranking [19–22].
+Prominent industrial systems demonstrate how these techniques
+are deployed at scale. eBay leverages deep region-based feature
+extraction with large-scale ANN retrieval to support item discovery
+in production [12]; Alibaba integrates hierarchical category-aware
+embeddings with cascaded ranking for personalized search and rec-
+ommendation [13]; JD.com builds a real-time visual search system
+with distributed indexing and sub-second image updates to handle
+large e-commerce catalogs [23]; Pinterest documents the evolution
+of its “Shop The Look” platform, iteratively improving detection,
+retrieval, and labeling to scale visual shopping [24].
+2.2
+Generative Retrieval System
+Generative Retrieval. Generative Retrieval (GR) has recently
+gained wide attention for reframing large-scale retrieval as sequence-
+to-sequence generation. Instead of querying an external index with
+ANN, GR trains models to generate item identifiers (e.g., SIDs),
+
+OneVision: An End-to-End Generative Framework for
+Multi-view E-commerce Vision Search
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Pre-training
+Vision
+Encoder
+Text
+Encoder
+Category1
+Category2
+DN
+N
+DN
+N
+Residual 
+Quantization
+View1
+View2
+L align
+View1
+View2
+Multimodal 
+Fusion
+L mar
+L commit
+L hc
+ OPQ Quantization
+<a_1><b_2><c_4> 
+<d_8><e_1>
+<a_1><b_2><c_4> 
+<d_3><e_2>
+SID1
+SID2
+query emb
+-  =   
+...   
+codebook 1
+...   
+codebook 2
+...   
+codebook 3
+-  =   
+-  =   
+statistical business 
+characteristics
+Tokenizer
+Vision
+Encoder
+Generative 
+Model
+Decoder
+Encoder
+Vision
+Encoder
+View1
+VRQ
+Generative 
+Model
+VRQ
+OPQ
+<a_1>
+<b_2>
+<c_4>
+<d_8> <e_1>
+Positive 
+Input
+Negative
+Input
+View2
+input 
+L DPO
+IMG
+Generative Model
+User
+(c)  VRQ Encoding
+(b)  Codebook Training for VRQ
+Vision
+Encoder
+ (a) Image Alignment
+ (d) Pre-training
+(e) SFT
+ (f) DPO
+Encoder
+K-Means++
+<BOS> 
+ (g) Dynamic Pruning
+ (h) Trie-constrained Beam Search
+<a_2>
+<a_1>
+<b_4>
+<d_2>
+<d_4>
+<e_2>
+<e_4>
+<c_5>
+<e_5>
+<c_4>
+<b_2>
+<d_3>
+SID
+Policy Model
+Input: 
+image         user behaviors           SID 
+Trie
+L dis
+Vmax
+Vsub
+E
+v (e)
+e
+1
+Reference
+Model
+Decoder
+Title
+IMG
+VRQ
+…
+…
+Category
+Vision
+Encoder
+VRQ
+User-Specific
+Behaviors
+SID
+L cons
+Policy
+Model
+Reference
+Model
+Vmax
+…
+input 
+v (e)
+…
+…
+Figure 3: Overall Framework of OneVision. The first row illustrates our VRQ codebook training and encoding process. The
+second row shows our multi-stage generative training pipeline, including Pretraining, SFT, and DPO. The third row presents
+our dynamic pruning and end-to-end inference process.
+outperforming multi-stage baselines like EBR [25] and RocketQA
+[26]. Notable advances include Tiger [27], which derives semantic
+IDs from item content for end-to-end recommendation; DSI [28],
+which generates learned identifiers for direct retrieval; and LC-REC
+[29], which adapts LLMs by integrating collaborative semantics
+through specialized tuning tasks.
+Encode method in Generative Retrieval. Encoding is a core com-
+ponent of generative retrieval. RQ-VAE[30] encodes images into
+residual-quantized codes, achieving high capacity with compact
+codebooks and modeling long-range dependencies efficiently via
+an autoregressive RQ-Transformer. QARM (RQ-KMeans)[31] aligns
+multimodal representations and compresses them into learnable
+SIDs through residual K-means, supporting end-to-end training
+and consistent semantics at scale. FSQ [32] replaces vector quan-
+tization with bounded scalar quantizers. This approach maintains
+performance while enabling large, well-utilized codebooks and eas-
+ier optimization, which is particularly useful when reconstruction
+quality and sampling efficiency are critical.
+Generative Retrieval application. Recent advances show that GR
+models can replace traditional recall–ranking stacks. OneRec unifies
+recall and ranking via session-wise generation and DPO, achieving
+stable online gains with simpler serving [15]. MMQ further learns
+semantic IDs from multimodal content through a shared–specific
+tokenizer and behavior-aware fine-tuning to align semantics with
+user preferences [33]. In e-commerce search, OneSearch builds an
+end-to-end system where a keyword-enhanced hierarchical quanti-
+zation encoder generates semantic IDs combining content, context,
+and collaborative signals; multi-view user sequences further im-
+prove personalization [16]. These advances show GR can unify
+fragmented objectives, introduce personalization early, and reduce
+reliance on hand-crafted indices.
+Generative Retrieval in image retrieval. Recent work has adapted
+GR to image search by generating discrete identifiers for target
+items. IRGen [17] formulates retrieval as sequence-to-sequence gen-
+eration of nearest-neighbor IDs with a semantic image tokenizer,
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+enabling end-to-end training at million-item scale and near–real-
+time inference. GENIUS [18] further introduces modality-decoupled
+semantic quantization, employing a modality token followed by
+contrastively learned residual codes and incorporating query aug-
+mentation to improve generalization. Collectively, these methods
+replace index probing with code generation while maintaining scal-
+ability and efficiency, providing the basis for our image-centric,
+code-based vision search framework.
+3
+Methodology
+In this section, we introduce OneVision, an end-to-end framework
+for multi-view e-commerce vision search. We first elaborate on the
+image hierarchical quantization encoding in § 3.1, and then detail
+the multi-stage pipeline for generative training in § 3.2. In § 3.3, we
+propose dynamic pruning for efficient online inference, and finally,
+in § 3.4, we outline the overall inference procedure. The complete
+pipeline is illustrated in Figure 3.
+3.1
+Vision-aligned Residual Quantization
+Semantic encoding of images is a key step for generative vision
+search. A common approach is hierarchical semantic encoding from
+coarse to fine levels. However, effective SIDs must satisfy two re-
+quirements: consistency, where similar items or multi-view images
+of the same object share shallow-level codes; and uniqueness, where
+different images remain distinguishable at deeper levels. However,
+current quantization methods face three major challenges: (i) Tech-
+niques like FSQ [32] and OPQ [34] struggle to hierarchically capture
+core attributes among similar items, limiting generative training;
+(ii) General methods such as VQ-VAE [35], RQ-VAE [30], and RQ-
+KMeans [31] use shared codebooks, limiting their ability to preserve
+uniqueness; (iii) Offline image encoding for retrieval often depends
+on object detection for item encoding, but incorrect main-subject
+recognition can yield erroneous embeddings and introduce noise.
+A recent approach, RQ-OPQ [16], adopts RQ-Kmeans for shallow
+shared representations, and OPQ for deep unique features, which
+can encode each item hierarchically and personally. Inspired by
+this schema, here we propose VRQ, which integrates multi-view
+contrastive learning for trainable shallow codebooks and leverages
+statistical business features in residual OPQ encoding to enhance
+consistency and uniqueness. Additionally, we incorporate category
+information to suppress noisy samples and improve category-code
+consistency across the e-commerce image pool.
+3.1.1
+Collaborative Image Feature Alignment. In generative vision
+search systems, aligning similar product images or multi-view im-
+ages enables the generation of high-quality visual representations,
+which are crucial for semantic encoding. Firstly, we construct a
+high-quality dataset of image pairs derived from real e-commerce
+user search logs, including multi-view images of the same items,
+query–item, and item–item pairs. Then, we apply cosine similarity
+for preliminary filtering, employ Qwen-VL [36] to further verify
+semantic consistency, and finally perform manual inspection and
+refinement to remove noisy data.
+We then apply a joint training objective to train the backbone V
+and align image features. A contrastive loss Lcl [37] pulls positive
+pairs closer, while a circle loss Lcircle [38] improves separation
+between positives and negatives. The total loss is:
+Lalign = 𝜆1 Lcl + 𝜆2 Lcircle,
+(1)
+where 𝜆1 and 𝜆2 are adjustable parameters.
+3.1.2
+Metrics for Vision Quantization Encoding. With high-quality
+image representations, the subsequent focus is on designing a se-
+mantic encoding scheme for product images to ensure both consis-
+tency and uniqueness. Accordingly, we propose Quantized ANN
+Score (QAS) and Independent Code Occupancy (ICO) as metrics for
+evaluating the quality of image semantic encoding. QAS quantifies
+how well semantically similar products stay clustered after quanti-
+zation via ANN retrieval, while ICO measures the average number
+of items per unique SID. A higher QAS and a lower ICO, indicate
+stronger encoding consistency and uniqueness.
+As shown in Table 4, current hierarchical encoding methods,
+including RQ-VAE and RQ-KMeans, are found to exhibit evident
+limitations on large and complex e-commerce image corpora; a
+detailed analysis is provided in § 4.3. To enhance encoding quality,
+we integrate multi-view contrastive learning and a hierarchical
+consistency loss into shallow-level codebook training. Furthermore,
+we incorporate category information to reduce noisy SIDs caused
+by main-subject misrecognition from inaccurate detection boxes.
+3.1.3
+VRQ Hierarchical Quantization Encoding. Concretely, given
+a single product image and its associated category label, we first
+extract the visual feature 𝑥using the image encoder V and the
+category feature𝑦using a pretrained BGE model [39]. We then learn
+latent representations 𝑣:= E𝑣(𝑥) and 𝑡:= E𝑡(𝑦), where E𝑣and
+E𝑡are modality-specific DNN encoders for the visual and textual
+inputs, respectively. To effectively combine multi-modal features
+into a unified representation [40], we compute the fused embedding
+as
+𝑓= (1 −𝛼) · 𝑣+ 𝛼· 𝑡+ 𝑓𝑐𝑎𝑡,
+(2)
+where 𝑓𝑐𝑎𝑡is a combined feature derived from the concatenated
+image–text embedding through an MLP. The fusion weight 𝛼is
+dynamically learned from the concatenated features via another
+MLP followed by a sigmoid activation.
+Additionally, inspired by [9], our multi-view contrastive objec-
+tive comprises two key components: fused feature consistency and
+cross-modal alignment. The loss encourages the representations of
+paired, semantically similar products to remain close in the embed-
+ding space. Formally:
+Lcons = −1
+𝑁
+𝑁
+∑︁
+𝑖=1
+
+log
+exp  𝑓(1)
+𝑖
+· 𝑓(2)
+𝑖
+/𝜏
+Í𝑁
+𝑗=1 exp  𝑓(1)
+𝑖
+· 𝑓(2)
+𝑗
+/𝜏
++ log
+exp  𝑣(1)
+𝑖
+· 𝑓(2)
+𝑖
+/𝜏
+Í𝑁
+𝑗=1 exp  𝑣(1)
+𝑖
+· 𝑓(2)
+𝑗
+/𝜏
+
+,
+(3)
+where 𝑓(1)
+𝑖
+and 𝑓(2)
+𝑖
+denote fused embeddings of the 𝑖-th positive
+item pair, 𝑁is the number of positive pairs in a batch, and 𝜏is a
+temperature parameter. Using only Lcons tends to make the model
+focus solely on visual features. To further enhance the category
+information [41], we introduce a margin loss:
+Lmar = 1
+𝑁
+𝑁
+∑︁
+𝑖=1
+𝑁
+∑︁
+𝑗=1
+h
+max 0, −𝛾+ 𝑠𝑓2𝑓
+𝑖𝑗
+−𝑠𝑣2𝑓
+𝑖𝑗
+i
+,
+(4)
+
+OneVision: An End-to-End Generative Framework for
+Multi-view E-commerce Vision Search
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+where 𝑠𝑓2𝑓
+𝑖𝑗
+and 𝑠𝑣2𝑓
+𝑖𝑗
+respectively denote the similarity between
+fused representations and the similarity between visual and fused
+representations, and 𝛾is a margin parameter.
+Then the fused embedding 𝑓is quantized by a 𝐿-level RQ-VAE
+and the codebook at level 𝑙is 𝐸𝑙= {𝑒(𝑙)
+𝑘
+∈R𝑑| 𝑘= 1, . . . , 𝐾𝑙}.
+Specifically, the code 𝑐𝑙at level 𝑙is determined from the residual 𝑟𝑙
+(𝑟0 = 𝑓) as
+𝑐𝑙= arg min
+𝑘
+∥𝑟𝑙−𝑒(𝑙)
+𝑘∥,
+(5)
+and the residual is updated as 𝑟𝑙+1 = 𝑟𝑙−𝑒(𝑙)
+𝑐𝑙. Finally, we can obtain
+the SID (𝑐0, ...,𝑐𝐿−1) and the quantized representation at level 𝑙is
+ˆ𝑓(𝑙) = Í𝑙
+𝑖=0 𝑒(𝑖)
+𝑐𝑖. The commitment loss in RQ-VAE [30] is
+Lcommit =
+𝐿−1
+∑︁
+𝑙=0
+∥𝑟𝑙−sg(𝑒(𝑙)
+𝑐𝑙)∥2,
+(6)
+where sg(·) is the stop-gradient operator and codebooks are up-
+dated using an exponential moving average (EMA) [42] to stabilize
+training. Furthermore, we incorporate a hierarchical consistency
+loss to enforce encoding consistency for multi-view paired samples:
+Lhc =
+𝐿−1
+∑︁
+𝑙=0
+∥ˆ𝑓(𝑙)
+𝑖
+−ˆ𝑓(𝑙)
+𝑗
+∥2,
+(7)
+where ˆ𝑓(𝑙)
+𝑖
+and ˆ𝑓(𝑙)
+𝑗
+are the quantized paired vectors, and the overall
+training loss is the combination of all the aforementioned losses:
+Lrq = 𝛽1Lcons + 𝛽2Lmar + 𝛽3Lcommit + 𝛽4Lhc,
+(8)
+where 𝛽𝑖are the adjustable parameters. Notably, to achieve more
+robust RQ-VAE codebook training, we perform RQ-KMeans first
+and then adopt the resulting cluster centroids as the initialization
+for the RQ-VAE codebooks.
+To further ensure the uniqueness of SIDs, we retain the resid-
+ual embeddings produced by RQ-VAE, which capture fine-grained
+visual attributes. Meanwhile, to better distinguish visually identi-
+cal products in e-commerce, we incorporate each item’s statistical
+business characteristics, such as the number of clicks, price, and
+purchase counts within a certain period. We then fuse these features
+with the RQ-VAE residuals and apply OPQ for residual encoding.
+Our VRQ encoding achieves significant improvements across mul-
+tiple evaluation metrics, as detailed in § 4.2 and § 4.3.
+3.2
+Multi-stage Generative Pipeline
+In this section, we introduce the OneVision framework and its
+multi-stage learning. Traditional retrieval pipelines struggle with
+multi-view discrepancies between query and product images. In
+contrast, generative models capture consistent multi-view represen-
+tations and integrate user-behavior signals, producing candidates
+that are visually relevant and personalized. Specifically, OneVi-
+sion can be built using either encoder–decoder architectures (e.g.,
+BART [43], mT5 [44]) or decoder-only backbones (e.g., Qwen3 [45]).
+For practical deployment, we adopt the encoder–decoder variant
+to speed up training and inference, as illustrated in Figure 3.
+3.2.1
+Pretraining for Visual–Semantic Alignment. Considering that
+the basic architectures, such as BART and mT5, are pretrained on
+large-scale textual corpora, while the input of the vision search
+system is based on image representations, we first introduce a
+pretraining stage to establish initial semantic alignment among
+product images, titles, categories, and SIDs. To this end, we design
+four related tasks for pretraining: (i) Predicting the product SID from
+the corresponding image. (ii) Input both image and product title and
+output the relevant SID. (iii) Predicting the product category from
+the image. (iv) Input both image and product title and output the
+corresponding category. The first task focuses on aligning visual
+representations with SIDs, while the remaining tasks introduce
+additional modalities to reinforce semantic relevance and facilitate
+alignment. During unified training, we insert a start token 𝑡[𝐵𝑂𝑆]
+and an ending token 𝑡[𝐸𝑂𝑆] at the first and last place, and use a
+separate token 𝑡[𝑆𝐸𝑃] between different modalities. The training
+loss for the generative model is a cross-entropy loss for next-token
+prediction, formulated as:
+LNTP = −
+𝑇∑︁
+𝑘=1
+log 𝑃 𝑡𝑘| 𝑢,𝑡<𝑘
+.
+(9)
+where 𝑡𝑘denotes the predicted next token, 𝑡<𝑘represents the se-
+quence of preceding tokens, 𝑢is the input, and 𝑇is the sequence
+length. Specifically, for SID prediction, 𝑇is set to the fixed length 𝐿.
+3.2.2
+Supervised Fine-tuning for Collaborative Feature Learning.
+For generative vision search, the goal is not only to align the images
+with their corresponding SIDs, but also to directly generate relevant
+candidate items from the query image. In this process, images of the
+same product taken from different views or angles must be mapped
+to the SID of the matching product. This allows the model to capture
+the intrinsic semantic and collaborative relations between query
+images and candidate items.
+Specifically, after the pretraining phase, we introduce an SFT
+stage for collaborative feature learning. This stage takes the query
+image and its corresponding SID as input and outputs the SID of
+the matched product. Robust semantic understanding provides the
+foundation for incorporating user behaviour signals and enabling
+personalized ranking.
+3.2.3
+Personalized Modeling and Post-training. To model user be-
+haviour, we incorporate two complementary, per-user components:
+(i) user long-term behavioural sequence, represented as a single
+aggregated SID obtained by fusing the SIDs of multiple products
+that the user has recently clicked or purchased on the Kuaishou e-
+commerce platform; and (ii) user short-term behavioural sequence,
+comprising the individual SIDs of the user’s five most recently
+clicked items during image-based search. In addition, we introduce
+explicit search-scene information to better distinguish intent across
+different contexts. The model is further trained with personalized
+SFT using the NTP loss to enhance its ability to capture nuanced
+user-specific purchasing preferences.
+To further align with real user preferences, we adopt a session-
+based optimization strategy. User interactions within a session
+are categorized into three types: purchased items, clicked-but-not-
+purchased items, and exposed-but-not-clicked items. Purchased
+items are treated as positive samples, while the others serve as
+negative samples. A list-wise DPO objective is then applied to
+encourage higher scores for positive items across the entire set
+of candidates [46]. Formally, for a given session 𝑠, with context
+𝑥𝑠, let the candidate set be Y𝑠= {𝑦+,𝑦−
+1 ,𝑦−
+2 , . . . ,𝑦−
+𝑚}, where 𝑦+
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+denotes the purchased item and 𝑦−
+𝑗denotes negative items. The
+DPO objective is defined as:
+LDPO = −E
+h
+log𝜎
+
+−log
+∑︁
+𝑦−∈Y−
+exp
+
+𝛽log 𝜋𝜃(𝑦−| 𝑥𝑠)
+𝜋ref (𝑦−| 𝑥𝑠)
+−𝛽log 𝜋𝜃(𝑦+ | 𝑥𝑠)
+𝜋ref (𝑦+ | 𝑥𝑠)
+i
+,
+(10)
+where Y−is the negative set, 𝛽is the inverse temperature parame-
+ter, 𝜋𝜃is the policy model and 𝜋ref is the reference model.
+3.3
+Dynamic Pruning
+While the GR model offers strong semantic understanding, it also
+introduces significant computational overhead—particularly during
+beam search decoding. For a single query image, the model must
+perform 𝐵rounds of decoding, where 𝐵is the number of beam
+search candidates. This greatly impacts online inference speed.
+Moreover, the encoding of image tokens contains redundancy and
+inefficiency, both in the visual encoder and the generative model’s
+encoder. To mitigate this, we propose a dynamic pruning strategy
+that effectively retains only the most informative visual tokens.
+This significantly reduces inference latency with minimal impact
+on prediction accuracy for beam search.
+Inspired by [47, 48], we incorporate a visual token selection al-
+gorithm into the encoder output, specifically on the patch-level
+visual tokens produced by the ViT encoder, before they are fed into
+the BART encoder. Given a query image with 𝑉𝑚𝑎𝑥visual tokens,
+our method selects a subset 𝑉𝑠𝑢𝑏of the most relevant tokens for
+subsequent decoding. Specifically, during both training and infer-
+ence, we apply K-means++ [49] clustering on the embeddings of
+the original 𝑉𝑚𝑎𝑥visual tokens to form 𝑉𝑠𝑢𝑏cluster centers. Within
+each cluster, only the token closest to the center is retained. This
+procedure effectively groups similar patterns, highlights salient
+regions in the image, and filters out less informative signals. We
+then adopt a distillation framework, where a frozen post-trained
+generative model serves as the teacher and the pruned model as
+the student. KL divergence is used to ensure consistency between
+their output distributions:
+Ldis =
+𝐿
+∑︁
+𝑘=1
+KL 𝜋ref (𝑡𝑘| 𝑢,𝑡<𝑘)
+ 𝜋𝜃(𝑡𝑘| 𝑢,𝑡<𝑘),
+(11)
+where 𝜋ref is the reference model and 𝜋𝜃is the policy model.
+Finally, inspired by curriculum learning [50], we introduce a
+progressive pruning strategy, where the number of retained visual
+tokens 𝑣(𝑒) gradually decreases as the training epoch 𝑒increases,
+as formulated below:
+𝑣(𝑒) =
+j
+𝑉𝑚𝑎𝑥−𝑒
+𝐸
+ 𝑉𝑚𝑎𝑥−𝑉𝑠𝑢𝑏
+k
+,
+𝑒= 1, . . . , 𝐸,
+(12)
+where 𝐸is the total number of training epochs and at the final
+epoch, the final retained visual token count is 𝑣(𝐸) = 𝑉𝑠𝑢𝑏.
+3.4
+End-to-End Inference
+In this section, we describe the end-to-end inference of OneVision.
+Given a query image and user-specific information, the model first
+applies the pruning strategy to compress the visual tokens from the
+encoder, reducing redundancy while preserving key semantic in-
+formation. The decoder then autoregressively generates a sequence
+of discrete codes that represent potential matching items.
+To produce a well-ranked candidate set, we use beam search.
+This method maintains multiple SID candidates during generation,
+selecting them based on the accumulated log-probability scores.
+Starting with a 𝑡[𝐵𝑂𝑆] token, the model predicts the top-𝐵most
+likely next tokens (𝐵being the beam size), and extends each token
+sequence. After scoring the extended sequences, only the top-𝐵
+with the highest cumulative scores are retained. To prevent invalid
+SIDs, we apply constrained decoding using a Trie structure [51, 52].
+The Trie is built from the full set of valid SIDs before inference and
+restricts decoding to valid prefixes only. This ensures that generated
+sequences are valid and improves retrieval reliability.
+4
+Experiment
+In this section, we present a comprehensive evaluation of OneVision
+using industrial-scale e-commerce datasets, along with rigorous
+online A/B testing. In addition, we conduct extensive ablation stud-
+ies to verify the usability of OneVision for image retrieval and to
+further facilitate the real-world adoption of generative vision search
+systems in industrial e-commerce scenarios.
+4.1
+Implementation Details
+Datasets. We construct training datasets from large-scale indus-
+trial e-commerce search logs to support the multi-stage training
+of OneVision. The corpus consists of three parts: (1) query im-
+ages and product images, each denoted with its corresponding SIDs,
+providing discrete representations for both search queries and prod-
+ucts; (2) item-to-item (i2i) associations, representing semantically
+similar product pairs; and (3) 4 months’ data of user search logs
+from Kuaishou’s platform, covering item click and purchase records.
+Both the i2i and user-interaction data incorporate multi-view paired
+samples, enabling the model to build a more comprehensive and
+robust understanding of each product across diverse visual appear-
+ances. For evaluation, we built two test sets. The first is a real-world
+search interaction set, containing 8.5K click events and 8.5K pur-
+chase events sampled from 30 days of historical visual search traffic,
+designed to measure retrieval quality under actual user behaviours.
+The second is a semantic benchmark, comprising 67K query–item
+pairs (about 22K each from top, middle, and tail segments) collected
+via ANN recall. All datasets are additionally refined using ANN
+similarity scores and VLM verification to ensure reliable supervi-
+sion and robust evaluation.
+Evaluation Metrics. The evaluation considers both recall and
+ranking performance, employing HitRate (HR) and Mean Recip-
+rocal Ranking (MRR) as metrics, which are widely recognized in
+search and recommendation system research. All reported results
+represent averages computed over the entire set of experiments.
+Baseline Methods. To comprehensively evaluate OneVision’s e-
+commerce image retrieval capabilities, we compare its performance
+with the state-of-the-art image feature extraction model (DINOv3)
+and two generative image retrieval approaches (IRGen and GE-
+NIUS) [11, 17, 18]. For fairness, DINOv3 uses a ViT-B backbone; IR-
+Gen is configured with a 12-layer decoder (about 120M parameters);
+
+OneVision: An End-to-End Generative Framework for
+Multi-view E-commerce Vision Search
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 1: Comparison of Encoding Strategies and Retrieval Paradigms on CLICK and ORDER Benchmarks. Ours (w/o P.) and Ours
+(w/ P.) denote the results without and with the incorporation of personalization signals and additional business information.
+Methods
+CLICK (8.5K)
+ORDER (8.5K)
+HR@1
+HR@4
+MRR@4
+HR@10
+MRR@10
+HR@1
+HR@4
+MRR@4
+HR@10
+MRR@10
+Traditional Retrieval
+DINOv3
+49.68%
+72.11%
+54.78%
+77.66%
+55.63%
+44.95%
+70.92%
+54.24%
+76.80%
+55.15%
+OnlineMCA
+51.01%
+74.82%
+60.16%
+83.89%
+61.37%
+50.84%
+74.92%
+59.83%
+82.85%
+60.51%
+Generative Retrieval
+RQ-Kmeans
+IRGen
+38.29%
+57.29%
+46.19%
+66.56%
+47.72%
+37.22%
+56.26%
+46.19%
+66.13%
+46.70%
+GENIUS
+42.43%
+62.50%
+50.93%
+70.72%
+52.30%
+41.19%
+61.70%
+49.74%
+69.95%
+51.15%
+Ours (w/o P.)
+45.30%
+63.70%
+52.95%
+72.10%
+54.36%
+44.61%
+63.05%
+52.18%
+72.04%
+53.68%
+Ours (w/ P.)
+48.91%
+68.67%
+57.14%
+77.41%
+58.60%
+48.05%
+68.38%
+56.37%
+77.38%
+57.88%
+VRQ
+IRGen
+44.13%
+64.72%
+52.90%
+71.04%
+53.96%
+41.71%
+63.48%
+50.86%
+70.13%
+52.01%
+GENIUS
+45.22%
+65.51%
+54.00%
+71.22%
+54.98%
+42.84%
+64.05%
+51.91%
+70.43%
+52.98%
+Ours (w/o P.)
+50.56%
+73.51%
+57.91%
+78.50%
+59.07%
+48.57%
+72.22%
+58.20%
+76.27%
+57.47%
+Ours (w/ P.)
+51.46%
+77.28%
+61.77%
+82.29%
+62.46%
+51.42%
+76.28%
+60.89%
+80.23%
+61.71%
+and GENIUS employs a BART backbone rather than T5. Addition-
+ally, we benchmark its product search effectiveness against the on-
+line multi-stage cascading architecture (referred to as onlineMCA)
+to further validate OneVision’s image-based search performance.
+Details of the OneVision. We employ a compact BART model
+with 6 encoder layers and 6 decoder layers, each with a hidden
+size of 768. For the VRQ discrete SID design, the total number of
+codebook layers is set to 𝐿= 5, including three RQ-VAE layers to
+capture hierarchical semantics and two additional residual OPQ
+layers for fine-grained residual refinement. The codebook size 𝐾
+for each layer is configured as (2048, 512, 256 | 256, 256). For offline
+evaluation, we use constrained beam search with a beam size of
+10, while for online inference, the beam size is increased to 256 to
+balance generation quality and latency. The multi-view contrastive
+learning for RQ-VAE codebooks is performed following the SimCLR
+paradigm, using a batch size of 4096. We adopt a CosineAnneal-
+ingLR scheduler with a maximum learning rate of 8 × 10−5 for
+Pretraining, SFT, and DPO. The batch size is configured as 768 for
+both Pretraining and SFT, and 256 for DPO.
+Table 2: Ablation Study of VRQ with Different Encoding De-
+signs and Additional Information Signals.
+Configuration
+CLICK (8.5K)
+ORDER (8.5K)
+HR@10
+MRR@10
+HR@10
+MRR@10
+onlineMCA
+83.89%
+61.37%
+82.85%
+60.51%
+—w/o ranking
+81.45%
+56.87%
+80.14%
+55.47%
+RQ–Kmeans
+77.41%
+58.60%
+77.39%
+57.88%
+RQ–OPQ (2/256)
+80.72%
+61.51%
+79.82%
+60.19%
+VRQ (Ours)
+82.29%
+62.46%
+80.23%
+61.71%
+—w/o User-Behaviour SIDs
+81.91%
+61.90%
+79.71%
+61.25%
+—w/o Convert𝑒𝑚𝑏
+78.98%
+59.72%
+77.58%
+58.02%
+—w/o Category𝑒𝑚𝑏
+81.89%
+62.37%
+79.95%
+61.56%
+4.2
+Real-World Offline Evaluation
+As shown in Table 1, our method consistently improves retrieval
+performance across different visual encoding strategies and training
+paradigms on the real-world search interaction set, reaching and
+slightly surpassing OnlineMCA. Concretely, the GRs encoded by
+RQ-Kmeans perform worse than systems using DINOv3 features
+with ANN retrieval. Replacing RQ–Kmeans with our VRQ results
+in consistent retrieval gains, with HR@1 improving by 8.64% and
+HR@4 by 11.07% on average over CLICK and ORDER test sets.
+This improvement stems from replacing unsupervised RQ–KMeans
+with a contrastively trained RQ-VAE to mitigate SID imbalance and
+cluster underutilization, while residual OPQ layers refine visual
+residuals for more uniform and semantically aligned SIDs.
+Under the unified VRQ encoding, OneVision surpasses tradi-
+tional generative models. Compared with IRGen and GENIUS, our
+multi-stage generative learning scheme improves HR@1/4 by 13.44%
+on average and raises MRR@10 by 8.96%. Furthermore, incorpo-
+rating personalization signals and statistical business information
+brings an additional +3.22 HR points and +3.55 MRR points. Notably,
+the best VRQ (w/ P.) slightly surpasses OnlineMCA (e.g., CLICK
+HR@1 51.46% vs 51.01%, ORDER HR@1 51.42% vs 50.84%, and
++1.15pt MRR@10), indicating that end-to-end generative retrieval
+can now rival and even exceed well-tuned ANN-based industrial
+systems, offering a new, unified paradigm for large-scale and highly
+dynamic e-commerce search applications.
+Table 2 presents the ablation study of OneVision. Removing the
+ranking stage from onlineMCA leads to a noticeable decline in re-
+trieval quality, confirming its importance. Substituting RQ–Kmeans
+with RQ–OPQ raises HR and MRR improves HR and MRR by 4.04%
+on average, showing that residual OPQ improves the stability of
+SIDs and enables a more fine-grained representation. The VRQ with
+multi-stage training reaches the highest overall scores while remain-
+ing comparable to the deployed online system. Adding statistical
+business characteristics (Convert) information brings an additional
+2.98pt in HR and 3.22pt in MRR, which helps the model separate
+near-duplicate products more effectively. In contrast, user sequence
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+Table 3: Comparison of Retrieval Methods on the Semantic Benchmark across Top, Middle, and Long-tail segments. Ours (Multi)
+and Ours (Single) represent the encoding of e-commerce multi-modal and single-modal visual features, respectively.
+Methods
+60w Top
+60w Middle
+60w Long-tail
+HR@1
+HR@4
+MRR@4
+HR@1
+HR@4
+MRR@4
+HR@1
+HR@4
+MRR@4
+Embedding-based Retrieval
+DINOv3
+79.12%
+87.56%
+84.14%
+78.61%
+88.86%
+82.97%
+77.46%
+87.41%
+82.10%
+Online Model∗
+99.41%
+99.80%
+99.59%
+98.76%
+99.78%
+99.24%
+98.33%
+99.78%
+99.00%
+Quantized ANN Score (QAS)
+81.45%
+90.34%
+85.08%
+72.77%
+85.10%
+77.74%
+69.57%
+83.54%
+75.23%
+Generative Retrieval
+IRGen
+88.49%
+94.92%
+91.28%
+84.19%
+92.65%
+87.81%
+80.42%
+91.93%
+85.32%
+GENIUS
+86.63%
+94.06%
+89.84%
+82.49%
+91.78%
+86.45%
+78.88%
+91.08%
+84.09%
+VLM
+85.77%
+91.80%
+88.41%
+77.01%
+88.51%
+81.92%
+71.24%
+85.94%
+77.29%
+Ours (Multi)
+68.61%
+76.24%
+72.15%
+55.32%
+67.56%
+63.53%
+49.12%
+63.66%
+58.32%
+Ours (Single)
+89.29%
+96.53%
+93.30%
+85.19%
+93.70%
+89.55%
+81.89%
+92.15%
+86.09%
+modeling shows limited impact, likely because user preferences are
+sparse and relatively consistent, offering little additional signal for
+personalization. Category embeddings mainly mitigate category
+inconsistency and detection noise, lowering off-category retrievals
+and strengthening search robustness and user experience, while
+having a limited direct impact on HR or MRR.
+4.3
+More Offline Evaluation
+To rigorously validate the effectiveness of our proposed method, we
+construct an e-commerce semantic dataset and benchmark multiple
+retrieval approaches under the same conditions.
+Table 3 compares embedding-based retrieval and generative re-
+trieval across category tiers (Top / Middle / Long-tail). Quantizing
+the strong online embedding model for ANN retrieval causes a
+pronounced drop in accuracy (e.g., HR@1 decreases from 98.83%
+to 74.60% and MRR@4 from 99.28% to 79.35%), highlighting the
+sensitivity of embedding-based systems to aggressive quantization
+and the importance of robust encoding approaches.
+Within generative retrieval, our image-centric GR model con-
+sistently outperforms other GR baselines across all category tiers.
+Compared with IRGen and GENIUS, it improves HR@1 by an av-
+erage of 1.98% on top categories and 2.81% on long-tail categories,
+with similar gains observed for HR@4 and MRR@4. VLM shows
+promise in principle, but is not yet fully optimized for this setting;
+matching our results would demand substantially larger training
+data and computational resources. Notably, our design also sur-
+passes multimodal encoding by a wide margin (e.g., Top HR@1
+89.29% vs. 68.61%), underscoring that focusing on fine-grained vi-
+sual features while preserving category consistency is both more
+effective and more practical for large-scale e-commerce retrieval.
+Table 4 summarizes the performance of multiple encoding ap-
+proaches using several evaluation metrics, including ICO, QAS, and
+GR. It can be clearly seen that methods focusing only on recon-
+struction quality, but ignoring semantic alignment, struggle when
+applied to generative decoding. For instance, although FSQ achieves
+extremely strong QAS results (HR@4 98.47%, MRR@4 96.99%), its
+performance collapses under GR (HR@4 36.56%, MRR@4 23.32%).
+The table further highlights the benefits of contrastive training
+and residual OPQ refinement. Among RQ-VAE variants, the Tiger
+Table 4: Comparison of Encoding Methods on Independent
+Code Occupancy (ICO), Quantized ANN Score (QAS), and
+Generative Retrieval (GR).
+Method
+ICO
+QAS
+GR
+HR@4
+MRR@4
+HR@4
+MRR@4
+RQ-Kmeans
+4.84
+81.76%
+74.66%
+89.98%
+85.42%
+FSQ
+2.17
+98.47%
+96.99%
+36.56%
+23.32%
+OPQ
+4.83
+84.70%
+79.05%
+86.07%
+78.83%
+RQ-VAE (Tiger)
+4.91
+69.48%
+61.41%
+79.60%
+68.80%
+RQ-VAE (GENIUS)
+4.23
+83.75%
+77.18%
+92.34%
+87.15%
+RQ–OPQ (2/256)
+3.92
+85.15%
+78.23%
+93.28%
+88.80%
+VRQ (Ours)
+3.78
+86.33%
+79.35%
+94.13%
+89.65%
+baseline without contrastive objectives yields HR@4 79.60% and
+MRR@4 68.80%, while GENIUS, with contrastive learning, improves
+to 92.34% and 87.15%. Building on this, our VRQ strengthens the
+representation by adding OPQ-based residual decomposition, reach-
+ing HR@4 94.13% and MRR@4 89.65%. These results confirm that
+combining fine-grained residual encoding with contrastive learning
+produces more discriminative and generation-friendly SIDs.
+We also ablate the RQ-VAE codebook depth 𝐿and size 𝐾under
+constrained beam search. As shown in Figure 4, increasing 𝐿from
+1 to 4 improves HR@4 from 2.21% to 93.03% and MRR@4 from
+1.58% to 86.33%, with only marginal gains beyond 𝐿= 4. Similarly,
+enlarging 𝐾from 256 to 2048 raises HR@4 from 87.84% to 92.50%
+and MRR@4 from 80.27% to 95.32%. Overall, within a practical code-
+book space and constrained decoding, retrieval accuracy improves
+monotonically with increasing depth and size.
+Finally, Figure 5 shows that with curriculum-based visual token
+pruning, the model can dynamically reduce the number of visual
+tokens while preserving retrieval accuracy. HR@4 and MRR@4
+remain stable even when compressing from the full 197 tokens to
+only 33 tokens. This compression yields substantial efficiency gains:
+real-time inference latency (RT) drops by 17.41% and memory usage
+decreases by 12.03%. By reducing redundancy in the encoder’s visual
+representations and easing the burden of beam search decoding, this
+approach markedly lowers online inference cost while maintaining
+strong semantic understanding.
+
+OneVision: An End-to-End Generative Framework for
+Multi-view E-commerce Vision Search
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+(a) Results across depth 𝐿
+(b) Results across size 𝐾
+Figure 4: Impact of Different Codebook Depth 𝐿and Size 𝐾.
+40
+60
+80 100 120 140 160 180 200
+Visual Token Num
+92.75
+93.00
+93.25
+93.50
+93.75
+94.00
+94.25
+94.50
+HR@4 (%)
+HR@4 (%)
+MRR@4 (%)
+87.75
+88.00
+88.25
+88.50
+88.75
+89.00
+89.25
+89.50
+MRR@4 (%)
+(a) Accuracy vs. token count
+40
+60
+80
+100 120 140 160 180 200
+Visual Token Num
+10.0
+10.5
+11.0
+11.5
+12.0
+12.5
+13.0
+13.5
+RT (ms)
+RT (ms)
+Memory (GB)
+23
+24
+25
+26
+27
+28
+Memory Assess (GB)
+(b) Efficiency vs. token count
+Figure 5: Impact of Visual Token Number on Retrieval Accu-
+racy (HR@4, MRR@4) and System Efficiency.
+4.4
+Online A/B Testing
+To validate the effectiveness of OneVision in real-world Vision
+Search, we conduct rigorous online A/B tests on KuaiShou’s search
+platform, where the query is an image captured in real time or
+selected from the photo album. As indicated in Table 5, we estab-
+lish one base group and two experimental groups : (1) OnlineMCA
+(baseline), (2) OnlineMCA w/o ranking that retains only recall +
+pre-ranking, and (3) the proposed OneVision. For OneVision, be-
+cause identical product codes can still appear even after introducing
+statistical business signals, we maintain a dynamic item sequence
+for each code and sort items in descending order of
+𝑆conv = 𝜔1 Clicks30d + 𝜔2 GMV30d + 𝜔3 Orders30d ,
+(13)
+where 𝜔1,𝜔2,𝜔3 are tunable weights that control the relative im-
+portance of recent clicks, GMV, and completed orders within a
+30-day window. This prioritizes items with stronger recent engage-
+ment and transaction value within a code cluster. Results show
+that multi-stage supervised training together with VRQ encoding
+yields consistent improvements over OnlineMCA: CTR +3.61%,
+CVR +2.43%, OPM +4.53%, Click +3.43%, and Order +5.89%. In con-
+trast, OnlineMCA w/o ranking exhibits marked declines (e.g., Order
+-12.65%), underscoring the centrality of ranking in Photo Search and
+indirectly confirming that OneVision, augmented by its dynamic
+item sequence, already demonstrates strong ranking capability.
+Overall, these outcomes indicate that OneVision matches or sur-
+passes the baseline OnlineMCA while simplifying the online stack
+without inducing seesaw effects, and it shows clear headroom for
+continued iteration in the era of large generative models.
+5
+Further Analysis
+This section discusses three critical issues in the online deployment
+of our end-to-end generative vision search framework: analyzing
+where OneVision’s gains come from, highlighting its current limi-
+tations, and outlining potential avenues for future exploration.
+Women Wear
+Men Wear
+Women Shoes
+Home Living
+Bags
+Personal Care
+Skincare
+Phones
+Kids Wear
+Beauty
+Sport Apparel
+Underwear
+Toys
+Games
+Snacks
+Appliances
+Accessories
+Nutrition
+Men Shoes
+Home Textile
+Flowers
+Auto Aftermkt
+Outdoor
+Stationery
+Woodwork
+Hardware
+Coffee
+Alcohol
+Secondhand
+Pets
+-10%
+-5%
+0%
+5%
+10%
+15%
+CTR Relative Gains (%)
+average 1.27%
+Figure 6: Relative Item CTR Gains of Vision Search Across
+the Top 30 Industries.
+Table 5: Online A/B Testing Results (All Improvements Sta-
+tistically Significant, 𝑝< 0.05)
+Method
+Item CTR
+PV CTR
+CVR
+OPM
+Order
+OnlineMCA w/o ranking
+-5.01%
+-5.51%
+-10.73%
+-10.39%
+-12.65%
+OneVision
++3.61%
++3.43%
++2.43%
++4.53%
++5.89%
+Sources of OneVision’s Online Gains. The main sources of
+OneVision’s online gains can be summarized in two aspects. First,
+multi-view modeling enables the generative retrieval system to go
+beyond the rigid semantic constraints of the traditional ANN frame-
+work. By generating multiple SIDs that capture diverse viewpoints
+and appearances of the same product, it significantly improves the
+recall of identical items that conventional cascaded retrieval often
+misses when faced with large perspective variations. Second, a
+more unified and clear definition of similarity reduces the model’s
+reliance on low-level visual details and strengthens category-level
+semantic consistency, leading to more reliable retrieval results and
+greater conversion potential.
+We further validate these two points through an in-depth analy-
+sis of the online A/B test results. With multi-view modeling, the
+overall Item CTR shows a clear +1.27% relative gain across Top 30
+categories. Notably, women wear improves by about +3.3%, while
+bags increase by approximately +4.8%. Meanwhile, unified similar-
+ity definition and improved category alignment lead to consistent
+PV CTR gains across category tiers: the top, middle, and long-tail
+segments increase by +2.58%, +1.63%, and +15.29%, respectively.
+These results (see Figure 6 and Table 6) highlight OneVision’s
+effectiveness in strengthening both identical-item retrieval and
+category-level consistency, ultimately driving measurable online
+CTR improvements and enhancing user experience.
+Limitations of Generative Image Retrieval. Traditional genera-
+tive image retrieval based on RQ-Kmeans encoding and one-stage
+training suffers from three key limitations. First, its coarse quantiza-
+tion lacks the fine-grained capacity to separate highly similar items,
+leading to insufficient discrimination among near-duplicate prod-
+ucts. Second, it provides no principled mechanism to verify whether
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Trovato et al.
+(a) Limited Encoding Discrimination                     (b) Lack of Reliable Match Checking                        (c) Mismatched Noisy Data                 
+   Cate:           sneakers           sneakers          sneakers             dendrobium      dendrobium     dendrobium          paper cups      photo folder       paper cups
+SID:                
+<a_729>, <b_348>,
+<c_20>, <d_47>
+<a_729>, <b_348>,
+<c_20>, <d_47>
+<a_729>, <b_348>,
+<c_20>, <d_47>
+<a_123>, <b_359>,
+<c_10>, <d_56>
+<a_123>, <b_582>,
+<c_32>, <d_48>
+<a_123>, <b_427>,
+<c_53>, <d_92>
+<a_529>, <b_23>,
+<c_9>, <d_92>
+<a_529>, <b_23>,
+<c_9>, <d_92>
+<a_529>, <b_23>,
+<c_9>, <d_92>
+Query Image          Top 1               Top 2              Query Image         Top 1               Top 2             Query Image          Top 1               Top 2
+Figure 7: An Overview of the Three Fundamental Challenges in Generative Image Retrieval, Including Limited Encoding
+Discrimination, Lack of Reliable Match Verification, and Mismatched Noise Data.
+Table 6: Relative PV CTR Gains Across Top, Middle, and Long-
+Tail Categories.
+Method
+Top
+Middle
+Long-tail
+OneVision
++2.58%
++1.63%
++15.29%
+relevant candidates exist for a given query; naive reliance on raw
+decoder logits results in unstable and unreliable relevance estima-
+tion. Third, it fails to enforce category-level consistency and cannot
+effectively filter out candidates whose primary object is incorrectly
+recognized, leading to off-category retrievals (see Figure 7).
+OneVision addresses these issues by combining RQ-VAE with
+OPQ to refine visual encoding and enlarge inter-item distinctions,
+incorporating an online Top-K similarity check to flag low-confidence
+retrievals, and injecting category information into the quantization
+process to preserve category alignment and reduce misclassification.
+Despite these advances, OneVision still lags behind ANN-based re-
+call when queries are ambiguous, noisy, or belong to the long-tail
+with limited relevant training data, leading to lower recall and
+accuracy than dense ANN retrieval.
+Future Optimization Directions for OneVision. Current gen-
+erative image retrieval remains a cascaded design: encoding and
+generation are optimized separately, making it hard to achieve
+Pareto optimality in quality and efficiency. A key direction is joint
+training that unifies codebook learning and the generative model
+for better overall retrieval effectiveness. Meanwhile, VLMs are ex-
+pected to serve as the backbone for future retrieval, offering deeper
+image–product understanding and better demand awareness. Ex-
+ploring how to leverage large-model reasoning to strengthen VLM-
+based generative retrieval represents a promising avenue.
+6
+Conclusion
+In summary, OneVision presents a unified generative framework
+that bridges retrieval and personalization in e-commerce vision
+search. By introducing vision-aligned residual quantization and
+multi-stage semantic alignment, it effectively handles multi-view
+discrepancies while preserving item distinctiveness. Experiments
+demonstrate notable gains in both offline and online settings, con-
+firming that a semantic ID–driven generative paradigm can simplify
+the retrieval pipeline and enhance both accuracy and efficiency.
+References
+[1] Tianheng Cheng, Lin Song, Yixiao Ge, Wenyu Liu, Xinggang Wang, and Ying
+Shan. Yolo-world: Real-time open-vocabulary object detection. arXiv preprint
+arXiv:2401.17270, 2024.
+[2] Yunjie Tian, Qixiang Ye, and David Doermann. Yolov12: Attention-centric real-
+time object detectors. arXiv preprint arXiv:2502.12524, 2025.
+[3] Ao Wang, Lihao Liu, Hui Chen, Zijia Lin, Jungong Han, and Guiguang Ding.
+Yoloe: Real-time seeing anything. arXiv preprint arXiv:2503.07465, 2025.
+[4] Lvxing Zhu, Hao Chen, Chao Wei, and Weiru Zhang. Enhanced representa-
+tion with contrastive loss for long-tail query classification in e-commerce. In
+Proceedings of the Fifth Workshop on e-Commerce and NLP (ECNLP 5), 2022.
+[5] Khondaker Tasrif Noor, Antonio Robles-Kelly, Leo Yu Zhang, and Mohamed Reda
+Bouadjenek. A bottom-up capsule network for hierarchical image classification.
+In 2023 International Conference on Digital Image Computing: Techniques and
+Applications (DICTA), 2023.
+[6] Khondaker Tasrif Noor, Antonio Robles-Kelly, Leo Yu Zhang, Mohamed Reda
+Bouadjenek, and Wei Luo. A consistency-aware deep capsule network for hierar-
+chical multi-label image classification. Neurocomputing, 2024.
+[7] Seongwon Lee, Hongje Seong, Suhyeon Lee, and Euntai Kim. Correlation verifi-
+cation for image retrieval. In Proceedings of the IEEE/CVF conference on computer
+vision and pattern recognition, 2022.
+[8] Shihao Shao, Kaifeng Chen, Arjun Karpur, Qinghua Cui, André Araujo, and
+Bingyi Cao. Global features are all you need for image retrieval and reranking.
+In Proceedings of the IEEE/CVF International Conference on Computer Vision, 2023.
+[9] Zihan Liang, Yufei Ma, ZhiPeng Qian, Huangyu Dai, Zihan Wang, Ben Chen,
+Chenyi Lei, Yuqing Ding, and Han Li. Uniecs: Unified multimodal e-commerce
+search framework with gated cross-modal fusion. arXiv preprint arXiv:2508.13843,
+2025.
+[10] Andrew Zhai, Hao-Yu Wu, Eric Tzeng, Dong Huk Park, and Charles Rosenberg.
+Learning a unified embedding for visual search at pinterest. In Proceedings of
+the 25th ACM SIGKDD international conference on knowledge discovery & data
+mining, 2019.
+[11] Oriane Siméoni, Huy V Vo, Maximilian Seitzer, Federico Baldassarre, Maxime
+Oquab, Cijo Jose, Vasil Khalidov, Marc Szafraniec, Seungeun Yi, Michaël Rama-
+monjisoa, et al. Dinov3. arXiv preprint arXiv:2508.10104, 2025.
+[12] Fan Yang, Ajinkya Kale, Yury Bubnov, Leon Stein, Qiaosong Wang, Hadi Kiapour,
+and Robinson Piramuthu. Visual search at ebay. In Proceedings of the 23rd ACM
+SIGKDD international conference on knowledge discovery and data mining, 2017.
+[13] Yanhao Zhang, Pan Pan, Yun Zheng, Kang Zhao, Yingya Zhang, Xiaofeng Ren,
+and Rong Jin. Visual search at alibaba. In Proceedings of the 24th ACM SIGKDD
+international conference on knowledge discovery & data mining, 2018.
+[14] Xu Chen, Zida Cheng, Yuangang Pan, Shuai Xiao, Xiaoming Liu, Jinsong Lan,
+Qingwen Liu, and Ivor W Tsang. Branches, assemble! multi-branch cooperation
+network for large-scale click-through rate prediction at taobao. arXiv preprint
+arXiv:2411.13057, 2024.
+[15] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965,
+2025.
+[16] Ben Chen, Xian Guo, Siyuan Wang, Zihan Liang, Yue Lv, Yufei Ma, Xinlong Xiao,
+Bowen Xue, Xuxin Zhang, Ying Yang, et al. Onesearch: A preliminary exploration
+of the unified end-to-end generative framework for e-commerce search. arXiv
+preprint arXiv:2509.03236, 2025.
+
+OneVision: An End-to-End Generative Framework for
+Multi-view E-commerce Vision Search
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+[17] Yidan Zhang, Ting Zhang, Dong Chen, Yujing Wang, Qi Chen, Xing Xie, Hao
+Sun, Weiwei Deng, Qi Zhang, Fan Yang, et al. Irgen: Generative modeling for
+image retrieval. In European Conference on Computer Vision, 2024.
+[18] Sungyeon Kim, Xinliang Zhu, Xiaofan Lin, Muhammet Bastan, Douglas Gray, and
+Suha Kwak. Genius: A generative framework for universal multimodal search.
+In Proceedings of the Computer Vision and Pattern Recognition Conference, 2025.
+[19] Arnon Dagan, Ido Guy, and Slava Novgorodov. An image is worth a thousand
+terms? analysis of visual e-commerce search. In Proceedings of the 44th Inter-
+national ACM SIGIR Conference on Research and Development in Information
+Retrieval, 2021.
+[20] Prajit Nadkarni and Narendra Varma Dasararaju. Visually similar products
+retrieval for shopsy. arXiv preprint arXiv:2210.04560, 2022.
+[21] Arnon Dagan, Ido Guy, and Slava Novgorodov. Shop by image: characterizing
+visual search in e-commerce. Information Retrieval Journal, 2023.
+[22] Xiaoyu You, Mi Zhang, Jianwei Xu, and Min Yang. I can retrieve more than
+images: Contrastive stealing attack against deep hashing models. In 2024 IEEE
+International Conference on Web Services (ICWS), 2024.
+[23] Jie Li, Haifeng Liu, Chuanghua Gui, Jianyu Chen, Zhenyuan Ni, Ning Wang, and
+Yuan Chen. The design and implementation of a real time visual search system
+on jd e-commerce platform. In Proceedings of the 19th International Middleware
+Conference Industry, 2018.
+[24] Raymond Shiau, Hao-Yu Wu, Eric Kim, Yue Li Du, Anqi Guo, Zhiyuan Zhang,
+Eileen Li, Kunlong Gu, Charles Rosenberg, and Andrew Zhai. Shop the look:
+Building a large scale visual shopping system at pinterest. In Proceedings of
+the 26th ACM SIGKDD International Conference on Knowledge Discovery & Data
+Mining, 2020.
+[25] Jui-Ting Huang, Ashish Sharma, Shuying Sun, Li Xia, David Zhang, Philip Pronin,
+Janani Padmanabhan, Giuseppe Ottaviano, and Linjun Yang. Embedding-based
+retrieval in facebook search. In Proceedings of the 26th ACM SIGKDD International
+Conference on Knowledge Discovery & Data Mining, 2020.
+[26] Yingqi Qu, Yuchen Ding, Jing Liu, Kai Liu, Ruiyang Ren, Wayne Xin Zhao, Dax-
+iang Dong, Hua Wu, and Haifeng Wang. Rocketqa: An optimized training
+approach to dense passage retrieval for open-domain question answering. arXiv
+preprint arXiv:2010.08191, 2020.
+[27] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+Recommender systems with generative retrieval. Advances in Neural Information
+Processing Systems, 2023.
+[28] Yi Tay, Vinh Tran, Mostafa Dehghani, Jianmo Ni, Dara Bahri, Harsh Mehta, Zhen
+Qin, Kai Hui, Zhe Zhao, Jai Gupta, et al. Transformer memory as a differentiable
+search index. Advances in Neural Information Processing Systems, 2022.
+[29] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming Chen,
+and Ji-Rong Wen. Adapting large language models by integrating collaborative
+semantics for recommendation. In 2024 IEEE 40th International Conference on
+Data Engineering (ICDE), 2024.
+[30] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. Au-
+toregressive image generation using residual quantization. In Proceedings of the
+IEEE/CVF conference on computer vision and pattern recognition, 2022.
+[31] Xinchen Luo, Jiangxia Cao, Tianyu Sun, Jinkai Yu, Rui Huang, Wei Yuan, Hezheng
+Lin, Yichen Zheng, Shiyao Wang, Qigen Hu, et al. Qarm: Quantitative alignment
+multi-modal recommendation at kuaishou. arXiv preprint arXiv:2411.11739, 2024.
+[32] Fabian Mentzer, David Minnen, Eirikur Agustsson, and Michael Tschannen. Finite
+scalar quantization: Vq-vae made simple. arXiv preprint arXiv:2309.15505, 2023.
+[33] Yi Xu, Moyu Zhang, Chenxuan Li, Zhihao Liao, Haibo Xing, Hao Deng, Jinxin
+Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang. Mmq: Multimodal mixture-of-
+quantization tokenization for semantic id generation and user behavioral adapta-
+tion. arXiv preprint arXiv:2508.15281, 2025.
+[34] Tiezheng Ge, Kaiming He, Qifa Ke, and Jian Sun. Optimized product quantization.
+IEEE transactions on pattern analysis and machine intelligence, 2013.
+[35] Aaron Van Den Oord, Oriol Vinyals, et al. Neural discrete representation learning.
+Advances in neural information processing systems, 2017.
+[36] Jinze Bai, Shuai Bai, Shusheng Yang, Shijie Wang, Sinan Tan, Peng Wang, Junyang
+Lin, Chang Zhou, and Jingren Zhou. Qwen-vl: A frontier large vision-language
+model with versatile abilities. arXiv preprint arXiv:2308.12966, 2023.
+[37] Ting Chen, Simon Kornblith, Mohammad Norouzi, and Geoffrey Hinton. A simple
+framework for contrastive learning of visual representations. In International
+conference on machine learning, 2020.
+[38] Yifan Sun, Changmao Cheng, Yuhan Zhang, Chi Zhang, Liang Zheng, Zhongdao
+Wang, and Yichen Wei. Circle loss: A unified perspective of pair similarity
+optimization. In Proceedings of the IEEE/CVF conference on computer vision and
+pattern recognition, 2020.
+[39] Shitao Xiao, Zheng Liu, Peitian Zhang, Niklas Muennighoff, Defu Lian, and Jian-
+Yun Nie. C-pack: Packed resources for general chinese embeddings. In Proceedings
+of the 47th international ACM SIGIR conference on research and development in
+information retrieval, 2024.
+[40] Alberto Baldrati, Marco Bertini, Tiberio Uricchio, and Alberto Del Bimbo. Com-
+posed image retrieval using contrastive learning and task-oriented clip-based
+features. ACM Transactions on Multimedia Computing, Communications and
+Applications, 2023.
+[41] Ben Chen, Linbo Jin, Xinxin Wang, Dehong Gao, Wen Jiang, and Wei Ning.
+Unified vision-language representation modeling for e-commerce same-style
+products retrieval. In Companion Proceedings of the ACM Web Conference 2023,
+2023.
+[42] Ali Razavi, Aaron Van den Oord, and Oriol Vinyals. Generating diverse high-
+fidelity images with vq-vae-2. Advances in neural information processing systems,
+2019.
+[43] Mike Lewis, Yinhan Liu, Naman Goyal, Marjan Ghazvininejad, Abdelrahman
+Mohamed, Omer Levy, Ves Stoyanov, and Luke Zettlemoyer. Bart: Denoising
+sequence-to-sequence pre-training for natural language generation, translation,
+and comprehension. arXiv preprint arXiv:1910.13461, 2019.
+[44] Linting Xue, Noah Constant, Adam Roberts, Mihir Kale, Rami Al-Rfou, Aditya
+Siddhant, Aditya Barua, and Colin Raffel. mt5: A massively multilingual pre-
+trained text-to-text transformer. arXiv preprint arXiv:2010.11934, 2020.
+[45] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng,
+Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical
+report. arXiv preprint arXiv:2505.09388, 2025.
+[46] Yuxin Chen, Junfei Tan, An Zhang, Zhengyi Yang, Leheng Sheng, Enzhi Zhang,
+Xiang Wang, and Tat-Seng Chua. On softmax direct preference optimization for
+recommendation. Advances in Neural Information Processing Systems, 2024.
+[47] Yasmine Omri, Parth Shroff, and Thierry Tambe. Token sequence compression
+for efficient multimodal computing. arXiv preprint arXiv:2504.17892, 2025.
+[48] Weiyun Wang, Zhangwei Gao, Lixin Gu, Hengjun Pu, Long Cui, Xingguang Wei,
+Zhaoyang Liu, Linglin Jing, Shenglong Ye, Jie Shao, et al. Internvl3. 5: Advancing
+open-source multimodal models in versatility, reasoning, and efficiency. arXiv
+preprint arXiv:2508.18265, 2025.
+[49] David Arthur and Sergei Vassilvitskii. k-means++: The advantages of careful
+seeding. Technical report, Stanford, 2006.
+[50] Xin Wang, Yudong Chen, and Wenwu Zhu. A survey on curriculum learning.
+IEEE transactions on pattern analysis and machine intelligence, 2021.
+[51] Nicola De Cao, Gautier Izacard, Sebastian Riedel, and Fabio Petroni. Autoregres-
+sive entity retrieval. arXiv preprint arXiv:2010.00904, 2020.
+[52] Edward Fredkin. Trie memory. Communications of the ACM, 1960.

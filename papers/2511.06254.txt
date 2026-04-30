@@ -1,0 +1,1772 @@
+LLaDA-Rec: Discrete Diffusion for Parallel Semantic ID
+Generation in Generative Recommendation
+Teng Shi
+Chenglei Shen
+Gaoling School of Artificial Intelligence
+Renmin University of China
+Beijing, China
+{shiteng,chengleishen9}@ruc.edu.cn
+Weijie Yu
+School of Information Technology
+and Management
+University of International Business
+and Economics
+Beijing, China
+yu@uibe.edu.cn
+Shen Nie
+Chongxuan Li
+Xiao Zhang
+Gaoling School of Artificial Intelligence
+Renmin University of China
+Beijing, China
+{nieshen,chongxuanli,zhangx89}@ruc.edu.cn
+Ming He
+AI Lab at Lenovo Research
+Beijing, China
+heming01@foxmail.com
+Yan Han
+AI Lab at Lenovo Research
+Beijing, China
+hanyan7217@163.com
+Jun Xu
+Gaoling School of Artificial Intelligence
+Renmin University of China
+Beijing, China
+junxu@ruc.edu.cn
+Abstract
+Generative recommendation represents each item as a semantic
+ID, i.e., a sequence of discrete tokens, and generates the next item
+through autoregressive decoding. While effective, existing autore-
+gressive models face two intrinsic limitations: (1) unidirectional
+constraints, where causal attention restricts each token to attend
+only to its predecessors, hindering global semantic modeling; and
+(2) error accumulation, where the fixed left-to-right generation
+order causes prediction errors in early tokens to propagate to the
+predictions of subsequent token. To address these issues, we pro-
+pose LLaDA-Rec, a discrete diffusion framework that reformulates
+recommendation as parallel semantic ID generation. By combin-
+ing bidirectional attention with the adaptive generation order, the
+approach models inter-item and intra-item dependencies more effec-
+tively and alleviates error accumulation. Specifically, our approach
+comprises three key designs: (1) a parallel tokenization scheme that
+produces semantic IDs for bidirectional modeling, addressing the
+mismatch between residual quantization and bidirectional architec-
+tures; (2) two masking mechanisms at the user-history and next-
+item levels to capture both inter-item sequential dependencies and
+intra-item semantic relationships; and (3) an adapted beam search
+strategy for adaptive-order discrete diffusion decoding, resolving
+the incompatibility of standard beam search with diffusion-based
+generation. Experiments on three real-world datasets show that
+LLaDA-Rec consistently outperforms both ID-based and state-of-
+the-art generative recommenders, establishing discrete diffusion as
+a new paradigm for generative recommendation.
+Permission to make digital or hard copies of all or part of this work for personal or
+classroom use is granted without fee provided that copies are not made or distributed
+for profit or commercial advantage and that copies bear this notice and the full citation
+on the first page. Copyrights for components of this work owned by others than the
+author(s) must be honored. Abstracting with credit is permitted. To copy otherwise, or
+republish, to post on servers or to redistribute to lists, requires prior specific permission
+and/or a fee. Request permissions from permissions@acm.org.
+Conference acronym ’XX, Woodstock, NY
+© 2018 Copyright held by the owner/author(s). Publication rights licensed to ACM.
+ACM ISBN 978-1-4503-XXXX-X/2018/06
+https://doi.org/XXXXXXX.XXXXXXX
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Generative Recommendation; Discrete Diffusion Model
+ACM Reference Format:
+Teng Shi, Chenglei Shen, Weijie Yu, Shen Nie, Chongxuan Li, Xiao Zhang,
+Ming He, Yan Han, and Jun Xu. 2018. LLaDA-Rec: Discrete Diffusion for
+Parallel Semantic ID Generation in Generative Recommendation. In Pro-
+ceedings of Make sure to enter the correct conference title from your rights
+confirmation email (Conference acronym ’XX). ACM, New York, NY, USA,
+10 pages. https://doi.org/XXXXXXX.XXXXXXX
+1
+Introduction
+In recent years, generative language models [1, 21, 39, 47] have
+exhibited remarkable capabilities, motivating a growing number
+of studies to explore the application of the generative paradigm
+to recommendation [4, 14, 29, 36, 48, 49]. In contrast to traditional
+discriminative recommendation models [16, 34, 50], generative rec-
+ommendation reformulates the recommendation task as a sequence-
+to-sequence generation problem, where the next target item is
+generated in an autoregressive manner.
+Generative recommendation typically comprises two key com-
+ponents: item tokenization and autoregressive generation. In item
+tokenization, each item is assigned a Semantic ID (SID), represented
+as a sequence of discrete tokens. Common techniques include hier-
+archical clustering [33] (e.g., K-means) and vector quantization (e.g.,
+RQ-VAE [29, 48]). The user history encoded as discrete tokens is
+subsequently fed into the generative model, which autoregressively
+produces the tokens of the next item in a step-by-step manner.
+Despite their effectiveness, existing methods still exhibit several
+limitations: (1) Unidirectional Constraint. Most approaches rely
+on autoregressive architectures that predict the tokens of each item
+in a left-to-right manner. This left-to-right dependency restricts
+the model’s ability to capture global relationships among all tokens
+that jointly define an item [8]. As a result, the generated items often
+exhibit limited semantic coherence and expressiveness. (2) Error
+arXiv:2511.06254v1  [cs.IR]  9 Nov 2025
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Teng Shi et al.
+a_1
+b_3
+c_5
+d_2
+Semantic ID of Next Item
+a_3
+b_7
+c_6
+d_7
+BOS
+MASK
+MASK
+MASK
+MASK
+a_3
+b_3
+c_5
+d_6
+Remask
+b_3
+c_5
+MASK
+MASK
+a_1
+b_3
+c_5
+d_4
+…
+a_1
+b_3
+c_5
+d_2
+Repredict
+Autoregressive Model: 
+The error of the first token propagates to all subsequent tokens.
+Discrete Diffusion:
+The model re-masks and re-predicts low-confidence error tokens.
+Figure 1: An illustration of the advantages of discrete diffu-
+sion over autoregressive generation. In autoregressive mod-
+els, an error in the first token will propagate to subsequent
+tokens. In contrast, a discrete diffusion model predicts all
+masked positions in parallel at each step, and re-masks and
+re-predicts low-confidence error tokens, ultimately produc-
+ing more accurate results.
+Accumulation. During inference, models generate each token
+conditioned on previously sampled ones, in contrast to the training
+phase where teacher forcing [28] is employed and the ground-
+truth token is provided at each step. As a result, errors made on
+earlier tokens during inference cannot be corrected and are likely to
+propagate to subsequent tokens, thereby amplifying their adverse
+effects [20]. Figure 1 provides a further illustration.
+To address these limitations, we explore a new formulation of
+generative recommendation based on discrete diffusion [17, 26,
+40, 51]. During training, the model employ a forward token mask-
+ing noise process followed by a reverse denoising reconstruction
+process, with a bidirectional Transformer parameterizing the pre-
+diction of masked tokens. This design offers two key advantages:
+(1) Bidirectional Understanding. The bidirectional architecture
+enhances contextual comprehension and enables the modeling of
+global relationships among all tokens. (2) Adaptive Generation
+Order. During inference, all tokens are predicted in parallel, while
+low-confidence tokens are iteratively re-masked and re-predicted.
+This yields a dynamic rather than fixed generation order, prioritiz-
+ing tokens with higher model confidence (i.e., easier tokens) and
+mitigating error accumulation.
+Overall, this discrete diffusion framework offers a compelling
+solution to the limitations identified in prior generative recom-
+mendation approaches. Although diffusion models inherently oper-
+ate under a fixed-length generation constraint [26], this property
+naturally aligns with recommendation tasks, where each item is
+represented by a fixed number of semantic IDs—making diffusion
+particularly well-suited for generative recommendation.
+However, applying discrete diffusion to generative recommenda-
+tion still presents several challenges: (1) Mismatch between Resid-
+ual Quantization (RQ) and Discrete Diffusion. Since discrete
+diffusion relies on a bidirectional Transformer where all tokens are
+equally important, it requires parallel tokenization schemes beyond
+hierarchical ones like RQ-VAE. (2) Beam Search is Not Directly
+Applicable to Discrete Diffusion. Unlike standard discrete diffu-
+sion models that rely on probabilistic sampling, recommendation
+tasks require generating the top-𝑘outputs. Beam search, which
+is widely used in autoregressive top-𝑘generation [29, 48], is pri-
+marily designed for fixed left-to-right decoding and thus cannot
+be directly applied to discrete diffusion with an adaptive genera-
+tion order, thereby requiring specialized decoding strategies tai-
+lored to the discrete diffusion setting. (3) Differences between
+Language Modeling and Recommendation. Original discrete
+diffusion models are primarily developed for language modeling.
+When applied to recommendation tasks, they need to be adapted
+to capture intra-item semantics and inter-item sequential relations
+within user histories.
+To address the above challenges, we propose LLaDA-Rec, a
+bidirectional generative recommendation method based on discrete
+diffusion. Our approach consists of three main modules: (1) Paral-
+lel Tokenization. We design Multi-Head VQ-VAE that encode the
+item embedding and split it into several sub-vectors, each queried
+against a separate codebook, ultimately producing parallel semantic
+IDs. (2) Discrete Diffusion Training. We employ two masking
+mechanisms: a User-History level masking to model inter-item se-
+quential relationships, and a Next-Item level mask, with the history
+fixed, to capture intra-item semantics, enabling the model to bet-
+ter understand the semantic relationships among different tokens
+within an item. (3) Discrete Diffusion Inference. We adapt beam
+search for diffusion model. At each step, we first select the position
+with the highest model confidence for generation, and then perform
+beam expansion at that position. Through multiple iterations, this
+process produces the final top-𝑘recommended items.
+This paper makes the following key contributions:
+• We analyze the issues of unidirectional constraints and error accu-
+mulation in existing autoregressive generative recommendation
+models, which limit their capability.
+• We propose LLaDA-Rec, a generative recommendation model
+based on discrete diffusion, which introduces parallel seman-
+tic IDs and develops discrete diffusion training and inference
+methods tailored to recommendation tasks.
+• Experiments on three datasets demonstrate the effectiveness
+of LLaDA-Rec, which consistently outperforms both traditional
+item-ID-based methods and semantic-ID-based generative rec-
+ommendation models, thereby establishing discrete diffusion as
+a promising new paradigm for generative recommendation.
+2
+Related Work
+2.1
+Generative Recommendation
+Inspired by the success of large language models (LLMs) [47], gener-
+ative recommendation has garnered growing attention [4, 14, 15, 22,
+29, 32, 36, 46, 48, 49]. In this paradigm, each item is tokenized into
+a sequence of discrete tokens, known as semantic IDs (SIDs). Con-
+sequently, every item in a user’s interaction history is represented
+by its SIDs and fed into a generative model to produce the SIDs of
+the target item. In general, generative recommendation comprises
+two key stages: item tokenization and autoregressive generation.
+Existing item tokenization methods mainly include the following
+approaches. Clustering-based approaches, such as SEATER [33]
+and EAGER [38], cluster item embeddings to construct identifiers.
+
+LLaDA-Rec : Discrete Diffusion for Parallel Semantic ID Generation in Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Vector-quantization based approaches encompass residual quanti-
+zation methods, such as TIGER [29], LETTER [36], and LC-Rec [48],
+which employ RQ-VAE [45], and OneRec [4, 49], which employs
+RQ-KMeans; as well as product quantization [6] methods, such
+as RPG [14]. There are also studies [3, 35] that enhance genera-
+tive recommendation through latent reasoning [9]. However, most
+existing methods rely on an autoregressive paradigm combined
+with hierarchical quantization, which imposes unidirectional con-
+straints and error accumulation. To address these limitations, we
+propose parallel semantic IDs and adopt discrete diffusion as the
+generative model.
+2.2
+Discrete Diffusion Model
+The discrete diffusion model [8, 17, 25–27, 51], as an emerging lan-
+guage modeling architecture, has received widespread attention in
+recent years. Built upon a bidirectional Transformer backbone, it
+is trained through a forward token-masking noise process and a
+reverse denoising reconstruction, which together enable stronger
+bidirectional context modeling. During inference, tokens are gen-
+erated in parallel, while low-confidence tokens are re-masked and
+re-predicted, yielding an adaptive and flexible generation order.
+LLaDA [26] represents the first diffusion-based language model to
+achieve performance comparable to that of autoregressive models.
+Its extension, LLaDA-V [43], adapts the framework for visual under-
+standing, and MMaDA [40] further generalizes it to multimodal un-
+derstanding and generation. The follow-up version, LLaDA 1.5 [51],
+integrates DPO-based post-training for additional performance
+gains. In this work, we build upon the discrete diffusion model and
+leverage its advantages in bidirectional understanding and adaptive
+generation to advance generative recommendation.
+3
+Preliminaries and Background
+This section provides the problem formulation and describes the
+probability distribution underlying the discrete diffusion model.
+3.1
+Problem Formulation
+Let U and I denote the sets of users and items, respectively. Each
+user 𝑢∈U has a chronologically ordered interaction history H =
+{𝑖1,𝑖2, . . . ,𝑖𝑛−1}, where 𝑖𝑗is the 𝑗-th interacted item. The objective
+is to predict the next item 𝑖𝑛that user 𝑢is likely to interact with.
+In general, under the generative recommendation framework,
+each item is tokenized into a sequence of discrete tokens, namely se-
+mantic IDs (SIDs). The SID of item𝑖is denoted as𝑠𝑖= [𝑐𝑖,1,𝑐𝑖,2, . . . ,𝑐𝑖,𝑀],
+where 𝑀is the length of the SID and 𝑐𝑖,𝑗is the 𝑗-th token. Further-
+more, each item in the user’s interaction history can be represented
+by its SID, resulting in the following token sequence for the user
+history:
+SH = [𝑐1,1, . . . ,𝑐1,𝑀, 𝑐2,1, . . . ,𝑐2,𝑀, . . . , 𝑐𝑛−1,1, . . . ,𝑐𝑛−1,𝑀].
+(1)
+The task of predicting the next item can be formulated as the fol-
+lowing conditional probability maximization:
+𝜃∗= arg max
+𝜃
+P𝜃(𝑠𝑛|SH),
+(2)
+where 𝜃represents the parameters of the generative model. 𝜃∗
+denotes the optimal parameter.
+In the following, we first revisit the probabilistic formulation
+of the autoregressive approach, and then present the probabilistic
+formulation of discrete diffusion, which allows us to highlight the
+differences between the two methods.
+3.2
+Autoregressive Modeling
+Existing generative recommendation methods (e.g., TIGER [29])
+predominantly adopt the autoregressive paradigm, generating to-
+kens sequentially from left to right. At each step, the generation is
+conditioned on both the user’s historical interactions and the tokens
+generated in preceding steps. Formally, the conditional probability
+can be expressed as:
+P𝜃(𝑠𝑛| SH) =
+𝑀
+Ö
+𝑚=1
+P𝜃(𝑐𝑛,𝑚| 𝑐𝑛,<𝑚, SH),
+(3)
+where 𝑐𝑛,<𝑚denotes all tokens preceding 𝑐𝑛,𝑚; for the first token,
+it corresponds to a special [BOS] token.
+3.3
+Discrete Diffusion Modeling
+In contrast to the autoregressive paradigm, generation in discrete
+diffusion corresponds to the reverse process, in which a Mask Pre-
+dictor gradually predicts the 𝑀tokens of the next item starting
+from a fully masked sequence containing 𝑀[MASK] tokens. At each
+step, the model simultaneously predicts all positions, retains the
+token prediction for the position with the highest confidence, and
+re-masks the remaining positions; the updated sequence is then fed
+back into the model for further prediction. Formally, this process
+can be expressed as:
+P𝜃(𝑠𝑛| SH) =
+𝑇
+Ö
+𝑡=1
+𝑀
+Ö
+𝑚=1
+
+
+P𝜃
+ 𝑐𝑛,𝑚| 𝑠𝑡
+𝑛, SH
+ ,
+if 𝑐𝑡
+𝑛,𝑚= [MASK],
+1,
+otherwise.
+(4)
+where 𝑇denotes the number of generation steps. Here, 𝑠𝑡
+𝑛repre-
+sents the input at step 𝑡, with the initial state 𝑠1
+𝑛consisting entirely
+of 𝑀[MASK] tokens. 𝑐𝑡
+𝑛,𝑚denotes the 𝑚-th token of 𝑠𝑡
+𝑛. At each
+step, 𝑠𝑡
+𝑛is concatenated with SH and passed to the mask predictor,
+implemented as a Transformer encoder with bidirectional attention.
+Unlike Eq. (3), which requires exactly 𝑀steps to generate all
+tokens sequentially, the generation process in Eq. (4) proceeds for𝑇
+steps (𝑇≤𝑀). At each step, the mask predictor predicts all masked
+tokens parallel. the top- 𝑀
+𝑇tokens with the highest predicted proba-
+bilities are retained while the rest are re-masked. Overall, the advan-
+tages of our approach lie in parallel generation, adaptive generation
+order, and explicit control over the number of generation steps.
+4
+Our Approach: LLaDA-Rec
+This section introduces our proposed framework, LLaDA-Rec, as
+illustrated in Figure 2. Our approach consists of three main mod-
+ules: (1) Parallel Tokenization (Section 4.1): we employ Multi-Head
+VQ-VAE to generate parallel semantic IDs; (2) Discrete Diffusion
+Training (Section 4.2): we design a User-History level masking and
+a Next-Item level masking to guide the training process; (3) Discrete
+Diffusion Inference (Section 4.3): we enhance beam search so that
+discrete diffusion can generate the top-𝑘recommended items.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Teng Shi et al.
+(1) Parallel Tokenization
+1
+2
+3
+4
+5
+1
+2
+3
+4
+5
+1
+2
+3
+4
+5
+1
+2
+3
+4
+5
+3
+4
+2
+1
+Encoder
+Decoder
+Item Embedding
+(a) User-History Level Masking
+User History Tokens
+…
+…
+MASK Predictor
+Mask ratio 𝑟~𝑈(0,1)
+…
+MASK Predictor
+Mask ratio 𝑟~𝑈(0,1)
+User History Tokens
+Next Item Tokens
+(b) Next-Item Level Masking
+…
+…
+MASK Predictor
+…
+Remask
+…
+…
+Generation 
+at Step 𝑡
+𝑡= 1
+𝑡= 𝑇
+…
+User History Tokens
+Next Item Tokens
+(3) Discrete Diffusion Inference
+(2) Discrete Diffusion Training
+Codebooks
+Mask Token
+Item Tokens
+Incorrectly Predicted Token
+Figure 2: Overall framework of LLaDA-Rec, which consists of three main modules: (1) Parallel Tokenization, where Multi-Head
+VQ-VAE are used to produce parallel semantic IDs for each item; (2) Discrete Diffusion Training, which applies two masking
+strategies. The user-history level masking models inter-item sequential dependencies, and the next-item level masking captures
+intra-item semantic relationships; (3) Discrete Diffusion Inference, where beam search is adapted to discrete diffusion decoding
+to generate the final top-𝑘recommended items.
+4.1
+Parallel Tokenization via Multi-Head VQ-VAE
+To align with the autoregressive generation paradigm, existing gen-
+erative recommendation models typically employ hierarchical quan-
+tization methods such as RQ-VAE [29, 36, 48] or RQ-KMeans [4, 49].
+In these frameworks, earlier tokens (e.g., the first token) play a more
+dominant role, as subsequent tokens are conditionally dependent
+on them. In contrast, the bidirectional Transformer architecture
+adopted in discrete diffusion enables full mutual interactions among
+all tokens, rendering each token equally important in the represen-
+tation and generation process. To better align with this property,
+we propose a Multi-Head VQ-VAE architecture that eliminates hi-
+erarchical dependencies and models all tokens on an equal footing.
+Specifically, we first encode the textual information of item 𝑖(e.g.,
+title, description) using a pre-trained embedding model, such as
+BERT [5] or Sentence-T5 [24], to obtain its semantic representation
+v𝑖∈R𝐷. We then project v𝑖into a latent space via an encoder for
+subsequent quantization:
+z𝑖= Encoder(v𝑖),
+(5)
+where z𝑖∈R𝑑and Encoder(·) is implemented as a multilayer
+perceptron (MLP). Next, we partition z𝑖into 𝑀sub-vectors:
+z𝑖= [z𝑖,1; z𝑖,2; . . . ; z𝑖,𝑀],
+(6)
+where z𝑖,𝑚∈R𝑑/𝑀and 𝑚∈{1, 2, . . . , 𝑀}. Each sub-vector corre-
+sponds to a head and is quantized independently.
+We maintain 𝑀codebooks, where the 𝑚-th codebook is defined
+as C𝑚= {e𝑚,𝑘}𝐾
+𝑘=1, with 𝐾representing the size of the codebook and
+e𝑚,𝑘∈R𝑑/𝑀being a learnable code embedding. The quantization
+for the 𝑚-th sub-vector is formulated as:
+𝑐𝑖,𝑚= arg min
+𝑘
+∥z𝑖,𝑚−e𝑚,𝑘∥2
+2,
+e𝑚,𝑘∈C𝑚,
+(7)
+where 𝑐𝑖,𝑚denotes the selected code from the 𝑚-th codebook.
+After quantizing all 𝑀sub-vectors, we obtain the semantic ID
+of item 𝑖as 𝑠𝑖= [𝑐𝑖,1,𝑐𝑖,2, . . . ,𝑐𝑖,𝑀] , along with the correspond-
+ing code embeddings {e𝑐𝑖,1, e𝑐𝑖,2, . . . , e𝑐𝑖,𝑀}. By concatenating these
+embeddings, we construct the quantized representation:
+ˆz𝑖= [e𝑐1; e𝑐2; . . . ; e𝑐𝑀],
+(8)
+which is then passed through a decoder to reconstruct the original
+semantic vector v𝑖:
+ˆv𝑖= Decoder(ˆz𝑖),
+(9)
+where Decoder(·) is also implemented as an MLP.
+The overall VQ-VAE loss consists of the reconstruction loss
+LRecon and the vector quantization loss LVQ:
+LRecon = ∥v𝑖−ˆv𝑖∥2
+2,
+LVQ =
+𝑀
+∑︁
+𝑚=1
+
+∥sg[z𝑖,𝑚] −e𝑐𝑖,𝑚∥2
+2 + 𝛼∥z𝑖,𝑚−sg[e𝑐𝑖,𝑚]∥2
+2
+
+,
+LVQ−VAE = LRecon + LVQ,
+(10)
+where sg[·] denotes the stop-gradient operation and 𝛼is a hyper-
+parameter. LRecon ensures that the reconstructed vector ˆv𝑖matches
+the original semantic vector v𝑖. LVQ minimizes the distance be-
+tween each sub-vector and its corresponding code embedding.
+4.2
+Discrete Diffusion Training
+The original discrete diffusion model is trained for language tasks [26];
+however, there exists a gap between language and recommenda-
+tion tasks, as the original model does not inherently understand
+the semantic IDs used in recommendation. To bridge this gap, we
+design two masking mechanisms: (1) a User-History level masking
+that enables the model to capture inter-item sequential dependen-
+cies; and (2) a Next-Item level masking that helps the model learn
+the relationships among tokens within the same item (intra-item),
+enabling it to generate the next item based on historical context.
+
+LLaDA-Rec : Discrete Diffusion for Parallel Semantic ID Generation in Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+4.2.1
+Discrete Diffusion Process. The discrete diffusion model op-
+erates in two complementary stages: the forward process and
+the reverse process. In the forward process, tokens in the input
+sequence are progressively masked. At the extreme masking ratio
+𝑟= 1, all tokens are replaced with [MASK]. For intermediate ratios
+𝑟∈(0, 1), the sequence is partially masked, with each token inde-
+pendently having a probability 𝑟of being masked and a probability
+1−𝑟of remaining visible. In the reverse process, as 𝑟decreases from
+1 to 0, the model incrementally reconstructs the original sequence,
+starting from the fully masked state and progressively filling in the
+masked tokens.
+Based on this framework, we design two diffusion mask training
+strategies: user-history level masking and next-item level masking,
+which enable our discrete diffusion model to capture both inter-item
+and intra-item dependencies.
+4.2.2
+User-History Level Masking. We first apply the discrete diffu-
+sion masking process to the token sequence of the user history, SH.
+The objective of this procedure is to enable the MASK predictor
+to effectively capture the global dependencies among all tokens
+within the user’s interaction history.
+At each diffusion step 𝑟∈(0, 1), each token in SH is indepen-
+dently masked with probability 𝑟and remains visible with probabil-
+ity 1 −𝑟. The partially masked sequence at step 𝑟, denoted by S𝑟
+H,
+is then passed to the MASK predictor, which aims to reconstruct
+the masked tokens. The training loss for this masking strategy is
+defined as:
+LHis-Mask = −E𝑟,SH,S𝑟
+H
+"
+1
+𝑟
+𝑀×(𝑛−1)
+∑︁
+𝑖=1
+1
+h
+S𝑟
+H,𝑖= [MASK]
+i
+log P𝜃(SH,𝑖| S𝑟
+H)
+#
+,
+(11)
+where 1
+h
+S𝑟
+H,𝑖= [MASK]
+i
+denotes an indicator function that re-
+turns 1 if the 𝑖-th token in the user history SH is masked at step 𝑟,
+and 0 otherwise.
+4.2.3
+Next-Item Level Masking. We next apply the discrete diffu-
+sion masking process to the token sequence of the next item, while
+keeping the user history sequence SH fully visible. In this setting,
+the 𝑀tokens of the next item are progressively masked across diffu-
+sion steps. This strategy encourages the MASK predictor to capture
+the semantic relationships among different tokens within the same
+item, while generating the next item in a manner conditioned on
+the historical context.
+At each step 𝑟∈(0, 1), each token in the next item sequence 𝑠𝑛is
+independently masked with probability 𝑟and remains visible with
+probability 1 −𝑟. The partially masked sequence at step 𝑟, denoted
+as 𝑠𝑟
+𝑛, is then concatenated with the historical tokens SH and fed
+into the MASK predictor to reconstruct the masked tokens. The
+training objective is defined as:
+LItem-Mask = −E𝑟,𝑠𝑛,𝑠𝑟𝑛
+"
+1
+𝑟
+𝑀
+∑︁
+𝑖=1
+1
+
+𝑐𝑟
+𝑛,𝑖= [MASK]
+
+log P𝜃
+ 𝑐𝑛,𝑖| 𝑠𝑟
+𝑛, SH
+
+#
+,
+(12)
+where 1
+
+𝑐𝑟
+𝑛,𝑖= [MASK]
+
+denotes an indicator function that returns
+1 if the 𝑖-th token of the next item 𝑠𝑛is masked at step 𝑟, and
+0 otherwise.
+The loss function in Eq. (12) can be shown to be an upper bound
+on the negative log-likelihood of the conditional model distribution
+in Eq. (2), as proven in previous studies [27, 31]:
+−E[log P𝜃(𝑠𝑛| SH)] ≤LItem-Mask.
+(13)
+Consequently, minimizing the loss in Eq. (12) is equivalent to maxi-
+mizing the conditional probability defined in Eq. (2). This validates
+the soundness of the loss function.
+4.2.4
+Joint Training. To jointly optimize the learning objectives,
+we train the MASK predictor by combining the loss in Eq. (11)
+with that in Eq. (12). This joint objective encourages the model to
+capture the semantic information of diverse tokens within the user
+history, while simultaneously predicting the tokens of the next item
+conditioned on the historical context. The overall training loss is
+formulated as:
+LTotal = LItem-Mask + 𝜆His-MaskLHis-Mask + 𝜆Reg∥𝜃∥2
+2,
+(14)
+where 𝜆His-Mask is a weighting coefficient that balances the contri-
+butions of LItem-Mask and LHis-Mask. 𝜆Reg controls the strength of
+the 𝐿2 regularization term.
+4.3
+Discrete Diffusion Inference
+After training the discrete diffusion model, our objective is to gener-
+ate the top-𝑘recommended items. However, we face two challenges.
+(1) The original discrete diffusion models for language generation
+produce outputs through sampling [26], and their greedy top-1
+sampling cannot yield top-𝑘results. (2) The beam search algorithm,
+which is commonly used in generative recommendation [29, 48]
+to generate top-𝑘results, relies on a fixed left-to-right generation
+order. In contrast, discrete diffusion employs an adaptive and dy-
+namically changing generation order, making conventional beam
+search unsuitable for this setting.
+To overcome these challenges, we adapt beam search to the
+discrete diffusion framework, enabling it to generate the top-𝑘
+recommended items. This section introduces our proposed infer-
+ence method.
+4.3.1
+Initialization. As shown in Eq. (4), the generation process is
+divided into𝑇discrete steps. We denote by PG𝑡the set of positions
+that have already been generated at step 𝑡∈{1, . . . ,𝑇}. At the
+first step, PG1 = ∅. Let 𝑠𝑡
+𝑛denote the token sequence for the next
+item to be generated at step 𝑡. Specifically, at 𝑡= 1, we initialize
+𝑠1
+𝑛= {[MASK], . . . , [MASK]}, consisting of 𝑀[MASK] tokens.
+Given 𝑠𝑡
+𝑛and the user history token sequence SH at step 𝑡, the
+MASK predictor outputs a probability distribution over the vocabu-
+lary for each masked position:
+P𝑡,𝑚
+𝜃
+(𝑤| 𝑠𝑡
+𝑛, SH) ∈[0, 1],
+𝑚∈{1, . . . , 𝑀} \ PG𝑡,
+𝑤∈{1, . . . , |W|},
+(15)
+where𝑚indexes masked positions and 𝑤indexes candidate tokens
+in the vocabulary. Here, W denotes the vocabulary containing all
+possible tokens, and P𝑡,𝑚
+𝜃
+(·) represents the probability distribution
+over the vocabulary for position 𝑚at step 𝑡.
+4.3.2
+Generation Position Selection. Unlike left-to-right autore-
+gressive generation, discrete diffusion predicts all [MASK] positions
+in parallel at each step. To generate tokens iteratively, we first
+determine the positions to be generated at step 𝑡. Given that 𝑀
+tokens need to be generated in total over𝑇steps, at each step we se-
+lect the top- 𝑀
+𝑇unfilled positions with the highest maximum token
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Teng Shi et al.
+Table 1: Comparison of different generative recommenda-
+tion methods.
+Methods
+Attention Mechanism
+Generation Order
+Controllable
+Generation Step
+TIGER [29]
+Causal
+Left2Right
+%
+LETTER [36]
+Causal
+Left2Right
+%
+LC-Rec [48]
+Causal
+Left2Right
+%
+RPG [14]
+Causal
+Parallel
+%
+LLaDA-Rec
+Bidirectional
+Adaptive
+"
+probabilities:
+M𝑡=
+top -𝑀
+𝑇
+𝑚∈{1,...,𝑀}\PG𝑡
+
+max
+𝑤∈{1,...,|W|} P𝑡,𝑚
+𝜃
+(𝑤| 𝑠𝑡
+𝑛, SH)
+
+,
+PG𝑡+1 = PG𝑡∪M𝑡.
+(16)
+Here, M𝑡denotes the set of positions with the top- 𝑀
+𝑇confidence
+scores at step 𝑡. Following this selection, PG𝑡is updated via a union
+operation to obtain PG𝑡+1.
+4.3.3
+Beam Search for Discrete Diffusion. We perform beam search
+sequentially over all selected positions in M𝑡. Let B𝑡denote the
+beam set at step 𝑡, and B𝑡,0 as its initial state before processing any
+positions in M𝑡. Index the positions in M𝑡as {𝑚1,𝑚2, . . . ,𝑚|M𝑡|}.
+For each 𝑚𝑖, we first expand the current beam set with the top-𝐵
+candidate tokens at that position, and then prune it back to the
+top-𝐵beams according to the model scores:
+B𝑡,0 ←B𝑡,
+B𝑡,𝑖←B𝑡,𝑖−1 ∪
+top -𝐵
+𝑤∈{1,...,|W|}
+ P𝑡,𝑚𝑖
+𝜃
+(𝑤| 𝑠𝑡
+𝑛, SH),
+B𝑡,𝑖←top -𝐵
+𝑏∈B𝑡,𝑖
+ P𝑡
+𝜃(𝑏| 𝑠𝑡
+𝑛, SH),
+B𝑡+1 ←B𝑡, |M𝑡|.
+(17)
+Here, 𝐵is the beam size, top -𝐵(·) selects the 𝐵elements with the
+highest confidence scores, and P𝑡
+𝜃(·) denotes the joint probability of
+a beam 𝑏at step 𝑡. After beam expansion, the tokens at all selected
+positions M𝑡in 𝑠𝑡
+𝑛are replaced with the newly generated tokens
+to form the updated sequence 𝑠𝑡+1
+𝑛
+.
+4.3.4
+Iterative Generation. In each iteration, M𝑡is determined ac-
+cording to Eq. (16). All unselected positions are remasked so that
+the MASK predictor can re-evaluate them in the context of the par-
+tially generated sequence. With this updated sequence, the MASK
+predictor is applied again, and the process of position selection and
+beam search is repeated until all positions have been filled. The
+resulting sequences are then ranked by their overall probabilities,
+and the top-𝑘sequences are returned as recommendations.
+This iterative procedure enables the discrete diffusion model to
+refine predictions at unselected positions dynamically, achieving
+high-quality top-𝑘outputs while providing greater flexibility than
+strictly left-to-right autoregressive generation.
+4.4
+Discussion
+4.4.1
+Continuous vs. Discrete Diffusion in Recommendation. Con-
+tinuous diffusion models have been widely applied in image gener-
+ation [30, 41] and sequential recommendation [18, 19, 37, 42]. Op-
+erating in continuous spaces, they produce high-quality images or
+latent representations through a forward noising process followed
+Table 2: Statistics of the used datasets. “Avg.len” indicates the
+average number of interactions within each input sequence.
+Dataset
+#Users
+#Items
+#Interaction
+Sparsity
+Avg.len
+Scientific
+50,985
+25,848
+412,947
+99.969%
+8.10
+Instrument
+57,439
+24,587
+511,836
+99.964%
+8.91
+Game
+94,762
+25,612
+814,586
+99.966%
+8.60
+by reverse denoising. In contrast, discrete diffusion models [17, 26]
+are designed to generate sequences of discrete tokens.
+In recommendation tasks, continuous-diffusion-based approaches
+generally produce a latent representation which is later used to
+retrieve items via similarity search. In such methods, retrieval and
+model optimization are conducted as separate stages. By compari-
+son, our discrete diffusion approach directly generates the semantic
+IDs of items, thereby removing the retrieval stage and unifying
+generation and retrieval into a single optimization process. This
+integration simplifies the inference pipeline and leads to improved
+recommendation performance.
+4.4.2
+Advantages over Autoregressive Models. Autoregressive gen-
+erative recommendation methods [22, 29, 36, 48] generate tokens
+in a fixed left-to-right order, resulting in strong sequential depen-
+dencies and susceptibility to error accumulation, where an early
+mistake can propagate through the entire sequence. Their atten-
+tion mechanism is unidirectional (causal), restricting each token to
+attend only to its preceding tokens. Although RPG [14] employs
+multi-token prediction [7] for parallel generation of semantic IDs,
+the prediction is performed in a single step, preventing iterative
+refinement through re-masking and re-prediction. Moreover, it re-
+quires a complex decoding strategy.
+In contrast, discrete diffusion uses a adaptive, confidence-driven
+generation order that prioritizes tokens with high certainty, thereby
+reducing the impact of early-step errors and alleviating error ac-
+cumulation. It also incorporates bidirectional attention, allowing
+tokens to attend to both preceding and succeeding positions to cap-
+ture richer contextual semantics. Furthermore, discrete diffusion
+supports controllable generation steps, and can predict multiple
+tokens at each step.
+Overall, bidirectional modeling combined with adaptive genera-
+tion order aligns the generation process more closely with recom-
+mendation objectives, improving accuracy. Table 1 summarizes the
+key differences between LLaDA-Rec and representative generative
+recommendation methods.
+5
+Experiments
+We performed comprehensive experiments to assess the effective-
+ness of LLaDA-Rec. The code is available1.
+5.1
+Experimental Setup
+5.1.1
+Dataset. We evaluate our method on three categories from
+the widely used Amazon 2023 Review dataset [13]: “Industrial Sci-
+entific” (Scientific), “Musical Instruments” (Instrument), and “Video
+Games” (Game). In line with [12, 29], each user’s historical reviews
+are treated as interaction records and ordered chronologically, with
+1https://github.com/TengShi-RUC/LLaDA-Rec
+
+LLaDA-Rec : Discrete Diffusion for Parallel Semantic ID Generation in Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Table 3: Recommendation performance of various methods across the three datasets. The best-performing and second-best
+methods are denoted with boldface and underlining, respectively. The improvements over the second-best methods are
+statistically significant (paired 𝑡-test, 𝑝-value< 0.05).
+Datasets
+Metric
+Item ID-based
+Semantic ID-based
+GRU4Rec
+SASRec
+BERT4Rec
+FMLP-Rec
+LRURec
+DreamRec
+DiffuRec
+VQ-Rec
+TIGER
+TIGER-SAS
+LETTER
+LC-Rec
+RPG
+LLaDA-Rec
+Scientific
+Recall@1
+0.0071
+0.0063
+0.0045
+0.0046
+0.0049
+0.0052
+0.0050
+0.0076
+0.0084
+0.0067
+0.0082
+0.0091
+0.0087
+0.0098
+Recall@5
+0.0184
+0.0240
+0.0157
+0.0181
+0.0169
+0.0184
+0.0190
+0.0248
+0.0282
+0.0221
+0.0273
+0.0280
+0.0257
+0.0310
+Recall@10
+0.0272
+0.0379
+0.0264
+0.0300
+0.0267
+0.0299
+0.0310
+0.0385
+0.0446
+0.0356
+0.0423
+0.0434
+0.0395
+0.0474
+NDCG@5
+0.0128
+0.0152
+0.0100
+0.0113
+0.0110
+0.0118
+0.0119
+0.0162
+0.0183
+0.0144
+0.0179
+0.0186
+0.0174
+0.0203
+NDCG@10
+0.0156
+0.0197
+0.0134
+0.0151
+0.0141
+0.0155
+0.0158
+0.0206
+0.0236
+0.0187
+0.0227
+0.0235
+0.0218
+0.0256
+Instrument
+Recall@1
+0.0094
+0.0089
+0.0065
+0.0086
+0.0071
+0.0069
+0.0077
+0.0099
+0.0105
+0.0102
+0.0114
+0.0119
+0.0118
+0.0128
+Recall@5
+0.0297
+0.0331
+0.0255
+0.0299
+0.0272
+0.0245
+0.0283
+0.0345
+0.0359
+0.0342
+0.0362
+0.0379
+0.0362
+0.0406
+Recall@10
+0.0453
+0.0525
+0.0412
+0.0496
+0.0431
+0.0423
+0.0465
+0.0532
+0.0566
+0.0521
+0.0562
+0.0587
+0.0545
+0.0623
+NDCG@5
+0.0196
+0.0211
+0.0160
+0.0193
+0.0172
+0.0157
+0.0179
+0.0222
+0.0233
+0.0223
+0.0239
+0.0251
+0.0241
+0.0268
+NDCG@10
+0.0246
+0.0273
+0.0211
+0.0257
+0.0223
+0.0214
+0.0237
+0.0282
+0.0300
+0.0280
+0.0303
+0.0318
+0.0300
+0.0337
+Game
+Recall@1
+0.0149
+0.0128
+0.0082
+0.0099
+0.0134
+0.0125
+0.0111
+0.0150
+0.0166
+0.0170
+0.0169
+0.0165
+0.0209
+0.0203
+Recall@5
+0.0461
+0.0516
+0.0315
+0.0395
+0.0480
+0.0381
+0.0425
+0.0497
+0.0529
+0.0548
+0.0552
+0.0567
+0.0579
+0.0623
+Recall@10
+0.0712
+0.0823
+0.0530
+0.0649
+0.0753
+0.0611
+0.0709
+0.0769
+0.0823
+0.0847
+0.0863
+0.0891
+0.0853
+0.0942
+NDCG@5
+0.0307
+0.0323
+0.0199
+0.0246
+0.0308
+0.0253
+0.0268
+0.0325
+0.0348
+0.0360
+0.0362
+0.0366
+0.0397
+0.0415
+NDCG@10
+0.0387
+0.0421
+0.0267
+0.0328
+0.0396
+0.0326
+0.0359
+0.0412
+0.0442
+0.0457
+0.0462
+0.0471
+0.0485
+0.0517
+the earliest review placed first. For evaluation, we adopt the widely
+used leave-one-out protocol [16, 29]: in each user sequence, the
+last item is held out for testing and the second-to-last item is re-
+served for validation. The detailed statistics of the three datasets
+are presented in Table 2.
+5.1.2
+Baselines. We first compared our approach with traditional
+item ID-based methods. Item ID-based: (1) GRU4Rec [11] lever-
+ages gated recurrent units (GRUs) to model user interaction histo-
+ries; (2) SASRec [16] employs a unidirectional Transformer to cap-
+ture sequential dependencies; (3) BERT4Rec [34] utilizes a bidirec-
+tional Transformer trained with a cloze-style objective; (4) FMLP-
+Rec [50] adopts multi-layer perceptrons (MLPs) with learnable
+filters for sequential modeling; (5) LRURec [44] integrates linear
+recurrent units (LRUs) to efficiently process long-range user inter-
+actions. (6) DreamRec [42] uses SASRec outputs in a diffusion de-
+noising module, removing negative sampling and training only on
+positive samples; (7) DiffuRec [19] combines generative diffusion
+with sequential recommendation via a Transformer approximator
+to reconstruct target item embeddings.
+We also compared our approach with generative recommenda-
+tion methods based on semantic IDs. Semantic ID-based: (8) VQ-
+Rec [12] applies product quantization to tokenize items into se-
+mantic IDs, which are then pooled to obtain item representations;
+(9) TIGER [29] utilizes RQ-VAE to generate codebook identifiers,
+embedding semantic information into discrete code sequences;
+(10) TIGER-SAS [29] derives semantic IDs from SASRec-trained
+item embeddings rather than text embeddings; (11) LETTER [36]
+develops a learnable tokenizer that incorporates hierarchical seman-
+tics, collaborative signals, and code assignment diversity; (12) LC-
+Rec [48] exploits identifiers with auxiliary alignment tasks to as-
+sociate the generated codes with natural language; (13) RPG [14]
+is a lightweight semantic ID-based model that generates long, un-
+ordered semantic IDs in parallel via multi-token prediction [7].
+5.1.3
+Evaluation Metrics. Following prior studies [29, 36, 48], we
+evaluate performance using two commonly adopted ranking met-
+rics: top-𝑘Recall and top-𝑘Normalized Discounted Cumulative Gain
+(NDCG). We report results for 𝑘∈{1, 5, 10}. Since NDCG@1 is
+identical to Recall@1, it is omitted from the evaluation.
+5.1.4
+Implementation Details. For the parallel tokenization module,
+we adopt Sentence-T5 [24] to encode the title and other textual
+information of each item into an embedding. We employ 𝑀= 4
+codebooks, each containing 𝐾= 256 code vectors of dimension
+𝑑= 32. The weight 𝛼in Eq. (10) is set to 0.25. The Multi-Head VQ-
+VAE is trained for 10,000 epochs using the AdamW optimizer [23]
+with a learning rate of 1 × 10−3 and a batch size of 2,048.
+For the discrete diffusion model, the MASK predictor is a bidi-
+rectional Transformer encoder with a token embedding dimen-
+sion of 256 and 8 attention heads per layer. On the Scientific and
+Instrument datasets, we use a 4-layer encoder, whereas on the
+Game dataset we use a 6-layer encoder. The model parameters
+are randomly initialized and trained using our designed loss func-
+tion. The weight 𝜆His-Mask in Eq. (14) is tuned over {1, 2, 3, 4, 5}.
+We train the Transformer encoder for 150 epochs with early stop-
+ping, using the AdamW optimizer. The learning rate is tuned over
+{0.005, 0.003, 0.001} and the weight decay over {0.05, 0.005, 0.001}.
+The batch size is set to 1,024.
+5.2
+Overall Performance
+Table 3 reports the results across the three datasets, and we can
+observe that:
+• Firstly, compared with both traditional item ID-based approaches
+and generative semantic ID-based approaches, LLaDA-Rec achieves
+state-of-the-art (SOTA) results. This confirms the benefits of dis-
+crete diffusion training and inference, together with the design
+of Multi-Head VQ-VAE.
+• Secondly, we can see that generative recommendation methods
+based on semantic IDs generally outperform traditional meth-
+ods based on item IDs, which verifies the advantages of using
+semantic IDs to capture the correlations between different items
+as well as the benefits of generative approaches.
+• Finally, we can also observe that both the parallel semantic ID-
+based methods, RPG and LLaDA-Rec, achieve promising results.
+This confirms the advantages of parallel semantic IDs, and the
+superior performance of LLaDA-Rec further demonstrates the
+benefits of discrete diffusion.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Teng Shi et al.
+Table 4: Ablation results on the three datasets. “w/o” indicates
+that the corresponding module is removed. R@5 and N@5
+denote Recall@5 and NDCG@5, respectively.
+Model
+Scientific
+Instrument
+Game
+R@5
+N@5
+R@5
+N@5
+R@5
+N@5
+LLaDA-Rec
+0.0310
+0.0203
+0.0406
+0.0268
+0.0623
+0.0415
+Tokenizer
+RQ-VAE
+0.0293
+0.0191
+0.0367
+0.0244
+0.0604
+0.0399
+RQ-Kmeans
+0.0250
+0.0165
+0.0344
+0.0224
+0.0552
+0.0370
+OPQ
+0.0237
+0.0155
+0.0340
+0.0229
+0.0552
+0.0362
+Training
+w/o LHis-Mask
+0.0255
+0.0169
+0.0321
+0.0209
+0.0544
+0.0356
+w/o LItem-Mask
+0.0264
+0.0172
+0.0355
+0.0231
+0.0571
+0.0376
+Inference
+w/o Beam Search
+0.0077
+0.0077
+0.0091
+0.0091
+0.0162
+0.0162
+5.3
+Ablation Study
+We conducted ablation studies on three datasets to verify the effect
+of each module in LLaDA-Rec, as shown in Table 4.
+5.3.1
+Tokenizer. As discussed in Section 4.1, to adapt the bidirec-
+tional Transformer-based discrete diffusion framework, we design
+Multi-Head VQ-VAE. We compare these with several commonly
+used semantic ID generation methods, including RQ-VAE [29, 48],
+RQ-Kmeans [4], and OPQ [12, 14]. Experimental results show that
+semantic IDs derived from residual quantization (RQ) consistently
+underperform, suggesting that RQ is not well aligned with bidi-
+rectional Transformers. This misalignment arises because, in RQ,
+earlier tokens tend to exert greater influence, whereas in LLaDA-
+Rec, token importance is uniformly distributed, making it more
+suitable for the parallel semantic ID structure.
+Furthermore, even when replacing our tokenizer with RQ-VAE,
+our method still surpasses the baseline in most cases, thereby val-
+idating the robustness and architectural advantage of our gen-
+erative framework. Finally, clustering-based approaches such as
+RQ-Kmeans and OPQ exhibit inferior performance compared to
+RQ-VAE and VQ-VAE, confirming that VAE-based quantization
+methods possess stronger representational capacity.
+5.3.2
+Training. In Section 4.2, we introduce two mask mechanisms
+for training and analyze the impact of the two corresponding loss
+functions on the results. From the results, we observe that remov-
+ing either loss function leads to performance degradation. The loss
+LHis-Mask (Eq. (11)) facilitates better modeling of relationships be-
+tween different items. The loss LItem-Mask (Eq. (12)) aids in capturing
+the semantic relationships among different tokens within the same
+item, and enables the model to predict the next item conditioned
+on the given history.
+5.3.3
+Inference. As discussed in Section 4.3, the original diffusion
+language model [26], which relies on probabilistic sampling, returns
+only the top-1 result. We adapt beam search so that it can generate
+the top-𝑘recommended items. To assess its impact, we remove beam
+search and instead apply the original diffusion language model with
+(a.1) Causal
+Item 1
+Item 2
+(a.2) Inter-Item Causal
+Item 1
+Item 2
+(a.4) Bidirectional
+Item 1
+Item 2
+(a.3) Intra-Item Causal
+Item 1
+Item 2
+(a) Different Attention Mechanism
+NDCG@5
+Recall@5
+0.000
+0.008
+0.016
+0.024
+0.032
+0.040
+NDCG@5
+Causal
+Inter-Item Causal
+Intra-Item Causal
+Bidirectional
+0.000
+0.011
+0.022
+0.033
+0.044
+0.055
+Recall@5
+(b) Instrument
+NDCG@5
+Recall@5
+0.000
+0.012
+0.024
+0.036
+0.048
+0.060
+NDCG@5
+Causal
+Inter-Item Causal
+Intra-Item Causal
+Bidirectional
+0.000
+0.017
+0.034
+0.051
+0.068
+0.085
+Recall@5
+(c) Game
+Figure 3: Comparison of different attention mechanisms.
+(a): Attention masks corresponding to each mechanism. (b)
+and (c): Performance under different attention mechanisms.
+a greedy search strategy to return the top-1 result. The performance
+drops substantially, confirming the importance of beam search in
+generative recommendation tasks. It is worth noting that greedy
+search produces only a single top-1 result, which causes the values
+of Recall and NDCG to become identical.
+5.4
+Experimental Analysis
+We further performed experimental analysis to assess the effective-
+ness of LLaDA-Rec.
+5.4.1
+Impact of the Attention Mechanism. Our method is built upon
+a bidirectional Transformer, which offers enhanced capability for
+modeling contextual dependencies in both directions. We compare
+it against several alternative attention mechanisms: (1) causal atten-
+tion, commonly employed in autoregressive models; (2) inter-item
+causal attention, in which attention across different items is causal,
+while attention within each item is bidirectional; and (3) intra-item
+causal attention, in which attention within each item is causal,
+while attention across different items is bidirectional. The atten-
+tion masks corresponding to these mechanisms are illustrated in
+Figure 3(a).
+Figure 3 further compares their performance. As shown, bidi-
+rectional attention yields the best results, attributed to its superior
+ability to capture contextual dependencies. In contrast, causal atten-
+tion, constrained by its unidirectional structure, exploits contextual
+information less effectively and thus performs the worst. Both inter-
+item causal and intra-item causal attention achieve competitive
+performance, highlighting that incorporating bidirectional atten-
+tion—either across items or within items—is crucial for effective
+contextual modeling.
+5.4.2
+Impact of Generation Order. As outlined in Section 4.3, our
+generation order is determined dynamically by selecting, at each
+step, the position with the highest model confidence. We compare
+this adaptive strategy with fixed left-to-right (left2right) and right-
+to-left (right2left) orders (Figure 4). The adaptive approach consis-
+tently delivers superior performance, with left2right occasionally
+
+LLaDA-Rec : Discrete Diffusion for Parallel Semantic ID Generation in Generative Recommendation
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+NDCG@5
+Recall@5
+0.025
+0.026
+0.027
+0.028
+0.029
+0.030
+NDCG@5
+Left2Right
+Right2Left
+Adaptive
+0.035
+0.037
+0.039
+0.041
+0.043
+0.045
+Recall@5
+(a) Instrument
+NDCG@5
+Recall@5
+0.035
+0.038
+0.041
+0.044
+0.047
+0.050
+NDCG@5
+Left2Right
+Right2Left
+Adaptive
+0.055
+0.057
+0.059
+0.061
+0.063
+0.065
+Recall@5
+(b) Game
+Figure 4: Performance under different generation orders.
+1
+2
+3
+4
+0.000
+0.007
+0.014
+0.021
+0.028
+0.035
+NDCG@5
+NDCG@5
+0.000
+0.011
+0.022
+0.033
+0.044
+0.055
+Recall@5
+Recall@5
+(a) Instrument
+1
+2
+3
+4
+0.000
+0.011
+0.022
+0.033
+0.044
+0.055
+NDCG@5
+NDCG@5
+0.000
+0.016
+0.032
+0.048
+0.064
+0.080
+Recall@5
+Recall@5
+(b) Game
+Figure 5: Performance under different generation steps.
+1
+2
+3
+4
+5
+0.020
+0.022
+0.024
+0.026
+0.028
+0.030
+NDCG@5
+NDCG@5
+0.030
+0.034
+0.038
+0.042
+0.046
+0.050
+Recall@5
+Recall@5
+(a) Instrument
+1
+2
+3
+4
+5
+0.035
+0.037
+0.039
+0.041
+0.043
+0.045
+NDCG@5
+NDCG@5
+0.055
+0.057
+0.059
+0.061
+0.063
+0.065
+Recall@5
+Recall@5
+(b) Game
+Figure 6: Performance of different 𝜆His-Mask (Eq. (14)) values.
+producing the poorest results, highlighting the shortcomings of the
+commonly used left2right scheme. Our method’s ability to progress
+from easier to harder tokens provides a notable advantage.
+5.4.3
+Impact of Generation Steps. As discussed in Sections 3.3
+and 4.3, we can control the number of generation steps so that
+the model produces multiple tokens per step. We analyze the im-
+pact of the generation steps on performance, as shown in Figure 5. It
+can be observed that increasing the number of steps leads to better
+results. Although using fewer steps improves generation efficiency,
+it also results in a significant performance drop. How to achieve
+a better trade-off between efficiency and performance with fewer
+steps remains an open question, and some recent studies on diffu-
+sion language models have started to explore this direction [2, 10].
+5.4.4
+Impact of Hyper-parameters. We investigate the impact of
+different hyperparameters on the results. Specifically, we analyze
+the effect of the weight 𝜆His-Mask in Eq. (14), as illustrated in Figure 6.
+The results show that moderately increasing 𝜆His-Mask can improve
+performance, enabling the model to better capture relationships
+among different tokens in the history. However, setting 𝜆His-Mask
+too large may hinder the model’s ability to predict the next item
+conditioned on the given history.
+6
+Conclusion
+In this work, we revisit generative recommendation from the per-
+spective of discrete diffusion, addressing the unidirectional con-
+straints and error accumulation inherent in existing autoregressive
+approaches. We propose LLaDA-Rec, a bidirectional generative
+recommendation framework that leverages parallel semantic IDs,
+tailored masking mechanisms, and an adapted beam search strategy
+to align discrete diffusion with recommendation tasks. This design
+enables the model to capture both global inter-item and intra-item
+dependencies while mitigating the propagation of early-stage pre-
+diction errors. Extensive experiments on three real-world datasets
+demonstrate that LLaDA-Rec consistently outperforms both tradi-
+tional ID-based recommenders and state-of-the-art semantic-ID-
+based generative recommendation models.
+References
+[1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Floren-
+cia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal
+Anadkat, et al. 2023. Gpt-4 technical report. arXiv preprint arXiv:2303.08774
+(2023).
+[2] Tianqi Chen, Shujian Zhang, and Mingyuan Zhou. 2025. DLM-One: Diffusion Lan-
+guage Models for One-Step Sequence Generation. arXiv preprint arXiv:2506.00290
+(2025).
+[3] Sunhao Dai, Jiakai Tang, Jiahua Wu, Kun Wang, Yuxuan Zhu, Bingjun Chen,
+Bangyang Hong, Yu Zhao, Cong Fu, Kangle Wu, et al. 2025. OnePiece: Bringing
+Context Engineering and Reasoning to Industrial Cascade Ranking System. arXiv
+preprint arXiv:2509.18091 (2025).
+[4] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. Onerec: Unifying retrieve and rank with generative
+recommender and iterative preference alignment. arXiv preprint arXiv:2502.18965
+(2025).
+[5] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019. Bert:
+Pre-training of deep bidirectional transformers for language understanding. In
+Proceedings of the 2019 conference of the North American chapter of the association
+for computational linguistics: human language technologies, volume 1 (long and
+short papers). 4171–4186.
+[6] Tiezheng Ge, Kaiming He, Qifa Ke, and Jian Sun. 2013. Optimized product
+quantization. IEEE transactions on pattern analysis and machine intelligence 36, 4
+(2013), 744–755.
+[7] Fabian Gloeckle, Badr Youbi Idrissi, Baptiste Rozière, David Lopez-Paz, and
+Gabriel Synnaeve. 2024. Better & faster large language models via multi-token
+prediction. arXiv preprint arXiv:2404.19737 (2024).
+[8] Shuyang Gu, Dong Chen, Jianmin Bao, Fang Wen, Bo Zhang, Dongdong Chen,
+Lu Yuan, and Baining Guo. 2022. Vector quantized diffusion model for text-to-
+image synthesis. In Proceedings of the IEEE/CVF conference on computer vision
+and pattern recognition. 10696–10706.
+[9] Shibo Hao, Sainbayar Sukhbaatar, DiJia Su, Xian Li, Zhiting Hu, Jason Weston, and
+Yuandong Tian. 2024. Training large language models to reason in a continuous
+latent space. arXiv preprint arXiv:2412.06769 (2024).
+[10] Satoshi Hayakawa, Yuhta Takida, Masaaki Imaizumi, Hiromi Wakaki, and Yuki
+Mitsufuji. 2024. Distillation of discrete diffusion through dimensional correlations.
+arXiv preprint arXiv:2410.08709 (2024).
+[11] Balázs Hidasi, Alexandros Karatzoglou, Linas Baltrunas, and Domonkos Tikk.
+2016. Session-based Recommendations with Recurrent Neural Networks. In 4th
+International Conference on Learning Representations, ICLR 2016, San Juan, Puerto
+Rico, May 2-4, 2016, Conference Track Proceedings, Yoshua Bengio and Yann LeCun
+(Eds.).
+[12] Yupeng Hou, Zhankui He, Julian McAuley, and Wayne Xin Zhao. 2023. Learning
+vector-quantized item representation for transferable sequential recommenders.
+In Proceedings of the ACM Web Conference 2023. 1162–1171.
+[13] Yupeng Hou, Jiacheng Li, Zhankui He, An Yan, Xiusi Chen, and Julian McAuley.
+2024. Bridging language and items for retrieval and recommendation. arXiv
+preprint arXiv:2403.03952 (2024).
+[14] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating long
+semantic IDs in parallel for recommendation. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V. 2. 956–966.
+[15] Wenyue Hua, Shuyuan Xu, Yingqiang Ge, and Yongfeng Zhang. 2023. How to
+index item ids for recommendation foundation models. In Proceedings of the
+Annual International ACM SIGIR Conference on Research and Development in
+Information Retrieval in the Asia Pacific Region. 195–204.
+
+Conference acronym ’XX, June 03–05, 2018, Woodstock, NY
+Teng Shi et al.
+[16] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE International Conference on Data Mining (ICDM). IEEE,
+197–206.
+[17] Tianyi Li, Mingda Chen, Bowei Guo, and Zhiqiang Shen. 2025. A survey on
+diffusion language models. arXiv preprint arXiv:2508.10875 (2025).
+[18] Wuchao Li, Rui Huang, Haijun Zhao, Chi Liu, Kai Zheng, Qi Liu, Na Mou, Guorui
+Zhou, Defu Lian, Yang Song, et al. 2025. DimeRec: a unified framework for
+enhanced sequential recommendation via generative diffusion models. In Pro-
+ceedings of the Eighteenth ACM International Conference on Web Search and Data
+Mining. 726–734.
+[19] Zihao Li, Aixin Sun, and Chenliang Li. 2023. Diffurec: A diffusion model for
+sequential recommendation. ACM Transactions on Information Systems 42, 3
+(2023), 1–28.
+[20] Xinyu Lin, Haihan Shi, Wenjie Wang, Fuli Feng, Qifan Wang, See-Kiong Ng, and
+Tat-Seng Chua. 2025. Order-agnostic identifier for large language model-based
+generative recommendation. In Proceedings of the 48th international ACM SIGIR
+conference on research and development in information retrieval. 1923–1933.
+[21] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Cheng-
+gang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. 2024. Deepseek-v3
+technical report. arXiv preprint arXiv:2412.19437 (2024).
+[22] Enze Liu, Bowen Zheng, Cheng Ling, Lantao Hu, Han Li, and Wayne Xin Zhao.
+2025. Generative recommender with end-to-end learnable item tokenization.
+In Proceedings of the 48th International ACM SIGIR Conference on Research and
+Development in Information Retrieval. 729–739.
+[23] Ilya Loshchilov and Frank Hutter. 2017. Decoupled weight decay regularization.
+arXiv preprint arXiv:1711.05101 (2017).
+[24] Jianmo Ni, Gustavo Hernandez Abrego, Noah Constant, Ji Ma, Keith B Hall,
+Daniel Cer, and Yinfei Yang. 2021. Sentence-t5: Scalable sentence encoders from
+pre-trained text-to-text models. arXiv preprint arXiv:2108.08877 (2021).
+[25] Shen Nie, Fengqi Zhu, Chao Du, Tianyu Pang, Qian Liu, Guangtao Zeng, Min
+Lin, and Chongxuan Li. [n. d.]. Scaling up Masked Diffusion Models on Text. In
+The Thirteenth International Conference on Learning Representations.
+[26] Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou,
+Yankai Lin, Ji-Rong Wen, and Chongxuan Li. 2025. Large language diffusion
+models. arXiv preprint arXiv:2502.09992 (2025).
+[27] Jingyang Ou, Shen Nie, Kaiwen Xue, Fengqi Zhu, Jiacheng Sun, Zhenguo Li,
+and Chongxuan Li. [n. d.]. Your Absorbing Discrete Diffusion Secretly Models
+the Conditional Distributions of Clean Data. In The Thirteenth International
+Conference on Learning Representations.
+[28] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang,
+Michael Matena, Yanqi Zhou, Wei Li, and Peter J Liu. 2020. Exploring the limits
+of transfer learning with a unified text-to-text transformer. Journal of machine
+learning research 21, 140 (2020), 1–67.
+[29] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Hulikal Keshavan,
+Trung Vu, Lukasz Heldt, Lichan Hong, Yi Tay, Vinh Tran, Jonah Samost, et al.
+2023. Recommender systems with generative retrieval. Advances in Neural
+Information Processing Systems 36 (2023), 10299–10315.
+[30] Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Björn
+Ommer. 2022. High-resolution image synthesis with latent diffusion models. In
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition.
+10684–10695.
+[31] Jiaxin Shi, Kehang Han, Zhe Wang, Arnaud Doucet, and Michalis Titsias. 2024.
+Simplified and generalized masked diffusion for discrete data. Advances in neural
+information processing systems 37 (2024), 103131–103167.
+[32] Teng Shi, Jun Xu, Xiao Zhang, Xiaoxue Zang, Kai Zheng, Yang Song, and Enyun
+Yu. 2025. GenSAR: Unifying Balanced Search and Recommendation with Genera-
+tive Retrieval. In Proceedings of the Nineteenth ACM Conference on Recommender
+Systems. 124–134.
+[33] Zihua Si, Zhongxiang Sun, Jiale Chen, Guozhang Chen, Xiaoxue Zang, Kai Zheng,
+Yang Song, Xiao Zhang, Jun Xu, and Kun Gai. 2024. Generative retrieval with
+semantic tree-structured identifiers and contrastive learning. In Proceedings of the
+2024 Annual International ACM SIGIR Conference on Research and Development in
+Information Retrieval in the Asia Pacific Region. 154–163.
+[34] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential Recommendation with Bidirectional Encoder Rep-
+resentations from Transformer. In Proceedings of the 28th ACM International
+Conference on Information and Knowledge Management (Beijing, China) (CIKM
+’19). ACM, New York, NY, USA, 1441–1450.
+[35] Jiakai Tang, Sunhao Dai, Teng Shi, Jun Xu, Xu Chen, Wen Chen, Jian Wu, and
+Yuning Jiang. 2025. Think before recommend: Unleashing the latent reasoning
+power for sequential recommendation. arXiv preprint arXiv:2503.22675 (2025).
+[36] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable item tokenization for generative
+recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management. 2400–2409.
+[37] Wenjie Wang, Yiyan Xu, Fuli Feng, Xinyu Lin, Xiangnan He, and Tat-Seng Chua.
+2023. Diffusion recommender model. In Proceedings of the 46th international ACM
+SIGIR conference on research and development in information retrieval. 832–841.
+[38] Ye Wang, Jiahao Xun, Minjie Hong, Jieming Zhu, Tao Jin, Wang Lin, Haoyuan
+Li, Linjun Li, Yan Xia, Zhou Zhao, et al. 2024. Eager: Two-stream generative
+recommender with behavior-semantic collaboration. In Proceedings of the 30th
+ACM SIGKDD Conference on Knowledge Discovery and Data Mining. 3245–3254.
+[39] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng,
+Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. 2025. Qwen3 technical
+report. arXiv preprint arXiv:2505.09388 (2025).
+[40] Ling Yang, Ye Tian, Bowen Li, Xinchen Zhang, Ke Shen, Yunhai Tong, and Mengdi
+Wang. 2025. Mmada: Multimodal large diffusion language models. arXiv preprint
+arXiv:2505.15809 (2025).
+[41] Ling Yang, Zhilong Zhang, Yang Song, Shenda Hong, Runsheng Xu, Yue Zhao,
+Wentao Zhang, Bin Cui, and Ming-Hsuan Yang. 2023. Diffusion models: A
+comprehensive survey of methods and applications. ACM computing surveys 56,
+4 (2023), 1–39.
+[42] Zhengyi Yang, Jiancan Wu, Zhicai Wang, Xiang Wang, Yancheng Yuan, and
+Xiangnan He. 2023. Generate what you prefer: Reshaping sequential recommen-
+dation via guided diffusion. Advances in Neural Information Processing Systems
+36 (2023), 24247–24261.
+[43] Zebin You, Shen Nie, Xiaolu Zhang, Jun Hu, Jun Zhou, Zhiwu Lu, Ji-Rong Wen,
+and Chongxuan Li. 2025. Llada-v: Large language diffusion models with visual
+instruction tuning. arXiv preprint arXiv:2505.16933 (2025).
+[44] Zhenrui Yue, Yueqi Wang, Zhankui He, Huimin Zeng, Julian McAuley, and Dong
+Wang. 2024. Linear recurrent units for sequential recommendation. In Proceedings
+of the 17th ACM International Conference on Web Search and Data Mining. 930–
+938.
+[45] Neil Zeghidour, Alejandro Luebs, Ahmed Omran, Jan Skoglund, and Marco
+Tagliasacchi. 2021. Soundstream: An end-to-end neural audio codec. IEEE/ACM
+Transactions on Audio, Speech, and Language Processing 30 (2021), 495–507.
+[46] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao, Zhao-
+jie Gong, Fangda Gu, Jiayuan He, et al. 2024. Actions Speak Louder than Words:
+Trillion-Parameter Sequential Transducers for Generative Recommendations. In
+International Conference on Machine Learning. PMLR, 58484–58509.
+[47] Wayne Xin Zhao, Kun Zhou, Junyi Li, Tianyi Tang, Xiaolei Wang, Yupeng Hou,
+Yingqian Min, Beichen Zhang, Junjie Zhang, Zican Dong, et al. 2023. A survey
+of large language models. arXiv preprint arXiv:2303.18223 1, 2 (2023).
+[48] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting large language models by integrating
+collaborative semantics for recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). IEEE, 1435–1448.
+[49] Guorui Zhou, Jiaxin Deng, Jinghao Zhang, Kuo Cai, Lejian Ren, Qiang Luo, Qian-
+qian Wang, Qigen Hu, Rui Huang, Shiyao Wang, et al. 2025. OneRec Technical
+Report. arXiv preprint arXiv:2506.13695 (2025).
+[50] Kun Zhou, Hui Yu, Wayne Xin Zhao, and Ji-Rong Wen. 2022. Filter-Enhanced
+MLP is All You Need for Sequential Recommendation. In Proceedings of the ACM
+Web Conference 2022 (Virtual Event, Lyon, France) (WWW ’22). Association for
+Computing Machinery, New York, NY, USA, 2388–2399.
+[51] Fengqi Zhu, Rongzhen Wang, Shen Nie, Xiaolu Zhang, Chunwei Wu, Jun Hu, Jun
+Zhou, Jianfei Chen, Yankai Lin, Ji-Rong Wen, et al. 2025. LLaDA 1.5: Variance-
+Reduced Preference Optimization for Large Language Diffusion Models. arXiv
+preprint arXiv:2505.19223 (2025).
