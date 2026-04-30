@@ -1,5 +1,5 @@
 name: exp050
-description: "M-tier NTP: 0.6b vs 4b SID × output-gate vs CADET — 2x2 ablation"
+description: "M-tier NTP: 0.6b vs 4b SID × output-gate vs CADET (± RoPE on 0.6b) — ablation"
 base: _base.yaml
 
 # Model: M-tier (same as EXP-043/048 baseline)
@@ -10,7 +10,6 @@ top_k: 2
 lr: 1.0e-3
 
 use_segment_emb: true
-# No RoPE: EXP-048 confirmed no benefit on M-tier
 
 variants:
   - name: exp050-0.6b-gate
@@ -29,3 +28,16 @@ variants:
     sid_cache_name: exp049-4b-nc8192-h128
     ntp_data_name: exp049-4b-nc8192-h128
     attn_gating_mode: cadet
+  # RoPE re-validation on 0.6b with new SID (EXP-048 showed no benefit but used old SID)
+  - name: exp050-0.6b-gate-rope
+    sid_cache_name: exp049-0.6b-nc8192-h128
+    ntp_data_name: exp049-0.6b-nc8192-h128
+    use_gate_attn: true
+    use_rope: true
+    rope_dims: "order:0.5,time:0.5,layer:0.0"
+  - name: exp050-0.6b-cadet-rope
+    sid_cache_name: exp049-0.6b-nc8192-h128
+    ntp_data_name: exp049-0.6b-nc8192-h128
+    attn_gating_mode: cadet
+    use_rope: true
+    rope_dims: "order:0.5,time:0.5,layer:0.0"
