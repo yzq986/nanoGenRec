@@ -11,12 +11,14 @@
 Tokenizer ✅ → NTP ✅ → RL 对齐 ← (当前) → 部署
 ```
 
-- **Tokenizer**: 4096×3 binary MLP-FSQ `[2]×12` 确认为赢家 (EXP-012, snHR=0.095, collision=0.89%)
-- **Embedding**: Qwen3 0.6B/4B/8B 三套 SID cache 已构建 (EXP-026/043)；4B 理论上限最优 (floor PPL=11.78)；**8B 需扩大 FSQ hidden** 修复 L2 entropy 坍缩
-- **NTP**: S-tier R@500=61.2%，M-tier R@500=**70.4%** (EXP-043)；scaling law 已更新，4B SID floor < 0.6B
-- **Features**: time_gap + action_level + segment_emb 三合一 +3.7pp (EXP-036)；TO-RoPE 实验进行中 (EXP-044)
-- **RL 对齐**: SP-DPO → RF-DPO → GRPO → ECPO 全链路已完成，SOTA R@500=**67.8%** (EXP-029)；下一步：以 M-tier SFT 为起点重做 RL 链路
-- **Ideas**: 63 个可实验想法已归档, 来源 39 篇工业论文
+| 阶段 | SOTA | 实验 | 文档 |
+|------|------|------|------|
+| **Tokenizer** | 4096×3 binary `[2]×12`，snHR=0.095，CR=0.89% | EXP-012 | [experiments/logs/tokenizer/README.md](experiments/logs/tokenizer/README.md) |
+| **Embedding** | exp026-0.6b-14d，CR=0.49%，Gini_d2=0.33 | EXP-026 | ↑ |
+| **NTP** | M-tier bare R@500=**70.2%**；L-tier SFT R@500=64.1% | EXP-043/047 | [experiments/logs/ntp/README.md](experiments/logs/ntp/README.md) |
+| **RL 对齐** | ECPO R@500=**65.7%**（S-tier 链路）；L-tier 链路待启动 | EXP-039B | [experiments/logs/rl/README.md](experiments/logs/rl/README.md) |
+
+⚠️ **待修复**：EXP-045 FSQ sweep 用了 `num_clusters=1024`（应为 4096），待重跑（EXP-049 规划中）。
 
 ## 流程总览
 
