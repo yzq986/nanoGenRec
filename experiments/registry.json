@@ -182,6 +182,136 @@
       "target_sid_found_rate": 0.349
     }
   },
+  "54e72469ffdb": {
+    "config": {
+      "action_l2_only": false,
+      "batch_size": 4096,
+      "contrastive_dim": 128,
+      "contrastive_temp": 0.07,
+      "contrastive_weight": 0.0,
+      "date_end": "2026-03-31",
+      "date_start": "2026-03-18",
+      "embed_dim": 512,
+      "entp_weight": 0.0,
+      "expert_dim": null,
+      "lr": 0.001,
+      "max_seq_len": 512,
+      "min_action_level": 1,
+      "model": "s-tier",
+      "n_eval_target": 50000,
+      "n_experts": 8,
+      "n_items": 10,
+      "n_transformer_layers": 8,
+      "ntp_data_name": "exp044b-0.6b-14d",
+      "rope_dims": "order:0.5,time:0.5,layer:0.0",
+      "sid_cache_name": "exp026-0.6b-14d",
+      "top_k": 2,
+      "use_gate_attn": true,
+      "use_rope": true,
+      "use_segment_emb": true
+    },
+    "git_commit": "dc4776ad286e",
+    "name": "exp048-m-2dim",
+    "registered_at": "2026-04-30T10:37:28.821283",
+    "results": {
+      "avg_loss": 2.8719,
+      "depth_acc_beam": [
+        0.032,
+        0.025,
+        0.023
+      ],
+      "depth_hit@10": [
+        0.2173,
+        0.2052,
+        0.2047
+      ],
+      "depth_hit@10_indep": [
+        0.2164,
+        0.8669,
+        0.9051
+      ],
+      "item_recall@10": 0.151,
+      "item_recall@100": 0.455,
+      "item_recall@50": 0.341,
+      "item_recall@500": 0.701,
+      "layer_ppl": [
+        317.5599,
+        6.709,
+        2.6341
+      ],
+      "n_eval_items": 49166,
+      "n_eval_positions": 148078,
+      "n_recall_samples": 1000,
+      "ppl": 17.6706,
+      "target_sid_found_rate": 0.702
+    },
+    "results_updated_at": "2026-04-30T11:03:59.760596"
+  },
+  "564fc749a6bd": {
+    "config": {
+      "action_l2_only": false,
+      "batch_size": 4096,
+      "contrastive_dim": 128,
+      "contrastive_temp": 0.07,
+      "contrastive_weight": 0.0,
+      "date_end": "2026-03-31",
+      "date_start": "2026-03-18",
+      "embed_dim": 512,
+      "entp_weight": 0.0,
+      "expert_dim": null,
+      "lr": 0.001,
+      "max_seq_len": 512,
+      "min_action_level": 1,
+      "model": "s-tier",
+      "n_eval_target": 50000,
+      "n_experts": 8,
+      "n_items": 10,
+      "n_transformer_layers": 8,
+      "ntp_data_name": "exp044b-0.6b-14d",
+      "rope_dims": "order:0.4,time:0.5,layer:0.1",
+      "sid_cache_name": "exp026-0.6b-14d",
+      "top_k": 2,
+      "use_gate_attn": true,
+      "use_rope": true,
+      "use_segment_emb": true
+    },
+    "git_commit": "4bebd2579668",
+    "name": "exp048-m-3dim",
+    "registered_at": "2026-04-30T11:03:59.834745",
+    "results": {
+      "avg_loss": 2.870217,
+      "depth_acc_beam": [
+        0.035,
+        0.024,
+        0.023
+      ],
+      "depth_hit@10": [
+        0.2182,
+        0.2067,
+        0.2061
+      ],
+      "depth_hit@10_indep": [
+        0.2173,
+        0.8682,
+        0.9062
+      ],
+      "item_recall@10": 0.155,
+      "item_recall@100": 0.466,
+      "item_recall@50": 0.356,
+      "item_recall@500": 0.695,
+      "layer_ppl": [
+        315.6257,
+        6.6418,
+        2.6635
+      ],
+      "n_eval_items": 49166,
+      "n_eval_positions": 148078,
+      "n_recall_samples": 1000,
+      "ppl": 17.6408,
+      "target_sid_found_rate": 0.696
+    },
+    "results_updated_at": "2026-04-30T11:30:26.754991"
+  },
   "c04795120cdd": {
     "config": {
       "action_l2_only": false,
