@@ -20,3 +20,5 @@ exp-045.sh  /tmp/exp045.log  EXP-045 complete!
 exp-044b.sh  /tmp/exp044b.log  EXP-044B complete!
 exp-046.sh  /tmp/exp046.log  EXP-046 complete!
 bash /tmp/run_exp049_snhr.sh  /tmp/exp049_snhr.log  exp049-snhr complete!
+bash /tmp/run_preprocess_exp050.sh  /tmp/exp050_preprocess.log  exp050-preprocess complete!
+run_config.sh experiments/configs/exp-050.yaml  /tmp/exp050.log  exp050 complete!
