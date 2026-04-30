@@ -39,6 +39,54 @@
 
 ---
 
+## EXP-047: L-tier NTP — All Validated Optimizations (scale-07, 101M active)
+
+**Date**: 2026-04-30
+**Status**: running
+**Results**: experiments/ntp_checkpoints/exp047/
+
+### Background
+
+S-tier 实验链（EXP-043~046）已验证一套优化组合：TO-RoPE ts=0.5（+2.7pp over abs-pos baseline）、
+gate_attn（+0.4pp）、segment_emb + time_gap + action_level。
+M-tier（71.6M active）在 EXP-043 中达到 R@500=70.2%，比 S-tier（61.2%）高 9pp。
+
+本实验将所有已验证优化移植到 L-tier（scale-07, 101.1M active params），作为 RL 链路的 SFT 起点。
+
+### Hypothesis
+
+| 指标 | S-tier + TO-RoPE + gate | M-tier bare | 预期 L-tier |
+|------|------------------------|-------------|-------------|
+| R@500 | 63.9% | 70.2% | ~72-74% |
+| PPL | 22.7 | 18.5 | ~17-19 |
+
+L-tier 比 M-tier 多 ~40% active params（101M vs 71.6M），预期 R@500 再提升 2-4pp。
+所有优化在 S-tier 正向验证，移植到 L-tier 应至少保留收益。
+
+### Design
+
+- **Model**: scale-07 (embed_dim=512, 12L, 16E top-2 MoE, 101.1M active)
+- **Features**: segment_emb + time_gap + action_level + TO-RoPE ts=0.5 (order:0.5,time:0.5) + gate_attn
+- **Data**: exp044b-0.6b-14d（14d，timestamps 已接通）；SID: exp026-0.6b-14d
+- **LR**: 2e-4（scale-07 EXP-015 最优 LR）
+- **Baselines**（不重训，直接引用）：
+  - exp043-m-0.6b: M-tier bare, R@500=70.2%
+  - exp044c-torope-ts05: S-tier + TO-RoPE ts=0.5, R@500=63.9%
+
+### Results
+
+TBD
+
+### Analysis
+
+TBD
+
+### Next Steps
+
+- RL 链路：exp047 → SP-DPO → RF-DPO (3ep) → ECPO
+
+---
+
 ## EXP-046: GateAttention — Sigmoid Gate on Attention Output
 
 **Date**: 2026-04-29
