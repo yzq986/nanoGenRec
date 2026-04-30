@@ -28,9 +28,14 @@ variants:
     sid_cache_name: exp049-4b-nc8192-h128
     ntp_data_name: exp049-4b-nc8192-h128
     attn_gating_mode: cadet
-  # RoPE re-validation on bare M-tier with new SID (EXP-048 showed no benefit but used old SID)
+  # RoPE re-validation on bare M-tier with new SID
   - name: exp050-0.6b-rope
     sid_cache_name: exp049-0.6b-nc8192-h128
     ntp_data_name: exp049-0.6b-nc8192-h128
+    use_rope: true
+    rope_dims: "order:0.5,time:0.5,layer:0.0"
+  - name: exp050-4b-rope
+    sid_cache_name: exp049-4b-nc8192-h128
+    ntp_data_name: exp049-4b-nc8192-h128
     use_rope: true
     rope_dims: "order:0.5,time:0.5,layer:0.0"
