@@ -5,7 +5,7 @@ Qwen3 Embedding 编码、批量处理、模型打包部署。
 > **注意**：Tokenizer 代码（RKMeans、FSQ、preprocess_sid）已于 2026-04-30 迁移至 [`tokenizer/`](../tokenizer/)。
 > `model/rkmeans.py`、`model/fsq.py`、`model/rkmeans_fsq.py` 保留为向后兼容 shim。
 
-## 文件说明
+## 文件
 
 | 文件 | 说明 |
 |------|------|
@@ -26,11 +26,20 @@ Qwen3 Embedding 编码、批量处理、模型打包部署。
     → train.py (编排) → pack.py (打包部署)
 ```
 
-## embedders.py
+## embedders.py 踩坑
 
-Qwen3 Embedding 模型封装，通过 `device` 参数区分运行模式：
+### `torch_dtype` 必须显式传
+`Qwen3TextEmbedder` 默认了 `torch_dtype=torch.float16`，`Qwen3VLEmbedder` 漏传 → HF fallback 到 fp32。2B 模型 fp32 权重 ~10GB + fp32 activations，8192 seq batch=8 就能吃满 40GB OOM。**写 embedder 包装时永远显式传 `torch_dtype` (fp16/bf16)**。
 
-- `device=None`: `device_map="auto"` (单进程多卡)
-- `device="cuda:0"`: 显式放置到指定 GPU (torchrun 分布式)
+### `output_hidden_states=True` 是显存放大器
+只为取 `hidden_states[-1]` 却开了这个 flag，HF 会 materialize 所有 30+ 层 hidden states。2B 模型 seq=8192 fp32 下这一项就是 20–30GB。直接从 `outputs.last_hidden_state` 拿，不要开全量 hidden_states。
 
-**踩坑**：`torch_dtype` 必须显式传，否则 HF 默认 fp32，OOM。见 CLAUDE.md VL/Embedder 踩坑记录。
+### OOM 诊断
+打印 `text_len + mem alloc/reserved/total`。`memory_allocated == memory_reserved == 总量 97%` 是 dtype 问题（不是碎片）。OOM skip 路径里要 `del sub_inputs + gc.collect() + empty_cache() + synchronize()`，只调 `empty_cache()` 释放不掉 Python 仍持有引用的 GPU tensor。
+
+### VL 场景别复用 text LFU cache
+相同文本 + 不同图片 → embedding 不同，text 缓存会返回错误结果。必须 `if not is_vl and ...` 分叉。
+
+## 实验记录
+
+见 [`experiments/logs/tokenizer/README.md`](../experiments/logs/tokenizer/README.md)。

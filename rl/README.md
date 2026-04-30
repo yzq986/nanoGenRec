@@ -47,7 +47,7 @@ SFT → SP-DPO → RF-DPO (3ep, mid-ckpt) → ECPO
 ## 关键实现细节
 
 ### BehaviorReward prefix cascade
-全 SID 精确匹配覆盖率仅 ~0.16%；prefix cascade fallback (L0) 覆盖率 ~24%，有效 reward 信号提升 150×。
+全 SID 精确匹配覆盖率仅 ~0.16%（1788/1.09M）；prefix cascade fallback (L0) 覆盖率 ~24%，有效 reward 信号提升 150×。
 
 ### reward std≈0 保护
 稀疏 reward 下一组 candidates reward 全同 → std≈0 → advantage 爆炸。
@@ -56,8 +56,14 @@ SFT → SP-DPO → RF-DPO (3ep, mid-ckpt) → ECPO
 ### on-policy beam search
 ECPO 必须 on-policy：每步用当前策略重新生成候选，避免 off-policy ratio 爆炸（EXP-029）。
 
+### SIDTrie 构建
+`semantic_ids.npy` 存 `{item_id_str: sid_str}`，必须 iterate `.values()` 构建 trie。iterate `.keys()` 只得到 item id 字符串，trie 为空，beam search 返回 0 candidates，GRPO loss 永远 0。
+
+### step log reward metrics
+reward metrics 挂在 `_grpo_step` 触发时的 `log_entry`，但定期打印时 GRPO 不一定触发（2% 概率）。正确做法：用累计 `reward_metric_totals / n_grpo_steps` 而非当步瞬时值。
+
 ### side features 全链路
-`dpo.py:compute_sid_logprobs` 和 `trainer.py` context pool 均通过 `ctx_side_features` / `gen_side_features` dict 传递特征，与 NTP 训练路径保持一致。详见 [CLAUDE.md — Side Features 注入架构](../CLAUDE.md)。
+`dpo.py:compute_sid_logprobs` 和 `trainer.py` context pool 均通过 `ctx_side_features` / `gen_side_features` dict 传递特征，与 NTP 训练路径保持一致。见 [`ntp/README.md`](../ntp/README.md)。
 
 ## 实验记录
 
