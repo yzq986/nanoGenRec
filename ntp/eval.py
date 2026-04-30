@@ -252,9 +252,29 @@ def _batched_teacher_forced_eval(probe, sequences, n_layers, device, batch_size=
     }
 
 
+def _build_item_freq(sequences):
+    """Count how many times each cid appears in eval_cids across all sequences."""
+    from collections import Counter
+    freq = Counter()
+    for seq in sequences:
+        for cid in seq.get('eval_cids', []):
+            freq[cid] += 1
+    return freq
+
+
+def _cold_warm_hot_bucket(freq, cid):
+    """Bucket a cid by eval frequency: cold (<3), warm (3-9), hot (>=10)."""
+    f = freq.get(cid, 0)
+    if f < 3:
+        return 'cold'
+    elif f < 10:
+        return 'warm'
+    return 'hot'
+
+
 def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
                         device, recall_beam_size=500, n_recall_samples=5000,
-                        verbose=True):
+                        verbose=True, item_freq=None):
     """Beam search recall on a small subsample of eval items.
 
     For each sampled eval item, uses all preceding tokens as context,
@@ -317,6 +337,9 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
     item_recall = {k: 0 for k in recall_ks}
     depth_correct = [0] * n_layers
     target_sid_found = 0  # how often the correct SID appears anywhere in beams
+    buckets = ('cold', 'warm', 'hot')
+    bucket_recall = {b: {k: 0 for k in recall_ks} for b in buckets}
+    bucket_count = {b: 0 for b in buckets}
     t0 = time.time()
 
     for idx, item in enumerate(eval_items):
@@ -378,6 +401,13 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
             if target_cid in set(candidates[:k]):
                 item_recall[k] += 1
 
+        if item_freq is not None:
+            b = _cold_warm_hot_bucket(item_freq, target_cid)
+            bucket_count[b] += 1
+            for k in recall_ks:
+                if target_cid in set(candidates[:k]):
+                    bucket_recall[b][k] += 1
+
         # Debug output for first 10 samples
         if verbose and idx < 10:
             n_items_mapped = len(candidates)
@@ -422,6 +452,20 @@ def _beam_search_recall(probe, sequences, sid_trie, sid_to_items, n_layers,
     if verbose:
         print(f"  Beam search summary: target_sid_found={target_sid_found_rate:.4f} "
               f"({target_sid_found}/{n})")
+
+    # ── Cold/Warm/Hot breakdown ──
+    if item_freq is not None:
+        for b in buckets:
+            cnt = bucket_count[b]
+            if cnt == 0:
+                continue
+            r10 = bucket_recall[b][10] / cnt
+            r500 = bucket_recall[b][500] / cnt
+            results[f'item_recall@10_{b}'] = r10
+            results[f'item_recall@500_{b}'] = r500
+            results[f'n_{b}'] = cnt
+            if verbose:
+                print(f"  [{b:4s}] n={cnt:4d}  R@10={r10:.4f}  R@500={r500:.4f}")
 
     return results
 
@@ -628,12 +672,14 @@ class SemanticIDPredictionMetric(BaseMetric):
         sid_trie = SIDTrie(sid_to_items, n_layers)
 
         n_recall_samples = min(200, eval_sample_size) if eval_sample_size > 0 else 200
+        item_freq = _build_item_freq(eval_sequences)
 
         with torch.no_grad():
             beam_results = _beam_search_recall(
                 probe, eval_sequences, sid_trie, sid_to_items, n_layers,
                 device, recall_beam_size=recall_beam_size,
-                n_recall_samples=n_recall_samples, verbose=verbose)
+                n_recall_samples=n_recall_samples, verbose=verbose,
+                item_freq=item_freq)
 
         # ── Assemble results ──
         details = {
