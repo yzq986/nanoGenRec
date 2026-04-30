@@ -413,6 +413,7 @@ def main():
     # ── Output dir ──
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     output_dir = args.output_dir or os.path.join(repo_root, 'experiments', 'sid_cache', model_key)
+    kmeans_cache_dir = os.path.join(repo_root, 'experiments', 'sid_cache', '_kmeans_cache')
 
     # Skip if output already exists
     if os.path.exists(os.path.join(output_dir, 'semantic_ids.npy')):
@@ -476,7 +477,8 @@ def main():
         fsq_mlp_hidden=cfg['fsq_mlp_hidden'],
         fsq_epochs=cfg['fsq_epochs'],
     )
-    model.train(embed_tensor, niter=cfg['niter'], nredo=cfg['nredo'])
+    model.train(embed_tensor, niter=cfg['niter'], nredo=cfg['nredo'],
+                kmeans_cache_dir=kmeans_cache_dir)
     train_time = time.time() - t1
     print(f"  Tokenizer trained ({train_time:.1f}s)")
 

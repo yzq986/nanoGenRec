@@ -6,7 +6,11 @@ third layer uses Finite Scalar Quantization (PCA + per-dim rounding).
 Reference: OneMall (arxiv 2601.21770) — FSQ on residuals reduces collision.
 """
 
-from typing import List
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -63,47 +67,89 @@ class ResKmeansFSQ:
         embeddings: torch.Tensor,
         niter: int = 25,
         nredo: int = 1,
+        kmeans_cache_dir: Optional[str] = None,
     ):
+        """Train KMeans layers then FSQ.
+
+        kmeans_cache_dir: if set, cache trained KMeans centroids + L2 residuals
+        under this directory so variants that share the same KMeans config can
+        skip retraining.  Cache key = hash(n_kmeans_clusters, n_features,
+        n_samples, niter, nredo, normalize_residuals).
+        """
         n_samples = embeddings.shape[0]
         print(f"Training ResKmeansFSQ on {n_samples:,} samples")
         nc_str = "×".join(str(n) for n in self.n_kmeans_clusters)
         print(f"Config: 2 KMeans ({nc_str} clusters) + 1 FSQ ({self.fsq_levels})")
 
-        current_residuals = embeddings.clone()
+        # ── KMeans cache lookup ────────────────────────────────────────────────
+        cache_hit = False
+        cache_path = None
+        if kmeans_cache_dir:
+            cache_key = hashlib.sha256(json.dumps({
+                "n_kmeans_clusters": self.n_kmeans_clusters,
+                "n_features": self.n_features,
+                "n_samples": n_samples,
+                "niter": niter,
+                "nredo": nredo,
+                "normalize_residuals": self.normalize_residuals,
+            }, sort_keys=True).encode()).hexdigest()[:16]
+            cache_path = Path(kmeans_cache_dir) / cache_key
+            centroids_file = cache_path / "centroids.pt"
+            residuals_file = cache_path / "l2_residuals.pt"
+            if centroids_file.exists() and residuals_file.exists():
+                print(f"  [kmeans_cache] HIT {cache_key} — loading centroids + residuals")
+                saved = torch.load(centroids_file, map_location="cpu", weights_only=True)
+                for layer_idx, kmeans in enumerate(self.kmeans_layers):
+                    kmeans.centroids = saved[layer_idx]
+                    if torch.cuda.is_available():
+                        kmeans.centroids = kmeans.centroids.cuda()
+                current_residuals = torch.load(residuals_file, map_location="cpu", weights_only=True)
+                cache_hit = True
 
-        # Normalize input once (layer 0 only)
-        if self.normalize_residuals:
-            print("  Normalizing input embeddings (layer 0 only)...")
-            normalized = []
-            chunk_size = 100000
-            for i in range(0, n_samples, chunk_size):
-                chunk = current_residuals[i:i+chunk_size].to(self.primary_device)
-                chunk = F.normalize(chunk, p=2, dim=1).cpu()
-                normalized.append(chunk)
-            current_residuals = torch.cat(normalized, dim=0)
+        if not cache_hit:
+            current_residuals = embeddings.clone()
 
-        # Layer 1 & 2: KMeans
-        for layer_idx, kmeans in enumerate(self.kmeans_layers):
-            print(f"\n{'='*60}")
-            print(f"Training KMeans Layer {layer_idx + 1}/2")
-            print(f"{'='*60}")
+            # Normalize input once (layer 0 only)
+            if self.normalize_residuals:
+                print("  Normalizing input embeddings (layer 0 only)...")
+                normalized = []
+                chunk_size = 100000
+                for i in range(0, n_samples, chunk_size):
+                    chunk = current_residuals[i:i+chunk_size].to(self.primary_device)
+                    chunk = F.normalize(chunk, p=2, dim=1).cpu()
+                    normalized.append(chunk)
+                current_residuals = torch.cat(normalized, dim=0)
 
-            kmeans.train(current_residuals, niter=niter, nredo=nredo)
+            # Layer 1 & 2: KMeans
+            for layer_idx, kmeans in enumerate(self.kmeans_layers):
+                print(f"\n{'='*60}")
+                print(f"Training KMeans Layer {layer_idx + 1}/2")
+                print(f"{'='*60}")
 
-            # Compute residuals for next layer
-            print("  Computing residuals for next layer...")
-            new_residuals = []
-            chunk_size = 50000
-            for i in range(0, n_samples, chunk_size):
-                chunk = current_residuals[i:i+chunk_size]
-                assignments = kmeans.predict(chunk)
-                assigned_centroids = kmeans.centroids[assignments].cpu()
-                residual = chunk - assigned_centroids
-                new_residuals.append(residual)
-            current_residuals = torch.cat(new_residuals, dim=0)
+                kmeans.train(current_residuals, niter=niter, nredo=nredo)
 
-            residual_norm = torch.norm(current_residuals, dim=1).mean().item()
-            print(f"  Residual norm (mean): {residual_norm:.6f}")
+                # Compute residuals for next layer
+                print("  Computing residuals for next layer...")
+                new_residuals = []
+                chunk_size = 50000
+                for i in range(0, n_samples, chunk_size):
+                    chunk = current_residuals[i:i+chunk_size]
+                    assignments = kmeans.predict(chunk)
+                    assigned_centroids = kmeans.centroids[assignments].cpu()
+                    residual = chunk - assigned_centroids
+                    new_residuals.append(residual)
+                current_residuals = torch.cat(new_residuals, dim=0)
+
+                residual_norm = torch.norm(current_residuals, dim=1).mean().item()
+                print(f"  Residual norm (mean): {residual_norm:.6f}")
+
+            # Save to cache
+            if cache_path is not None:
+                cache_path.mkdir(parents=True, exist_ok=True)
+                centroids = [km.centroids.cpu() for km in self.kmeans_layers]
+                torch.save(centroids, cache_path / "centroids.pt")
+                torch.save(current_residuals, cache_path / "l2_residuals.pt")
+                print(f"  [kmeans_cache] SAVED {cache_key}")
 
         # Layer 3: FSQ
         print(f"\n{'='*60}")
