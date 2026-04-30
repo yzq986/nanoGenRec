@@ -12,7 +12,8 @@ Embedding → KMeans → FSQ codebook，生成 3-token Semantic ID（SID）。
 | Collision Rate (4b) | 1.28% | EXP-049 |
 | Gini_d2 (0.6b) | 0.2375 | EXP-049 |
 | Gini_d2 (4b) | 0.2530 | EXP-049 |
-| snHR (FORGE) | 0.095 | EXP-012 |
+| snHR (0.6b best) | 0.0919 | EXP-049 |
+| snHR (4b best) | 0.1307 | EXP-049 |
 | **FSQ 配置** | 4096×3 binary `[2]×12` | EXP-012 |
 | **Embedding** | Qwen3-0.6B or 4B (h=128) | EXP-049 |
 | **num_clusters** | 8192 | EXP-049 |

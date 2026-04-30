@@ -24,6 +24,30 @@ import torch.nn.functional as F
 from .base import BaseMetric, MetricResult
 
 
+def build_content_user_sets(behavior_data: Dict) -> Dict:
+    """Build content -> frozenset of positive users using numpy vectorized ops.
+
+    Returns dict[iid -> frozenset[uid]]. ~10-50x faster than Python for-loop
+    over tens-of-millions of rows.
+    """
+    uids = np.asarray(behavior_data['uid'])
+    iids = np.asarray(behavior_data['iid'])
+    actions = np.asarray(behavior_data['action_bitmap'], dtype=np.int32)
+
+    mask = actions > 0
+    uids, iids = uids[mask], iids[mask]
+
+    # Sort by iid so we can use np.unique split
+    order = np.argsort(iids, kind='stable')
+    iids_sorted = iids[order]
+    uids_sorted = uids[order]
+
+    unique_iids, starts = np.unique(iids_sorted, return_index=True)
+    splits = np.split(uids_sorted, starts[1:])
+
+    return {iid: frozenset(users) for iid, users in zip(unique_iids, splits)}
+
+
 # Action bitmap 定义 (from export_user_behavior.py)
 # - action_bitmap > 0: 正向行为 (click, like, share, follow, etc.)
 # - action_bitmap < 0: 负反馈 (negative_feedback, bit 31 符号位)
@@ -102,17 +126,15 @@ class UserSemanticConsistencyMetric(BaseMetric):
                 status='unknown',
             )
 
-        uids = behavior_data['uid']
-        iids = behavior_data['iid']
-        actions = behavior_data['action_bitmap']
+        content_positive_users = build_content_user_sets(behavior_data)
 
         # 按用户聚合正向交互的内容
         user_positive_items = defaultdict(list)
-        for uid, iid, action in zip(uids, iids, actions):
-            # 正向行为: like, share, follow (action > 0 排除 negative)
-            if is_positive(action):
-                if iid in content_id_to_idx:
-                    user_positive_items[uid].append(content_id_to_idx[iid])
+        for iid, users in content_positive_users.items():
+            if iid in content_id_to_idx:
+                idx = content_id_to_idx[iid]
+                for uid in users:
+                    user_positive_items[uid].append(idx)
 
         # 筛选有足够正向交互的用户
         valid_users = [
@@ -256,15 +278,7 @@ class SemanticNeighborHitRateMetric(BaseMetric):
                 status='unknown',
             )
 
-        uids = behavior_data['uid']
-        iids = behavior_data['iid']
-        actions = behavior_data['action_bitmap']
-
-        # 构建 content -> users who liked it
-        content_positive_users = defaultdict(set)
-        for uid, iid, action in zip(uids, iids, actions):
-            if is_positive(action):
-                content_positive_users[iid].add(uid)
+        content_positive_users = build_content_user_sets(behavior_data)
 
         # 构建 prefix -> content_ids
         prefix_to_contents = defaultdict(list)
@@ -402,16 +416,7 @@ class EmbeddingBehaviorCorrelationMetric(BaseMetric):
                 status='unknown',
             )
 
-        uids = behavior_data['uid']
-        iids = behavior_data['iid']
-        actions = behavior_data['action_bitmap']
-
-        # 构建 content -> positive users
-        content_users = defaultdict(set)
-        for uid, iid, action in zip(uids, iids, actions):
-            if is_positive(action):  # action > 0
-                if iid in content_id_to_idx:
-                    content_users[iid].add(uid)
+        content_users = build_content_user_sets(behavior_data)
 
         # 筛选有足够用户的内容
         valid_contents = [
@@ -535,23 +540,24 @@ class PositiveNegativeSeparationMetric(BaseMetric):
                 status='unknown',
             )
 
-        uids = behavior_data['uid']
-        iids = behavior_data['iid']
-        actions = behavior_data['action_bitmap']
+        uids_arr = np.asarray(behavior_data['uid'])
+        iids_arr = np.asarray(behavior_data['iid'])
+        actions_arr = np.asarray(behavior_data['action_bitmap'], dtype=np.int32)
 
-        # 按用户聚合正负交互
-        user_positive = defaultdict(list)
-        user_negative = defaultdict(list)
+        known_iids = np.array(list(content_id_to_idx.keys()))
+        iid_set = set(content_id_to_idx.keys())
+        in_vocab = np.array([iid in iid_set for iid in iids_arr], dtype=bool)
 
-        for uid, iid, action in zip(uids, iids, actions):
-            if iid not in content_id_to_idx:
-                continue
+        def _build_user_idx_dict(mask):
+            u, ii = uids_arr[mask & in_vocab], iids_arr[mask & in_vocab]
+            order = np.argsort(u, kind='stable')
+            u_sorted, ii_sorted = u[order], ii[order]
+            unique_u, starts = np.unique(u_sorted, return_index=True)
+            splits = np.split(ii_sorted, starts[1:])
+            return {uid: [content_id_to_idx[iid] for iid in grp] for uid, grp in zip(unique_u, splits)}
 
-            idx = content_id_to_idx[iid]
-            if is_negative(action):  # action < 0 表示 negative feedback
-                user_negative[uid].append(idx)
-            elif is_positive(action):  # action > 0 且有 like/share/follow
-                user_positive[uid].append(idx)
+        user_positive = _build_user_idx_dict(actions_arr > 0)
+        user_negative = _build_user_idx_dict(actions_arr < 0)
 
         # 筛选有正负样本的用户
         valid_users = [
