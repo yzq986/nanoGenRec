@@ -21,8 +21,10 @@ S-tier (39.5M params, 当前唯一实现)
 │   └── 5x 训练 / 21x 推理 scaling, 保留 self-attention 表达力
 ├── IDEA-mtgenrec-0: 分布式 GR 训练系统 (Meituan)
 │   └── Dynamic Hash Embedding + Sequence Batching + ID Dedup, 2.4x throughput
-└── IDEA-freescale-0: Sequence Load Balancing + SM-Free 通信 (Meta, MLSys 2026)
-    └── 长序列 UIH straggler 缓解 + 优先级 embedding 更新 + CPU-RDMA 零 SM 占用
+├── IDEA-freescale-0: Sequence Load Balancing + SM-Free 通信 (Meta, MLSys 2026)
+│   └── 长序列 UIH straggler 缓解 + 优先级 embedding 更新 + CPU-RDMA 零 SM 占用
+└── IDEA-vlm-0: Versioned Late Materialization — 打破 Fat Row 墙 (Meta, arxiv 2604.24806)
+    └── UIH 序列单拷贝存储 + 训练时 JIT 重建, 序列长度从 4K → 64K 解锁, A/B Topline +0.22%
 ```
 
 ---
@@ -249,6 +251,7 @@ MTGenRec 是美团基于 TorchRec 构建的 GR 专用分布式训练系统，解
 | P1 | IDEA-hstu-0 | Sparse Self-Attention Co-design | 21x inference scaling, 对比 Query-Former 路线 |
 | P2 | IDEA-mtgenrec-0 | 分布式 GR 训练系统 | 美团部署, 100+ GPU scaling, dynamic batch 可先行参考 |
 | P2 | IDEA-freescale-0 | Meta FreeScale: Load Balancing + SM-Free 通信 | 256×H100 验证, 90% 通信气泡削减; 当前 8 GPU 受益有限, 未来多节点扩展时核心参考 |
+| P2 | IDEA-vlm-0 | Meta VLM: Versioned Late Materialization | Fat Row 墙 @ 4K UIH, 延迟物化破墙推到 64K; A/B Platform A Topline +0.22%/Metrics-C +4.1% |
 
 ---
 
@@ -323,3 +326,105 @@ GPU 上通信和计算同时发生时，NCCL 会占用 SM，导致实际 overlap
 - IDEA-mtgenrec-0 (MTGenRec): Meituan 的同类系统, 技术重叠但 FreeScale 更成熟
 - IDEA-oneloc-4: 序列长度 scaling, 是启动 FreeScale 的前置依赖
 - IDEA-hstu-0: Sparse attention co-design, 减少 compute 需求 → 降低 FreeScale 必要性
+
+---
+
+## IDEA-vlm-0: Versioned Late Materialization — 把 UIH 序列从训练样本里剥离
+
+**优先级**: P2
+**来源**: Versioned Late Materialization for Ultra-Long Sequence Training in Recommendation Systems at Scale (Meta, arxiv 2604.24806, 2026-04-27)
+**状态**: 待讨论 (与 IDEA-oneloc-4 序列长度 scaling 绑定)
+
+### 核心问题: Fat Row 墙
+
+工业 RecSys 标准做法是 **pre-materialize** 完整 UIH 序列到每条训练样本（"Fat Row"）：
+
+- 一个 request 在 lookback 窗口内产生 K 条训练样本 → 同一 UIH 被复制 K 次 → K-fold 数据冗余
+- Platform A 实测: UIH 达 **4K items** 时，data infrastructure 资源已超过 GPU 训练资源 → 定义为 "Fat Row Wall"
+- 4K 以上继续 scaling，存储/IO 成本 > 训练收益，经济上不合理 → 封锁了更长 UIH 的探索
+
+### 核心洞察: 物理复制不是 O2O 一致性的必要条件
+
+之前为什么要 pre-materialize？为了保证 **Online-to-Offline (O2O) consistency**——训练时看到的特征必须是 inference 时的 exact state (否则 future leakage 会让离线指标虚高)。
+
+Meta 的论点: UIH 是 **append-only, temporally ordered, immutable** sequence。既然如此：
+
+- 只需要 **一份规范化的 canonical UIH store** + **per-request 的轻量 version metadata** (版本指针)
+- 训练时通过 version pointer + 时间谓词 (`t < T_request`) **JIT 重建** 那一刻的 UIH state
+- 这就是数据库社区的 **late materialization + MVCC**，移植到 RecSys 训练数据管道
+
+### 系统设计关键点
+
+1. **Bifurcated consistency protocol** — 流式训练 (streaming) 和批量训练 (batch) 有不同的时间语义
+   - Streaming: 事件实时追加，需要 `t ≤ T_request` 的 snapshot read
+   - Batch: 历史回溯，需要版本指针精确指向当时的 UIH 状态
+   - 两套协议都要防 future leakage，共用一套 canonical store
+
+2. **Read-optimized immutable storage with multi-tenant projection pushdown**
+   - 不同 model tenant 要的序列长度不同 (A 要 64K, B 要 16K, C 要 4K)
+   - 共用一份长序列数据，按 tenant 要的长度 pushdown 投影 (类似列存 projection pushdown)
+   - 消除 Fat Row paradigm 里 "短序列 tenant 读整个长序列" 的读放大
+
+3. **Disaggregated preprocessing + pipelined I/O prefetching**
+   - 训练时 JIT 重建会引入 sequence lookup I/O (Model A 62.7% baseline primary read)
+   - 但 immutable store 单层、compaction-free → 3.4× 高于 append-only primary storage 的 per-host 吞吐
+   - 数据亲和性分片 + prefetching 使 lookup 延迟被 pipeline 吸收，训练保持 GPU-bound
+
+4. **Data-affinity optimization**
+   - batch 训练同一用户的时间相邻样本被分片到同一 DPP worker
+   - 相同 UIH lookup 被复用，batch 场景 lookup 带宽再降 60%
+
+### 实测效果
+
+**Fat Row 系统效率 (baseline = 1.0):**
+
+| Tenant | UIH 长度 | Primary Write ↓ | Primary Read ↓ | Lookup Read (新增) | 数据加载延迟 |
+|--------|---------|----------------|---------------|-------------------|-------------|
+| Model A (long) | Long | **-46.2%** | **-70.3%** | +62.7% (streaming) / +24.6% (batch) | +9.7% |
+| Model B (mid) | Mid | -50.9% | — | +16.2% / +6.5% | **-26.4%** |
+| Model C (short) | Short | -47.7% | — | +8.7% / +3.4% | **-36.2%** |
+
+关键: 长序列 tenant 新增的 62.7% lookup read 被 compaction-free immutable store 的 3.4× 读密度抵消；中短序列 tenant 靠 projection pushdown 净收益正向。
+
+**序列长度 scaling A/B (表 2):**
+
+| Platform | Seq Length | Topline | Metrics-C | Metrics-E |
+|----------|-----------|---------|-----------|-----------|
+| Platform A | 4K → 16K | **+0.22%** | **+4.1%** | +2.3% / +4.3% |
+| Platform B | 4K → 10K | **+0.14%** | +0.79% | +1.4% / +1.7% |
+
+Platform A 从 4K 继续推到 64K 能 cumulative NE +1.2% (4K→64K 总 NE > 5%)；Fat Row paradigm 下这个量级的提升 "within the same infrastructure envelope is impractical"。
+
+**作为 HSTU / trillion-parameter sequential transducer 的基础设施**: Meta 的 HSTU [arxiv 2402.17152] 和 VISTA (IDEA-vista-0) 都部署在这套基础设施上。
+
+### 与当前项目的关联
+
+- **IDEA-oneloc-4 序列长度 scaling**: 直接对应。当前 `max_seq_len=512`, ~170 items/user, 远未触墙
+- **从哪一步开始有意义**: Meta 的 Fat Row Wall @ 4K 是 K-fold 放大（用户每次 request 都复制一份 UIH）导致的。我们当前 NTP 的训练数据形态是 **per-user single row** (day partition 聚合)，K 不是问题。只有当 (a) 推到真正的 ultra-long (>4K items) 并且 (b) 切换到 request-level 训练样本（per-impression）时才会遇到相同墙
+- **multi-tenant 收益**: 如果未来我们有不同 tenant 模型 (P2 的 ranker vs retriever, 短序列 vs 长序列) 共用同一份用户行为数据集，projection pushdown 可以把短序列 tenant 的读放大消除
+
+### 当前阶段不执行的理由
+
+- 4-8 L20X GPU, 单节点, `max_seq_len=512` 还远远没到瓶颈
+- 数据形态是 per-user daily partition (非 per-request Fat Row)，K-fold 复制问题不存在
+- 需要专职数据平台团队才能落地 (MVCC + 双协议 + 列存 pushdown 是完整的存储层改造)
+
+### 未来触发条件
+
+同时满足下面两个条件时再重新评估:
+
+1. `max_seq_len` 推到 2K+ 且单条训练样本过大 (已成 I/O bottleneck)
+2. 训练数据粒度从 per-user daily 切到 per-request (例如要做 per-impression CTR label 而不是 day-level NTP)
+
+### 关键问题
+
+1. **O2O consistency 的非必要性论证**: Meta 的论点依赖 UIH 是 append-only + immutable。我们的 SID 序列也满足这个性质（item 行为一旦发生就不可变），但 user features (侧信息如 time_gap bucket) 是否也纯 append-only？如果 side features 会修订 → late materialization 会 break O2O
+2. **Version metadata 的开销**: 轻量 pointer 具体多轻量，论文未给字节数。估计 ~16-32 bytes/pointer vs 整个 UIH row 几 MB
+3. **bifurcated protocol 的复杂度**: 流/批两套一致性协议是典型的"看着优雅实际调试一整个季度"的设计，推广到中小团队不现实
+
+### 相关 idea
+
+- IDEA-oneloc-4: 序列长度 scaling，是唯一触发本 idea 的前置
+- IDEA-mtgenrec-0 / IDEA-freescale-0: 训练系统优化，本 idea 是数据层优化，互补
+- IDEA-vista-0 (VISTA, Meta): 直接部署在这套数据基础设施上
+- IDEA-hstu-0 (HSTU, Meta): 同上，trillion-parameter transducer 依赖这套数据层
