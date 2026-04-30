@@ -13,6 +13,17 @@ Every time a coding task finishes (implementation complete, no more pending chan
 
 Do not ask for confirmation — just do it after each coding round.
 
+## README 分工原则
+
+各阶段有两个 README，各司其职，不重复内容：
+
+| 位置 | 受众 | 内容 |
+|------|------|------|
+| `<phase>/README.md`（如 `rl/`, `ntp/`, `tokenizer/`）| 改代码的人 | 文件说明、接口、实现细节、已验证超参、架构踩坑 |
+| `experiments/logs/<phase>/README.md` | 设计实验的人 | EXP 列表、当前 SOTA、下一步实验方向、proxy metrics |
+
+两者互相引用，不重复。每次代码变更或实验完成后，对应的两个 README 都要更新。
+
 ## gr conda env 标准配置
 
 `/home/dev/.conda/envs/gr` — 所有训练/eval/preprocess 任务使用此环境。
