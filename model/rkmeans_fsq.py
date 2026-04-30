@@ -100,27 +100,20 @@ class ResKmeansFSQ:
             residuals_file = cache_path / "l2_residuals.pt"
             if centroids_file.exists() and residuals_file.exists():
                 print(f"  [kmeans_cache] HIT {cache_key} — loading centroids + residuals")
-                saved = torch.load(centroids_file, map_location="cpu", weights_only=True)
+                saved = torch.load(centroids_file, map_location=self.primary_device, weights_only=True)
                 for layer_idx, kmeans in enumerate(self.kmeans_layers):
                     kmeans.centroids = saved[layer_idx]
-                    if torch.cuda.is_available():
-                        kmeans.centroids = kmeans.centroids.cuda()
-                current_residuals = torch.load(residuals_file, map_location="cpu", weights_only=True)
+                current_residuals = torch.load(residuals_file, map_location=self.primary_device, weights_only=True)
                 cache_hit = True
 
         if not cache_hit:
-            current_residuals = embeddings.clone()
+            # Move embeddings to GPU once; all subsequent ops stay on device
+            current_residuals = embeddings.to(self.primary_device)
 
             # Normalize input once (layer 0 only)
             if self.normalize_residuals:
                 print("  Normalizing input embeddings (layer 0 only)...")
-                normalized = []
-                chunk_size = 100000
-                for i in range(0, n_samples, chunk_size):
-                    chunk = current_residuals[i:i+chunk_size].to(self.primary_device)
-                    chunk = F.normalize(chunk, p=2, dim=1).cpu()
-                    normalized.append(chunk)
-                current_residuals = torch.cat(normalized, dim=0)
+                current_residuals = F.normalize(current_residuals, p=2, dim=1)
 
             # Layer 1 & 2: KMeans
             for layer_idx, kmeans in enumerate(self.kmeans_layers):
@@ -128,29 +121,22 @@ class ResKmeansFSQ:
                 print(f"Training KMeans Layer {layer_idx + 1}/2")
                 print(f"{'='*60}")
 
+                # faiss.Kmeans.train requires numpy — unavoidable CPU copy here
                 kmeans.train(current_residuals, niter=niter, nredo=nredo)
 
-                # Compute residuals for next layer
+                # Compute residuals fully on GPU
                 print("  Computing residuals for next layer...")
-                new_residuals = []
-                chunk_size = 50000
-                for i in range(0, n_samples, chunk_size):
-                    chunk = current_residuals[i:i+chunk_size]
-                    assignments = kmeans.predict(chunk)
-                    assigned_centroids = kmeans.centroids[assignments].cpu()
-                    residual = chunk - assigned_centroids
-                    new_residuals.append(residual)
-                current_residuals = torch.cat(new_residuals, dim=0)
+                assignments = kmeans.predict(current_residuals)  # GPU tensor
+                current_residuals = current_residuals - kmeans.centroids[assignments]
 
-                residual_norm = torch.norm(current_residuals, dim=1).mean().item()
+                residual_norm = current_residuals.norm(dim=1).mean().item()
                 print(f"  Residual norm (mean): {residual_norm:.6f}")
 
-            # Save to cache
+            # Save to cache (centroids stay on GPU; residuals saved from GPU directly)
             if cache_path is not None:
                 cache_path.mkdir(parents=True, exist_ok=True)
-                centroids = [km.centroids.cpu() for km in self.kmeans_layers]
-                torch.save(centroids, cache_path / "centroids.pt")
-                torch.save(current_residuals, cache_path / "l2_residuals.pt")
+                torch.save([km.centroids.cpu() for km in self.kmeans_layers], cache_path / "centroids.pt")
+                torch.save(current_residuals.cpu(), cache_path / "l2_residuals.pt")
                 print(f"  [kmeans_cache] SAVED {cache_key}")
 
         # Layer 3: FSQ
@@ -227,44 +213,30 @@ def generate_semantic_ids_fsq(
     n_samples = embeddings.shape[0]
     device = model.primary_device
 
-    layer_assignments = []
-    # Keep residuals on GPU throughout to avoid CPU bottleneck
-    current_residuals = embeddings.clone().to(device)
+    # Move to GPU once; all ops stay on device until final string build
+    current_residuals = embeddings.to(device)
 
-    # Normalize input once (layer 0 only)
     if normalize_residuals:
-        chunk_size = 100000
-        normalized = []
-        for i in range(0, n_samples, chunk_size):
-            chunk = F.normalize(current_residuals[i:i+chunk_size], p=2, dim=1)
-            normalized.append(chunk)
-        current_residuals = torch.cat(normalized, dim=0)
+        current_residuals = F.normalize(current_residuals, p=2, dim=1)
 
-    # Layers 1 & 2: KMeans
+    layer_codes: List[torch.Tensor] = []  # GPU int tensors, one per layer
+
+    # Layers 1 & 2: KMeans — predict stays on GPU, residuals stay on GPU
     for layer_idx, kmeans in enumerate(model.kmeans_layers):
         print(f"  Predicting KMeans layer {layer_idx + 1}/2...")
-        assignments = kmeans.predict(current_residuals).cpu().numpy()
-        layer_assignments.append(assignments)
-
-        # Compute residuals on GPU
-        chunk_size = 50000
-        new_residuals = []
-        for i in range(0, n_samples, chunk_size):
-            chunk = current_residuals[i:i+chunk_size]
-            chunk_assignments = torch.tensor(assignments[i:i+chunk_size], device=device)
-            assigned_centroids = kmeans.centroids[chunk_assignments]
-            new_residuals.append(chunk - assigned_centroids)
-        current_residuals = torch.cat(new_residuals, dim=0)
+        assignments = kmeans.predict(current_residuals)  # GPU tensor
+        layer_codes.append(assignments)
+        current_residuals = current_residuals - kmeans.centroids[assignments]
 
     # Layer 3: FSQ
     print(f"  Predicting FSQ layer 3/3...")
-    fsq_codes = model.fsq_layer.predict(current_residuals).cpu().numpy()
-    layer_assignments.append(fsq_codes)
+    fsq_codes = model.fsq_layer.predict(current_residuals)  # returns CPU tensor
+    layer_codes.append(fsq_codes.to(device))
 
-    # Build SID strings
-    semantic_ids = []
-    for i in range(n_samples):
-        sid = "_".join(str(layer_assignments[layer][i]) for layer in range(3))
-        semantic_ids.append(sid)
+    # Build SID strings from GPU tensors — pull all to CPU in one transfer
+    c1 = layer_codes[0].cpu().numpy()
+    c2 = layer_codes[1].cpu().numpy()
+    c3 = layer_codes[2].cpu().numpy()
+    semantic_ids = [f"{c1[i]}_{c2[i]}_{c3[i]}" for i in range(n_samples)]
 
     return semantic_ids

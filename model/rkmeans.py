@@ -34,6 +34,7 @@ class FaissKMeansLayer:
         import faiss
         import gc
 
+        # faiss.Kmeans.train() only accepts numpy — required CPU copy, not avoidable
         data_np = data.cpu().numpy().astype(np.float32)
 
         use_gpu = self.gpu
@@ -132,40 +133,27 @@ class ResidualQuantizationMultiGPU:
         print(f"Training RKMeans on {n_samples:,} samples (FAISS {'GPU' if self.gpu else 'CPU'})")
         print(f"Config: {self.n_layers} layers x {self.n_clusters} clusters, niter={niter}, nredo={nredo}")
 
-        current_residuals = embeddings.clone()
+        # Move to GPU once; all subsequent ops stay on device
+        current_residuals = embeddings.to(self.primary_device)
 
-        # 只对原始输入做 L2 normalize（layer 0），残差保留原始 scale
         if self.normalize_residuals:
             print("  Normalizing input embeddings (layer 0 only)...")
-            normalized = []
-            chunk_size = 100000
-            for i in range(0, n_samples, chunk_size):
-                chunk = current_residuals[i:i+chunk_size].to(self.primary_device)
-                chunk = F.normalize(chunk, p=2, dim=1).cpu()
-                normalized.append(chunk)
-            current_residuals = torch.cat(normalized, dim=0)
+            current_residuals = F.normalize(current_residuals, p=2, dim=1)
 
         for layer_idx, kmeans in enumerate(self.kmeans_layers):
             print(f"\n{'='*60}")
             print(f"Training Layer {layer_idx + 1}/{self.n_layers}")
             print(f"{'='*60}")
 
-            # FAISS full-batch KMeans (包含 KMeans++ init, Lloyd's iteration, empty cluster rebalance)
+            # faiss.Kmeans.train requires numpy — unavoidable CPU copy here
             kmeans.train(current_residuals, niter=niter, nredo=nredo)
 
-            # Compute residuals for next layer
+            # Compute residuals fully on GPU
             print("  Computing residuals for next layer...")
-            new_residuals = []
-            chunk_size = 50000
-            for i in range(0, n_samples, chunk_size):
-                chunk = current_residuals[i:i+chunk_size]
-                assignments = kmeans.predict(chunk)
-                assigned_centroids = kmeans.centroids[assignments].cpu()
-                residual = chunk - assigned_centroids
-                new_residuals.append(residual)
-            current_residuals = torch.cat(new_residuals, dim=0)
+            assignments = kmeans.predict(current_residuals)  # GPU tensor
+            current_residuals = current_residuals - kmeans.centroids[assignments]
 
-            residual_norm = torch.norm(current_residuals, dim=1).mean().item()
+            residual_norm = current_residuals.norm(dim=1).mean().item()
             print(f"  Residual norm (mean): {residual_norm:.6f}")
 
         # Final GPU cleanup after all layers trained
