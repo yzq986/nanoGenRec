@@ -1,0 +1,15 @@
+# Base config for tokenizer (preprocess-sid) experiments
+phase: tokenizer
+
+# ── Data ──────────────────────────────────────────────────────
+date_start: "2026-03-18"
+date_end: "2026-03-31"
+behavior_path: "/mnt/workspace/gr-demo-behavior-cache"
+
+# ── Tokenizer ─────────────────────────────────────────────────
+model: qwen3-0.6b
+num_clusters: 4096          # int (both layers same) or "L1,L2" e.g. "4096,2048"
+fsq_levels: 12d_4096        # FSQ codebook levels
+fsq_projection: mlp
+fsq_mlp_hidden: 64          # MLP bottleneck dim
+fsq_epochs: 50

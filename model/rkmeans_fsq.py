@@ -21,7 +21,7 @@ class ResKmeansFSQ:
 
     def __init__(
         self,
-        n_kmeans_clusters: int,
+        n_kmeans_clusters,  # int (same for both layers) or List[int] (per-layer)
         fsq_levels: List[int],
         n_features: int,
         normalize_residuals: bool = True,
@@ -30,7 +30,12 @@ class ResKmeansFSQ:
         fsq_mlp_hidden: int = 128,
         fsq_epochs: int = 50,
     ):
-        self.n_kmeans_clusters = n_kmeans_clusters
+        # Accept int, "4096", or "4096,2048" — normalise to List[int]
+        if isinstance(n_kmeans_clusters, str):
+            n_kmeans_clusters = [int(x) for x in n_kmeans_clusters.split(",")]
+        if isinstance(n_kmeans_clusters, int):
+            n_kmeans_clusters = [n_kmeans_clusters, n_kmeans_clusters]
+        self.n_kmeans_clusters = n_kmeans_clusters  # List[int], one per KMeans layer
         self.fsq_levels = fsq_levels
         self.n_features = n_features
         self.normalize_residuals = normalize_residuals
@@ -40,8 +45,8 @@ class ResKmeansFSQ:
         self.gpu = num_gpus > 0
 
         self.kmeans_layers: List[FaissKMeansLayer] = [
-            FaissKMeansLayer(n_kmeans_clusters, n_features, gpu=self.gpu)
-            for _ in range(2)
+            FaissKMeansLayer(nc, n_features, gpu=self.gpu)
+            for nc in self.n_kmeans_clusters
         ]
         if fsq_projection == 'mlp':
             self.fsq_layer = LearnedFSQLayer(
@@ -61,7 +66,8 @@ class ResKmeansFSQ:
     ):
         n_samples = embeddings.shape[0]
         print(f"Training ResKmeansFSQ on {n_samples:,} samples")
-        print(f"Config: 2 KMeans ({self.n_kmeans_clusters} clusters) + 1 FSQ ({self.fsq_levels})")
+        nc_str = "×".join(str(n) for n in self.n_kmeans_clusters)
+        print(f"Config: 2 KMeans ({nc_str} clusters) + 1 FSQ ({self.fsq_levels})")
 
         current_residuals = embeddings.clone()
 
@@ -122,7 +128,6 @@ class ResKmeansFSQ:
         obj = cls.__new__(cls)
         obj.normalize_residuals = model_data['normalize_residuals']
         obj.n_layers = model_data['n_layers']
-        obj.n_kmeans_clusters = model_data['n_kmeans_clusters']
         obj.fsq_levels = model_data['fsq_levels']
         obj.n_features = model_data['n_features']
         obj.num_gpus = 0
@@ -135,12 +140,18 @@ class ResKmeansFSQ:
             layer = FaissKMeansLayer(centroids.shape[0], centroids.shape[1], gpu=False)
             layer.centroids = centroids.to(device)
             obj.kmeans_layers.append(layer)
+        # Restore per-layer cluster counts (old checkpoints stored a scalar)
+        saved_nc = model_data['n_kmeans_clusters']
+        if isinstance(saved_nc, int):
+            saved_nc = [saved_nc] * len(obj.kmeans_layers)
+        obj.n_kmeans_clusters = saved_nc
 
         # Rebuild FSQ layer from saved state
         obj.fsq_layer = fsq_layer_from_state(model_data['fsq_state'])
 
+        nc_str = "×".join(str(n) for n in obj.n_kmeans_clusters)
         print(f"Loaded quantizer from {path} "
-              f"(KMeans {obj.n_kmeans_clusters}x2 + FSQ {obj.fsq_levels})")
+              f"(KMeans [{nc_str}] + FSQ {obj.fsq_levels})")
         return obj
 
     def save(self, path: str):

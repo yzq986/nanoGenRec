@@ -237,6 +237,14 @@ def build_eval_cmd(name: str, n_gpus: int, n_recall: int = 1000) -> list[str]:
 
 TOKENIZER_HASH_EXCLUDE = {"behavior_path", "output_dir", "date_start", "date_end", "seed"}
 
+
+def _nc_str(v) -> str:
+    """Normalise num_clusters to comma-string for CLI: int→"4096", list→"4096,2048", str passthrough."""
+    if isinstance(v, list):
+        return ",".join(str(x) for x in v)
+    return str(v)
+
+
 def build_preprocess_sid_cmd(resolved: dict, name: str) -> list[str]:
     output_dir = str(SID_CACHE_ROOT / name)
     behavior_cache = "/mnt/workspace/gr-demo-behavior-cache"
@@ -247,7 +255,7 @@ def build_preprocess_sid_cmd(resolved: dict, name: str) -> list[str]:
         "--behavior_path", resolved.get("behavior_path", behavior_cache),
         "--date_start", resolved["date_start"],
         "--date_end",   resolved["date_end"],
-        "--num_clusters", str(resolved["num_clusters"]),
+        "--num_clusters", _nc_str(resolved["num_clusters"]),
         "--fsq_levels",   resolved["fsq_levels"],
         "--fsq_mlp_hidden", str(resolved["fsq_mlp_hidden"]),
         "--fsq_projection", resolved.get("fsq_projection", "mlp"),

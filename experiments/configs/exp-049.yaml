@@ -1,0 +1,84 @@
+name: exp049
+description: "FSQ sweep — num_clusters × h, fixed num_clusters=4096/8192, metrics: CR + Gini_d2"
+base: _base_tokenizer.yaml
+
+# Shared across all variants
+date_start: "2026-03-18"
+date_end: "2026-03-31"
+fsq_levels: 12d_4096
+fsq_projection: mlp
+fsq_epochs: 50
+
+variants:
+  # ── 0.6b (dim=1024) × num_clusters sweep ──────────────────────
+  - name: exp049-0.6b-nc4096-h64
+    model: qwen3-0.6b
+    num_clusters: 4096
+    fsq_mlp_hidden: 64
+
+  - name: exp049-0.6b-nc4096-h128
+    model: qwen3-0.6b
+    num_clusters: 4096
+    fsq_mlp_hidden: 128
+
+  - name: exp049-0.6b-nc8192-h64
+    model: qwen3-0.6b
+    num_clusters: 8192
+    fsq_mlp_hidden: 64
+
+  - name: exp049-0.6b-nc8192-h128
+    model: qwen3-0.6b
+    num_clusters: 8192
+    fsq_mlp_hidden: 128
+
+  # ── 4b (dim=2560) × num_clusters sweep ───────────────────────
+  - name: exp049-4b-nc4096-h64
+    model: qwen3-4b
+    num_clusters: 4096
+    fsq_mlp_hidden: 64
+
+  - name: exp049-4b-nc4096-h128
+    model: qwen3-4b
+    num_clusters: 4096
+    fsq_mlp_hidden: 128
+
+  - name: exp049-4b-nc8192-h64
+    model: qwen3-4b
+    num_clusters: 8192
+    fsq_mlp_hidden: 64
+
+  - name: exp049-4b-nc8192-h128
+    model: qwen3-4b
+    num_clusters: 8192
+    fsq_mlp_hidden: 128
+
+  # ── 层次化码本 (MGMR): L1>L2 递减 × h=128 ──────────────────
+  - name: exp049-0.6b-nc8192x4096-h128
+    model: qwen3-0.6b
+    num_clusters: "8192,4096"
+    fsq_mlp_hidden: 128
+
+  - name: exp049-0.6b-nc8192x2048-h128
+    model: qwen3-0.6b
+    num_clusters: "8192,2048"
+    fsq_mlp_hidden: 128
+
+  - name: exp049-0.6b-nc4096x2048-h128
+    model: qwen3-0.6b
+    num_clusters: "4096,2048"
+    fsq_mlp_hidden: 128
+
+  - name: exp049-4b-nc8192x4096-h128
+    model: qwen3-4b
+    num_clusters: "8192,4096"
+    fsq_mlp_hidden: 128
+
+  - name: exp049-4b-nc8192x2048-h128
+    model: qwen3-4b
+    num_clusters: "8192,2048"
+    fsq_mlp_hidden: 128
+
+  - name: exp049-4b-nc4096x2048-h128
+    model: qwen3-4b
+    num_clusters: "4096,2048"
+    fsq_mlp_hidden: 128
