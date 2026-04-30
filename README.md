@@ -18,7 +18,7 @@ Tokenizer ✅ → NTP ✅ → RL 对齐 ← (当前) → 部署
 | **NTP** | M-tier bare R@500=**70.2%**；L-tier SFT R@500=64.1% | EXP-043/047 | [experiments/logs/ntp/README.md](experiments/logs/ntp/README.md) |
 | **RL 对齐** | ECPO R@500=**65.7%**（S-tier 链路）；L-tier 链路待启动 | EXP-039B | [experiments/logs/rl/README.md](experiments/logs/rl/README.md) |
 
-⚠️ **待修复**：EXP-045 FSQ sweep 用了 `num_clusters=1024`（应为 4096），待重跑（EXP-049 规划中）。
+🔄 **EXP-049**：FSQ sweep 重跑中（修复 EXP-045 `num_clusters=1024` bug），14 variants，含 MGMR 层次化配置。
 
 ## 流程总览
 
@@ -33,7 +33,7 @@ graph LR
 
     subgraph S3 ["3. Tokenizer ✅"]
         direction TB
-        T_TRAIN["<b>训练</b><br>RKMeans · MLP-FSQ · OPQ<br><code>model/fsq.py</code><br><code>model/rkmeans.py</code>"]
+        T_TRAIN["<b>训练</b><br>RKMeans · MLP-FSQ · OPQ<br><code>tokenizer/fsq.py</code><br><code>tokenizer/rkmeans.py</code>"]
         T_EVAL["<b>评测</b><br>collision_rate · codebook_util<br>recon_loss · entropy<br>semantic_neighbor_HR<br>embedding_HR<br><code>eval/evaluator</code> · <code>eval/hyperparam</code>"]
         T_TRAIN --> T_EVAL
     end
@@ -213,13 +213,19 @@ gr_demo/
 │   ├── export_behavior.py # Hive → S3 行为导出 (PySpark)
 │   ├── encode_distributed.py # torchrun 分布式编码
 │   └── loaders.py         # 数据加载器
+├── tokenizer/             # Semantic ID Tokenizer (2026-04-30 迁移)
+│   ├── rkmeans.py         # FaissKMeansLayer — GPU-native via DatasetAssignGPU
+│   ├── fsq.py             # FSQLayer (PCA) + LearnedFSQLayer (MLP+STE)
+│   ├── rkmeans_fsq.py     # ResKmeansFSQ — 2×KMeans + 1×FSQ
+│   ├── preprocess_sid.py  # CLI: embedding → 训练量化器 → 生成 SID
+│   └── README.md
 ├── model/
 │   ├── embedders.py       # Qwen3 Embedding 模型封装
 │   ├── encode.py          # 编码流程
 │   ├── train.py           # 端到端训练 CLI
-│   ├── rkmeans.py         # RKMeans tokenizer (残差编码)
-│   ├── fsq.py             # MLP-FSQ tokenizer (当前推荐)
-│   ├── rkmeans_fsq.py     # RKMeans + FSQ 混合 tokenizer
+│   ├── rkmeans.py         # shim → tokenizer/rkmeans.py
+│   ├── fsq.py             # shim → tokenizer/fsq.py
+│   ├── rkmeans_fsq.py     # shim → tokenizer/rkmeans_fsq.py
 │   ├── opq.py             # OPQ (Optimized Product Quantization)
 │   ├── qformer.py         # QFormer (cross-attention 压缩)
 │   ├── contrastive_finetune.py # I2I contrastive fine-tune (已关闭)
@@ -728,9 +734,9 @@ L = E[ min(ρ·A, clip(ρ, 1-ε, 1+ε)·A) ]    ρ = π_θ / π_ref
 
 | Key | 文件 | 说明 | 状态 |
 |-----|------|------|------|
-| MLP-FSQ | `model/fsq.py` | MLP 映射 + Finite Scalar Quantization | **当前推荐** (EXP-008 赢家) |
-| RKMeans | `model/rkmeans.py` | 残差 K-Means 聚类 | 基线 |
-| RKMeans+FSQ | `model/rkmeans_fsq.py` | 混合: 前层 KMeans + 末层 FSQ | 实验备选 |
+| MLP-FSQ | `tokenizer/fsq.py` | MLP 映射 + Finite Scalar Quantization | **当前推荐** (EXP-008 赢家) |
+| RKMeans | `tokenizer/rkmeans.py` | 残差 K-Means 聚类 | 基线 |
+| RKMeans+FSQ | `tokenizer/rkmeans_fsq.py` | 混合: 前层 KMeans + 末层 FSQ | 实验备选 |
 | OPQ | `model/opq.py` | Optimized Product Quantization | 已验证劣于 MLP-FSQ |
 
 ## 环境依赖
