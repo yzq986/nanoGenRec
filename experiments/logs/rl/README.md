@@ -12,7 +12,7 @@ SP-DPO → RF-DPO → GRPO/ECPO 全链路强化学习对齐。
 | SP-DPO | ~55-58% | EXP-037 |
 | SFT baseline (S-tier) | 61.2% | EXP-043 |
 
-**下一步**：以 exp047（L-tier SFT, R@500=64.1%）为起点重做 RL 链路。
+**下一步**：以 exp047（L-tier SFT, R@500=64.1%）为起点重做 RL 链路：SP-DPO → RF-DPO (3ep) → ECPO。
 
 ## 标准 RL 链路
 
