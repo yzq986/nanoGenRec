@@ -68,15 +68,30 @@ Use WebSearch to find recent papers on generative recommendation from major indu
 
 If a specific argument is given (e.g., "ByteDance"), focus the search on that company/topic.
 
-### Step 2: Filter papers
+### Step 2: Filter and tier papers
 
-For each paper found, evaluate against these criteria. Papers must meet **at least 2 of 3**:
+Use WebFetch on the arxiv abstract page to read the paper summary, then **assign a tier**:
 
-1. **Online A/B results**: Paper reports real online metrics (CTR, revenue, GMV lift), not just offline
-2. **Deployment scale**: Mentions serving scale (QPS, user base, item pool size > 1M)
-3. **Novel technique**: Introduces a technique not already covered by existing ideas in `ideas/*.md`
+**Tier A — Industrial Deployed** (gold standard, highest priority for ideas)
+- **Both** online A/B results (CTR/GMV/revenue lift) **and** deployment scale (QPS / >1M users / >1M items) explicit
+- Author list includes industry lab (Kuaishou, Meta, Alibaba, ByteDance, Tencent, JD, Google, Amazon, Microsoft, Baidu, Meituan, Xiaohongshu, Pinduoduo, Netflix, Spotify, LinkedIn, Huawei, NetEase, etc.)
 
-Use WebFetch on the arxiv abstract page to read the paper summary. Skip papers that don't meet criteria.
+**Tier B — Industrial Paper** (worth filing, weaker evidence)
+- Has industry lab affiliation in authors **OR** venue acceptance (SIGIR / WWW / KDD / RecSys / CIKM)
+- Missing A/B results **or** concrete deployment scale numbers, but novelty + industry-friendly framing
+
+**Tier C — Academic Novel** (file only if genuinely new technique)
+- Pure academic (university labs), no industry co-authors, offline datasets only
+- Must introduce a **concrete, reproducible technique** not already in `ideas/*.md`
+- Skip if it's an incremental academic benchmark bump, a pure survey, or theory-only with no experiments
+
+**Skip entirely**:
+- Technique is already covered by an existing idea (cross-reference `ideas/*.md` first)
+- Off-topic: agent memory, knowledge graph reasoning, QA, general LLM alignment without rec context
+- No method contribution (pure dataset / survey / position paper)
+- Workshop or preprint with <3 pages or placeholder experiments
+
+**Tier A** papers always file. **Tier B** papers file if the technique dimension (tokenizer / embedding / architecture / training / RL / inference / scaling) doesn't already have a strong industrial reference. **Tier C** papers file sparingly — only when the technique is genuinely novel and actionable; prefer to note and skip if borderline.
 
 ### Step 3: Download PDF and convert to text
 
@@ -115,15 +130,17 @@ For each qualifying paper:
 
 ### Step 4: Update papers index
 
-After downloading, update `papers/README.md` (create if it doesn't exist) with a table of all downloaded papers:
+After downloading, update `papers/README.md` (create if it doesn't exist) with a table of all downloaded papers. Include a `Tier` column:
 
 ```markdown
 # Downloaded Papers
 
-| Arxiv ID | Title | Authors | Date | PDF | Text | Ideas |
-|----------|-------|---------|------|-----|------|-------|
-| {id} | {title} | {first author} et al. | {date} | [pdf](/{id}.pdf) | [txt](/{id}.txt) | IDEA-{hash}-N, ... |
+| Arxiv ID | Title | Authors | Date | Tier | PDF | Text | Ideas |
+|----------|-------|---------|------|------|-----|------|-------|
+| {id} | {title} | {first author} et al. | {date} | A/B/C | [pdf]({id}.pdf) | [txt]({id}.txt) | IDEA-{hash}-N, ... |
 ```
+
+Existing rows without a Tier column can be left as-is — only new rows need the column. When backfilling, use your best judgment based on A/B + deployment evidence in the paper.
 
 ### Step 5: Extract ideas
 
@@ -146,7 +163,11 @@ For each qualifying paper, **read from the full text** (`papers/{arxiv_id}.txt`)
    - Derive a hash prefix from the paper (e.g., arxiv ID or short name)
    - Assign globally-unique N per hash prefix (grep all `ideas/*.md` files first)
    - Append to the appropriate topic file
-   - Update `ideas/README.md` index and priority tables
+   - **Tag tier in the idea header**: first line after the `## IDEA-xxx-N` title must include `**Tier**: A | B | C` plus a one-line justification, e.g.:
+     - `**Tier**: A (Meta, Platform A/B +0.22% Topline, 64K UIH)`
+     - `**Tier**: B (SIGIR 2026, Kuaishou authors, offline datasets only)`
+     - `**Tier**: C (academic, novel non-uniform quantization, no A/B)`
+   - Update `ideas/README.md` index and priority tables — in the prefix tracking table, prefix the description with `[A]` / `[B]` / `[C]`
 
 ### Step 6: Output summary
 
@@ -167,16 +188,16 @@ After processing all papers, output a summary:
 
 ### Processed Papers
 
-| Paper | Company | Venue | Key Ideas | Filed To |
-|-------|---------|-------|-----------|----------|
-| {title} | {company} | {venue} | IDEA-{hash}-{N}, ... | tokenizer.md, training.md |
-| ... | ... | ... | ... | ... |
+| Paper | Company | Venue | Tier | Key Ideas | Filed To |
+|-------|---------|-------|------|-----------|----------|
+| {title} | {company} | {venue} | A/B/C | IDEA-{hash}-{N}, ... | tokenizer.md, training.md |
+| ... | ... | ... | ... | ... | ... |
 
-### Skipped Papers (didn't meet criteria)
+### Skipped Papers
 
 | Paper | Reason |
 |-------|--------|
-| {title} | No online results / Already covered by IDEA-xxx-N |
+| {title} | Off-topic / Duplicate of IDEA-xxx-N / No method contribution / Already covered |
 | ... | ... |
 
 ### New Ideas Added: {count}
@@ -186,7 +207,7 @@ After processing all papers, output a summary:
 
 - **Always download PDFs**: Every qualifying paper must be downloaded to `papers/` as both `.pdf` and `.txt`. This enables future deep-dive discussions without re-fetching.
 - **Read full text, not just abstracts**: Use the converted `.txt` file (via Read tool) for idea extraction. Full text provides experimental details, ablation results, and implementation specifics that abstracts miss.
-- **Industrial focus**: Skip pure academic papers without deployment evidence. We want techniques proven at scale.
+- **Tier the paper, don't discard it**: Academic papers are welcome when they introduce genuinely novel techniques — just tag them Tier C so we know the evidence strength. Reserve Tier A for industrial-deployed (A/B + scale), Tier B for industry-adjacent (authors or venue).
 - **Actionable ideas only**: Each idea must be concrete enough to design an experiment. "Interesting approach" is not enough.
 - **Cross-reference existing work**: Always check existing ideas before filing. The value is in discovering NEW techniques, not rediscovering known ones.
 - **Respect ID conventions**: Hash prefix = paper provenance, N = globally unique per prefix, filed by improvement dimension.
