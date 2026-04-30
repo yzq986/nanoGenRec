@@ -36,10 +36,12 @@ class FaissKMeansLayer:
 
         data_np = data.cpu().numpy().astype(np.float32)
 
-        # faiss GPU KMeans has numerical issues with high-dim (>2048) data in CUDA 12.8+
-        use_gpu = self.gpu and self.n_features <= 2048
-        if self.gpu and not use_gpu:
-            print(f"  [rkmeans] dim={self.n_features} > 2048, falling back to CPU KMeans for numerical stability")
+        use_gpu = self.gpu
+        if use_gpu and faiss.get_num_gpus() == 0:
+            raise RuntimeError(
+                "[rkmeans] gpu=True but faiss.get_num_gpus()==0. "
+                "Check LD_LIBRARY_PATH includes /usr/local/nvidia/lib64."
+            )
         kmeans = faiss.Kmeans(
             self.n_features,
             self.n_clusters,

@@ -8,6 +8,8 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # Use gr conda env for GPU support (faiss-gpu, torch cu128)
 GR_ENV="/home/dev/.conda/envs/gr"
 [ -d "${GR_ENV}" ] && export PATH="${GR_ENV}/bin:${PATH}"
+# Expose NVIDIA libs so faiss-gpu can find libcuda.so at runtime
+export LD_LIBRARY_PATH="/usr/local/nvidia/lib:/usr/local/nvidia/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 cd "${REPO_ROOT}"
 
 CONFIG="${1:?Usage: $0 <config.yaml>}"
