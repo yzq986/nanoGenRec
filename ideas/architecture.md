@@ -1410,3 +1410,77 @@ K̃ = K ⊙ Gate(K)
 - IDEA-vista-0 (QLA): attention 形式替换, 有竞争关系
 - IDEA-torope-0 (Roblox Time-and-Order RoPE): 时间 RoPE 另一实现, CADET 的 timestamp RoPE 是激进替换方案
 - IDEA-ocarm-0 paper (reference only, 2604.25839): 用 distillation 解决 post-scoring signal 缺失; CADET 用 multi-head output 解决, 两种互补思路
+
+---
+
+## IDEA-recochain-0: 单 Transformer 里融合生成式检索 + target-aware 重排 (KV-cache 复用)
+
+**优先级**: P2
+**来源**: RecoChain — Harmonizing Generative Retrieval and Ranking in Chain-of-Recommendation (Kuaishou Jiangxia Cao, arxiv 2604.25787)
+**Tier**: B (Kuaishou 通讯作者, 离线 TAOBAO-MM, 无 A/B; short paper "work in progress")
+**状态**: 待讨论
+
+### 问题: GR 的 beam candidate 难排序
+
+OneRec / TIGER 这类 GR 通过 hierarchical beam search 生成 `K=256` 个候选 SID, 但 **next-item-agnostic** 建模方式无法精确估计 "这 256 个里哪 10 个最好"。工业两段 pipeline 的做法是:
+
+- Retrieval (GR): `P(next_item | user_hist)` → 粗召 256 个
+- Ranking (DIN/SIM/TWIN/RankMixer): `P(click | user, item_feat)` → 精排 top10
+
+现有 GR 蒸馏 ranking 作 reward model (OneRec-V2 / Climber / ReCast 都是这条路线), 但根本的 target-item aware searched-sequence modeling (SIM 的核心) 没接到 GR 里, 所以 ranking 能力仍差。
+
+### RecoChain 的做法: 一个 decoder 两段用
+
+关键是 **把 SIM 的 target-aware 行为序列 retrieval 搬进 Transformer 生成路径**:
+
+1. **Retrieval 阶段**: decoder 对 `user_hist` → hierarchical beam 生成 `K` 个 SID, 反解出 `K` 个候选 item_id
+2. **Ranking 阶段**: 对每个候选 `i(c)`, 用 cosine 相似度从 **整个 user history** 里 retrieve top-M 相似 item (SIM 风格 GSU), 把这 M 个 item 的 token 拼在 beam SID 后面, 再 append 一个候选 item_id token 作 "rank token"
+3. **KV cache 复用**: 上面两步都在同一 decoder 做 incremental computation, user_hist 的 KV 不重算, beam SID 部分也复用
+4. **Rank head**: 在 rank token 位置接 MLP head → sigmoid → click probability
+5. **Loss**: Stage-I 纯 SID generation CE; Stage-II 同时 SID CE + binary CE (正样本 = 真 target SID match, 负样本 = beam 里其他 SID)
+
+### 离线效果 (TAOBAO-MM, 仅数据集)
+
+- Base (beam-only) R@5=0.2384, Rerank 后 0.2459 (**+3.14%**, beam=20, seq=32, retrieval=10)
+- Beam size 10→40: rerank gain 0.27%→1.08%, 即 beam 越大 rerank 收益越大
+- Retrieval length 0→20: rerank gain 0.12%→3.51%, GSU 搜到的相似序列越多越好
+
+### 与当前项目的关联
+
+- **对标 IDEA-onerec-3 (Reward Model 集成)** / **IDEA-orecv2-0** / **IDEA-recast-0**: 这些都是 "用 ranker 信号 shape GR 生成概率"; RecoChain 是 "让 GR 自己做 ranking"。两条路根本路线不同
+- **对标 IDEA-glorank-0 (GloRank Kuaishou 重排)**: GloRank 是重排模型, 但用**独立**生成式 reranker; RecoChain 是**同一个** decoder 前后两段。耦合度更高, 但也更省算力
+- **Target-aware GSU 是 SIM [arxiv 2006.05639] 的核心**, 论文引用到了; 本 idea 本质是 "OneRec + SIM 端到端化"
+
+### 实验设计草案
+
+**当前阶段不执行。** 前置条件:
+
+1. 我们目前只有 retrieval 训练 (NTP 单任务), 没有 ranking label (二分类 click/conv)。需要先有 RTB / 曝光日志的 pos/neg 标签, 才能训 rank head
+2. 现阶段 R@500 的相对差距 (64.1% vs 70.1%) 主要在 tokenizer + sequence scaling, rank head 的相对收益未必大过这些
+
+如果未来补充 ranking label:
+
+- Stage A: 保持现有 NTP 训练不变, 在 checkpoint 上加 rank head, 冻 backbone 微调 (快验证)
+- Stage B: joint training, 两个 loss 加权求和
+
+实验粒度: 对比 `beam-only R@K` vs `beam+rerank R@K`, 预期 rerank 在 beam size 大时提升更明显 (论文结论)
+
+### 关键问题
+
+1. **KV cache 设计**: 我们 `eval.py` 的 `constrained_beam_search` 已经有 KV cache 复用, 但 rank 阶段要 append **M 个 retrieved item tokens + 1 个 candidate item_id token**, 这套 incremental 要加一条新的路径, 非 trivial
+2. **item_id token 的词汇表**: RecoChain 除了 SID token 还要额外一个 item_id embedding table (每个 item 一个 id token)。我们目前是 pure-SID, 加 item_id table 会让模型侧额外花 params
+3. **GSU 搜索**: cosine 相似度在整个 user history 上搜 top-M, 这是工业 SIM 标准做法, 但离线训练时要预计算好, inference 时要实时做 (M=10 量级可接受)
+4. **Rank label 来源**: 我们目前没有 "next item 是否真 click" 的 binary label; beam 里不是 target 的全算负样本, 这个构造跟论文一致, 但可能过稀疏 (positive/负 = 1/beam_size)
+
+### 为什么是 Tier B 而非 Tier A
+
+- Kuaishou 通讯作者 Jiangxia Cao (OneRec 系列一作) → 高 industrial relevance
+- 但实验只在**公开 TAOBAO-MM 数据集**, 没有 Kuaishou 内部 online A/B 或 deployment 报告
+- Short paper (5 页), 论文标 "work in progress", 方法细节 (GSU 的具体实现, rank head 的 BCE 构造) 尚不完整
+
+### 相关 idea
+
+- IDEA-onerec-3 / IDEA-orecv2-0 / IDEA-recast-0: GR + reward model 蒸馏路线
+- IDEA-glorank-0: Kuaishou 的另一个生成式 reranking 方案, 独立 reranker
+- IDEA-vista-0 (VISTA Meta): target-aware UIH attention, 思想类似但不在 GR decoder 内
+- IDEA-a2gen-0 (A2Gen): 扩展 GR 输出到 (action, timing), 正交

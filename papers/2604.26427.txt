@@ -1,0 +1,1723 @@
+CARD: Non-Uniform Quantization of Visual Semantic Unit for
+Generative Recommendation
+Yibiao Wei
+University of Electronic Science and
+Technology of China
+Chengdu, Sichuan, China
+weiyibiao12138@gmail.com
+Jie Zou∗
+University of Electronic Science and
+Technology of China
+Chengdu, Sichuan, China
+jie.zou@uestc.edu.cn
+Pengfei Zhang
+University of Electronic Science and
+Technology of China
+Chengdu, Sichuan, China
+202421080437@std.uestc.edu.cn
+Xiao Ao
+University of Electronic Science and
+Technology of China
+Chengdu, Sichuan, China
+202422080439@std.uestc.edu.cn
+Weikang Guo
+Southwestern University of Finance
+and Economics
+Chengdu, Sichuan, China
+guowk@swufe.edu.cn
+Zeyu Ma
+University of Electronic Science and
+Technology of China
+Chengdu, Sichuan, China
+cnzeyuma@163.com
+Yang Yang
+University of Electronic Science and
+Technology of China
+Chengdu, Sichuan, China
+yang.yang@uestc.edu.cn
+ABSTRACT
+Generative recommendation frameworks typically represent items
+as discrete Semantic IDs (SIDs). While existing studies have sought
+to enhance SID construction by incorporating multimodal con-
+tent, collaborative signals, or more advanced quantization tech-
+niques, learning high-quality SIDs still faces two key challenges:
+(1) The two-stage generative recommendation paradigm (SID con-
+struction and autoregressive generation) provides insufficient su-
+pervision for heterogeneous fusion, which hinders learning high-
+quality SIDs, and (2) non-uniform embeddings lead to codeword
+imbalance and generation bias. To address these challenges, we
+propose a novel generative recommendation framework, called
+CARD. CARD introduces a visual semantic unit that unifies tex-
+tual, visual, and collaborative signals into a structured visual rep-
+resentation prior to encoding, enabling holistic semantic model-
+ing and effectively alleviating the semantic gap, thereby reducing
+the reliance on supervision signals during SID learning. Further-
+more, to deal with the highly non-uniform distribution of item
+semantic embeddings in recommendation scenarios, we develop
+a non-uniform quantization framework (NU-RQ-VAE), which in-
+corporates a learnable and invertible non-uniform transformation
+into the quantization process to map skewed semantic distributions
+into a more balanced latent space, thereby significantly improv-
+ing codebook utilization and quantization accuracy. Experiments
+on multiple datasets show that CARD consistently outperforms
+∗Corresponding author.
+This work is licensed under a Creative Commons Attribution-NonCommercial-
+NoDerivatives 4.0 International License.
+SIGIR ’26, Melbourne, VIC, Australia
+© 2026 Copyright held by the owner/author(s).
+ACM ISBN 979-8-4007-2599-9/2026/07
+https://doi.org/10.1145/3805712.3809538
+baseline methods under various settings; meanwhile, the proposed
+non-uniform transformation module is plug-and-play and remains
+robust across different quantization schemes. Code is available at
+https://github.com/HAI-UESTC/CARD.
+CCS Concepts
+• Information systems →Recommender systems.
+Keywords
+Generative Recommendation, Semantic ID, Multimodal Recommen-
+dation
+ACM Reference Format:
+Yibiao Wei, Jie Zou, Pengfei Zhang, Xiao Ao, Weikang Guo, Zeyu Ma,
+and Yang Yang. 2026. CARD: Non-Uniform Quantization of Visual Semantic
+Unit for Generative Recommendation. In Proceedings of the 49th International
+ACM SIGIR Conference on Research and Development in Information Retrieval
+(SIGIR ’26), July 20–24, 2026, Melbourne, VIC, Australia. ACM, New York, NY,
+USA, 12 pages. https://doi.org/10.1145/3805712.3809538
+1
+INTRODUCTION
+Recommender systems [2, 7, 16, 19, 22, 26, 65–67] play a crucial
+role in modern information services by connecting users with mas-
+sive information resources. Traditional recommendation methods
+[1, 6, 24, 25, 54, 55] predominantly follow an identifier (ID)-based
+modeling paradigm, which suffers from limited representational
+expressiveness and exhibits poor generalization to unseen items,
+particularly under sparse interaction settings [29, 52].
+To alleviate these limitations, generative recommendation [4,
+34, 58] has recently emerged as a promising approach. Unlike ID-
+based modeling paradigms, generative recommendation represents
+each item with semantic IDs (SIDs) by quantizing item textual con-
+tent into sequences of discrete codes [4, 20, 41], which improves
+generalization under interaction sparsity and cold-start settings.
+arXiv:2604.26427v1  [cs.IR]  29 Apr 2026
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yibiao Wei et al.
+Subsequently, generative models (e.g., T5 [33]) perform autoregres-
+sive generation over SIDs, formulating next-item prediction as a
+sequence-to-sequence task. Existing studies of generative recom-
+mendation enhance the construction of SIDs from multiple perspec-
+tives, including both information enrichment and quantization de-
+sign. Some approaches incorporate multimodal features [53, 60, 63]
+and collaborative signals [43, 44, 62] into the quantization process
+to learn richer semantic representations. Beyond incorporating
+multimodal and collaborative signals, recent studies further focus
+on the quantization mechanism itself, designing more fine-grained
+or efficient quantization strategies (e.g., OPQ [9] and Multi-Head
+VQ-VAE [35]) to improve the expressiveness and generation effi-
+ciency of SIDs. Despite these advances, constructing high-quality
+SIDs still faces two key challenges:
+Challenge 1: Insufficient Supervision Limits Heterogeneous
+Information Fusion for SID Quantization. Although existing
+methods [43, 59, 60] incorporate heterogeneous information such
+as textual, visual, and collaborative signals, most still encode each
+modality with independent encoders. Mainstream generative rec-
+ommendation approaches further adopt a non-end-to-end two-
+stage paradigm [4, 34, 62]: they first learn item SIDs independently
+and then keep them fixed for subsequent recommendation. Since
+SID construction is decoupled from the final recommendation ob-
+jective, heterogeneous fusion lacks direct downstream supervision.
+In this setting, most existing work often enforces cross-modal con-
+sistency by explicitly aligning [43, 56, 59] (e.g., contrastive losses
+[43, 60]) embeddings or SIDs across modalities. However, strong
+alignment may ignore cross-modal differences, leading to over-
+homogenization that weakens unimodal discriminability, and may
+even distort modality-specific semantics. This issue is particularly
+critical for quantization, where continuous semantics must be com-
+pressed into discrete codes and any semantic conflicts or dominance
+can be amplified during discretization. Therefore, a natural ques-
+tion arises: under an insufficiently supervised setting, can we unify
+heterogeneous semantic representations, avoiding complex fusion
+mechanisms, and perform holistic semantic modeling tailored for
+SID construction?
+Challenge 2: Non-uniform Embeddings Result in Codeword
+Imbalance and Generation Bias. Traditional quantizers (e.g., RQ-
+VAE [20]) minimize global reconstruction error, which is more
+appropriate when the embedding density is relatively uniform.
+However, Figure 1 (left) shows that item semantic embeddings in
+recommendation scenarios are highly non-uniform: semantically
+similar and popular items form dense clusters, while numerous long-
+tail items are scattered across sparse regions. Applying distribution-
+agnostic quantization to such non-uniform embedding spaces leads
+to imbalanced codeword assignment. Figure 1 (right) summarizes
+codeword usage for target and generated SIDs: a few frequent code-
+words dominate and are further amplified during autoregressive
+decoding, causing generation bias. From a spatial perspective, this
+imbalance translates into uneven effective codebook capacity across
+the embedding space. In dense regions, limited codebook capacity
+must represent many items, hindering fine-grained discrimination,
+while in sparse regions, a portion of the codebook capacity re-
+mains underutilized. This imbalance ultimately limits the ability to
+effectively represent diverse item semantics. It naturally raises a
+0.1
+0.0
+0.1
+0.2
+0.3
+PC1 (8.7%)
+0.1
+0.0
+0.1
+0.2
+0.3
+PC2 (5.5%)
+Figure 1: The left shows item embeddings in a 2D PCA space,
+with dense clusters and sparse regions (darker colors indicate
+higher density). The right shows skewed codeword usage,
+where a few frequent codewords dominate and are further
+amplified in generated SIDs, causing generation bias.
+question: can we explicitly correct the skewed embedding distribu-
+tion before or during quantization to balance codeword usage and
+improve codebook utilization and accuracy?
+To answer the above questions, we propose non-uniform quanti-
+zation of visual semantiC unit for generAtive RecommenDation,
+named CARD. The design of CARD is inspired by card-based games
+(e.g., Slay the Spire1), where a single card compactly integrates multi-
+ple attributes and effects into a unified representation. Motivated by
+this design intuition, we propose a visual semantic unit representa-
+tion that organizes heterogeneous information (textual descriptions,
+visual content, and collaborative signals) into a structured card-
+style image. By unifying heterogeneous modalities into a unified
+visual modality, our design enables holistic integration before en-
+coding, effectively alleviating the semantic gap. As all modalities are
+fused within a unified visual representation space, the subsequent
+process avoids the need for complex fusion mechanisms, leading
+to improved semantic consistency and reduced system complex-
+ity. Although the above design enables unified semantic modeling,
+item embeddings in recommendation scenarios still exhibit highly
+skewed distributions, which poses new challenges for the subse-
+quent quantization stage. We further propose a Non-Uniform Resid-
+ual Quantized Variational Autoencoder (NU-RQ-VAE). The core
+idea is to introduce a learnable and invertible nonlinear transforma-
+tion prior to quantization, which can be viewed as an “adjustable
+ruler” that maps the original non-uniform semantic distributions
+into an approximately uniform latent space. This transformation
+enables subsequent residual quantization to operate under more
+favorable distributional conditions, thereby significantly improv-
+ing codebook utilization and quantization accuracy. Specifically,
+NU-RQ-VAE provides two non-uniform transformation variants:
+(1) Kumaraswamy-based parameterized transformation. This ap-
+proach adopts the cumulative distribution function (CDF) of the
+Kumaraswamy distribution as the non-uniform transformation, en-
+abling flexible modeling of various complex non-uniform semantic
+distributions during global training and achieving more thorough
+distribution correction. (2) Logistic–Logit–based transformation.
+This approach adopts an invertible Logistic–Logit transformation
+tailored for bell-shaped semantic embeddings in recommendation
+scenarios. The main contributions of this work are summarized as
+follows:
+1https://www.megacrit.com/slay-the-spire
+
+
+CARD: Non-Uniform Quantization of Visual Semantic Unit for Generative Recommendation
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+• We propose a novel generative recommendation method, CARD,
+which addresses both the insufficient supervision in heteroge-
+neous fusion and the non-uniformity of semantic embeddings in
+SID construction via unified semantic modeling and non-uniform
+quantization.
+• We propose a visual semantic unit that unifies heterogeneous
+semantic signals into a visual representation, enabling holistic
+and quantization-friendly semantic modeling while simplifying
+heterogeneous information fusion.
+• We propose NU-RQ-VAE to handle non-uniform semantic embed-
+dings in recommendation by introducing a learnable and invert-
+ible transformation into quantization, which improves codebook
+utilization and SID generation quality.
+• Experiments on multiple datasets show that CARD consistently
+outperforms existing methods, while the proposed non-uniform
+transformation module serves as a plug-and-play component
+and maintains robust performance across different quantization
+schemes.
+2
+RELATED WORK
+2.1
+Generative Recommendation
+In recent years, inspired by the success of large language mod-
+els (LLMs), generative recommendation [9–11, 15, 21, 34, 42] has
+emerged as an important research direction in recommender sys-
+tems. Such methods typically represent items as sequences of dis-
+crete SIDs and employ generative models (e.g., T5 [33]) to predict
+the SID sequence of the target item. Early studies on SID construc-
+tion mainly adopted cluster-based strategies [36, 44] to discretize
+item embeddings. Subsequent studies introduced vector quantiza-
+tion techniques, including models based on residual quantization
+(e.g., TIGER [34], LETTER [43], and LC-Rec [62] based on RQ-VAE
+[20], as well as OneRec [4] based on RQ-KMeans) and product
+quantization methods [9], thereby enabling the construction of
+more expressive SIDs. Beyond quantization mechanisms, recent
+studies have enriched SID construction by incorporating collabora-
+tive signals [43, 44, 56] and multimodal content [28, 53, 59, 60, 63].
+Representative studies such as EAGER [44] and LETTER [43] in-
+tegrated semantic representations with collaborative signals to
+generate more informative and recommendation-relevant SIDs. SE-
+TRec [27] jointly encoded semantic and collaborative information
+as a set of unordered tokens and enables parallel generation, im-
+proving generation efficiency and recommendation performance.
+MQL4GRec [59] mapped multimodal content into a unified quan-
+tized language, enhancing semantic representation and knowledge
+transfer through a shared vocabulary space and generative objec-
+tives. MMQ [53] and MACRec [60] focused on multimodal SID
+construction, where MMQ [53] modeled modality collaboration
+and specificity through shared–specific multi-expert quantizers,
+while MACRec [60] reduced codebook conflicts via cross-modal
+quantization and multi-faceted alignment. While existing methods
+rely on modality-specific encoders and post-hoc alignment under
+insufficient supervision, CARD renders heterogeneous signals into
+coherent visual semantic units for pre-encoding fusion and incor-
+porates non-uniform residual quantization, enabling more stable
+quantization and higher-quality SID generation.
+2.2
+Multi-modal Recommendation
+Multi-modal recommendation [23, 32, 48–50, 57] enhances perfor-
+mance by leveraging the multi-modal features of items. Earlier
+models [5, 47] primarily used such signals to complement ID-based
+collaborative filtering. More recent studies [45, 47], motivated by
+graph neural networks, integrated multi-modal features into graph-
+based learning paradigms; MMGCN [47] proposed user and item
+representations in different modalities through specific modality
+graph structures. LATTICE [61] considered specific modality se-
+mantic graphs and integrated them with graph-based collaborative
+filtering methods. To address the semantic gap between different
+modalities, BM3 [64] proposed a novel method and aligned these
+features through contrastive learning. Similarly, MMSSL [45] em-
+ployed adversarial learning to learn user and item representations
+across different modalities and fuse these representations through
+cross-modal contrastive learning. MENTOR [51] used ID-guided
+hierarchical alignment to bridge modality gaps while preserving
+interaction history. Besides contrastive learning, PromptMM [46]
+fused user preferences from different modalities through ranking
+distillation [38]. MELON [13] integrated “interaction neighbors”
+and “modality neighbors” to model the complex relationships be-
+tween user and item modality features. Existing multimodal recom-
+mendation methods typically adopt a paradigm of modality-specific
+encoding followed by late-stage fusion. In non-end-to-end genera-
+tive recommendation pipelines, heterogeneous signals often lack
+effective, task-driven fusion, which in turn poses challenges for
+stable SID learning and quantization. In contrast, CARD rethinks
+multimodal fusion and offers a new solution for SID construction.
+3
+METHODOLOGY
+This section introduces the CARD framework, as illustrated in Fig-
+ure 2. CARD first unifies heterogeneous semantic information into
+visual representations by constructing visual semantic units, then
+applies a Non-Uniform Residual Quantized Variational Autoencoder
+(NU-RQ-VAE) to quantize non-uniform semantic embeddings, and
+finally performs generative recommendation in an autoregressive
+manner based on the SIDs.
+3.1
+Card-style Unified Item Representation
+Existing SID construction methods typically use modality-specific
+encoders to separately model textual, visual, and collaborative sig-
+nals. This separated modeling places heterogeneous information
+in disjoint representation spaces, so cross-modal relations are ad-
+dressed only via post-hoc fusion or alignment, creating a semantic
+gap during representation learning. In generative recommenda-
+tion, SID learning is often insufficiently supervised and decoupled
+from downstream objectives; insufficient fusion across heteroge-
+neous modalities can then be fixed by quantization into discrete
+codes, limiting SID quality. To mitigate this problem, we propose a
+rendering-based fusion strategy: before encoding, we render tex-
+tual attributes, visual content, and collaborative relations into a
+structured visual representation, allowing the encoder to process
+a single semantically consistent input rather than multiple inde-
+pendent modality channels. Next, we describe the construction of
+visual semantic units.
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yibiao Wei et al.
+Residual 
+Quantization
+Construct Visual Semantic Unit
+Image of item
+Traditional 
+models
+Title: Red and White Striped 
+Turtleneck Sweater
+Category: Clothing / Tops 
+/ Sweaters / Knitwear
+Datasets
+All items 
+embedding
+Text of item
+Title: Red and White Striped Turtleneck 
+Sweater
+Category: Clothing / Tops / Sweaters / 
+Knitwear
+Collaborative Context
+Non-Uniform RQ-VAE
+Image
+Top-K most similar items 
+SigLIP2
+Encoder
+Non-Uniform
+Transformation
+Non-Uniform
+Transformation
+Codebook 1
+Inverse 
+Transformation
+Inverse 
+Transformation
+Decoder
+...
+...
+Codebook 2
+Nearest
+Nearest
+Nearest
+Nearest
+Encoder
+Output
+non-uniform
+uniform
+Retrieve
+...
+...
+Red Knit Scarf
+Blue Ear Warmers
+Hooded Warm Jacket
+Red Knit 
+Scarf
+Cold Weather 
+Ear Warmers
+Hooded Warm 
+Jacket
+1
+2
+3
+Codebook 3
+Codebook 4
+Figure 2: Overview of the CARD framework. CARD constructs a visual semantic unit for each item by unifying visual, textual,
+and collaborative signals within the image modality. Each unit is encoded by SigLIP2 and processed by a Non-Uniform
+Residual Quantization Variational Autoencoder (NU-RQ-VAE), where a non-uniform transformation and multi-level residual
+quantization produce discrete SIDs. These SIDs are used for downstream generative recommendation.
+3.1.1
+Construction of Visual Semantic Units. We propose a
+card-style unified item representation method that integrates mul-
+timodal information and collaborative signals prior to the encoding
+stage. By organizing textual information, visual images, and col-
+laborative signals into a structured visual input, the encoder can
+directly model holistic item semantics without requiring explicit
+cross-modal alignment or post-hoc fusion mechanisms. For each
+item 𝑖, we construct a card image G𝑖∈R𝐻×𝑊×3, which consists of
+three functionally complementary regions: (1) a visual region, (2) a
+textual semantic region, and (3) a collaborative signal region.
+Visual region. The upper part of the card displays the original
+image of the item, denoted as 𝑥img
+𝑖
+, which preserves the most in-
+tuitive and discriminative visual cues and provides foundational
+visual signals for subsequent semantic encoding.
+Textual semantic region. The textual semantic region is de-
+signed to incorporate structured textual attributes of the item. We
+render the textual attributes 𝑥text
+𝑖
+(e.g., title and category) into a text
+panel using a fixed template and place it below the visual region
+to complement high-level semantic information that is difficult to
+capture from images alone.
+Collaborative signal region. To explicitly incorporate collabo-
+rative signals into the visual semantic unit, we construct a collabo-
+rative signal region at the bottom of the card, where behaviorally
+similar neighbor items are presented as visual context. Specifically,
+we first employ a traditional recommender model (e.g., SASRec[16])
+to learn collaborative embeddings u𝑖∈R𝑑for each item 𝑖∈I. For
+a target item 𝑖, we use its embedding u𝑖as the query to identify its
+collaborative neighborhood N (𝑖). Let 𝑠(𝑖, 𝑗) = u⊤
+𝑖u𝑗be the simi-
+larity scoring function. The neighborhood N (𝑖) is constructed by
+selecting a subset of 𝐾neighbors items from the item set I \ {𝑖} that
+maximizes the sum of similarity scores. This selection process is
+Title: Merrell Men’s Jungle Moc Slip-On Shoe.
+Category: Clothing, Shoes and Jewelry / Shoes and 
+Accessories.
+Collaborative Context
+Cubavera Men’s Short 
+Sleeve Pieced Camp Shirt.
+Carhartt Men’s Big & 
+Tall Detroit Belt.
+Merrell Men’s Moab Ventilator 
+Multisport Shoe. 
+Title: Yogi Peach DeTox Tea, 16 Tea Bags.
+Category: Grocery and Gourmet Food / Beverages 
+and Tea
+Collaborative Context
+Starbucks Decaf House 
+Blend Coffee (Medium).
+Triscuit Hint Of Salt, 
+9-Ounce Boxes.
+Red Rose Tea Bags, 100-Count
+Figure 3: Examples of visual semantic units on the Clothing
+and Food datasets.
+formally defined as:
+N (𝑖) =
+argmax
+N⊂I\{𝑖},|N|=𝐾neighbors
+∑︁
+𝑗∈N
+𝑠(𝑖, 𝑗),
+(1)
+where 𝐾neighbors is a hyperparameter controlling the number of
+neighbors and we set it to 3 based on empirical validation. The items
+in the resulting neighborhood set N (𝑖) are arranged horizontally
+at the bottom of the card, with each neighbor item represented
+by its thumbnail image and corresponding textual title. Through
+this design, collaborative signals that originally reside only in the
+latent embedding space are transformed into visual context directly
+perceivable by the encoder.
+By unifying textual, visual, and collaborative information into a
+card-style image representation G𝑖, this design provides a rich and
+structurally consistent input to facilitate subsequent encoding and
+quantization. Representative examples of the constructed visual
+semantic units are presented in Figure 3.
+
+
+CARD: Non-Uniform Quantization of Visual Semantic Unit for Generative Recommendation
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+3.1.2
+Unified Encoding with a Vision–Language Encoder.
+Upon constructing the visual semantic unit G𝑖, we treat it as a uni-
+fied visual input to a pretrained vision–language encoder, denoted
+as 𝑓(·). This encoding process produces an𝑚-dimensional semantic
+embedding:
+z = 𝑓(G𝑖) ∈R𝑚.
+(2)
+In our implementation, we adopt SigLIP2 [40] as the vision–
+language encoder, which has been widely validated as a strong
+vision–language representation model. Its powerful holistic rep-
+resentation ability enables effective encoding of complex visual
+inputs, providing a stable and high-quality semantic foundation for
+subsequent modeling.
+Although the unified embedding z𝑖effectively integrates multi-
+modal semantic information and collaborative signals, its distribu-
+tion in real-world recommendation scenarios is often highly non-
+uniform. This characteristic fundamentally limits the effectiveness
+of conventional uniform quantization strategies. To address this, we
+propose NU-RQ-VAE, which explicitly models such non-uniform
+semantic distributions.
+3.2
+Non-Uniform Quantization Module
+The quantization module transforms embeddings z𝑖into discrete
+SID sequences, whose quality is crucial for downstream generative
+models to capture fine-grained item semantics. RQ-VAE [20] opti-
+mizes a global reconstruction loss (e.g., MSE), implicitly allocating
+codebook capacity uniformly across the latent space. This assump-
+tion often breaks in recommendation, where item semantics are
+highly non-uniform. Ignoring this non-uniformity leads to poor
+discriminability in high-density regions and inefficient codebook
+usage in low-density regions, degrading SID quality and generation
+stability. To address this issue, we propose a Non-Uniform Residual
+Quantized Variational Autoencoder (NU-RQ-VAE). We first review
+the standard RQ-VAE quantization procedure.
+3.2.1
+RQ-VAE Quantization Process. The RQ-VAE consists of
+an 𝐸𝑛𝑐𝑜𝑑𝑒𝑟(·), a 𝐷𝑒𝑐𝑜𝑑𝑒𝑟(·), and 𝐾codebooks {C1, . . . , C𝐾}. Specif-
+ically, for each code level 𝑘∈{1, . . . , 𝐾}, we have a codebook
+C𝑘= {𝒆𝑖}𝑁
+𝑖=1, where 𝒆𝑖∈R𝑑is a learnable code embedding and 𝑁
+denotes the codebook size.
+For an item, we first project its embedding 𝒛into the latent space
+via the encoder 𝒉= 𝐸𝑛𝑐𝑜𝑑𝑒𝑟(𝒛). This 𝒉is then quantized through 𝐾
+successive codebook levels via residual quantization. The residual
+quantization process can then be formally expressed as:
+
+
+𝑐𝑘= arg min
+𝑖
+∥𝒓𝑘−1 −𝒆𝑖∥2,
+𝒆𝑖∈C𝑘,
+𝒓𝑘= 𝒓𝑘−1 −𝒆𝑐𝑘,
+(3)
+where 𝑐𝑘is the assigned code index from the 𝑘-th level codebook,
+𝒓𝑘−1 is the semantic residual from the last level, and we set 𝒓0 = 𝒉.
+Intuitively, at each code level, RQ-VAE finds the most similar code
+embedding with the semantic residual and assigns the item with
+the corresponding code index. After the recursive quantization, we
+eventually obtain the SID ˜𝑖= [𝑐1,𝑐2, . . . ,𝑐𝐾], and the quantized em-
+bedding ˆ𝒉= Í𝑘
+𝑘=1 𝒆𝑐𝑘. The quantized embedding ˆ𝒉is then decoded
+to the reconstructed semantic embedding ˆ𝒛= 𝐷𝑒𝑐𝑜𝑑𝑒𝑟( ˆ𝒉).
+Figure 4: PDF (left) and CDF (right) of the Kumaraswamy
+distribution. The monotonic and invertible CDF enables repa-
+rameterizing non-uniform distributions into an approxi-
+mately uniform space, making it suitable for distribution-
+aware quantization.
+The overall RQ-VAE loss consists of the reconstruction loss
+LRecon and the quantization loss LRQ:
+
+
+LRecon = ∥𝒛−ˆ𝒛∥2,
+LRQ =
+𝐾
+∑︁
+𝑘=1
+ ∥sg[𝒓𝑘−1] −𝒆𝑐𝑘∥2 + 𝜇∥𝒓𝑘−1 −sg[𝒆𝑐𝑘]∥2 ,
+LSem = LRecon + LRQ,
+(4)
+where sg[·] denotes the stop-gradient operation [41], and 𝜇con-
+trols the trade-off between optimizing the code embeddings and
+the encoder. The reconstruction loss LRecon preserves essential
+semantic information by enforcing accurate reconstruction from
+the quantized embedding, while LRQ minimizes residual errors
+across all quantization levels and jointly trains the encoder and
+codebooks [41].
+3.2.2
+Non-Uniform RQ-VAE. Inspired by non-uniform quantiza-
+tion [3, 12, 39], we introduce a learnable and invertible non-uniform
+transformation before residual quantization to reparameterize la-
+tent semantic representations. Quantization is then performed in
+an intermediate space where the transformed representations are
+approximately more uniform, making them more amenable to
+quantization; during decoding, the inverse transformation maps
+the quantized representations back to the original semantic space.
+Specifically, we introduce the following two invertible non-uniform
+transformation functions:
+The Kumaraswamy Distribution. To realize the proposed learn-
+able and invertible non-uniform transformation, we construct a
+monotonic mapping that admits an efficient (closed-form) inverse,
+enabling efficient forward and inverse transforms. A natural choice
+is to parameterize the mapping via a distribution’s CDF and its
+quantile function. The Beta distribution is widely adopted due to
+its strong expressive power in modeling diverse data distributions
+over the interval [0, 1]. However, its normalization term is defined
+by the Beta function, which lacks a closed-form expression, mak-
+ing it computationally expensive in practice. The Kumaraswamy
+distribution exhibits expressive power comparable to that of the
+Beta distribution, as illustrated in Figure 4. It is significantly more
+computationally efficient because its probability density function,
+cumulative distribution function, and quantile function all have
+closed-form expressions [14, 18]. We adopt the Kumaraswamy dis-
+tribution as the non-uniform transformation function. Its cumu-
+lative distribution function and quantile function are defined as
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yibiao Wei et al.
+Figure 5: The left shows the embedding distributions of 10
+samples from the T5 encoder on the Food dataset, and the
+right shows those from the SigLIP2 encoder. In both cases,
+the distributions exhibit an approximately bell-shaped form.
+follows:
+𝐹KS(𝑥;𝑎,𝑏) = 1 −(1 −𝑥𝑎)𝑏,
+(5)
+𝐹−1
+KS (𝑦;𝑎,𝑏) =
+
+1 −(1 −𝑦)1/𝑏1/𝑎
+,
+(6)
+where 𝑥∈[0, 1] and 𝑎,𝑏∈R+. Although the Kumaraswamy distri-
+bution is conventionally defined over the open interval (0, 1), its cu-
+mulative distribution function remains well defined at the boundary
+points. Therefore, we safely extend its domain to the closed interval
+[0, 1]. We normalize the values 𝑥𝑖in 𝑥as (𝑥𝑖−𝑥min)/(𝑥max −𝑥min),
+where 𝑥min = min𝑖𝑥𝑖and 𝑥max = max𝑖𝑥𝑖.
+The Scaled Logistic and Scaled Logit. To further understand the
+characteristics of semantic embeddings in recommendation sce-
+narios, we analyze the distributions of item embeddings produced
+by different encoding methods. As shown in Figure 5, regardless
+of the specific encoding approach, the semantic embeddings of
+individual items consistently exhibit an approximately bell-shaped
+distribution across dimensions. Based on this observation, we fur-
+ther introduce scaled logistic and scaled logit functions as invertible
+transformations to perform non-uniform mapping on each seman-
+tic embedding. These functions naturally align with bell-shaped
+distributions while preserving monotonicity and invertibility. As
+a result, the quantization process becomes better adapted to the
+internal structure of the embedding space, enhancing its ability
+to discriminate densely populated semantic regions. The standard
+logistic and logit functions on R →(0, 1) and (0, 1) →R, respec-
+tively, are defined as:
+logistic(𝑥;𝛼,𝑥0) = (1 + exp(−𝛼(𝑥−𝑥0)))−1 ,
+(7)
+logit(𝑦;𝛼,𝑥0) = 𝛼−1 log
+
+𝑦
+1 −𝑦
+
++ 𝑥0.
+(8)
+Let 𝑥min = min𝑖𝑥𝑖and 𝑥max = max𝑖𝑥𝑖. We are interested in
+quantizing values in [𝑥min,𝑥max]. For this, we define scaled versions
+of these functions, i.e., logisticscaled : [𝑥min,𝑥max] →[0, 1] and
+logitscaled : [0, 1] →[𝑥min,𝑥max], as follows:
+logisticscaled(𝑥;𝛼,𝑥0) =
+logistic(𝛿−1𝑥;𝛼,𝑥0) −logistic(𝛿−1𝑥min;𝛼,𝑥0)
+Δ
+,
+(9)
+logitscaled(𝑦;𝛼,𝑥0) = 𝛿logit Δ𝑦+ logistic(𝛿−1𝑥min;𝛼,𝑥0) , (10)
+where Δ = logistic(𝑥max;𝛼,𝑥0)−logistic(𝑥min;𝛼,𝑥0) and 𝛿= 𝑥max−
+𝑥min. This scaling ensures that the logistic and logit transforma-
+tions are well-defined, monotonic, and bounded on the prescribed
+domain, while preserving a consistent interpretation of the param-
+eters across different input ranges. In particular, normalizing the
+input values 𝑥by 𝛿−1 makes the parameters 𝛼and 𝑥0 invariant to
+the specific domain [𝑥min,𝑥max], so that identical parameter values
+induce comparable nonlinear behavior across vectors. Equivalently,
+this normalization can be interpreted as a reparameterization with
+e𝛼= 𝛿−1𝛼and e𝑥0 = 𝛿𝑥0.
+Based on the two non-uniform transformations introduced above,
+we define an invertible transformation pair  T (·), T −1(·) and in-
+corporate it into the RQ-VAE framework to better adapt residual
+quantization to the distributional characteristics of item represen-
+tations in recommendation scenarios. Specifically, T (·) and its
+inverse can be instantiated in one of the following two forms:
+T (·), T −1(·) =
+( 𝐹KS(·;𝑎,𝑏), 𝐹−1
+KS (·;𝑎,𝑏),
+  logisticscaled(·;𝛼,𝑥0), logitscaled(·;𝛼,𝑥0).
+(11)
+Given a continuous embedding 𝒉produced by the RQ-VAE
+𝐸𝑛𝑐𝑜𝑑𝑒𝑟(·), we first map it into an approximately uniform interme-
+diate space via 𝒅= T (𝒉), on which residual quantization is per-
+formed as described in Eq. (3), yielding the quantized representation
+ˆ𝒅. After quantization, we apply the inverse transformation prior to
+decoding, yielding ˆ𝒉= T −1( ˆ𝒅), so that the 𝐷𝑒𝑐𝑜𝑑𝑒𝑟(·) operates in
+the original semantic space for representation reconstruction. This
+design enhances quantization by mapping non-uniform item repre-
+sentations into an approximately uniform space, while maintaining
+semantic consistency with the original representations through the
+inverse transformation.
+To further encourage the consistency and stability of the non-
+uniform transformation, we introduce an additional NUQ (Non-
+uniform Quantization) consistency loss. Specifically, given the trans-
+formed representation 𝒅= T (𝒉), we apply the inverse transfor-
+mation to reconstruct the original embedding ˜𝒉= T −1(𝒅), and
+penalize the discrepancy between ˜𝒉and the original embedding 𝒉.
+The NUQ consistency loss is defined as:
+LNUQ =
+T −1(T (𝒉)) −𝒉
+2
+2 .
+(12)
+The overall quantization objective is formulated as a weighted
+combination of the residual quantization loss in Eq. (4) and the
+NUQ consistency loss:
+Loverall = LSem + 𝜆NUQ LNUQ,
+(13)
+where 𝜆NUQ is a hyper-parameter that controls the strength of the
+NUQ consistency regularization.
+3.3
+Training and Recommendation
+Training. The training of generative recommender models consists
+of two phases: quantization and model optimization. Each item is
+quantized into an SID ˜𝒊= [𝑐1,𝑐2, . . . ,𝑐𝐾] using the well-trained
+NU-RQ-VAE. Based on these SIDs, user interaction sequences are
+translated into code sequences. We construct a training dataset
+D = {(𝑥(𝜉),𝑦(𝜉))}| D|
+𝜉=1, where 𝑥(𝜉) = [˜𝒊1, . . . , ˜𝒊𝑀] denotes the histor-
+ical interaction sequence, and 𝑦(𝜉) = ˜𝒊𝑀+1 is the SID of the next
+interacted item. The model is trained in an autoregressive manner
+by minimizing the token-level negative log-likelihood:
+L = −
+𝐾
+∑︁
+𝑡=1
+log 𝑃𝜃
+
+𝑦(𝜉)
+𝑡
+| 𝑦(𝜉)
+<𝑡, 𝑥(𝜉)
+,
+(14)
+
+
+CARD: Non-Uniform Quantization of Visual Semantic Unit for Generative Recommendation
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Table 1: Dataset statistics. “Avg. len” denotes the mean length
+of user interaction sequences.
+Dataset
+#Users
+#Items
+#Interaction
+Sparsity
+Avg.len
+Food
+14,681
+8,713
+151254
+99.882%
+10.30
+Phones
+27,879
+10,429
+194,439
+99.933%
+6.97
+Clothing
+39,387
+23,033
+278,677
+99.969%
+7.08
+Recommendation. During inference, the generative recommender
+produces the code sequence of the next item in an autoregressive
+fashion. At each decoding step 𝑡, the model estimates a conditional
+probability distribution 𝑃𝜃(𝑣| 𝑦(𝜉)
+<𝑡,𝑥) over the code vocabulary
+V. Sequence decoding is carried out using beam search, which
+maintains the top-𝐵most probable partial sequences at each step
+to enhance recommendation quality.
+4
+EXPERIMENTS
+4.1
+Experimental Setup
+4.1.1
+Datasets. We conduct experiments on three categories Ama-
+zon [31] datasets: “Grocery and Gourmet Food” (Food), “Cell Phones
+and Accessories” (Phones), and “Clothing, Shoes and Jewelry” (Cloth-
+ing). Following prior work [16, 34, 43], we apply the 5-core filtering
+strategy to remove users and items with fewer than five interac-
+tions. To standardize the training process, each user’s interaction
+history is truncated or padded to a fixed length of 20 by retaining
+the most recent interactions. For data splitting, we adopt the widely
+used leave-one-out strategy [16, 34, 43], where the most recent
+interaction of each user is used for testing, the second most recent
+for validation, and the remaining interactions are used for training.
+The detailed statistics of these datasets are reported in Table 1.
+4.1.2
+Evaluation Metrics. We adopt Top-𝐾Recall (Recall@𝐾) and
+Normalized Discounted Cumulative Gain (NDCG@𝐾) as evaluation
+metrics, and assess recommendation performance with 𝐾= 5, 10, 20.
+We conduct a full-ranking [34, 43] evaluation over the entire item
+set.
+4.1.3
+Implementation Details. The encoder and decoder of the
+proposed NU-RQ-VAE are implemented as 3-layer MLPs. For the
+codebook configuration, we follow the same setting as the baseline
+methods [34, 43], using 𝐾= 4 codebooks, each containing 𝑁= 256
+code vectors with a dimensionality of 32. The model is optimized
+using the AdamW optimizer [17] with a learning rate of 0.001
+and a batch size of 1024, and the weight hyperparameter 𝜆NUQ is
+tuned within the range of [0.1, 1]. We implement the Transformer
+encoder–decoder architecture based on the T5 model [33]. Both
+the Transformer encoder and decoder consist of 4 layers, with
+each layer including 6 self-attention heads of dimension 64. The
+T5 model is also trained using the AdamW optimizer [17]. For a
+fair comparison, MQL4GRec did not use pre-training on large-scale
+additional-category data.
+Each visual semantic unit is constructed as a 512 × 512 image.
+The upper region is used to present the main item image, which is
+resized to fit the designated display area while preserving its aspect
+ratio and centered horizontally. The middle text region is used to
+display the item title, with optional category information when
+needed. The bottom region adopts a multi-column layout to present
+several collaborative neighbors, each consisting of a thumbnail and
+its corresponding title text. The specific layout and size configu-
+ration can be adjusted according to the content characteristics of
+different datasets.
+4.1.4
+Baselines. To evaluate the performance of our proposed
+model CARD, we compare it with the following baseline methods,
+including both traditional sequential recommendation methods and
+generative recommendation methods:
+• GRU4Rec [7] is a GRU-based sequential method that predicts
+the next item from user behavior sequences.
+• HGN [30] models users’ sequential interests by selecting key
+items and features through hierarchical gating.
+• BERT4Rec [37] leverages a bidirectional Transformer to model
+user interaction sequences by capturing contextual information
+from both directions.
+• SASRec [16] builds on self-attention to model long-range depen-
+dencies in user interaction sequences.
+• VQ-Rec [8] quantizes each item into SIDs via product quantiza-
+tion, and pools the SID embeddings to represent each item.
+• TIGER [34] quantizes each item using RQ-VAE, then trains the
+model to autoregressively generate the next SID token by token,
+and uses beam search during inference.
+• LETTER [43] is a learnable item tokenization method for gener-
+ative recommendation that adaptively learns item identifiers by
+leveraging hierarchical semantics and collaborative signals.
+• MQL4GRec [59] leverages pre-training and fine-tuning to quan-
+tize multimodal information of items into SIDs, thereby construct-
+ing a unified representation across modalities and domains.
+• MACRec [60] is a generative recommendation model that im-
+proves SID learning via cross-modal quantization and multi-aspect
+alignment.
+4.2
+Overall Performance
+Table 2 reports the Top-𝐾recommendation performance of CARD
+and all baseline methods on three datasets. We observe that both
+variants of CARD (CARD𝐾and CARD𝑆) consistently outperform
+existing baseline methods across all datasets and evaluation met-
+rics. This demonstrates that CARD exhibits stable and robust per-
+formance advantages in recommendation scenarios. Compared
+with traditional sequential recommendation models (e.g., GRU4Rec,
+HGN, BERT4Rec, and SASRec), CARD achieves significant improve-
+ments on all evaluation metrics, indicating the clear benefits of
+formulating recommendation as SID-based generative sequence
+prediction. Moreover, CARD consistently outperforms existing gen-
+erative recommendation methods across all datasets, including
+those relying on multimodal modeling such as MQL4GRec and
+MACRec.
+More specifically, the performance gains of CARD arise from two
+complementary designs. First, by unifying multimodal content and
+collaborative semantics at the encoding stage via visual semantic
+units, CARD mitigates the instability and semantic gap introduced
+by the “separate-then-fuse” paradigm under insufficient supervi-
+sion, providing a coherent semantic basis for quantization. Second,
+the proposed non-uniform quantization explicitly accounts for the
+highly skewed semantic distributions in recommendation, enabling
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yibiao Wei et al.
+Table 2: Top-K recommendation performance on three datasets. Best results are in bold, and best baselines are underlined. ∗
+indicates 𝑝≤0.01 in paired t-tests against the best baseline. CARD𝐾and CARD𝑆denote variants with Kumaraswamy-based and
+scaled logistic/logit-based non-uniform quantization, respectively.
+Setting
+Baseline Methods
+Ours
+Dataset
+Metric
+GRU4Rec
+HGN
+BERT4Rec
+SASRec
+VQ-Rec
+TIGER
+LETTER
+MQL4GRec
+MACRec
+CARD𝐾
+CARD𝑆
+Food
+Recall@5
+0.0345
+0.0364
+0.0325
+0.0386
+0.0423
+0.0394
+0.0437
+0.0445
+0.0492
+0.0520∗
+0.0547∗
+Recall@10
+0.0540
+0.0575
+0.0523
+0.0596
+0.0646
+0.0617
+0.0683
+0.0697
+0.0779
+0.0819∗
+0.0853∗
+Recall@20
+0.0849
+0.0829
+0.0806
+0.0874
+0.0982
+0.0891
+0.1004
+0.1023
+0.1137
+0.1212∗
+0.1238∗
+NDCG@5
+0.0218
+0.0237
+0.0209
+0.0239
+0.0275
+0.0256
+0.0283
+0.0289
+0.0322
+0.0333∗
+0.0364∗
+NDCG@10
+0.0280
+0.0302
+0.0264
+0.0286
+0.0351
+0.0327
+0.0362
+0.0369
+0.0410
+0.0428∗
+0.0462∗
+NDCG@20
+0.0358
+0.0367
+0.0340
+0.0361
+0.0426
+0.0397
+0.0439
+0.0448
+0.0486
+0.0527∗
+0.0559∗
+Phones
+Recall@5
+0.0483
+0.0438
+0.0450
+0.0504
+0.0511
+0.0526
+0.0544
+0.0540
+0.0561
+0.0596∗
+0.0585∗
+Recall@10
+0.0783
+0.0671
+0.0707
+0.0762
+0.0766
+0.0794
+0.0830
+0.0838
+0.0850
+0.0904∗
+0.0880∗
+Recall@20
+0.1102
+0.1008
+0.1034
+0.1075
+0.1095
+0.1132
+0.1179
+0.1158
+0.1172
+0.1284∗
+0.1250∗
+NDCG@5
+0.0310
+0.0255
+0.0276
+0.0315
+0.0318
+0.0338
+0.0353
+0.0350
+0.0355
+0.0385∗
+0.0388∗
+NDCG@10
+0.0407
+0.0347
+0.0365
+0.0405
+0.0417
+0.0425
+0.0443
+0.0441
+0.0453
+0.0486∗
+0.0474∗
+NDCG@20
+0.0519
+0.0451
+0.0464
+0.0505
+0.0492
+0.0510
+0.0536
+0.0533
+0.0546
+0.0578∗
+0.0570∗
+Clothing
+Recall@5
+0.0094
+0.0140
+0.0134
+0.0141
+0.0145
+0.0152
+0.0158
+0.0170
+0.0175
+0.0191∗
+0.0187∗
+Recall@10
+0.0159
+0.0213
+0.0215
+0.0223
+0.0232
+0.0257
+0.0263
+0.0273
+0.0281
+0.0297∗
+0.0301∗
+Recall@20
+0.0255
+0.0316
+0.0322
+0.0330
+0.0382
+0.0418
+0.0436
+0.0441
+0.0450
+0.0483∗
+0.0480∗
+NDCG@5
+0.0061
+0.0072
+0.0074
+0.0076
+0.0081
+0.0093
+0.0092
+0.0097
+0.0096
+0.0114∗
+0.0112∗
+NDCG@10
+0.0082
+0.0097
+0.0106
+0.0102
+0.0114
+0.0113
+0.0110
+0.0135
+0.0133
+0.0150∗
+0.0145∗
+NDCG@20
+0.0106
+0.0122
+0.0127
+0.0130
+0.0144
+0.0167
+0.0152
+0.0167
+0.0170
+0.0192∗
+0.0185∗
+Table 3: Ablation study of CARD𝐾on the Food and Phones
+datasets.
+Ablation
+Food
+Phones
+R@5
+R@10
+R@5
+R@10
+CARD𝐾
+0.0520
+0.0819
+0.0596
+0.0904
+w/o Unit-V
+0.0452
+0.0711
+0.0564
+0.0835
+w/o Unit-T
+0.0463
+0.0732
+0.0557
+0.0820
+w/o Unit-C
+0.0491
+0.0768
+0.0571
+0.0863
+w/o Unit
+0.0432
+0.0683
+0.0542
+0.0809
+w/o NUT
+0.0478
+0.0745
+0.0560
+0.0841
+better codebook utilization, reducing generation bias, and improv-
+ing quantization stability. Together, these two components allow
+heterogeneous information to be compressed into discrete SIDs in
+a more stable and expressive manner, leading to improvements in
+generative recommendation performance.
+4.3
+Ablation Study
+To further validate the effectiveness of each component in CARD,
+we conduct ablation studies on the Food and Phones datasets for
+both CARD𝐾and CARD𝑆, as reported in Tables 3 and 4. Removing
+visual (w/o Unit-V), textual (w/o Unit-T), or collaborative signals
+(w/o Unit-C) consistently degrades performance, indicating that
+these information sources provide complementary semantics for
+stable and discriminative SID learning. Replacing the visual se-
+mantic unit with a text-only representation (w/o Unit) leads to the
+most severe performance drop, highlighting the benefit of unifying
+multimodal content and collaborative semantics at the encoding
+stage. We further examine the role of non-uniform quantization.
+Table 4: Ablation study of CARD𝑆on the Food and Phones
+datasets.
+Ablation
+Food
+Phones
+R@5
+R@10
+R@5
+R@10
+CARD𝑆
+0.0547
+0.0853
+0.0585
+0.0880
+w/o Unit-V
+0.0485
+0.0771
+0.0558
+0.0792
+w/o Unit-T
+0.0472
+0.0754
+0.0551
+0.0793
+w/o Unit-C
+0.0525
+0.0821
+0.0565
+0.0848
+w/o Unit
+0.0456
+0.0702
+0.0545
+0.0819
+w/o NUT
+0.0513
+0.0795
+0.0564
+0.0831
+Removing the non-uniform transformation and NUQ regularization
+loss (w/o NUT), which reduces the model to a standard RQ-VAE,
+consistently harms performance across all settings, suggesting that
+conventional quantization struggles with the highly skewed seman-
+tic distributions in recommendation scenarios. Overall, the visual
+semantic unit and non-uniform quantization act complementarily,
+jointly enabling robust and effective SID construction.
+4.4
+Further Analysis
+4.4.1
+Fusion Strategy Variants Analysis. To further examine the ef-
+fectiveness and practicality of different multimodal fusion strategies
+for SID learning, we compare visual semantic unit (Unit) with three
+representative alternatives: (1) Concatenation-based Fusion (Con-
+cat), which independently encodes textual, visual, and collaborative
+signals and fuses them via feature concatenation; (2) Contrastive-
+aligned Fusion (Align), which aligns heterogeneous representations
+through contrastive pretraining before fusion; and (3) MLLM-based
+Joint Encoding (MLLM), which uses a multimodal large language
+
+
+CARD: Non-Uniform Quantization of Visual Semantic Unit for Generative Recommendation
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Table 5: Performance of Non-Uniform Quantization with Different Quantizers.
+Methods
+Food
+Phones
+Clothing
+Recall@5
+Recall@10
+Recall@5
+Recall@10
+Recall@5
+Recall@10
+R-VQ
+0.0422
+0.0638
+0.0495
+0.0773
+0.0145
+0.0245
+NU-R-VQ𝐾
+0.0461 (+9.24%)
+0.0729 (+14.26%)
+0.0539 (+8.89%)
+0.0812 (+5.05%)
+0.0159 (+9.66%)
+0.0268 (+9.39%)
+NU-R-VQ𝑆
+0.0472 (+11.85%)
+0.0722 (+13.17%)
+0.0546 (+10.30%)
+0.0823 (+6.47%)
+0.0155 (+6.90%)
+0.0261 (+6.53%)
+RQ-VAE
+0.0394
+0.0617
+0.0526
+0.0794
+0.0152
+0.0257
+NU-RQ-VAE𝐾
+0.0442 (+12.18%)
+0.0693 (+12.32%)
+0.0556 (+5.70%)
+0.0838 (+5.54%)
+0.0164 (+7.89%)
+0.0273 (+6.23%)
+NU-RQ-VAE𝑆
+0.0456 (+15.74%)
+0.0713 (+15.56%)
+0.0551 (+4.75%)
+0.0842 (+6.05%)
+0.0160 (+5.26%)
+0.0269 (+4.67%)
+Table 6: Comparison between text-only encoding variants.
+Variant
+Food
+Phones
+R@5
+R@10
+R@5
+R@10
+TIGER+T5
+0.0394
+0.0617
+0.0526
+0.0794
+TIGER+Unit-T
+0.0389
+0.0625
+0.0531
+0.0788
+Unit
+Concat
+Align
+MLLM
+0.055
+0.060
+0.065
+0.070
+0.075
+0.080
+Recall-10
+Unit
+Concat
+Align
+MLLM
+0.0750
+0.0775
+0.0800
+0.0825
+0.0850
+0.0875
+Recall-10
+Figure 6: Comparison of different multimodal fusion strate-
+gies in terms of Recall@10. The left corresponds to the Food
+dataset, and the right corresponds to the Phones dataset.
+model (LLaMA3-8B) to jointly encode textual and visual inputs,
+extracting hidden representations as item embeddings.
+As shown in Figure 6, Unit consistently achieves the best Re-
+call@10 performance while maintaining a significantly simpler
+modeling pipeline. Concatenation-based fusion lacks unified seman-
+tic organization and is therefore prone to semantic gaps, whereas
+contrastive-aligned fusion may disrupt the original semantic struc-
+tures of individual modalities during alignment, thereby weakening
+modality-specific information. MLLM representations are more
+geared toward high-level semantic abstraction for generative un-
+derstanding. As a result, their joint encoding process often involves
+strong information compression, making it difficult to fully preserve
+fine-grained cues from both images and text. Unit unifies hetero-
+geneous information into visual semantic units prior to encoding,
+which avoids semantic gaps while preserving modality-specific crit-
+ical details. As a result, it produces representations with continuous
+semantic structure, stable distributions, and improved quantization-
+friendliness.
+4.4.2
+Unit-based Text Encoding vs. Text-only Encoding. To examine
+whether rendering textual information into visual semantic units
+introduces semantic loss, we compare two text-only encoding vari-
+ants under the TIGER framework. TIGER+T5 encodes item text
+using a T5 text encoder, while TIGER+Unit-T renders the same text
+into visual semantic units and encodes it with SigLIP2. As shown in
+Table 6, the two variants achieve highly comparable performance on
+1.0
+0.5
+0.0
+0.5
+1.0
+1.5
+PC1 (8.9%)
+1.0
+0.5
+0.0
+0.5
+1.0
+1.5
+PC2 (7.1%)
+[0,20)
+[20,40)
+[40,60)
+[60,80)
+[80,100]
+Top code percentage(%)
+0.00
+0.05
+0.10
+0.15
+0.20
+0.25
+Frequency
+Target SID in training data
+Generated SID
+Figure 7: The left shows item embeddings after non-uniform
+transformation, exhibiting a more compact and balanced se-
+mantic distribution. The right shows that the non-uniform
+transformation leads to more balanced codeword usage, re-
+ducing generation bias.
+CARD: 249
+CARD w/o NUT: 132
+TIGER: 70
+Figure 8: Compared with TIGER and CARD w/o NUT, CARD
+with non-uniform transformation significantly increases the
+number of effectively utilized codewords, indicating more
+balanced codebook usage.
+both the Food and Phones datasets, indicating that visual-semantic
+encoding does not lead to noticeable semantic degradation. This can
+be attributed to the following factors. First, SigLIP2, pretrained on
+large-scale image–text pairs, can reliably extract textual semantics
+from visual representations. Second, the visual semantic unit adopts
+a clean background, fixed layout, and structured fields, enabling
+stable and consistent rendering of textual content. Finally, item
+text in recommendation scenarios is typically short and semanti-
+cally concise, allowing its core information to be preserved even
+when encoded in visual form. Minor differences between encoding
+methods are further mitigated during subsequent quantization.
+4.4.3
+Plug-and-Play Property of Non-Uniform Quantization. To
+evaluate the plug-and-play property of non-uniform quantization,
+we apply the proposed transformation to different quantizers, in-
+cluding R-VQ and RQ-VAE. As shown in Table 5, introducing non-
+uniform quantization consistently improves performance across
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yibiao Wei et al.
+all datasets and metrics. For both R-VQ and RQ-VAE, their non-
+uniform variants achieve stable and notable gains, with relative
+improvements of up to 15.74%. These results indicate that the pro-
+posed non-uniform transformation is quantizer-agnostic and can
+be seamlessly integrated into different quantization frameworks,
+effectively correcting skewed semantic distributions and improving
+SID quality.
+4.4.4
+Effect of Non-Uniform Quantization. As shown in Figure 7,
+after applying the proposed non-uniform transformation, the em-
+beddings of visual semantic units form a more balanced distribution
+in the PCA space, alleviating dense clustering and long-tail spar-
+sity that hinder effective quantization. Such a distribution is more
+favorable for subsequent discrete quantization. Furthermore, as
+illustrated in Figure 8, compared with TIGER and CARD w/o NUT,
+the full CARD model significantly increases the number of effec-
+tively utilized codewords. The distributions of generated SIDs better
+align with those of target SIDs, indicating more balanced codebook
+usage and reduced generation bias, which in turn contributes to
+improved recommendation performance.
+5
+CONCLUSION AND DISCUSSION
+In this paper, we propose CARD, a novel generative recommenda-
+tion framework designed to address two challenges in SID construc-
+tion: insufficient supervision for heterogeneous information fusion
+and codeword imbalance caused by non-uniform semantic embed-
+dings. CARD introduces a visual semantic unit that unifies textual,
+visual, and collaborative signals into a structured visual representa-
+tion prior to encoding, enabling holistic semantic modeling without
+relying on explicit fusion mechanisms. This design provides a se-
+mantically coherent and quantization-friendly representation space
+for SID-based generative recommendation. To further mitigate the
+skewed semantic distributions commonly observed in real-world
+recommendation scenarios, we propose NU-RQ-VAE, which incor-
+porates a learnable and invertible non-uniform transformation into
+residual quantization. Extensive experiments on multiple datasets
+demonstrate that both variants of CARD consistently outperform
+existing baseline methods, while the proposed non-uniform trans-
+formation module exhibits strong plug-and-play capability and can
+be generalized to different quantization methods. While CARD
+demonstrates strong effectiveness, the current visual semantic unit
+relies on a certain amount of human prior in representation struc-
+ture design, and we plan to explore more automated construction
+in future work.
+Acknowledgments
+This research was supported by the National Natural Science Foun-
+dation of China (62402093), the Sichuan Science and Technology
+Program (2025ZNSFSC0479), and the Fundamental Research Funds
+for the Central Universities (JBK202511020). This research was also
+supported by the Center for HPC, University of Electronic Science
+and Technology of China.
+References
+[1] Guojia An, Jie Zou, Jiwei Wei, Chaoning Zhang, Fuming Sun, and Yang Yang.
+2025. Beyond Whole Dialogue Modeling: Contextual Disentanglement for Con-
+versational Recommendation. In Proceedings of the 48th International ACM SIGIR
+Conference on Research and Development in Information Retrieval. 1–11.
+[2] Guojia An, Jie Zou, Yuhan Yang, Shuai Qin, Weikang Guo, Jinyu Guo, and Yang
+Yang. 2026. Beyond the Single Path: Divergent Reasoning for LLM-based Rec-
+ommendation. In Proceedings of the 49th International ACM SIGIR Conference on
+Research and Development in Information Retrieval. 1–12.
+[3] Chaim Baskin, Natan Liss, Eli Schwartz, Evgenii Zheltonozhskii, Raja Giryes,
+Alex M Bronstein, and Avi Mendelson. 2021. Uniq: Uniform noise injection for
+non-uniform quantization of neural networks. ACM Transactions on Computer
+Systems (2021), 1–15.
+[4] Jiaxin Deng, Shiyao Wang, Kuo Cai, Lejian Ren, Qigen Hu, Weifeng Ding, Qiang
+Luo, and Guorui Zhou. 2025. OneRec: Unifying Retrieve and Rank with Generative
+Recommender and Iterative Preference Alignment. Technical Report. 1–10 pages.
+[5] Ruining He and Julian McAuley. 2016. VBPR: visual Bayesian Personalized
+Ranking from implicit feedback. In Proceedings of the Thirtieth AAAI Conference
+on Artificial Intelligence. 144–150.
+[6] Xiangnan He, Kuan Deng, Xiang Wang, Yan Li, YongDong Zhang, and Meng
+Wang. 2020. LightGCN: Simplifying and Powering Graph Convolution Net-
+work for Recommendation. In Proceedings of the 43rd International ACM SIGIR
+Conference on Research and Development in Information Retrieval. 639–648.
+[7] Balázs Hidasi, Alexandros Karatzoglou, Linas Baltrunas, and Domonkos Tikk.
+2016. Session-based Recommendations with Recurrent Neural Networks. In
+Proceedings of the 4th International Conference on Learning Representations. 1–10.
+[8] Yupeng Hou, Zhankui He, Julian McAuley, and Wayne Xin Zhao. 2023. Learning
+vector-quantized item representation for transferable sequential recommenders.
+In Proceedings of the ACM Web Conference 2023. 1162–1171.
+[9] Yupeng Hou, Jiacheng Li, Ashley Shin, Jinsung Jeon, Abhishek Santhanam, Wei
+Shao, Kaveh Hassani, Ning Yao, and Julian McAuley. 2025. Generating Long
+Semantic IDs in Parallel for Recommendation. In Proceedings of the 31st ACM
+SIGKDD Conference on Knowledge Discovery and Data Mining V.2. 956–966.
+[10] Yupeng Hou, Jianmo Ni, Zhankui He, Noveen Sachdeva, Wang-Cheng Kang, Ed H.
+Chi, Julian Mcauley, and Derek Zhiyuan Cheng. 2025. ActionPiece: Contextually
+Tokenizing Action Sequences for Generative Recommendation. In Proceedings of
+the 42nd International Conference on Machine Learning. 24004–24024.
+[11] Peiyu Hu, Wayne Lu, and Jia Wang. 2026. From ids to semantics: A generative
+framework for cross-domain recommendation with adaptive semantic tokeniza-
+tion. In Proceedings of the AAAI Conference on Artificial Intelligence. 14874–14882.
+[12] Yongkweon Jeon, Chungman Lee, Eulrang Cho, and Yeonju Ro. 2022. Mr. biq:
+Post-training non-uniform quantization based on minimizing the reconstruction
+error. In Proceedings of the IEEE/CVF conference on computer vision and pattern
+recognition. 12329–12338.
+[13] Dongho Jeong, Taeri Kim, Donghyeon Cho, and Sang-Wook Kim. 2025. MELON:
+Learning Multi-Aspect Modality Preferences for Accurate Multimedia Recom-
+mendation. In Proceedings of the 48th International ACM SIGIR Conference on
+Research and Development in Information Retrieval. 1850–1859.
+[14] M. C. Jones. 2009. Kumaraswamy’s distribution: A beta-type distribution with
+some tractability advantages. Statistical Methodology (2009), 70–81.
+[15] Clark Mingxuan Ju, Liam Collins, Leonardo Neves, Bhuvesh Kumar, Louis Yufeng
+Wang, Tong Zhao, and Neil Shah. 2025. Generative Recommendation with Seman-
+tic IDs: A Practitioner’s Handbook. In Proceedings of the 34th ACM International
+Conference on Information and Knowledge Management. 6420–6425.
+[16] Wang-Cheng Kang and Julian McAuley. 2018. Self-attentive sequential recom-
+mendation. In 2018 IEEE international conference on data mining. 197–206.
+[17] Diederik P Kingma. 2014. Adam: A method for stochastic optimization. arXiv
+preprint arXiv:1412.6980 (2014), 1–15.
+[18] Ponnambalam Kumaraswamy. 1980. A generalized probability density function
+for double-bounded random processes. Journal of Hydrology (1980), 79–88.
+[19] Lazarus Kwao, Yang Yang, Jie Zou, and Jing Ma. 2025. A Survey of Approaches to
+Early Rumor Detection on Microblogging Platforms: Computational and Socio-
+Psychological Insights. Wiley Interdisciplinary Reviews: Data Mining and Knowl-
+edge Discovery (2025), e70001.
+[20] Doyup Lee, Chiheon Kim, Saehoon Kim, Minsu Cho, and Wook-Shin Han. 2022.
+Autoregressive image generation using residual quantization. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition. 11523–11532.
+[21] Sunkyung Lee, Minjin Choi, Eunseong Choi, Hye-young Kim, and Jongwuk Lee.
+2025. Gram: Generative recommendation via semantic-aware multi-granular late
+fusion. In Proceedings of the 63rd Annual Meeting of the Association for Computa-
+tional Linguistics. 33294–33312.
+[22] Jingzhi Li, Zhiyong Cheng, Richang Hong, and Meng Wang. 2026. Post-hoc
+Provider Fairness Adaptation via Hierarchical Exposure Alignment. In Proceedings
+of the 49th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 1–11.
+[23] Jin Li, Shoujin Wang, Qi Zhang, Shui Yu, and Fang Chen. 2025. Generating
+with fairness: A modality-diffused counterfactual framework for incomplete
+multimodal recommendations. In Proceedings of the ACM on Web Conference.
+2787–2798.
+[24] Kaibei Li, Yihao Zhang, Qinyang He, and Xiaokang Li. 2026. Leveraging hierarchy-
+aware diffusion model and knowledge-enhanced contrastive learning for recom-
+mendation. Knowledge and Information Systems (2026), 1–24.
+
+
+CARD: Non-Uniform Quantization of Visual Semantic Unit for Generative Recommendation
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+[25] Kaibei Li, Yihao Zhang, Xiaokang Li, Meng Yuan, and Wei Zhou. 2025. Mask
+Diffusion-Based Contrastive Learning for Knowledge-Aware Recommendation.
+IEEE Transactions on Knowledge and Data Engineering (2025), 5407–5419.
+[26] Yeming Li, Chenxi Liu, Jie Zou, Cheng Long, Chaoning Zhang, Peng Wang,
+and Yang Yang. 2026. From Dialogue to Destination: Geography-Aware Large
+Language Models with Multimodal Fusion for Conversational Recommendation.
+In Proceedings of the AAAI Conference on Artificial Intelligence. 19267–19275.
+[27] Xinyu Lin, Haihan Shi, Wenjie Wang, Fuli Feng, Qifan Wang, See-Kiong Ng, and
+Tat-Seng Chua. 2025. Order-agnostic Identifier for Large Language Model-based
+Generative Recommendation. In Proceedings of the 48th International ACM SIGIR
+Conference on Research and Development in Information Retrieval. 1923–1933.
+[28] Han Liu, Yinwei Wei, Xuemeng Song, Weili Guan, Yuan-Fang Li, and Liqiang
+Nie. 2024. Mmgrec: Multimodal generative recommendation with transformer
+model. arXiv preprint arXiv:2404.16555 (2024), 1–9.
+[29] Yunze Luo, Yuezihan Jiang, Yinjie Jiang, Gaode Chen, Jingchi Wang, Kaigui
+Bian, Peiyi Li, and Qi Zhang. 2025. Online Item Cold-Start Recommendation
+with Popularity-Aware Meta-Learning. In Proceedings of the 31st ACM SIGKDD
+Conference on Knowledge Discovery and Data Mining V.1. 927–937.
+[30] Chen Ma, Peng Kang, and Xue Liu. 2019. Hierarchical Gating Networks for Se-
+quential Recommendation. In Proceedings of the 25th ACM SIGKDD International
+Conference on Knowledge Discovery & Data Mining. 825–833.
+[31] Julian McAuley, Christopher Targett, Qinfeng Shi, and Anton van den Hengel.
+2015. Image-Based Recommendations on Styles and Substitutes. In Proceedings
+of the 38th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 43–52.
+[32] Rongqing Kenneth Ong and Andy WH Khong. 2025. Spectrum-based modality
+representation fusion graph convolutional network for multimodal recommen-
+dation. In Proceedings of the Eighteenth ACM International Conference on Web
+Search and Data Mining. 773–781.
+[33] Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang,
+Michael Matena, Yanqi Zhou, Wei Li, and Peter J Liu. 2020. Exploring the limits
+of transfer learning with a unified text-to-text transformer. Journal of machine
+learning research 21 (2020), 1–67.
+[34] Shashank Rajput, Nikhil Mehta, Anima Singh, Raghunandan Keshavan, Trung
+Vu, Lukasz Heidt, Lichan Hong, Yi Tay, Vinh Q. Tran, Jonah Samost, Maciej Kula,
+Ed H. Chi, and Maheswaran Sathiamoorthy. 2023. Recommender systems with
+generative retrieval. In Proceedings of the 37th International Conference on Neural
+Information Processing Systems. 1–17.
+[35] Teng Shi, Chenglei Shen, Weijie Yu, Shen Nie, Chongxuan Li, Xiao Zhang, Ming
+He, Yan Han, and Jun Xu. 2025. LLaDA-Rec: Discrete Diffusion for Parallel
+Semantic ID Generation in Generative Recommendation. (2025), 1–10.
+[36] Zihua Si, Zhongxiang Sun, Jiale Chen, Guozhang Chen, Xiaoxue Zang, Kai Zheng,
+Yang Song, Xiao Zhang, Jun Xu, and Kun Gai. 2024. Generative Retrieval with
+Semantic Tree-Structured Identifiers and Contrastive Learning. In Proceedings of
+the 2024 Annual International ACM SIGIR Conference on Research and Development
+in Information Retrieval in the Asia Pacific Region. 154–163.
+[37] Fei Sun, Jun Liu, Jian Wu, Changhua Pei, Xiao Lin, Wenwu Ou, and Peng Jiang.
+2019. BERT4Rec: Sequential Recommendation with Bidirectional Encoder Rep-
+resentations from Transformer. In Proceedings of the 28th ACM International
+Conference on Information and Knowledge Management. 1441–1450.
+[38] Jiaxi Tang and Ke Wang. 2018. Ranking Distillation: Learning Compact Ranking
+Models With High Performance for Recommender System. In Proceedings of
+the 24th ACM SIGKDD International Conference on Knowledge Discovery & Data
+Mining. 2289–2298.
+[39] Mariano Tepper and Ted Willke. 2025. Individualized non-uniform quantization
+for vector search. arXiv preprint arXiv:2509.18471 (2025), 1–24.
+[40] Michael Tschannen, Alexey Gritsenko, Xiao Wang, Muhammad Ferjad Naeem,
+Ibrahim Alabdulmohsin, Nikhil Parthasarathy, Talfan Evans, Lucas Beyer, Ye
+Xia, Basil Mustafa, Olivier Hénaff, Jeremiah Harmsen, Andreas Steiner, and
+Xiaohua Zhai. 2025. SigLIP 2: Multilingual Vision-Language Encoders with
+Improved Semantic Understanding, Localization, and Dense Features. arXiv
+preprint arXiv:2502.14786 (2025), 1–20.
+[41] Aaron van den Oord, Oriol Vinyals, and Koray Kavukcuoglu. 2017. Neural Dis-
+crete Representation Learning. In Proceedings of the 31st International Conference
+on Neural Information Processing Systems. 6309–6318.
+[42] Dongsheng Wang, Yuxi Huang, Shen Gao, Yifan Wang, Chengrui Huang, and
+Shuo Shang. 2025. Generative Next POI Recommendation with Semantic ID. In
+Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data
+Mining V.2. 2904–2914.
+[43] Wenjie Wang, Honghui Bao, Xinyu Lin, Jizhi Zhang, Yongqi Li, Fuli Feng, See-
+Kiong Ng, and Tat-Seng Chua. 2024. Learnable Item Tokenization for Generative
+Recommendation. In Proceedings of the 33rd ACM International Conference on
+Information and Knowledge Management. 2400–2409.
+[44] Ye Wang, Jiahao Xun, Minjie Hong, Jieming Zhu, Tao Jin, Wang Lin, Haoyuan Li,
+Linjun Li, Yan Xia, Zhou Zhao, and Zhenhua Dong. 2024. EAGER: Two-Stream
+Generative Recommender with Behavior-Semantic Collaboration. In Proceedings
+of the 30th ACM SIGKDD Conference on Knowledge Discovery and Data Mining.
+3245–3254.
+[45] Wei Wei, Chao Huang, Lianghao Xia, and Chuxu Zhang. 2023. Multi-Modal
+Self-Supervised Learning for Recommendation. In Proceedings of the ACM Web
+Conference. 790–800.
+[46] Wei Wei, Jiabin Tang, Lianghao Xia, Yangqin Jiang, and Chao Huang. 2024.
+PromptMM: Multi-Modal Knowledge Distillation for Recommendation with
+Prompt-Tuning. In Proceedings of the ACM Web Conference. 3217–3228.
+[47] Yinwei Wei, Xiang Wang, Liqiang Nie, Xiangnan He, Richang Hong, and Tat-Seng
+Chua. 2019. MMGCN: Multi-modal Graph Convolution Network for Personalized
+Recommendation of Micro-video. In Proceedings of the 27th ACM International
+Conference on Multimedia. 1437–1445.
+[48] Yibiao Wei, Yang Xu, Lei Zhu, Jingwei Ma, and Jiangping Huang. 2024. FUM-
+MER:A fine-grained self-supervised momentum distillation framework for multi-
+modal recommendation. Inf. Process. Manag. (2024), 103776–103791.
+[49] Yibiao Wei, Yang Xu, Lei Zhu, Jingwei Ma, and Chengmei Peng. 2024. Multi-level
+cross-modal contrastive learning for review-aware recommendation. Expert
+Systems with Applications (2024), 123341–123351.
+[50] Yibiao Wei, Jie Zou, Weikang Guo, Guoqing Wang, Xing Xu, and Yang Yang.
+2025. MSCRS: Multi-modal Semantic Graph Prompt Learning Framework for
+Conversational Recommender Systems. In Proceedings of the 48th International
+ACM SIGIR Conference on Research and Development in Information Retrieval.
+42–52.
+[51] Jinfeng Xu, Zheyu Chen, Shuo Yang, Jinze Li, Hewei Wang, and Edith CH Ngai.
+2025. Mentor: multi-level self-supervised learning for multimodal recommenda-
+tion. In Proceedings of the AAAI Conference on Artificial Intelligence. 12908–12917.
+[52] Xiaolong Xu, Hongsheng Dong, Lianyong Qi, Xuyun Zhang, Haolong Xiang,
+Xiaoyu Xia, Yanwei Xu, and Wanchun Dou. 2024. CMCLRec: Cross-modal Con-
+trastive Learning for User Cold-start Sequential Recommendation. In Proceedings
+of the 47th International ACM SIGIR Conference on Research and Development in
+Information Retrieval. 1589–1598.
+[53] Yi Xu, Moyu Zhang, Chenxuan Li, Zhihao Liao, Haibo Xing, Hao Deng, Jinxin
+Hu, Yu Zhang, Xiaoyi Zeng, and Jing Zhang. 2026. Mmq: Multimodal mixture-
+of-quantization tokenization for semantic id generation and user behavioral
+adaptation. In Proceedings of the Nineteenth ACM International Conference on Web
+Search and Data Mining. 788–797.
+[54] Yuhan Yang, Jie Zou, Guojia An, Weikang Guo, Mingshi Yan, Yang Yang, and
+Heng Tao Shen. 2026. CooSBR: Rethinking neighborhood integration for session-
+based recommendation. Information Processing & Management (2026), 104625–
+104644.
+[55] Yuhan Yang, Jie Zou, Guojia An, Jiwei Wei, Yang Yang, and Heng Tao Shen.
+2026. Unleashing the Potential of Neighbors: Diffusion-based Latent Neighbor
+Generation for Session-based Recommendation. arXiv preprint arxiv: 2601.03903,
+1–10.
+[56] Wencai Ye, Mingjie Sun, Shuhang Chen, Wenjin Wu, and Peng Jiang. 2026.
+Align3GR: Unified Multi-Level Alignment for LLM-based Generative Recom-
+mendation. In Proceedings of the AAAI Conference on Artificial Intelligence. 16154–
+16162.
+[57] Yuyang Ye, Zhi Zheng, Yishan Shen, Tianshu Wang, Hengruo Zhang, Peijun
+Zhu, Runlong Yu, Kai Zhang, and Hui Xiong. 2025. Harnessing multimodal large
+language models for multimodal sequential recommendation. In Proceedings of
+the AAAI Conference on Artificial Intelligence. 13069–13077.
+[58] Jiaqi Zhai, Lucy Liao, Xing Liu, Yueming Wang, Rui Li, Xuan Cao, Leon Gao,
+Zhaojie Gong, Fangda Gu, Jiayuan He, Yinghai Lu, and Yu Shi. 2024. Actions
+speak louder than words: trillion-parameter sequential transducers for generative
+recommendations. In Proceedings of the 41st International Conference on Machine
+Learning. 1–26.
+[59] Jianyang Zhai, Zi-Feng Mai, Chang-Dong Wang, Feidiao Yang, Xiawu Zheng,
+Hui Li, and Yonghong Tian. 2025. Multimodal Quantitative Language for Gener-
+ative Recommendation. In The Thirteenth International Conference on Learning
+Representations. 1–23.
+[60] Fuwei Zhang, Xiaoyu Liu, Dongbo Xi, Jishen Yin, Huan Chen, Peng Yan, Fuzhen
+Zhuang, and Zhao Zhang. 2026. Multi-Aspect Cross-modal Quantization for
+Generative Recommendation. In Proceedings of the AAAI Conference on Artificial
+Intelligence. 16271–16279.
+[61] Jinghao Zhang, Yanqiao Zhu, Qiang Liu, Shu Wu, Shuhui Wang, and Liang Wang.
+2021. Mining Latent Structures for Multimedia Recommendation. In Proceedings
+of the 29th ACM International Conference on Multimedia. 3872–3880.
+[62] Bowen Zheng, Yupeng Hou, Hongyu Lu, Yu Chen, Wayne Xin Zhao, Ming
+Chen, and Ji-Rong Wen. 2024. Adapting Large Language Models by Integrating
+Collaborative Semantics for Recommendation. In 2024 IEEE 40th International
+Conference on Data Engineering (ICDE). 1435–1448.
+[63] Bowen Zheng, Hongyu Lu, Yu Chen, Wayne Xin Zhao, and Ji-Rong Wen. 2025.
+Universal Item Tokenization for Transferable Generative Recommendation. arXiv
+preprint arXiv:2504.04405 (2025), 1–11.
+[64] Xin Zhou, Hongyu Zhou, Yong Liu, Zhiwei Zeng, Chunyan Miao, Pengwei Wang,
+Yuan You, and Feijun Jiang. 2023. Bootstrap Latent Representations for Multi-
+modal Recommendation. In Proceedings of the ACM Web Conference 2023. 845–854.
+
+
+SIGIR ’26, July 20–24, 2026, Melbourne, VIC, Australia
+Yibiao Wei et al.
+[65] Jie Zou, Yifan Chen, and Evangelos Kanoulas. 2020. Towards Question-based Rec-
+ommender Systems. In Proceedings of the 43rd International ACM SIGIR Conference
+on Research and Development in Information Retrieval. 881–890.
+[66] Jie Zou, Cheng Lin, Weikang Guo, Zheng Wang, Jiwei Wei, Yang Yang, and
+Heng Tao Shen. 2026. Multi-type context-aware conversational recommender
+systems via mixture-of-experts. Inf. Fusion (2026), 1–10.
+[67] Jie Zou, Aixin Sun, Cheng Long, and Evangelos Kanoulas. 2024. Knowledge-
+Enhanced Conversational Recommendation via Transformer-Based Sequential
+Modeling. ACM Trans. Inf. Syst. (2024), 1–27.

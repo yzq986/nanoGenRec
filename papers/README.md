@@ -47,4 +47,6 @@
 | 2602.23964 | RAD-DPO: Robust Adaptive Denoising DPO for Generative Retrieval in E-commerce | Zhiguo Chen et al. (JD.com) | 2026-02-27 | [pdf](2602.23964.pdf) | [txt](2602.23964.txt) | IDEA-raddpo-0 |
 | 2603.22916 | GateSID: Adaptive Gating for Semantic-Collaborative Alignment in Cold-Start Recommendation | Hai Zhu et al. | 2026-03-24 | [pdf](2603.22916.pdf) | [txt](2603.22916.txt) | IDEA-gatesid-0 |
 | 2510.12604 | COINS: SemantiC Ids Enhanced COLd Item RepresentatioN for CTR Prediction in E-commerce Search | Qihang Zhao et al. | 2025-10-14 (WWW 2026) | [pdf](2510.12604.pdf) | [txt](2510.12604.txt) | IDEA-coins-0 |
-| 2604.24806 | Versioned Late Materialization for Ultra-Long Sequence Training in Recommendation Systems at Scale | Liang Guo et al. (Meta) | 2026-04-27 | [pdf](2604.24806.pdf) | [txt](2604.24806.txt) | IDEA-vlm-0 |
+| 2604.24806 | Versioned Late Materialization for Ultra-Long Sequence Training in Recommendation Systems at Scale | Liang Guo et al. (Meta) | 2026-04-27 | [pdf](2604.24806.pdf) | [txt](2604.24806.txt) | IDEA-vlm-0 [A] |
+| 2604.25787 | Harmonizing Generative Retrieval and Ranking in Chain-of-Recommendation (RecoChain) | Yu Liu, Jiangxia Cao (Kuaishou) | 2026-04-28 | [pdf](2604.25787.pdf) | [txt](2604.25787.txt) | IDEA-recochain-0 [B] |
+| 2604.26427 | CARD: Non-Uniform Quantization of Visual Semantic Unit for Generative Recommendation | Yibiao Wei et al. (UESTC, SIGIR 2026) | 2026-04-29 | [pdf](2604.26427.pdf) | [txt](2604.26427.txt) | IDEA-card-0 [C] |

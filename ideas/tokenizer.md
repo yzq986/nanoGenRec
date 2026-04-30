@@ -1050,3 +1050,77 @@ COINS 针对电商搜索中**冷启动 item 缺协同信号的 Matthew 效应**,
 - IDEA-flexcode-0 (FlexCode 双码本): 独立 CF + Semantic codebooks, 与 COINS 合一 SID 路线区别
 - IDEA-gatesid-0 (GateSID): representation 层 gating, 可组合
 - IDEA-adasid-0 (AdaSID Kuaishou): 自适应 collision 处理冷 item, 另一角度
+
+---
+
+## IDEA-card-0: NU-RQ-VAE — 可学习可逆非均匀变换预处理 → 再 RQ
+
+**优先级**: P2
+**来源**: CARD — Non-Uniform Quantization of Visual Semantic Unit for Generative Recommendation (UESTC, arxiv 2604.26427, SIGIR 2026)
+**Tier**: C (纯学术, 离线公开数据集, 无 A/B; SIGIR 2026 录用)
+**状态**: 待讨论
+
+### 核心观察: embedding 分布不均匀 → codeword 使用失衡
+
+论文 Figure 1 展示了工业 rec embedding 的 2D PCA: **头部 item 极密集 + 长尾稀疏扩散**。直接对这种分布做 RQ-VAE:
+
+- 密集区域 codeword 被过度分配, 导致细粒度区分能力不足 (many items 共享几个 code)
+- 稀疏区域 codeword 闲置, 码本利用率低
+- 自回归 decoding 会进一步放大这种 bias (频繁 code 更容易被生成)
+
+我们的 MLP-FSQ 理论上有 low-collision 目标 (EXP-045 用 hidden dim 控制), 但 embedding 本身分布仍非均匀 → 长尾区域的 item 即便 code 不冲突, 质心覆盖率也差。
+
+### CARD 的解法: 量化前的分布校正
+
+在 RQ-VAE 的 encoder 输出 → quantize 之间, 插入一个**可学习、可逆的非线性变换** `T: z → z'`, 把 z 的 skewed 分布近似拉成均匀分布; 再对 z' 做 RQ, reconstruct 时用 `T⁻¹` 反向映射。
+
+两种变换变体:
+1. **Kumaraswamy-based (通用)**: 用 Kumaraswamy 分布的 CDF 作为 `T`。Kumaraswamy CDF `F(x; a,b) = 1 − (1 − x^a)^b` 可微、可逆、参数化强 → 能拟合各种复杂非均匀分布。训练时 (a, b) 学习。
+2. **Logistic-Logit-based (专用 bell-shaped)**: 用 logistic function + logit 对偶, 针对钟形分布。数值更稳定, 但表达能力弱一些。
+
+关键点: 变换是 **per-dimension invertible**, RQ 的 reconstruction loss 穿过 `T` / `T⁻¹` 反向传播训练 (a, b)。整个 pipeline 仍是端到端 VAE。
+
+### 可插拔性
+
+论文强调 NU-RQ-VAE 是 **plug-and-play**: 可替换 RQ-VAE、可嫁接到 MLP-FSQ、RQ-KMeans 等任意量化 backbone。
+
+### 与当前项目的关联
+
+- **直接对标 IDEA-crab-0 (CRAB Walmart)**: CRAB 是 codeword 频率感知的正则 + split, 事后处理过热 token; CARD 是事前分布校正。两者正交, 可叠加。
+- **对标 IDEA-rqgmm-0 (Tencent GMM-RQ)**: GMM 是用混合高斯建模 embedding 分布, CARD 是通过变换把分布推平。目标相同 (处理非均匀), 手段相反 (建模 vs 拉平)。
+- **对标 IDEA-adasid-0 (Kuaishou AdaSID)**: AdaSID 事后让冷 item 借热 item 的 SID, CARD 事前减少冷 item 的码本浪费。可组合。
+- **与 MLP-FSQ 的关系**: 我们的 MLP-FSQ projection 已经是非线性变换, 但没显式约束输出分布均匀。加 Kumaraswamy CDF 在 projection 输出后 + quantize 前, 等价于"对 MLP 输出做分布 normalization"。
+
+### 实验设计草案
+
+**Phase 1 (~0.5 天, 模拟验证)**:
+1. 取 Qwen3-0.6B embeddings 14d
+2. 对每维 apply Kumaraswamy CDF transform (a, b 从数据估计 或 nn.Parameter 学)
+3. 算 variance / skewness / kurtosis 对比变换前后
+4. 观测量化后 code frequency 的 Gini 系数
+
+**Phase 2 (~2 天, 集成到 MLP-FSQ)**:
+1. 在 `model/fsq_quantizer.py` 的 MLP projection 之后、FSQ discretize 之前插入 `NUTransform` layer
+2. 重训一个 tokenizer (EXP-045 的 4B h=256 为 baseline)
+3. 指标: collision rate, d2 Gini, NTP R@500 端到端对比
+
+### 关键问题
+
+1. **双射约束**: Kumaraswamy CDF 在 (0,1) 上双射, 需要先 sigmoid 把 embedding 映到 (0,1), 加一次非线性; 是否会破坏 MLP-FSQ projection 的学习能力？
+2. **训练稳定性**: (a, b) 从 1.0 初始化 (等价于恒等变换) 是否能收敛到非平凡解？论文似乎没说初始化细节
+3. **reconstruction 路径**: FSQ 本身没有 decoder (无 reconstruction loss), 只有 NTP loss 能提供梯度信号。那 Kumaraswamy 变换是否能被下游 loss 有效更新？ (RQ-VAE 有 reconstruction loss 可以, FSQ 需要设计额外的自监督)
+4. **与 MLP-FSQ 的 sweep 关系**: 如果 MLP hidden dim 足够大 (h=1024+), MLP 本身就能学到近似均匀的输出分布。Kumaraswamy 的边际收益是否在 h_max 处归零？建议先做 h=32 和 h=1024 对比再决定
+
+### 为什么是 Tier C 而非 Tier A
+
+- UESTC + 西南财大作者, 无工业 lab 共同作者
+- 实验在 Amazon Beauty / Toys / Sports 公开数据集, 非工业日活级 item pool
+- 无 online A/B, 无任何 CTR / GMV lift 数字
+- 但 NU-RQ-VAE 变换是**数学上清晰的独立组件**, SIGIR 2026 认可的新技术, 可以作为 plug-in 在我们现有 tokenizer 上验证
+
+### 相关 idea
+
+- IDEA-crab-0 (CRAB): 事后 token split, 与本 idea 事前分布校正互补
+- IDEA-rqgmm-0 (RQ-GMM): 另一条处理非均匀路线 (高斯混合建模)
+- IDEA-adasid-0 (AdaSID): 冷 item 借热 item SID, 可组合
+- IDEA-quasid-0 (QuaSID): Qualification-aware SID, 相似 motivation

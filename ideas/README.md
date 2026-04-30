@@ -8,16 +8,18 @@
 
 | 文件 | 维度 | Ideas 数 | P0 |
 |------|------|---------|-----|
-| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision/Capacity/VRQ/MMQ/GeoSID/DualCodebook/Rebalance/AdaptiveCollision/DualFlowOrthRQ/GMMQuant/RQOPQ-Cold) | 18 | ~~sid-0~~ ❌ |
+| [tokenizer.md](tokenizer.md) | 量化方法 (RQ/OPQ/FSQ/Balanced/Co-gen/Collision/Capacity/VRQ/MMQ/GeoSID/DualCodebook/Rebalance/AdaptiveCollision/DualFlowOrthRQ/GMMQuant/RQOPQ-Cold/NU-RQ) | 19 | ~~sid-0~~ ❌ |
 | [embedding.md](embedding.md) | 表征增强 (协同/多模态/属性/Caption/MidLayer/GateSID) | 8 | — |
-| [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale/CascadedSparseDense/SummaryAttn/VISTA-UIH/SIF-Mixer/GloRank/A2Gen/CADET-SelfGated) | 30 | — |
+| [architecture.md](architecture.md) | 模型架构 (LazyAR/QFormer/SoftPrompt/Reasoning/Diffusion/CoA/MultiStream/Session-MIM/HierIdx/OneRanker/InTextReason/MoEReason/TokenMerger/NextScale/CascadedSparseDense/SummaryAttn/VISTA-UIH/SIF-Mixer/GloRank/A2Gen/CADET-SelfGated/RecoChain) | 31 | — |
 | [training.md](training.md) | 训练目标 (Contrastive/MTP/Value/ENTP/NSP/TaskDecomp/MultiBiz/InstrMultiTask/MemoryBank/PW-NTP/ReverseCurriculum/LAC/OneLive-BOS/CF-SoftLabel/TAMIP) | 21 | ~~onemall-0~~ ❌ (EXP-022 负结果) |
 | [rl-alignment.md](rl-alignment.md) | RL 对齐 (GRPO/DPO/ECPO/Progressive/Listwise/HEPO/A2PO/GRPO-SR/RPO/ElasticTether/ReCast/RAD-DPO) | 14 | — |
 | [inference.md](inference.md) | 推理优化 (Dynamic Beam/~~CSR约束~~/Register压缩/PRM-Beam/GRC/FP8-PTQ/SelfDraftSD/SnapMap) | 9 | ~~static-0~~ ❌(SIDTrie已有) |
 | [scaling.md](scaling.md) | 扩展性 (序列长度/MFU/Sparse Attn/DistTraining/FreeScale/VLM) | 6 | ~~oneloc-4~~ 部分完成 |
 | [ntp-features.md](ntp-features.md) | NTP 特征注入 (TimeGap/ActionType/SegmentEmb/Category/UserProfile/ContTime) | 6 | ~~feat-0/1/2~~ ✅ (EXP-036 全部验证) |
 
-**总计: 112 ideas (0 P0 活跃 / ~63 P1 / 38 P2 / 11 已完成或关闭)**
+**总计: 114 ideas (0 P0 活跃 / ~63 P1 / 40 P2 / 11 已完成或关闭)**
+
+Tier 标注: [A]=工业部署+A/B; [B]=工业 author 或 top 会议, 无 A/B; [C]=纯学术, 新技术入围
 
 **已完成/关闭**: sid-0 ❌, sid-1(emb) ❌(EXP-007/009), onemall-0 ❌(EXP-022), onemall-4 ✅, onemall-5 ✅, forge-0 ✅, oneloc-4 部分✅, oneloc-2 已被align3-0覆盖, feat-0/1/2 ✅(EXP-036), rpo-0 ✅(理论验证), spot-0 ✅(理论验证), uni-0 ❌(无搜索场景), mtgr-0 ✅(train_packed), lac-0 ✅(EXP-025/036), onerec-3 暂缓P2, static-0 ❌(SIDTrie已实现)
 
@@ -245,7 +247,9 @@ graph LR
 | `raddpo` | RAD-DPO (JD.com, arxiv 2602.23964) | DPO for SID: 共享 prefix gradient detach + similarity-based reward weighting + multi-label global contrastive (JD.com UCVR +0.34%) |
 | `gatesid` | GateSID (arxiv 2603.22916) | Per-item maturity-based gating between semantic SID and collaborative signal (冷启动场景 GMV +2.6%, CTR +1.1%) |
 | `coins` | COINS (arxiv 2510.12604, WWW 2026) | RQ + OPQ 两阶段冷启动 SID: RQ 共享协同转移 + OPQ 差异化 (CTR +1.66%, 订单 +2.17%) |
-| `vlm` | Versioned Late Materialization (Meta, arxiv 2604.24806) | UIH 单拷贝 canonical store + version pointer JIT 重建, 破 "Fat Row" 墙 4K→64K; Platform A A/B Topline +0.22% / Metrics-C +4.1% |
+| `vlm` | [A] Versioned Late Materialization (Meta, arxiv 2604.24806) | UIH 单拷贝 canonical store + version pointer JIT 重建, 破 "Fat Row" 墙 4K→64K; Platform A A/B Topline +0.22% / Metrics-C +4.1% |
+| `recochain` | [B] RecoChain (Kuaishou Jiangxia Cao, arxiv 2604.25787) | 单 decoder 融合生成式检索 + target-aware SIM 重排, KV-cache 复用; TAOBAO-MM 离线 R@5 +3.14%, 无 A/B |
+| `card` | [C] CARD NU-RQ-VAE (UESTC, arxiv 2604.26427, SIGIR 2026) | 可学习可逆非均匀变换 (Kumaraswamy CDF / Logistic-Logit) 预处理 → 再 RQ, 平衡 codeword 利用; 公开数据集 |
 
 ## 核心设计原则
 
