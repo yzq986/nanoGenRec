@@ -200,6 +200,48 @@ EXP-045 新跑的所有 preprocess-sid 使用了 `num_clusters=1024`（默认值
 
 **h sweep 结论（EXP-045 bug 修复前暂定）**：0.6b 最优 h 约为 128（CR 拐点），4b CR 对 h 不敏感（FSQ levels 瓶颈，需增大 levels 而非 h）。
 
+## Tokenizer Pipeline GPU 架构（2026-04-30）
+
+### 数据流：全程 GPU，零 CPU 中转
+
+`preprocess-sid` 的 `ResKmeansFSQ` pipeline 经过优化，embeddings 搬到 GPU 一次后全程不落 CPU：
+
+```
+embeddings.to(cuda:0)
+  → F.normalize (GPU)
+  → KMeans L1: DatasetAssignGPU (GPU, 无 numpy)
+  → 残差计算 (GPU)
+  → KMeans L2: DatasetAssignGPU (GPU)
+  → 残差计算 (GPU)
+  → FSQ MLP train: residuals pin on GPU, randperm on GPU
+  → SID build: 一次 .cpu() 取三列
+```
+
+### KMeans: 必须用 DatasetAssignGPU，不能用 faiss.Kmeans
+
+`faiss.Kmeans(gpu=True).train(x)` 内部有 `np.ascontiguousarray(x)` — 无论 `gpu=True` 还是传 CUDA tensor，都会强制走 CPU numpy 路径（`extra_wrappers.py` 里写死的）。`torch_utils` 只 patch 了 `Index` 子类，不 patch `Kmeans`/`Clustering`。
+
+**正确用法**（见 `model/rkmeans.py:FaissKMeansLayer.train`）：
+```python
+from faiss.contrib.clustering import kmeans as faiss_kmeans
+from faiss.contrib.torch.clustering import DatasetAssignGPU
+
+res = faiss.StandardGpuResources()
+dataset = DatasetAssignGPU(res, data_gpu)  # data_gpu: CUDA tensor
+centroids = faiss_kmeans(k=k, data=dataset, niter=25, seed=42)
+# centroids 是 CUDA tensor，全程无 CPU transfer
+```
+
+**性能**（1.1M × 1024，k=4096，niter=25，benchmark: `benchmarks/bench_faiss_kmeans.py`）：
+- `faiss.Kmeans` + numpy：14.6s
+- `DatasetAssignGPU`：6.4s（**2.3x 加速**）
+
+注意：`faiss.contrib.clustering.kmeans` 纯 Python 实现，不支持 `nredo`，需手动循环多次取最优 inertia（`FaissKMeansLayer` 已处理）。
+
+### FSQ MLP：residuals 整体 pin 到 GPU
+
+`LearnedFSQLayer.train()` 把全量 residuals 一次搬到 GPU，`randperm` 也在 GPU 上做，消除所有 per-batch CPU↔GPU 传输。1.1M × 1024 × 4B ≈ 4.5GB，GPU 有 140GB 绰绰有余。
+
 ## Code quality
 
 - **不确定的 API 必须验证**：写 PyTorch / CUDA 等外部库调用时，先用 `Grep` 或 `WebSearch` 确认属性名和参数，不要凭记忆猜。已踩过的坑：`torch.cuda.get_device_properties().total_memory`（不是 `total_mem`）。
