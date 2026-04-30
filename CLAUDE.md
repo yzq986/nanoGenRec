@@ -160,25 +160,41 @@ Three remotes are configured:
 已踩坑：EXP-044 TO-RoPE 实验，timestamps 在代码里传了但全为 0（pipeline 未接通），
 导致 TO-RoPE vs baseline 的对比无效（两个都没有用真实时间戳）。
 
-## FSQ Hidden Dim 选取规则（EXP-045 实验结论）
+## FSQ Codebook 质量评估规则（EXP-045，2026-04-30）
 
-经验公式（拟合自 9 个数据点，R²=0.141）：
+### ⚠️ EXP-045 num_clusters bug — 所有 exp045-* 数据不可信
 
-```
-collision_rate ≈ 0.0123 × (h / embedding_dim) ^ -0.300
-```
+EXP-045 新跑的所有 preprocess-sid 使用了 `num_clusters=1024`（默认值），而正确值应为 `num_clusters=4096`（exp026 使用）。KMeans 欠约束导致 Gini_d2 从 0.33（exp026）飙升到 0.54（exp045），collision 数值也不可与 exp026 比较。**需用 `--num_clusters 4096` 重跑 EXP-045 全部数据点后才能得出可信结论。**
 
-**h_min（collision_rate < 1%）**：
+### 两个 Proxy Metrics（FORGE 2025）
 
-| Embedding Model | dim | h_min |
-|----------------|-----|-------|
-| Qwen3-0.6B | 1024 | 2036 |
-| Qwen3-4B   | 2560 | 5091 |
-| Qwen3-8B   | 4096 | 8146 |
+评估 codebook 质量，不需要跑 NTP：
 
-通用公式：`h_min = ceil(embedding_dim × (0.0123 × 0.01) ^ (1 / -0.300))`
+1. **Collision Rate (CR)**：有多少 item 共享同一 SID（`1 - N_unique / N_items`）。越低越好，但与 Gini_d3 基本等价。
 
-写实验脚本时直接查上表，不需要 sweep。
+2. **Gini_d2**（推荐）：L1+L2 prefix 分布的 Gini 系数，衡量 KMeans 层间负载均衡。**比 CR 更有信息量**——codebook 容量（4096³）远大于 item 数（1.1M）时，CR 趋近于 0 但 Gini_d2 仍能区分 num_clusters 设置好坏。Gini_d2 越低 = L2 层预测难度越均匀 = NTP 性能越好。
+
+   计算：`python -c "import sys; ..." experiments/sid_cache/<name>`（见 `metrics/cluster_balance.py`）
+
+### 当前各 SID Cache 对比（2026-04-30 实测）
+
+| Cache | CR | Gini_d2 | num_clusters | 可信 |
+|-------|-----|---------|--------------|------|
+| **exp026-0.6b-14d** | **0.49%** | **0.33** | **4096** | ✅ 基准 |
+| exp026-4b-14d | 2.76% | 0.35 | 4096 | ✅ |
+| exp026-8b-14d | 5.44% | 0.37 | 4096 | ✅ |
+| exp045-0.6b-h128 | 1.25% | 0.54 | 1024 | ❌ bug |
+| exp045-0.6b-h64 | 2.21% | 0.54 | 1024 | ❌ bug |
+| exp045-4b-h512 | 3.13% | 0.57 | 1024 | ❌ bug |
+
+### 当前推荐
+
+| Embedding | 推荐 SID cache | CR | Gini_d2 |
+|-----------|--------------|-----|---------|
+| Qwen3-0.6B | exp026-0.6b-14d（h=64，num_clusters=4096） | 0.49% | 0.33 |
+| Qwen3-4B | exp026-4b-14d（h=64，num_clusters=4096） | 2.76% | 0.35 |
+
+**h sweep 结论（EXP-045 bug 修复前暂定）**：0.6b 最优 h 约为 128（CR 拐点），4b CR 对 h 不敏感（FSQ levels 瓶颈，需增大 levels 而非 h）。
 
 ## Code quality
 
