@@ -14,6 +14,24 @@ Embedding → KMeans → FSQ codebook，生成 3-token Semantic ID（SID）。
 | **Embedding** | Qwen3-0.6B (dim=1024, h=64) | EXP-026 |
 | **num_clusters** | 4096 | EXP-026 |
 
+## GPU Pipeline 架构（2026-04-30 优化后）
+
+tokenizer 训练全程保持数据在 GPU，无 CPU 中转：
+
+| 环节 | 实现 | 说明 |
+|------|------|------|
+| Normalize | `F.normalize(data_gpu)` | 一次 GPU op，无 chunked bounce |
+| KMeans | `DatasetAssignGPU` + `faiss.contrib.clustering.kmeans` | **禁止用 `faiss.Kmeans(gpu=True)`** — 内部有 `np.ascontiguousarray` 强制 CPU |
+| 残差计算 | `data_gpu - centroids[assignments]` | 全 GPU |
+| FSQ MLP train | `residuals.to(device)` 整体搬上去，`torch.randperm(N, device=device)` | 无 per-batch transfer |
+| SID 构建 | 三列 `.cpu()` 一次取出 | 唯一的 CPU 落地 |
+
+**KMeans 性能**（1.1M × 1024，k=4096，niter=25）：
+- `faiss.Kmeans` + numpy：14.6s（旧方式）
+- `DatasetAssignGPU`：6.4s（**2.3x 加速**）
+
+Benchmark 可复现：`python benchmarks/bench_faiss_kmeans.py`
+
 ## ⚠️ 已知问题
 
 - **EXP-045 num_clusters bug**：所有 exp045-* SID cache 使用 `num_clusters=1024`（应为 4096），数据不可信，待重跑
@@ -46,3 +64,4 @@ Embedding → KMeans → FSQ codebook，生成 3-token Semantic ID（SID）。
 | [012](../exp-012.md) | 2026-04-15 | completed | **Grid Search — 4096×3 binary 确认为赢家** |
 | [026](../exp-026.md) | 2026-04-27 | completed | **0.6B/4B/8B SID cache 构建（14d data）** |
 | [045](../exp-045.md) | 2026-04-29 | ⚠️ bug | FSQ h-dim sweep — num_clusters=1024 bug，待重跑 |
+| [049](../exp-049.md) | 2026-04-30 | 🔄 running | num_clusters × h × model sweep（14 variants，修复 EXP-045 bug，含 MGMR 层次化 variants） |
