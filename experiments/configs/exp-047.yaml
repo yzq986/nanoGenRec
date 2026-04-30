@@ -1,0 +1,25 @@
+name: exp047
+description: "L-tier (scale-07, 101M active) NTP with all validated optimizations: segment_emb + time_gap + action_level + TO-RoPE ts=0.5 + gate_attn"
+base: _base.yaml
+
+# Data: reuse exp044b (has timestamps + time_gaps + action_levels, exp026-0.6b SID)
+sid_cache_name: exp026-0.6b-14d
+ntp_data_name: exp044b-0.6b-14d
+
+# Model: scale-07 (L-tier)
+embed_dim: 512
+n_transformer_layers: 12
+n_experts: 16
+top_k: 2
+lr: 2.0e-4
+
+# Features: all validated optimizations from S-tier experiments
+use_segment_emb: true
+use_rope: true
+rope_dims: "order:0.5,time:0.5,layer:0.0"   # TO-RoPE 2-dim ts=0.5 (best from EXP-044C-B)
+use_gate_attn: true
+
+# Baselines for reference (not re-trained):
+#   exp043-m-0.6b: M-tier, R@500=70.2% (no TO-RoPE, no gate_attn)
+#   exp043-s-0.6b: S-tier, R@500=61.2%
+#   exp044c-torope-ts05: S-tier + TO-RoPE ts=0.5, R@500=63.9%

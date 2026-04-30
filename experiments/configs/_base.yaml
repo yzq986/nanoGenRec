@@ -17,6 +17,11 @@ min_action_level: 1
 
 # ── Model ─────────────────────────────────────────────────────
 model: s-tier
+embed_dim: 256              # 256=S-tier, 512=M/L-tier
+n_transformer_layers: null  # null = train.py default (6 for s-tier)
+n_experts: 8
+top_k: 2
+expert_dim: null            # null = 4*embed_dim
 use_segment_emb: false
 use_rope: false
 rope_dims: "order:0.6,time:0.25,layer:0.0"   # dim spec; layer:0.0 = 2-dim mode

@@ -194,6 +194,16 @@ def build_torchrun_cmd(resolved: dict, name: str, n_gpus: int, dry_run: bool = F
 
     if resolved.get("lr"):
         cmd += ["--lr", str(resolved["lr"])]
+    if resolved.get("embed_dim") and resolved["embed_dim"] != 256:
+        cmd += ["--embed_dim", str(resolved["embed_dim"])]
+    if resolved.get("n_transformer_layers"):
+        cmd += ["--n_transformer_layers", str(resolved["n_transformer_layers"])]
+    if resolved.get("n_experts") and resolved["n_experts"] != 8:
+        cmd += ["--n_experts", str(resolved["n_experts"])]
+    if resolved.get("top_k") and resolved["top_k"] != 2:
+        cmd += ["--top_k", str(resolved["top_k"])]
+    if resolved.get("expert_dim"):
+        cmd += ["--expert_dim", str(resolved["expert_dim"])]
     if resolved.get("use_segment_emb"):
         cmd.append("--use_segment_emb")
     # New RoPE API

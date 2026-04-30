@@ -58,6 +58,39 @@
       "target_sid_found_rate": 0.308
     }
   },
+  "394bd0a48991": {
+    "config": {
+      "action_l2_only": false,
+      "batch_size": 4096,
+      "contrastive_dim": 128,
+      "contrastive_temp": 0.07,
+      "contrastive_weight": 0.0,
+      "date_end": "2026-03-31",
+      "date_start": "2026-03-18",
+      "embed_dim": 512,
+      "entp_weight": 0.0,
+      "expert_dim": null,
+      "lr": 0.0002,
+      "max_seq_len": 512,
+      "min_action_level": 1,
+      "model": "s-tier",
+      "n_eval_target": 50000,
+      "n_experts": 16,
+      "n_items": 10,
+      "n_transformer_layers": 12,
+      "ntp_data_name": "exp044b-0.6b-14d",
+      "rope_dims": "order:0.5,time:0.5,layer:0.0",
+      "sid_cache_name": "exp026-0.6b-14d",
+      "top_k": 2,
+      "use_gate_attn": true,
+      "use_rope": true,
+      "use_segment_emb": true
+    },
+    "git_commit": "3cb77d51fcc6",
+    "name": "exp047",
+    "registered_at": "2026-04-30T08:29:21.836729",
+    "results": {}
+  },
   "44101a26d27e": {
     "backfilled": true,
     "config": {
