@@ -14,11 +14,12 @@ Tokenizer ✅ → NTP ✅ → RL 对齐 ← (当前) → 部署
 | 阶段 | SOTA | 实验 | 文档 |
 |------|------|------|------|
 | **Tokenizer** | 4096×3 binary `[2]×12`，snHR=0.095，CR=0.89% | EXP-012 | [experiments/logs/tokenizer/README.md](experiments/logs/tokenizer/README.md) |
-| **Embedding** | exp026-0.6b-14d，CR=0.49%，Gini_d2=0.33 | EXP-026 | ↑ |
+| **Embedding** | exp049-0.6b-nc8192-h128，CR=0.42%，Gini_d2=0.2375 | EXP-049 | ↑ |
 | **NTP** | M-tier bare R@500=**70.2%**；L-tier SFT R@500=64.1% | EXP-043/047 | [experiments/logs/ntp/README.md](experiments/logs/ntp/README.md) |
 | **RL 对齐** | ECPO R@500=**65.7%**（S-tier 链路）；L-tier 链路待启动 | EXP-039B | [experiments/logs/rl/README.md](experiments/logs/rl/README.md) |
 
-🔄 **EXP-049**：FSQ sweep 重跑中（修复 EXP-045 `num_clusters=1024` bug），14 variants，含 MGMR 层次化配置。
+✅ **EXP-049 完成**：nc=8192 决定性（Gini_d2 0.35→0.24），h=64/128 无差异，推荐 exp049-{0.6b,4b}-nc8192-h128。
+🔄 **EXP-050**：M-tier NTP 0.6b/4b SID × output-gate/CADET + bare+RoPE ablation（6 variants，排队中）。
 
 ## 流程总览
 

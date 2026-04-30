@@ -51,3 +51,4 @@ Transformer + MoE 序列模型，输入用户行为序列，预测下一个 item
 | [046](../exp-046.md) | 2026-04-29 | completed | GateAttention — +0.4pp |
 | [047](../exp-047.md) | 2026-04-30 | completed | **L-tier + all opts — SFT 起点 R@500=64.1%** |
 | [048](../exp-048.md) | 2026-04-30 | completed | M-tier TO-RoPE 2-dim vs 3-dim — 无收益 |
+| [050](../exp-050.md) | 2026-04-30 | 🔄 queued | M-tier NTP：0.6b/4b SID × output-gate/CADET + bare+RoPE（6 variants，exp049 SID） |
