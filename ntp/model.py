@@ -930,6 +930,56 @@ def _compute_entp_loss(
 
 
 # ============================================================
+# AttnGating — pluggable attention gate module
+# ============================================================
+
+class AttnGating(nn.Module):
+    """Pluggable attention gating.
+
+    mode='output'  (legacy gate_attn): output-side sigmoid gate applied after projection.
+                   gate = sigmoid(W_out · x_norm);  attn_out = attn_out * gate
+
+    mode='cadet'   (CADET-style, input-side): three sigmoid gates applied before the
+                   QKV projection to suppress attention sinks and boost query/key focus.
+                   rep_gate = sigmoid(W_x  · x_norm)  → gates the input representation
+                   q_gate   = sigmoid(W_q  · x_norm)  → gates Q after projection
+                   k_gate   = sigmoid(W_k  · x_norm)  → gates K after projection
+    """
+
+    def __init__(self, embed_dim: int, mode: str = 'output'):
+        super().__init__()
+        self.mode = mode
+        if mode == 'output':
+            self.w_out = nn.Linear(embed_dim, embed_dim, bias=False)
+        elif mode == 'cadet':
+            self.w_x = nn.Linear(embed_dim, embed_dim, bias=False)
+            self.w_q = nn.Linear(embed_dim, embed_dim, bias=False)
+            self.w_k = nn.Linear(embed_dim, embed_dim, bias=False)
+        else:
+            raise ValueError(f"AttnGating: unknown mode {mode!r}")
+
+    def gate_x(self, x_norm: torch.Tensor) -> torch.Tensor:
+        """Rep gate (cadet only): returns gated x_norm."""
+        return x_norm * torch.sigmoid(self.w_x(x_norm))
+
+    def gate_q(self, q: torch.Tensor, x_norm: torch.Tensor) -> torch.Tensor:
+        """Q gate (cadet only): q is (B,H,T,Dh); x_norm is (B,T,D=H*Dh)."""
+        B, H, T, Dh = q.shape
+        g = torch.sigmoid(self.w_q(x_norm)).view(B, T, H, Dh).permute(0, 2, 1, 3)
+        return q * g
+
+    def gate_k(self, k: torch.Tensor, x_norm: torch.Tensor) -> torch.Tensor:
+        """K gate (cadet only): k is (B,H,T,Dh); x_norm is (B,T,D=H*Dh)."""
+        B, H, T, Dh = k.shape
+        g = torch.sigmoid(self.w_k(x_norm)).view(B, T, H, Dh).permute(0, 2, 1, 3)
+        return k * g
+
+    def gate_out(self, attn_out: torch.Tensor, x_norm: torch.Tensor) -> torch.Tensor:
+        """Output gate (output mode only)."""
+        return attn_out * torch.sigmoid(self.w_out(x_norm))
+
+
+# ============================================================
 # Transformer Layer (pre-norm, causal, supports MoE or dense FFN)
 # ============================================================
 
@@ -953,6 +1003,7 @@ class TransformerLayer(nn.Module):
         causal: bool = True,
         rope_params: Optional[dict] = None,
         use_gate_attn: bool = False,
+        attn_gating_mode: str = '',
         # backward compat alias
         torope_params: Optional[dict] = None,
     ):
@@ -968,9 +1019,12 @@ class TransformerLayer(nn.Module):
         self.attn = nn.MultiheadAttention(
             embed_dim, n_heads, dropout=dropout, batch_first=True,
         )
-        # GateAttention: scalar sigmoid gate on attention output per position
-        # gate(x) = sigmoid(W_g x) ∈ (0,1)^D, applied as attn_out * gate(x_norm)
-        self.attn_gate = nn.Linear(embed_dim, embed_dim, bias=False) if use_gate_attn else None
+
+        # Resolve gating mode: new attn_gating_mode takes precedence; legacy use_gate_attn maps to 'output'.
+        resolved_mode = attn_gating_mode or ('output' if use_gate_attn else '')
+        self.attn_gating: Optional[AttnGating] = AttnGating(embed_dim, resolved_mode) if resolved_mode else None
+        # backward compat: expose legacy attn_gate alias
+        self.attn_gate = self.attn_gating.w_out if (resolved_mode == 'output' and self.attn_gating) else None
 
         if use_moe:
             self.ffn = SparseMoEBlock(embed_dim, expert_dim, n_experts, top_k, dropout)
@@ -1000,17 +1054,27 @@ class TransformerLayer(nn.Module):
         T_kv = kv_src.size(1)
         H, Dh = self.n_heads, self.head_dim
         tp = self.rope_params
+        gate = self.attn_gating
+
+        # CADET rep gate: applied before QKV projection
+        q_src = gate.gate_x(x_norm) if gate is not None and gate.mode == 'cadet' else x_norm
+        kv_gated = gate.gate_x(kv_src) if gate is not None and gate.mode == 'cadet' else kv_src
 
         # Project Q, K, V
         W, b = self.attn.in_proj_weight, self.attn.in_proj_bias
-        q = F.linear(x_norm, W[:D], b[:D] if b is not None else None)
-        k = F.linear(kv_src, W[D:2*D], b[D:2*D] if b is not None else None)
-        v = F.linear(kv_src, W[2*D:], b[2*D:] if b is not None else None)
+        q = F.linear(q_src,   W[:D],    b[:D]    if b is not None else None)
+        k = F.linear(kv_gated, W[D:2*D], b[D:2*D] if b is not None else None)
+        v = F.linear(kv_gated, W[2*D:],  b[2*D:]  if b is not None else None)
 
         # Reshape to (B, H, T, Dh)
         q = q.view(B, T_q, H, Dh).transpose(1, 2)
         k = k.view(B, T_kv, H, Dh).transpose(1, 2)
         v = v.view(B, T_kv, H, Dh).transpose(1, 2)
+
+        # CADET Q/K gates: applied after projection, before RoPE
+        if gate is not None and gate.mode == 'cadet':
+            q = gate.gate_q(q, q_src)
+            k = gate.gate_k(k, kv_gated)
 
         q, k = apply_torope(
             q, k,
@@ -1068,6 +1132,7 @@ class TransformerLayer(nn.Module):
             kv = x_norm
 
         use_rope = self.rope_params is not None and positions is not None and timestamps is not None
+        gate = self.attn_gating
 
         if use_rope:
             if kv_positions is not None:
@@ -1078,31 +1143,56 @@ class TransformerLayer(nn.Module):
                 pos_kv = positions
                 ts_kv  = timestamps
                 lay_kv = layers
+            # CADET gates applied inside _attn_with_rope; output gate applied below
             attn_out = self._attn_with_rope(
                 x_norm, kv, positions, pos_kv, timestamps, ts_kv,
                 layers_q=layers, layers_kv=lay_kv,
             )
-        elif self.causal:
-            Q_len = x_norm.size(1)
-            KV_len = kv.size(1)
-            if Q_len == KV_len:
-                attn_mask = nn.Transformer.generate_square_subsequent_mask(
-                    KV_len, device=x.device,
-                )
-                attn_out, _ = self.attn(x_norm, kv, kv, attn_mask=attn_mask)
-            elif Q_len == 1:
-                attn_out, _ = self.attn(x_norm, kv, kv)
-            else:
-                attn_mask = torch.full(
-                    (Q_len, KV_len), float('-inf'), device=x.device)
-                for i in range(Q_len):
-                    attn_mask[i, :KV_len - Q_len + i + 1] = 0.0
-                attn_out, _ = self.attn(x_norm, kv, kv, attn_mask=attn_mask)
         else:
-            attn_out, _ = self.attn(x_norm, x_norm, x_norm)
+            # Non-RoPE path: extract Q/K/V manually when cadet mode needs to gate them
+            if gate is not None and gate.mode == 'cadet':
+                B, T_q, D = x_norm.shape
+                T_kv = kv.size(1)
+                H, Dh = self.n_heads, self.head_dim
+                W, b = self.attn.in_proj_weight, self.attn.in_proj_bias
+                kv_src = kv
+                q_src   = gate.gate_x(x_norm)
+                kv_gated = gate.gate_x(kv_src)
+                q = F.linear(q_src,    W[:D],    b[:D]    if b is not None else None)
+                k = F.linear(kv_gated, W[D:2*D], b[D:2*D] if b is not None else None)
+                v = F.linear(kv_gated, W[2*D:],  b[2*D:]  if b is not None else None)
+                q = gate.gate_q(q.view(B, T_q, H, Dh).transpose(1, 2), q_src)
+                k = gate.gate_k(k.view(B, T_kv, H, Dh).transpose(1, 2), kv_gated)
+                v = v.view(B, T_kv, H, Dh).transpose(1, 2)
+                is_causal_call = self.causal and (T_q == T_kv)
+                attn_out = F.scaled_dot_product_attention(
+                    q, k, v,
+                    dropout_p=self.dropout if self.training else 0.0,
+                    is_causal=is_causal_call,
+                )
+                attn_out = attn_out.transpose(1, 2).reshape(B, T_q, D)
+                attn_out = F.linear(attn_out, self.attn.out_proj.weight, self.attn.out_proj.bias)
+            elif self.causal:
+                Q_len = x_norm.size(1)
+                KV_len = kv.size(1)
+                if Q_len == KV_len:
+                    attn_mask = nn.Transformer.generate_square_subsequent_mask(
+                        KV_len, device=x.device,
+                    )
+                    attn_out, _ = self.attn(x_norm, kv, kv, attn_mask=attn_mask)
+                elif Q_len == 1:
+                    attn_out, _ = self.attn(x_norm, kv, kv)
+                else:
+                    attn_mask = torch.full(
+                        (Q_len, KV_len), float('-inf'), device=x.device)
+                    for i in range(Q_len):
+                        attn_mask[i, :KV_len - Q_len + i + 1] = 0.0
+                    attn_out, _ = self.attn(x_norm, kv, kv, attn_mask=attn_mask)
+            else:
+                attn_out, _ = self.attn(x_norm, x_norm, x_norm)
 
-        if self.attn_gate is not None:
-            attn_out = attn_out * torch.sigmoid(self.attn_gate(x_norm))
+        if gate is not None and gate.mode == 'output':
+            attn_out = gate.gate_out(attn_out, x_norm)
         x = x + attn_out
         x = x + self.ffn(self.norm2(x))
         if use_cache:
@@ -1150,6 +1240,7 @@ class NTPModel(nn.Module):
         torope_time_split: float = 0.5,
         torope_layer_split: float = 0.0,
         use_gate_attn: bool = False,
+        attn_gating_mode: str = '',
     ):
         super().__init__()
         assert len(n_clusters_per_layer) == n_sid_layers
@@ -1253,6 +1344,7 @@ class NTPModel(nn.Module):
                 causal=not parallel,
                 rope_params=rope_layer_params,
                 use_gate_attn=use_gate_attn,
+                attn_gating_mode=attn_gating_mode,
             )
             for _ in range(n_transformer_layers)
         ])
