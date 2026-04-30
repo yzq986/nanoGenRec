@@ -1,5 +1,9 @@
 # Project Instructions
 
+## 后台任务监控原则
+
+**绝对禁止 `sleep` + 检查结果。** 启动后台进程后，直接报告"已启动，PID=XXX"然后结束这个 turn。结果由 cron 守护进程（每 2 分钟触发）异步检查。在同一个 turn 里 sleep/tail/poll 是浪费时间且多余的。
+
 ## Auto commit & push
 
 Every time a coding task finishes (implementation complete, no more pending changes), automatically:
