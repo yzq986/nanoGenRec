@@ -1002,29 +1002,25 @@ class TransformerLayer(nn.Module):
         expert_dim: int = 1024,
         causal: bool = True,
         rope_params: Optional[dict] = None,
-        use_gate_attn: bool = False,
         attn_gating_mode: str = '',
-        # backward compat alias
+        # backward compat aliases
         torope_params: Optional[dict] = None,
+        use_gate_attn: bool = False,
     ):
         super().__init__()
         self.causal = causal
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
         self.dropout = dropout
-        self.rope_params = rope_params if rope_params is not None else torope_params  # None → standard APE path
-        # backward compat: expose as torope_params too
-        self.torope_params = self.rope_params
+        self.rope_params = rope_params if rope_params is not None else torope_params
+        self.torope_params = self.rope_params  # backward compat alias
 
         self.attn = nn.MultiheadAttention(
             embed_dim, n_heads, dropout=dropout, batch_first=True,
         )
-
-        # Resolve gating mode: new attn_gating_mode takes precedence; legacy use_gate_attn maps to 'output'.
-        resolved_mode = attn_gating_mode or ('output' if use_gate_attn else '')
-        self.attn_gating: Optional[AttnGating] = AttnGating(embed_dim, resolved_mode) if resolved_mode else None
-        # backward compat: expose legacy attn_gate alias
-        self.attn_gate = self.attn_gating.w_out if (resolved_mode == 'output' and self.attn_gating) else None
+        # use_gate_attn=True is the legacy flag; attn_gating_mode takes precedence
+        mode = attn_gating_mode or ('output' if use_gate_attn else '')
+        self.attn_gating: Optional[AttnGating] = AttnGating(embed_dim, mode) if mode else None
 
         if use_moe:
             self.ffn = SparseMoEBlock(embed_dim, expert_dim, n_experts, top_k, dropout)
@@ -1037,6 +1033,39 @@ class TransformerLayer(nn.Module):
             )
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
+
+    def _project_qkv(
+        self,
+        x_norm: torch.Tensor,   # (B, T_q, D)
+        kv_src: torch.Tensor,   # (B, T_kv, D)
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Project Q/K/V and apply CADET gates if active.
+
+        Returns q, k, v all shaped (B, H, T, Dh).
+        For 'output' mode gating, gates are applied in forward() after projection — not here.
+        """
+        B, T_q, D = x_norm.shape
+        T_kv = kv_src.size(1)
+        H, Dh = self.n_heads, self.head_dim
+        gate = self.attn_gating
+
+        q_src  = gate.gate_x(x_norm) if gate is not None and gate.mode == 'cadet' else x_norm
+        kv_in  = gate.gate_x(kv_src) if gate is not None and gate.mode == 'cadet' else kv_src
+
+        W, b = self.attn.in_proj_weight, self.attn.in_proj_bias
+        q = F.linear(q_src, W[:D],    b[:D]    if b is not None else None)
+        k = F.linear(kv_in, W[D:2*D], b[D:2*D] if b is not None else None)
+        v = F.linear(kv_in, W[2*D:],  b[2*D:]  if b is not None else None)
+
+        q = q.view(B, T_q, H, Dh).transpose(1, 2)
+        k = k.view(B, T_kv, H, Dh).transpose(1, 2)
+        v = v.view(B, T_kv, H, Dh).transpose(1, 2)
+
+        if gate is not None and gate.mode == 'cadet':
+            q = gate.gate_q(q, q_src)
+            k = gate.gate_k(k, kv_in)
+
+        return q, k, v
 
     def _attn_with_rope(
         self,
@@ -1052,29 +1081,9 @@ class TransformerLayer(nn.Module):
         """Manual SDPA with 3-dim RoPE applied to Q and K."""
         B, T_q, D = x_norm.shape
         T_kv = kv_src.size(1)
-        H, Dh = self.n_heads, self.head_dim
         tp = self.rope_params
-        gate = self.attn_gating
 
-        # CADET rep gate: applied before QKV projection
-        q_src = gate.gate_x(x_norm) if gate is not None and gate.mode == 'cadet' else x_norm
-        kv_gated = gate.gate_x(kv_src) if gate is not None and gate.mode == 'cadet' else kv_src
-
-        # Project Q, K, V
-        W, b = self.attn.in_proj_weight, self.attn.in_proj_bias
-        q = F.linear(q_src,   W[:D],    b[:D]    if b is not None else None)
-        k = F.linear(kv_gated, W[D:2*D], b[D:2*D] if b is not None else None)
-        v = F.linear(kv_gated, W[2*D:],  b[2*D:]  if b is not None else None)
-
-        # Reshape to (B, H, T, Dh)
-        q = q.view(B, T_q, H, Dh).transpose(1, 2)
-        k = k.view(B, T_kv, H, Dh).transpose(1, 2)
-        v = v.view(B, T_kv, H, Dh).transpose(1, 2)
-
-        # CADET Q/K gates: applied after projection, before RoPE
-        if gate is not None and gate.mode == 'cadet':
-            q = gate.gate_q(q, q_src)
-            k = gate.gate_k(k, kv_gated)
+        q, k, v = self._project_qkv(x_norm, kv_src)
 
         q, k = apply_torope(
             q, k,
@@ -1149,22 +1158,10 @@ class TransformerLayer(nn.Module):
                 layers_q=layers, layers_kv=lay_kv,
             )
         else:
-            # Non-RoPE path: extract Q/K/V manually when cadet mode needs to gate them
             if gate is not None and gate.mode == 'cadet':
                 B, T_q, D = x_norm.shape
-                T_kv = kv.size(1)
-                H, Dh = self.n_heads, self.head_dim
-                W, b = self.attn.in_proj_weight, self.attn.in_proj_bias
-                kv_src = kv
-                q_src   = gate.gate_x(x_norm)
-                kv_gated = gate.gate_x(kv_src)
-                q = F.linear(q_src,    W[:D],    b[:D]    if b is not None else None)
-                k = F.linear(kv_gated, W[D:2*D], b[D:2*D] if b is not None else None)
-                v = F.linear(kv_gated, W[2*D:],  b[2*D:]  if b is not None else None)
-                q = gate.gate_q(q.view(B, T_q, H, Dh).transpose(1, 2), q_src)
-                k = gate.gate_k(k.view(B, T_kv, H, Dh).transpose(1, 2), kv_gated)
-                v = v.view(B, T_kv, H, Dh).transpose(1, 2)
-                is_causal_call = self.causal and (T_q == T_kv)
+                q, k, v = self._project_qkv(x_norm, kv)
+                is_causal_call = self.causal and (T_q == kv.size(1))
                 attn_out = F.scaled_dot_product_attention(
                     q, k, v,
                     dropout_p=self.dropout if self.training else 0.0,
