@@ -1,5 +1,5 @@
 name: exp050
-description: "M-tier NTP: exp049 nc=8192 SID 对比 — 0.6b vs 4b embedding tokenizer"
+description: "M-tier NTP: 0.6b vs 4b SID × output-gate vs CADET — 2x2 ablation"
 base: _base.yaml
 
 # Model: M-tier (same as EXP-043/048 baseline)
@@ -9,16 +9,23 @@ n_experts: 8
 top_k: 2
 lr: 1.0e-3
 
-# Features: all validated (same as EXP-048 M-tier)
 use_segment_emb: true
-use_gate_attn: true
-
 # No RoPE: EXP-048 confirmed no benefit on M-tier
 
 variants:
-  - name: exp050-m-0.6b
+  - name: exp050-0.6b-gate
     sid_cache_name: exp049-0.6b-nc8192-h128
     ntp_data_name: exp049-0.6b-nc8192-h128
-  - name: exp050-m-4b
+    use_gate_attn: true
+  - name: exp050-0.6b-cadet
+    sid_cache_name: exp049-0.6b-nc8192-h128
+    ntp_data_name: exp049-0.6b-nc8192-h128
+    attn_gating_mode: cadet
+  - name: exp050-4b-gate
     sid_cache_name: exp049-4b-nc8192-h128
     ntp_data_name: exp049-4b-nc8192-h128
+    use_gate_attn: true
+  - name: exp050-4b-cadet
+    sid_cache_name: exp049-4b-nc8192-h128
+    ntp_data_name: exp049-4b-nc8192-h128
+    attn_gating_mode: cadet
