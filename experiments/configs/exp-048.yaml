@@ -1,0 +1,25 @@
+name: exp048
+description: "M-tier (scale-06, 71.6M active) + TO-RoPE: 2-dim ts=0.5 vs 3-dim ts=0.5 layer=0.1"
+base: _base.yaml
+
+sid_cache_name: exp026-0.6b-14d
+ntp_data_name: exp044b-0.6b-14d   # timestamps already present
+
+# Model: scale-06 (M-tier)
+embed_dim: 512
+n_transformer_layers: 8
+n_experts: 8
+top_k: 2
+lr: 1.0e-3
+
+# Features: all validated
+use_segment_emb: true
+use_gate_attn: true
+
+variants:
+  - name: exp048-m-2dim
+    use_rope: true
+    rope_dims: "order:0.5,time:0.5,layer:0.0"
+  - name: exp048-m-3dim
+    use_rope: true
+    rope_dims: "order:0.4,time:0.5,layer:0.1"
