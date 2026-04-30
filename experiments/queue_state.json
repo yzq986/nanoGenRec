@@ -1,8 +1,8 @@
 {
-  "current": null,
-  "log": null,
-  "done_string": null,
-  "status": "done",
-  "pid": null,
+  "current": "run_config.sh experiments/configs/exp-049.yaml",
+  "log": "/tmp/exp049.log",
+  "done_string": "exp049 complete!",
+  "status": "running",
+  "pid": 808522,
   "next_queue": []
 }
