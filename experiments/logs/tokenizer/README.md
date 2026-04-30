@@ -14,23 +14,7 @@ Embedding → KMeans → FSQ codebook，生成 3-token Semantic ID（SID）。
 | **Embedding** | Qwen3-0.6B (dim=1024, h=64) | EXP-026 |
 | **num_clusters** | 4096 | EXP-026 |
 
-## GPU Pipeline 架构（2026-04-30 优化后）
-
-tokenizer 训练全程保持数据在 GPU，无 CPU 中转：
-
-| 环节 | 实现 | 说明 |
-|------|------|------|
-| Normalize | `F.normalize(data_gpu)` | 一次 GPU op，无 chunked bounce |
-| KMeans | `DatasetAssignGPU` + `faiss.contrib.clustering.kmeans` | **禁止用 `faiss.Kmeans(gpu=True)`** — 内部有 `np.ascontiguousarray` 强制 CPU |
-| 残差计算 | `data_gpu - centroids[assignments]` | 全 GPU |
-| FSQ MLP train | `residuals.to(device)` 整体搬上去，`torch.randperm(N, device=device)` | 无 per-batch transfer |
-| SID 构建 | 三列 `.cpu()` 一次取出 | 唯一的 CPU 落地 |
-
-**KMeans 性能**（1.1M × 1024，k=4096，niter=25）：
-- `faiss.Kmeans` + numpy：14.6s（旧方式）
-- `DatasetAssignGPU`：6.4s（**2.3x 加速**）
-
-Benchmark 可复现：`python benchmarks/bench_faiss_kmeans.py`
+代码文档见 [`tokenizer/README.md`](../../../tokenizer/README.md)。
 
 ## ⚠️ 已知问题
 
