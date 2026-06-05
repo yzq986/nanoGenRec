@@ -1,166 +1,84 @@
-# gr_demo — Generative Recommendation Semantic ID Project
+# gr_demo
 
 [English](README.md) | [中文](README.zh.md)
 
-`gr_demo` is a research project for generative recommendation with Qwen3 embeddings and Semantic IDs. It develops the full path from item representation to sequence modeling and alignment: Semantic ID tokenization, next-token prediction over item sequences, RL-style preference optimization, full-recall evaluation, and experiment governance.
+Generative recommendation research project built around Semantic IDs, sequence modeling, and preference alignment.
 
-The project is intentionally organized as a reproducible research system rather than a collection of scripts. Experiments are specified through YAML configs, results are recorded by phase, and implementation notes are kept close to the model and data pipelines they affect.
+`gr_demo` turns item embeddings into discrete Semantic IDs, trains autoregressive recommenders over user behavior sequences, evaluates full-recall retrieval quality, and records experiments in a reproducible YAML-driven workflow. The repository is meant to be useful both as a research log and as an implementation reference for Semantic-ID-based generative recommendation.
 
-References: [OneRec](https://arxiv.org/abs/2506.13695) / [OneRec-V2](https://arxiv.org/abs/2508.20900) / [GR4AD](https://arxiv.org/abs/2602.22732) / [OneMall](https://arxiv.org/abs/2601.21770)
+## Highlights
 
-## Project Status
+- **End-to-end Semantic ID pipeline**: Qwen3 embeddings -> residual KMeans + FSQ -> 3-token item IDs.
+- **Generative recommender**: Transformer + MoE next-token prediction over item sequences.
+- **Alignment stack**: SP-DPO, RF-DPO, GRPO, and ECPO experiments on top of SFT checkpoints.
+- **Full-recall evaluation**: beam search with SID constraints, Recall@K, tokenizer proxy metrics, and comparison reports.
+- **Reproducible experiment workflow**: YAML configs, duplicate-run checks, phase-level logs, and queue-based long-running jobs.
 
-```text
-Semantic ID tokenizer -> NTP recommender -> RL alignment -> Deployment packaging
-```
+References: [OneRec](https://arxiv.org/abs/2506.13695), [OneRec-V2](https://arxiv.org/abs/2508.20900), [GR4AD](https://arxiv.org/abs/2602.22732), [OneMall](https://arxiv.org/abs/2601.21770).
 
-| Area | Current Position | Representative Run | Working Notes |
-|------|------------------|--------------------|---------------|
-| **Semantic ID tokenizer** | 4096x3 binary `[2]x12`, snHR=0.095, CR=0.89% | EXP-012 | [tokenizer logs](experiments/logs/tokenizer/README.md) |
-| **Embedding scale** | 0.6B: snHR=0.092, CR=0.42%; **4B: snHR=0.131**, CR=1.28% at nc=8192 | EXP-049 | [tokenizer logs](experiments/logs/tokenizer/README.md) |
-| **NTP recommender** | M-tier bare R@500=**70.2%**; L-tier SFT R@500=64.1% | EXP-043/047 | [NTP logs](experiments/logs/ntp/README.md) |
-| **RL alignment** | ECPO R@500=**65.7%** on the S-tier pipeline; L-tier alignment is pending | EXP-039B | [RL logs](experiments/logs/rl/README.md) |
+## Current Results
 
-**Recent result**: EXP-049 confirmed nc=8192 as the stronger tokenizer setting (Gini_d2 0.35 -> 0.24). h=64 and h=128 are equivalent in the current sweep; the recommended configs are exp049-{0.6b,4b}-nc8192-h128.
+| Area | Best Known Result | Representative Run | Details |
+|------|-------------------|--------------------|---------|
+| Semantic ID tokenizer | 4096x3 binary `[2]x12`, snHR=0.095, CR=0.89% | EXP-012 | [tokenizer logs](experiments/logs/tokenizer/README.md) |
+| Embedding scale | 4B SID snHR=0.131; 0.6B SID snHR=0.092 | EXP-049 | [tokenizer logs](experiments/logs/tokenizer/README.md) |
+| NTP recommender | M-tier bare R@500=70.2%; L-tier SFT R@500=64.1% | EXP-043 / EXP-047 | [NTP logs](experiments/logs/ntp/README.md) |
+| RL alignment | ECPO R@500=65.7% on the S-tier pipeline | EXP-039B | [RL logs](experiments/logs/rl/README.md) |
 
-**Next run**: EXP-050 evaluates M-tier NTP with 0.6B/4B Semantic IDs, output-gate/CADET variants, and bare+RoPE ablations across 6 queued variants.
+Recent tokenizer work in EXP-049 confirmed `num_clusters=8192` as the stronger setting. h=64 and h=128 are effectively tied in the current sweep; the recommended SID caches are `exp049-0.6b-nc8192-h128` and `exp049-4b-nc8192-h128`.
 
-## System Pipeline
+## How It Works
 
 ```mermaid
 graph LR
-    subgraph S1 ["1. Behavioral data"]
-        D1[Hive -> S3<br><code>data/export_*</code>]
-    end
-    subgraph S2 ["2. Representation"]
-        D2[Qwen3 encode<br><code>data/encode_distributed</code><br>or train-time encoding]
-    end
-    subgraph S3 ["3. Semantic ID tokenizer"]
-        direction TB
-        T_TRAIN["Train<br>RKMeans · MLP-FSQ · OPQ<br><code>tokenizer/</code>"]
-        T_EVAL["Evaluate<br>collision · codebook utilization<br>reconstruction · entropy<br>semantic neighbor HR"]
-        T_TRAIN --> T_EVAL
-    end
-    subgraph S4 ["4. Generative recommender"]
-        direction TB
-        N_TRAIN["Train<br>Transformer + MoE<br>beam search · KV cache<br><code>ntp/</code>"]
-        N_EVAL["Evaluate<br>Perplexity · depth accuracy<br>Item Recall@K"]
-        N_TRAIN --> N_EVAL
-    end
-    subgraph S5 ["5. Preference alignment"]
-        direction TB
-        R_TRAIN["Train<br>SP-DPO -> RF-DPO -> GRPO -> ECPO<br><code>rl/</code>"]
-        R_EVAL["Evaluate<br>Recall/NDCG deltas<br>reward distribution shifts"]
-        R_TRAIN --> R_EVAL
-    end
-    subgraph S6 ["6. Packaging"]
-        D5["Package model<br><code>model/pack.py</code>"]
-    end
-    S1 --> S2 --> S3 --> S4 --> S5 --> S6
+    A["Behavior and item data"] --> B["Qwen3 embeddings"]
+    B --> C["Semantic ID tokenizer"]
+    C --> D["NTP recommender"]
+    D --> E["Preference alignment"]
+    E --> F["Full-recall evaluation"]
+    F --> G["Experiment logs"]
 ```
 
-The primary CLI entry point is `python run.py <command>`.
+The main CLI entry point is:
 
-## Core Workflows
+```bash
+python run.py <command>
+```
+
+For distributed jobs:
+
+```bash
+PYTHONPATH=. torchrun --nproc_per_node=8 run.py <command>
+```
+
+## Quick Start
+
+Install dependencies in the project environment, then run from the repository root:
 
 ```bash
 # Train a tokenizer and produce Semantic IDs
 python run.py train --model qwen3-0.6b
 
-# Skip embedding if a cache already exists
+# Reuse an existing embedding cache
 python run.py train --model qwen3-0.6b --skip_embedding
 
-# Distributed embedding for large data
-PYTHONPATH=. torchrun --nproc_per_node=8 data/encode_distributed.py --model qwen3-0.6b
+# Build NTP shards
+python run.py preprocess-ntp \
+    --sid_cache experiments/sid_cache/<sid-cache-name> \
+    --output_dir experiments/ntp_data/<data-name> \
+    --date_start 2026-03-18 \
+    --date_end 2026-03-31
 
-# Evaluate a trained NTP checkpoint
+# Train an NTP model from a YAML config
+python experiments/run_exp.py experiments/configs/exp-047.yaml --no-smoke --commit
+
+# Run full evaluation
 PYTHONPATH=. torchrun --nproc_per_node=8 run.py eval-ntp \
     --checkpoint experiments/ntp_checkpoints/<name> \
     --n_recall 1000
 ```
 
-## Experiment Discipline
-
-New experiments are expected to go through `experiments/run_exp.py` and YAML configs. This keeps training commands reproducible, makes duplicate baselines easier to detect, and gives each result a stable place in the experiment logs.
-
-```bash
-# Inspect defaults before writing an experiment config
-sed -n '1,220p' experiments/configs/_base.yaml
-
-# Check for similar historical runs before training
-python experiments/run_exp.py experiments/configs/exp-NNN.yaml --check
-
-# Run all variants
-python experiments/run_exp.py experiments/configs/exp-NNN.yaml --no-smoke --commit
-
-# Resume or run one variant
-python experiments/run_exp.py experiments/configs/exp-NNN.yaml --only expNNN-a --no-smoke
-```
-
-Queue a background experiment through the shared wrapper:
-
-```bash
-echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!" >> experiments/queue.txt
-```
-
-## Repository Structure
-
-| Path | Purpose |
-|------|---------|
-| `data/` | Export, loading, embedding synchronization, and distributed encoding. |
-| `tokenizer/` | Semantic ID tokenizers and SID preprocessing. |
-| `ntp/` | Generative recommendation model, feature pipeline, preprocessing, training, and evaluation. |
-| `rl/` | Preference and RL alignment: SP-DPO, RF-DPO, GRPO, ECPO, rewards, and preference data. |
-| `eval/` | Full-recall evaluation, behavior metrics, comparison reports, and wrappers. |
-| `metrics/` | Intrinsic tokenizer and representation metrics. |
-| `experiments/` | YAML configs, orchestration, queue state, logs, and result artifacts. |
-| `ideas/` | Research backlog organized by improvement dimension. |
-| `research/` | Autonomous research-agent protocol, status, logs, inbox, and outbox. |
-| `docs/` | Bilingual architecture and engineering documentation. |
-| `model/` | Legacy-compatible wrappers, embedders, packaging, and model utilities. |
-
-## Core Documentation
-
-| Topic | English | 中文 |
-|------|---------|------|
-| Documentation index | [docs/README.md](docs/README.md) | [docs/README.zh.md](docs/README.zh.md) |
-| Architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [docs/ARCHITECTURE.zh.md](docs/ARCHITECTURE.zh.md) |
-| Engineering log | [docs/engineering/README.md](docs/engineering/README.md) | [docs/engineering/README.zh.md](docs/engineering/README.zh.md) |
-| Engineering changelog | [docs/engineering/CHANGELOG.md](docs/engineering/CHANGELOG.md) | [docs/engineering/CHANGELOG.zh.md](docs/engineering/CHANGELOG.zh.md) |
-
-## Experiment Lineage
-
-The detailed history lives in [experiments/logs/](experiments/logs/). The condensed lineage is:
-
-| Phase | Key Experiments | Takeaway |
-|------|-----------------|----------|
-| Tokenizer | EXP-001 to EXP-012 | Frozen Qwen3-0.6B + 4096x3 binary MLP-FSQ `[2]x12` is the tokenizer baseline. |
-| NTP foundation | EXP-013 to EXP-016 | S-tier active params with a 14-day data window established the first strong NTP baseline. |
-| SP-DPO | EXP-017 | Hard-split preference pairs improved R@500 from 58.5% to 68.3%. |
-| RF-DPO | EXP-018 to EXP-020 | Pure DPO caused catastrophic forgetting; joint NTP+DPO with lambda=0.03 became the SFT baseline. |
-| Side features | EXP-021 to EXP-025 | Beam-search feature passing fixed train/eval mismatch and reached R@500=63.6%. |
-| GRPO/ECPO | EXP-026 to EXP-039 | On-policy beam search and ECPO produced the strongest RL-aligned checkpoints. |
-| Embedding scaling | EXP-043 onward | Qwen3-4B improves semantic-neighbor quality and M-tier NTP recall. |
-
-## Evaluation Notes
-
-Inline eval during `train-ntp` is only a health check. It uses a limited beam-search candidate set and should not be compared directly with full baselines. Use full evaluation for reported numbers:
-
-```bash
-PYTHONPATH=. torchrun --nproc_per_node=N run.py eval-ntp \
-    --checkpoint experiments/ntp_checkpoints/<name> \
-    --n_recall 1000
-```
-
-After each completed experiment, update:
-
-1. `experiments/logs/<phase>/exp-NNN.md`
-2. `experiments/logs/<phase>/README.md`
-3. `README.md`
-
-## Environment
-
-The standard training/evaluation environment is `/home/dev/.conda/envs/gr`.
+The standard training/evaluation environment used for experiments is `/home/dev/.conda/envs/gr`.
 
 | Package | Version |
 |---------|---------|
@@ -172,10 +90,70 @@ The standard training/evaluation environment is `/home/dev/.conda/envs/gr`.
 | pandas | 3.0.2 |
 | pyarrow | 24.0.0 |
 
-For standalone scripts, set `PYTHONPATH` to the repository root itself:
+## Experiment Workflow
+
+New experiments should use `experiments/run_exp.py` with YAML configs. This keeps defaults explicit, avoids duplicate baselines, and makes results comparable across phases.
 
 ```bash
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
-cd "${REPO_ROOT}"
+# Inspect shared defaults before writing a new config
+sed -n '1,220p' experiments/configs/_base.yaml
+
+# Check for similar historical runs
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --check
+
+# Run all variants
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --no-smoke --commit
+
+# Resume or run one variant
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --only expNNN-a --no-smoke
 ```
+
+Queue long-running experiments through the shared wrapper:
+
+```bash
+echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!" >> experiments/queue.txt
+```
+
+Inline eval during `train-ntp` is a health check only. Reported numbers should come from full eval with `run.py eval-ntp --n_recall 1000`.
+
+## Repository Layout
+
+| Path | Purpose |
+|------|---------|
+| [data/](data/README.md) | Data export, loading, embedding synchronization, and distributed encoding. |
+| [tokenizer/](tokenizer/README.md) | Semantic ID tokenizers and SID preprocessing. |
+| [ntp/](ntp/README.md) | Generative recommendation model, preprocessing, training, and evaluation. |
+| [rl/](rl/README.md) | Preference and RL alignment methods. |
+| [eval/](eval/README.md) | Evaluation wrappers, behavior metrics, full-recall reports, and comparisons. |
+| [metrics/](metrics/README.md) | Intrinsic and behavior-aware tokenizer/embedding metrics. |
+| [model/](model/README.md) | Embedding wrappers, model packaging, and compatibility shims. |
+| [viz/](viz/README.md) | Post-training visualization tools. |
+| [experiments/](experiments/README.md) | Configs, orchestration, queues, checkpoints, and result artifacts. |
+| [experiments/logs/](experiments/logs/README.md) | Phase-level experiment records and SOTA summaries. |
+| [docs/](docs/README.md) | Architecture notes, engineering logs, and durable documentation. |
+| [ideas/](ideas/README.md) | Research backlog organized by improvement dimension. |
+
+## Documentation
+
+| Topic | English | Chinese |
+|------|---------|---------|
+| Documentation index | [docs/README.md](docs/README.md) | [docs/README.zh.md](docs/README.zh.md) |
+| Architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | [docs/ARCHITECTURE.zh.md](docs/ARCHITECTURE.zh.md) |
+| Engineering log | [docs/engineering/README.md](docs/engineering/README.md) | [docs/engineering/README.zh.md](docs/engineering/README.zh.md) |
+| Experiment logs | [experiments/logs/README.md](experiments/logs/README.md) | - |
+
+## Reporting Results
+
+When an experiment completes, update the three places that serve different readers:
+
+| File | Reader | Content |
+|------|--------|---------|
+| `experiments/logs/<phase>/exp-NNN.md` | Experiment reviewer | Background, hypothesis, design, results, analysis, next steps. |
+| `experiments/logs/<phase>/README.md` | Research planner | Current best table, completed runs, and next experiments. |
+| `README.md` | New visitor | Only headline results and representative links. |
+
+## Notes
+
+- The repository root is added directly to `PYTHONPATH`; imports do not use a `gr_demo.` prefix.
+- Use `python run.py <command>`, not `python -m gr_demo`.
+- For standalone shell scripts, export `PYTHONPATH` to the repository root before running project modules.

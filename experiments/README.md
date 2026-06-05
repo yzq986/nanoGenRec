@@ -1,59 +1,71 @@
 # experiments/
 
-Structured experiment results directory. All results are committed to git for reproducibility.
+Experiment orchestration, configs, queues, checkpoints, and generated result artifacts.
 
-## Directory Structure
+This directory is the operational home for reproducible runs. Use it to define experiments, check for duplicate baselines, run variants, and store artifacts that are needed to reproduce or inspect a result. Narrative conclusions live in [experiments/logs/](logs/).
 
-```
-experiments/
-├── README.md                              # This file
-├── log.md                                 # Experiment log (reverse chronological)
-├── hyperparam/
-│   └── {date}_{name}/
-│       ├── results.json                   # Raw grid search data
-│       └── report.md                      # Auto-generated report
-└── eval/
-    └── {date}_{model}/
-        ├── report.json
-        ├── report.md
-        └── report.csv
-```
+## Layout
 
-## Usage
+| Path | Purpose |
+|------|---------|
+| `configs/` | YAML experiment definitions. New experiments should start here. |
+| `configs/_base.yaml` | Shared defaults. Read this before writing a new config. |
+| `run_exp.py` | Main experiment runner with config expansion and duplicate-run checks. |
+| `scripts/run_config.sh` | Queue-friendly wrapper around `run_exp.py --no-smoke --commit`. |
+| `queue.txt` | Append-only queue for long-running experiments. |
+| `queue_state.json` | Current queue daemon state. |
+| `sid_cache/` | Semantic ID cache artifacts. |
+| `ntp_data/` | NTP preprocessing shards. |
+| `ntp_checkpoints/` | Training outputs, `train_meta.json`, and `train_log.jsonl`. |
+| `logs/` | Human-readable experiment records and phase summaries. |
 
-### Hyperparameter Search
+## Standard Workflow
 
 ```bash
-python run.py hyperparam --skip_embedding --clusters 256 512 1024 --only-sid --name cluster-sweep
-# Output: experiments/hyperparam/2026-04-13_cluster-sweep/
+# 1. Inspect defaults
+sed -n '1,220p' experiments/configs/_base.yaml
+
+# 2. Check whether a similar run already exists
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --check
+
+# 3. Run all variants
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --no-smoke --commit
+
+# 4. Resume or run one variant
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --only expNNN-a --no-smoke
 ```
 
-### Batch Evaluation
+Queue a run for asynchronous execution:
 
 ```bash
-python run.py eval-all --models qwen3-0.6b --only-sid
-# Output: experiments/eval/2026-04-13_qwen3-0.6b/
+echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!" >> experiments/queue.txt
 ```
 
-## Experiment Log
+## Config Guidelines
 
-See [log.md](./log.md) for the structured experiment log following the scientific method:
-Background → Hypothesis → Design → Results → Analysis → Next Steps
+- Start from `configs/_base.yaml`; only override fields that are part of the experiment.
+- Always verify `sid_cache_name`, `ntp_data_name`, and date ranges from existing configs before writing a new one.
+- Use `variants:` for controlled comparisons.
+- Do not rerun an identical baseline; reference the existing experiment in the log.
+- If an experiment only changes evaluation code, re-evaluate an existing checkpoint instead of retraining.
 
-### Timing Convention
+## Timing Reference
 
-All Results tables include a `训练耗时` column (training wall time) sourced from `train_meta.json`
-`train.wall_time_s`. This excludes full eval time (~25min per run on 8×A100 with n_recall=1000).
-
-Quick reference for planning new experiments:
+Training wall time is recorded in `train_meta.json` as `train.wall_time_s`. Full eval is separate and is usually around 25 minutes on 8 GPUs with `n_recall=1000`.
 
 | Experiment Type | Typical Train Time |
-|----------------|-------------------|
-| SFT S-tier (17.5M, 1 epoch, 14d data) | ~21min |
-| RF-DPO Hard (807 steps) | ~62min |
-| GRPO/ECPO (G=512, rl_ratio=1.0) | ~80min |
-| Scaling M+ (101M, 1 epoch, 14d) | ~207min |
+|-----------------|--------------------|
+| SFT S-tier, 17.5M active params, 1 epoch, 14d data | ~21 min |
+| RF-DPO Hard, 807 steps | ~62 min |
+| GRPO/ECPO, G=512, rl_ratio=1.0 | ~80 min |
+| Scaling M+, 101M active params, 1 epoch, 14d data | ~207 min |
 
-New experiment scripts must instrument each phase with `$(date +%s)` timestamps and print
-`train=${TRAIN_MIN}min eval=${EVAL_MIN}min total=${TOTAL_MIN}min` at the end. See
-`.claude/skills/experiment/SKILL.md` for the required template.
+## Reporting
+
+After a completed experiment, update:
+
+1. `experiments/logs/<phase>/exp-NNN.md`
+2. `experiments/logs/<phase>/README.md`
+3. `README.md`
+
+Keep implementation details in the relevant module README, not in experiment summaries.
