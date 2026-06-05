@@ -1,66 +1,71 @@
 # Engineering Changelog
 
-代码/基础设施变更记录，按时间倒序。实验结果见 `experiments/logs/`。
+[English](CHANGELOG.md) | [中文](CHANGELOG.zh.md)
 
----
+Code and infrastructure changes in reverse chronological order. Experiment results live in `experiments/logs/`.
 
 ## 2026-04-30
 
-### tokenizer/ 目录重构
-- 新建 `tokenizer/` 目录，将 tokenizer 相关代码从 `model/` 和 `eval/` 迁移
-- `model/rkmeans.py`、`model/fsq.py`、`model/rkmeans_fsq.py`、`eval/preprocess_sid.py` 保留为 shim（`from tokenizer.xxx import *`）
+### `tokenizer/` Directory Refactor
 
-### GPU Pipeline 全面优化（tokenizer）
-- **KMeans**：`faiss.Kmeans(gpu=True)` 换为 `DatasetAssignGPU` + `faiss.contrib.clustering.kmeans`
-  - 数据全程在 GPU，无 CPU 中转
-  - 1.1M × 1024，k=4096，niter=25：14.6s → **6.4s（2.3×）**
-  - 原因：`faiss.Kmeans.train()` 内部有 `np.ascontiguousarray` 强制 CPU，即使传 CUDA tensor 也一样；`torch_utils` 只 patch Index 类，不 patch Kmeans/Clustering
-  - Benchmark：`benchmarks/bench_faiss_kmeans.py`
-- **Normalize**：chunked CPU bounce → 单次 `F.normalize(data_gpu)`
-- **残差计算**：`assigned_centroids.cpu()` → 全 GPU 直接相减
-- **FSQ MLP**：整体 `residuals.to(device)` + `torch.randperm(N, device=device)`，消除 per-batch 传输
-- **KMeans cache load**：`map_location="cpu"` → `map_location=primary_device`
-- **SID 构建**：三列统一一次 `.cpu()`
-- `np.bincount` → `torch.bincount`，GPU path 完全移除 numpy
+- Created `tokenizer/` and moved tokenizer-related code out of `model/` and `eval/`.
+- Kept `model/rkmeans.py`, `model/fsq.py`, `model/rkmeans_fsq.py`, and `eval/preprocess_sid.py` as compatibility shims using `from tokenizer.xxx import *`.
+
+### Full GPU Pipeline Optimization for Tokenizers
+
+- **KMeans**: replaced `faiss.Kmeans(gpu=True)` with `DatasetAssignGPU` plus `faiss.contrib.clustering.kmeans`.
+  - Data stays on GPU throughout the path.
+  - 1.1M x 1024, k=4096, niter=25: 14.6s -> **6.4s (2.3x)**.
+  - Root cause: `faiss.Kmeans.train()` internally calls `np.ascontiguousarray`, forcing CPU transfer even for CUDA tensors. `torch_utils` patches Index classes, not Kmeans/Clustering.
+  - Benchmark: `benchmarks/bench_faiss_kmeans.py`.
+- **Normalize**: replaced chunked CPU bounce with one `F.normalize(data_gpu)` call.
+- **Residual computation**: replaced `assigned_centroids.cpu()` with direct GPU subtraction.
+- **FSQ MLP**: moved full residual tensors to device and used `torch.randperm(N, device=device)`, removing per-batch transfer.
+- **KMeans cache loading**: changed `map_location="cpu"` to `map_location=primary_device`.
+- **SID construction**: moved all three columns to CPU in one unified step.
+- Replaced `np.bincount` with `torch.bincount`; the GPU path no longer depends on NumPy.
 
 ### KMeans Layer Cache
-- 相同 `(n_kmeans_clusters, n_features, n_samples, niter, nredo)` 的 KMeans 结果缓存到 `experiments/sid_cache/_kmeans_cache/<hash>/`
-- FSQ 不同的 variants 共享 KMeans，直接跳到 FSQ 训练
 
-### EXP-049 基础设施
-- `num_clusters` 支持 comma-string 格式（`"4096,2048"`），L1/L2 可设不同 cluster 数（MGMR）
-- `config/config.py`：`EFS_BASE` 默认值从 cloud notebook 路径改为 `/mnt/workspace`
-- `run_config.sh`：加 `LD_LIBRARY_PATH` export，修复 faiss-gpu 因找不到 libcuda.so 静默 fallback CPU 的问题
-- `rkmeans.py`：移除 `use_gpu = self.gpu and self.n_features <= 2048` 的错误 CPU fallback（根因是 LD_LIBRARY_PATH 缺失，非数值问题）
+- Cache KMeans results for identical `(n_kmeans_clusters, n_features, n_samples, niter, nredo)` under `experiments/sid_cache/_kmeans_cache/<hash>/`.
+- FSQ variants can share the same KMeans result and jump directly to FSQ training.
 
----
+### EXP-049 Infrastructure
+
+- `num_clusters` now supports comma-separated strings such as `"4096,2048"`, allowing different L1/L2 cluster counts for MGMR.
+- `config/config.py`: changed the default `EFS_BASE` from the cloud notebook path to `/mnt/workspace`.
+- `run_config.sh`: exports `LD_LIBRARY_PATH`, fixing silent CPU fallback in faiss-gpu when `libcuda.so` was missing.
+- `rkmeans.py`: removed the incorrect `use_gpu = self.gpu and self.n_features <= 2048` CPU fallback. The real cause was missing `LD_LIBRARY_PATH`, not numerical instability.
 
 ## 2026-04-29
 
-### run_exp.py variants 支持
-- YAML 支持 `variants:` 列表，`base_config + shared_keys + variant_overrides` 自动展开
-- `--only NAME` 断点续跑单个 variant
-- `ntp_data_name` 优先取 YAML 显式值，fallback `sid_cache_name`
-- phase 从 resolved config 读取（修复从 raw YAML 读时漏掉 `_base_tokenizer.yaml` 里 `phase: tokenizer` 的 bug）
+### `run_exp.py` Variant Support
 
-### NTP 模型
-- TO-RoPE：`use_rope` + `rope_dims` 支持 2-dim（时间+位置）和 3-dim（时间+位置+层级）
-- `load_model_from_checkpoint`：strip `use_rope`，`rope_dims` dict → `RopeDimSpec` 反序列化
+- YAML configs now support a `variants:` list; `base_config + shared_keys + variant_overrides` expands automatically.
+- Added `--only NAME` for resuming or running one variant.
+- `ntp_data_name` now prefers the explicit YAML value, falling back to `sid_cache_name`.
+- Fixed phase detection to read from resolved config instead of raw YAML, so `_base_tokenizer.yaml` can supply `phase: tokenizer`.
 
-### 实验基础设施
-- `run_config.sh`：使用 `gr` conda 环境（faiss-gpu、torch cu128）
-- 新增 `experiments/logs/tokenizer/`、`ntp/`、`rl/` 阶段目录
+### NTP Model
 
----
+- TO-RoPE: `use_rope` and `rope_dims` now support 2D time+position and 3D time+position+level variants.
+- `load_model_from_checkpoint`: strips `use_rope` and deserializes `rope_dims` dicts into `RopeDimSpec`.
 
-## 2026-04-28 及更早
+### Experiment Infrastructure
 
-### GRPO/ECPO 工程修复
-- SIDTrie 构建：iterate `.values()` 而非 `.keys()`
-- reward std≈0 保护：`std<1e-6` group skip + `adv.clamp(-5,5)` + `log_rho.clamp(-10,10)`
-- BehaviorReward prefix cascade fallback（L0 覆盖率 0.16% → ~24%）
-- on-policy beam search（EXP-029，修复 off-policy ratio 爆炸）
+- `run_config.sh`: uses the `gr` conda environment with faiss-gpu and torch cu128.
+- Added stage directories under `experiments/logs/tokenizer/`, `experiments/logs/ntp/`, and `experiments/logs/rl/`.
 
-### Side Features 全链路
-- train-eval 一致性：beam search incremental path 正确 carry-forward features
-- EXP-044B bug fix：`constrained_beam_search` 补传 `step_timestamp`；`eval_items` 构建循环不再过滤 `inject='torope'` 的 timestamps
+## 2026-04-28 and Earlier
+
+### GRPO/ECPO Engineering Fixes
+
+- SIDTrie construction: iterate `.values()` instead of `.keys()`.
+- Reward std near zero protection: `std<1e-6` group skip, `adv.clamp(-5,5)`, and `log_rho.clamp(-10,10)`.
+- BehaviorReward prefix cascade fallback, increasing L0 coverage from 0.16% to about 24%.
+- On-policy beam search for EXP-029, fixing off-policy ratio explosion.
+
+### Side Features Pipeline
+
+- Train/eval consistency: the beam-search incremental path now carries forward features correctly.
+- EXP-044B bug fix: `constrained_beam_search` passes `step_timestamp`; the `eval_items` construction loop no longer filters out timestamps with `inject='torope'`.

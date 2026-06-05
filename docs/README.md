@@ -1,5 +1,8 @@
-# docs/ — 设计文档
+# docs/ — Design Documentation
 
-| 文档 | 说明 |
-|------|------|
-| `ARCHITECTURE.md` | 架构设计 — OneRec 参考、模型配置、MoE 选型、设计决策记录 |
+[English](README.md) | [中文](README.zh.md)
+
+| Document | Description |
+|----------|-------------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Architecture design: OneRec references, model tiers, MoE choices, and design decisions. |
+| [engineering/README.md](engineering/README.md) | Engineering incident notes and implementation changelog. |
