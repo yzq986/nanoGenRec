@@ -31,7 +31,7 @@
 
 ### EXP-049 基础设施
 - `num_clusters` 支持 comma-string 格式（`"4096,2048"`），L1/L2 可设不同 cluster 数（MGMR）
-- `config/config.py`：`EFS_BASE` 默认值从 cloud notebook 路径改为 `/mnt/workspace`
+- `config.py`：`EFS_BASE` 默认值改为 `/mnt/workspace`
 - `run_config.sh`：加 `LD_LIBRARY_PATH` export，修复 faiss-gpu 因找不到 libcuda.so 静默 fallback CPU 的问题
 - `rkmeans.py`：移除 `use_gpu = self.gpu and self.n_features <= 2048` 的错误 CPU fallback（根因是 LD_LIBRARY_PATH 缺失，非数值问题）
 

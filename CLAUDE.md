@@ -136,12 +136,10 @@ echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN c
 
 | Remote | URL | Purpose |
 |--------|-----|---------|
-| `personal` | `git@github.com:yzq986/gr_demo.git` | Personal GitHub |
-| `company` | `git@github.com:yzq986/gr_demo.git` | Public Git remote |
-| `origin` | `git@github.com:yzq986/gr_demo.git` | Alibaba Cloud GitHub |
+| `origin` | `git@github.com:yzq986/gr_demo.git` | Public GitHub repository |
 
-- **Push**: `./push.sh` handles all remotes. Never push manually.
-- **Pull**: `git pull company master --rebase && git pull origin master --rebase`
+- **Push**: `./push.sh` pushes the current branch to configured public remotes.
+- **Pull**: `git pull --rebase origin master`
 
 ## 分布式代码陷阱
 

@@ -68,7 +68,7 @@ New best config: segment_emb + time_gap + action + beam search feature passing.
 
 ## [2026-04-22 19:15] STARTUP: Research agent activated (session 3)
 
-git pull company/prometheus failed (remote unreachable). No inbox changes since session 2. status.md current_task=null.
+git pull from the previous private remote failed (remote unreachable). No inbox changes since session 2. status.md current_task=null.
 
 ## [2026-04-22 19:20] PAPER_READ: 2603.28124 (RCLRec — Reverse Curriculum Learning for Conversions, Alibaba)
 
@@ -88,7 +88,7 @@ HIGH RELEVANCE: reveals DPO structural flaw for rigid correctness tasks (optimiz
 
 ## [2026-04-22 19:45] STARTUP: Research agent activated (session 4, /loop)
 
-git pull company/prometheus failed (remote unreachable). No inbox changes. Continuing P6 paper reading.
+git pull from the previous private remote failed (remote unreachable). No inbox changes. Continuing P6 paper reading.
 
 ## [2026-04-22 19:47] PAPER_READ: 2602.08612 (OneLive — Dynamic Tokenizer, Sequential MTP, GRPO>DPO, Kuaishou)
 

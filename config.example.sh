@@ -1,22 +1,26 @@
 #!/bin/bash
-# Example Shell Configuration Template
-# Copy to config/config.sh and fill in actual values.
+# Example shell configuration for public/open-source deployments.
+# Source this file or copy the exports into your job environment.
 
-S3_BUCKET="your-s3-bucket"
-S3_PREFIX="your-prefix"
-S3_BASE="s3://${S3_BUCKET}/${S3_PREFIX}"
+export GR_S3_BUCKET="your-public-or-private-bucket"
+export GR_S3_PREFIX="gr-demo"
+export GR_S3_BASE="s3://${GR_S3_BUCKET}/${GR_S3_PREFIX}"
 
-S3_CONTENT_TEXT="${S3_BASE}/feed_content_text"
-S3_CONTENT_TEXT_EXPOSED="${S3_BASE}/feed_content_text_exposed"
-S3_USER_BEHAVIOR="${S3_BASE}/feed_user_behavior"
-S3_RKMEANS_BASE="${S3_BASE}/feed_rkmeans"
-S3_RKMEANS_QWEN="${S3_BASE}/feed_rkmeans_qwen"
+export GR_S3_CONTENT_TEXT_EXPOSED="${GR_S3_BASE}/feed_content_text_exposed"
+export GR_S3_CONTENT_TEXT_EXPOSED_S3="${GR_S3_BASE}/feed_content_text_exposed_s3"
+export GR_S3_USER_BEHAVIOR="${GR_S3_BASE}/feed_user_behavior"
+export GR_S3_RKMEANS_BASE="${GR_S3_BASE}/feed_rkmeans"
+export GR_S3_RKMEANS_QWEN="${GR_S3_BASE}/feed_rkmeans_qwen"
+export GR_S3_OLD_EMBEDDINGS="${GR_S3_BASE}/feed_embeddings"
+export GR_S3_EMBEDDING_CACHE_BACKUP="${GR_S3_BASE}/embedding_cache_backup"
 
-RAVEN_ENDPOINT="http://your-internal-endpoint:10271"
+export GR_HIVE_BEHAVIOR_TABLE="your_db.behavior_table"
+export GR_HIVE_CONTENTS_TABLE="your_db.contents_table"
+export GR_HIVE_COMMENT_TABLE="your_db.comment_table"
 
-EFS_BASE="~/.cache/gr_demo"
-EFS_EMBEDDING_CACHE="${EFS_BASE}/embedding_cache"
-
-DEFAULT_DATE="2026-03-31"
-DEFAULT_DATE_START="2026-03-24"
-DEFAULT_DATE_END="2026-03-31"
+export GR_EFS_BASE="${HOME}/.cache/gr_demo"
+export GR_EFS_EMBEDDING_CACHE="${GR_EFS_BASE}/embedding_cache"
+export GR_EFS_HF_CACHE="${GR_EFS_BASE}/huggingface_cache"
+export GR_EFS_IMAGE_CACHE="${GR_EFS_BASE}/image_cache"
+export GR_EFS_MODEL_CACHE="${GR_EFS_BASE}/model_cache/qwen3_emb"
+export GR_EFS_DEFAULT_OUTPUT="${GR_EFS_BASE}/feed_content_embedding_v4.tar.gz"

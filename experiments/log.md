@@ -3438,7 +3438,7 @@ EXP-003: 将 PCA 替换为 learned MLP 投影，复现论文方案。需要：
 
 **Date**: 2026-03 ~ 2026-04
 **Status**: completed
-**Results**: See `config/RKMEANS_EXPERIMENT_LOG.md` for full details
+**Results**: Summary retained in this public experiment log.
 
 ### Background
 RKMeans 生成 semantic_id 碰撞率极高（99%+），需要系统性优化。

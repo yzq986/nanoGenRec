@@ -1,14 +1,13 @@
-"""打包 model.tar.gz + model registry 上传。"""
+"""Package model.tar.gz artifacts."""
 
 import argparse
-import json
 import os
 import shutil
 import tarfile
 import tempfile
 
 from s3_utils import download_from_s3
-from config import RAVEN_ENDPOINT, EFS_MODEL_CACHE, EFS_DEFAULT_OUTPUT
+from config import EFS_MODEL_CACHE, EFS_DEFAULT_OUTPUT
 
 
 def download_qwen_model(model_name: str, local_dir: str):
@@ -24,33 +23,13 @@ def download_qwen_model(model_name: str, local_dir: str):
     print(f"  Done: {local_dir}")
 
 
-def upload_model_to_raven(model_name: str, model_path: str, report: dict = None):
-    """Upload model.tar.gz to model registry."""
-    from raven.core.Provider import model registry
-    from raven.core.data.Models import Application, TrainingStatus, ModelDataType
-
-    endpoint = RAVEN_ENDPOINT
-    client = model registry().with_endpoint(endpoint).create_raven(application=Application.MODEL)
-
-    print(f"\nUploading to model registry: {model_name}")
-    client.manuly_upload_training_result(
-        model_name,
-        model_path,
-        model_data_type=ModelDataType.TAR_FILE,
-        status=TrainingStatus.SUCCESS,
-        evaluate_result=json.dumps(report or {})
-    )
-    print(f"  Upload complete!")
-    return True
-
-
 def pack_model_tarball(
     qwen_model_name: str,
     rkmeans_s3_path: str,
     output_path: str,
     qwen_local_cache: str = None,
 ):
-    """Pack model.tar.gz for cloud notebook."""
+    """Pack a Qwen embedding model and RKMeans checkpoint into a tarball."""
     # 默认缓存目录
     default_cache = EFS_MODEL_CACHE
 
@@ -80,7 +59,7 @@ def pack_model_tarball(
         rkmeans_local = os.path.join(rkmeans_dir, "rkmeans.pt")
         download_from_s3(rkmeans_s3_path, rkmeans_local)
 
-        # 3. Pack tar (不压缩，速度更快；cloud notebook 支持 .tar)
+        # 3. Pack tar. Use gzip when the requested output path ends in .gz.
         print(f"\n[Step 3/3] Creating {output_path}...")
         # 如果是 .tar.gz 就压缩，否则不压缩
         mode = "w:gz" if output_path.endswith(".gz") else "w"
@@ -101,7 +80,7 @@ def pack_model_tarball(
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Pack model.tar.gz for cloud notebook")
+    parser = argparse.ArgumentParser(description="Pack model.tar.gz")
     parser.add_argument(
         "--qwen_model",
         type=str,
@@ -126,17 +105,6 @@ def parse_args():
         default=None,
         help="Local path to cached Qwen model (skip download)",
     )
-    parser.add_argument(
-        "--model_name",
-        type=str,
-        default="feed_content_embedding_v4",
-        help="Model name for model registry upload",
-    )
-    parser.add_argument(
-        "--upload",
-        action="store_true",
-        help="Upload to model registry after packing",
-    )
     return parser.parse_args()
 
 
@@ -144,13 +112,11 @@ def main():
     args = parse_args()
 
     print("=" * 60)
-    print("Pack model.tar.gz for cloud notebook")
+    print("Pack model.tar.gz")
     print("=" * 60)
     print(f"Qwen model: {args.qwen_model}")
     print(f"RKMeans: {args.rkmeans_s3_path}")
     print(f"Output: {args.output_path}")
-    print(f"Model name: {args.model_name}")
-    print(f"Upload to model registry: {args.upload}")
     print("=" * 60)
 
     pack_model_tarball(
@@ -160,19 +126,8 @@ def main():
         qwen_local_cache=args.qwen_local_cache,
     )
 
-    if args.upload:
-        report = {
-            "qwen_model": args.qwen_model,
-            "rkmeans_s3_path": args.rkmeans_s3_path,
-        }
-        upload_model_to_raven(args.model_name, args.output_path, report)
-
     print("\n" + "=" * 60)
     print("Done!")
-    if not args.upload:
-        print(f"\nTo upload manually:")
-        print(f"  from model.pack import upload_model_to_raven")
-        print(f"  upload_model_to_raven('{args.model_name}', '{args.output_path}')")
     print("=" * 60)
 
 

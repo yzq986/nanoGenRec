@@ -33,7 +33,7 @@ Code and infrastructure changes in reverse chronological order. Experiment resul
 ### EXP-049 Infrastructure
 
 - `num_clusters` now supports comma-separated strings such as `"4096,2048"`, allowing different L1/L2 cluster counts for MGMR.
-- `config/config.py`: changed the default `EFS_BASE` from the cloud notebook path to `/mnt/workspace`.
+- `config.py`: changed the default `EFS_BASE` to `/mnt/workspace`.
 - `run_config.sh`: exports `LD_LIBRARY_PATH`, fixing silent CPU fallback in faiss-gpu when `libcuda.so` was missing.
 - `rkmeans.py`: removed the incorrect `use_gpu = self.gpu and self.n_features <= 2048` CPU fallback. The real cause was missing `LD_LIBRARY_PATH`, not numerical instability.
 

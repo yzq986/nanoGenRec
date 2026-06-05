@@ -1,6 +1,3 @@
-# Private config (nested git repo, never push to GitHub)
-config/
-
 # Python
 __pycache__/
 *.pyc

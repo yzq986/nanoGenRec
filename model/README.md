@@ -13,7 +13,7 @@ Qwen3 Embedding 编码、批量处理、模型打包部署。
 | `encode.py` | 批量编码流水线（增量缓存 + OOM 重试 + S3 备份）|
 | `train.py` | 端到端训练 CLI |
 | `semantic_ids.py` | SID 工具函数 |
-| `pack.py` | 打包 model.tar.gz + 上传 model registry 模型仓库 |
+| `pack.py` | 打包 model.tar.gz |
 | `rkmeans.py` | ⚠️ shim → `tokenizer/rkmeans.py` |
 | `fsq.py` | ⚠️ shim → `tokenizer/fsq.py` |
 | `rkmeans_fsq.py` | ⚠️ shim → `tokenizer/rkmeans_fsq.py` |

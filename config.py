@@ -1,26 +1,52 @@
-"""Model configurations and project-level Config dataclass."""
+"""Model configurations and public project defaults.
+
+Private deployments can override paths and table names through environment
+variables. The repository intentionally has no dependency on private config
+packages.
+"""
 
 import os
 from dataclasses import dataclass
 
-import torch
+try:
+    import torch
+except ImportError:  # Allow lightweight config imports before ML deps are installed.
+    torch = None
 
-from config import (
-    S3_CONTENT_TEXT_EXPOSED,
-    S3_OLD_EMBEDDINGS,
-    S3_RKMEANS_BASE,
-    S3_EMBEDDING_CACHE_BACKUP,
-    EFS_HF_CACHE,
-    EFS_IMAGE_CACHE,
-    EFS_EMBEDDING_CACHE,
-)
 
-# ── Default dates (non-sensitive, version-controlled) ──
+def _env(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+S3_BUCKET = _env("GR_S3_BUCKET", "your-s3-bucket")
+S3_PREFIX = _env("GR_S3_PREFIX", "gr-demo")
+S3_BASE = _env("GR_S3_BASE", f"s3://{S3_BUCKET}/{S3_PREFIX}")
+
+S3_CONTENT_TEXT_EXPOSED = _env("GR_S3_CONTENT_TEXT_EXPOSED", f"{S3_BASE}/feed_content_text_exposed")
+S3_CONTENT_TEXT_EXPOSED_S3 = _env("GR_S3_CONTENT_TEXT_EXPOSED_S3", f"{S3_BASE}/feed_content_text_exposed_s3")
+S3_USER_BEHAVIOR = _env("GR_S3_USER_BEHAVIOR", f"{S3_BASE}/feed_user_behavior")
+S3_RKMEANS_BASE = _env("GR_S3_RKMEANS_BASE", f"{S3_BASE}/feed_rkmeans")
+S3_RKMEANS_QWEN = _env("GR_S3_RKMEANS_QWEN", f"{S3_BASE}/feed_rkmeans_qwen")
+S3_OLD_EMBEDDINGS = _env("GR_S3_OLD_EMBEDDINGS", f"{S3_BASE}/feed_embeddings")
+S3_EMBEDDING_CACHE_BACKUP = _env("GR_S3_EMBEDDING_CACHE_BACKUP", f"{S3_BASE}/embedding_cache_backup")
+
+HIVE_BEHAVIOR_TABLE = _env("GR_HIVE_BEHAVIOR_TABLE", "your_db.behavior_table")
+HIVE_CONTENTS_TABLE = _env("GR_HIVE_CONTENTS_TABLE", "your_db.contents_table")
+HIVE_COMMENT_TABLE = _env("GR_HIVE_COMMENT_TABLE", "your_db.comment_table")
+
+EFS_BASE = _env("GR_EFS_BASE", os.path.expanduser("~/.cache/gr_demo"))
+EFS_EMBEDDING_CACHE = _env("GR_EFS_EMBEDDING_CACHE", f"{EFS_BASE}/embedding_cache")
+EFS_HF_CACHE = _env("GR_EFS_HF_CACHE", f"{EFS_BASE}/huggingface_cache")
+EFS_IMAGE_CACHE = _env("GR_EFS_IMAGE_CACHE", f"{EFS_BASE}/image_cache")
+EFS_MODEL_CACHE = _env("GR_EFS_MODEL_CACHE", f"{EFS_BASE}/model_cache/qwen3_emb")
+EFS_DEFAULT_OUTPUT = _env("GR_EFS_DEFAULT_OUTPUT", f"{EFS_BASE}/feed_content_embedding_v4.tar.gz")
+
+# ── Default dates (public, version-controlled) ──
 DEFAULT_DATE = "2026-03-31"
 DEFAULT_DATE_START = "2026-03-01"
 DEFAULT_DATE_END = "2026-03-31"
 
-# 设置 HuggingFace 缓存目录到大容量 EFS（仅在 cloud notebook 环境下生效）
+# Set HuggingFace cache directories when the configured cache path is writable.
 HF_CACHE_DIR = EFS_HF_CACHE
 try:
     os.makedirs(HF_CACHE_DIR, exist_ok=True)
@@ -28,7 +54,7 @@ try:
     os.environ["TRANSFORMERS_CACHE"] = HF_CACHE_DIR
     os.environ["HF_DATASETS_CACHE"] = HF_CACHE_DIR
 except OSError:
-    pass  # 非 cloud notebook 环境，跳过
+    pass
 
 # 模型配置映射: model_key -> (hf_model_name, embedding_dim, is_multimodal, batch_size)
 # batch_size 基于 8xA100 40GB 测试，保守设置避免 OOM
@@ -66,5 +92,5 @@ class Config:
     NREDO: int = 3        # number of restarts, keep best
 
     # 多 GPU 配置
-    NUM_GPUS: int = torch.cuda.device_count() if torch.cuda.is_available() else 0
-    DEVICE: str = "cuda" if torch.cuda.is_available() else "cpu"
+    NUM_GPUS: int = torch.cuda.device_count() if torch is not None and torch.cuda.is_available() else 0
+    DEVICE: str = "cuda" if torch is not None and torch.cuda.is_available() else "cpu"

@@ -75,7 +75,7 @@ graph LR
 
 ### Step 1. 数据导出 (Hive → S3)
 
-PySpark 脚本，在 cloud notebook Notebook 里执行：
+PySpark 脚本，用于从 Hive 导出训练所需数据：
 
 - 导出曝光内容 (文本 + 图片 URL) 到 S3
 - 导出用户行为数据 (20+ 交互类型 → `action_bitmap`) 到 S3
@@ -197,11 +197,10 @@ python experiments/scripts/tokenizer_grid_search.py --gpus 0,1,2,3 --skip_opq
 python -m gr_demo pack \
     --rkmeans_s3_path s3://bucket/rkmeans/qwen3-0.6b/rkmeans.pt
 
-# 打包 + 上传 model registry 模型仓库
+# 指定 Qwen 模型并打包
 python -m gr_demo pack \
     --rkmeans_s3_path s3://bucket/rkmeans/qwen3-0.6b/rkmeans.pt \
-    --qwen_model Qwen/Qwen3-Embedding-0.6B \
-    --upload
+    --qwen_model Qwen/Qwen3-Embedding-0.6B
 ```
 
 ---
@@ -283,7 +282,6 @@ gr_demo/
 │   └── scaling.md         # 扩展性 (3 ideas)
 ├── docs/
 │   └── ARCHITECTURE.md    # 架构设计 (OneRec S/M/L 配置)
-├── config/             # 敏感配置 (独立 git 仓库, .gitignore)
 └── push.sh               # 一键推送脚本
 ```
 
