@@ -1,27 +1,30 @@
-# gr_demo — Generative Recommendation Semantic ID Toolkit
+# gr_demo — Generative Recommendation Semantic ID Project
 
 [English](README.md) | [中文](README.zh.md)
 
-基于 Qwen3 Embedding + Semantic ID 的生成式推荐系统研究工具包。
-覆盖 Tokenizer 训练、NTP 模型、端到端评测、实验管理和论文 idea 追踪。
+`gr_demo` 是一个基于 Qwen3 Embedding + Semantic ID 的生成式推荐系统研究项目。
+项目覆盖从 item 表征到序列建模和对齐的完整链路：Semantic ID tokenizer、基于 item 序列的 Next Token Prediction、RL-style preference optimization、全量召回评测、实验治理和研究 idea 追踪。
+
+这个仓库按“可复现实验系统”组织，而不是零散脚本集合。实验通过 YAML config 固化，结果按阶段沉淀，工程记录贴近对应的数据和模型 pipeline，方便后续继续迭代。
 
 参考: [OneRec](https://arxiv.org/abs/2506.13695) / [OneRec-V2](https://arxiv.org/abs/2508.20900) / [GR4AD](https://arxiv.org/abs/2602.22732) / [OneMall](https://arxiv.org/abs/2601.21770)
 
-## 当前阶段
+## 项目状态
 
 ```
-Tokenizer ✅ → NTP ✅ → RL 对齐 ← (当前) → 部署
+Semantic ID tokenizer → NTP recommender → RL alignment → Deployment packaging
 ```
 
-| 阶段 | SOTA | 实验 | 文档 |
+| 方向 | 当前状态 | 代表实验 | 工作记录 |
 |------|------|------|------|
-| **Tokenizer** | 4096×3 binary `[2]×12`，snHR=0.095，CR=0.89% | EXP-012 | [experiments/logs/tokenizer/README.md](experiments/logs/tokenizer/README.md) |
-| **Embedding** | 0.6b: snHR=0.092，CR=0.42%；**4b: snHR=0.131**，CR=1.28%（nc=8192，snHR 是跨模型唯一可信指标） | EXP-049 | ↑ |
-| **NTP** | M-tier bare R@500=**70.2%**；L-tier SFT R@500=64.1% | EXP-043/047 | [experiments/logs/ntp/README.md](experiments/logs/ntp/README.md) |
-| **RL 对齐** | ECPO R@500=**65.7%**（S-tier 链路）；L-tier 链路待启动 | EXP-039B | [experiments/logs/rl/README.md](experiments/logs/rl/README.md) |
+| **Semantic ID tokenizer** | 4096×3 binary `[2]×12`，snHR=0.095，CR=0.89% | EXP-012 | [experiments/logs/tokenizer/README.md](experiments/logs/tokenizer/README.md) |
+| **Embedding scale** | 0.6b: snHR=0.092，CR=0.42%；**4b: snHR=0.131**，CR=1.28%（nc=8192，snHR 是跨模型唯一可信指标） | EXP-049 | [experiments/logs/tokenizer/README.md](experiments/logs/tokenizer/README.md) |
+| **NTP recommender** | M-tier bare R@500=**70.2%**；L-tier SFT R@500=64.1% | EXP-043/047 | [experiments/logs/ntp/README.md](experiments/logs/ntp/README.md) |
+| **RL alignment** | ECPO R@500=**65.7%**（S-tier 链路）；L-tier alignment 待启动 | EXP-039B | [experiments/logs/rl/README.md](experiments/logs/rl/README.md) |
 
-✅ **EXP-049 完成**：nc=8192 决定性（Gini_d2 0.35→0.24），h=64/128 无差异，推荐 exp049-{0.6b,4b}-nc8192-h128。
-🔄 **EXP-050**：M-tier NTP 0.6b/4b SID × output-gate/CADET + bare+RoPE ablation（6 variants，排队中）。
+**近期结果**：EXP-049 确认 nc=8192 是更强 tokenizer 设置（Gini_d2 0.35→0.24），h=64/128 在当前 sweep 中无显著差异，推荐 exp049-{0.6b,4b}-nc8192-h128。
+
+**下一组实验**：EXP-050 评估 M-tier NTP 0.6b/4b SID × output-gate/CADET + bare+RoPE ablation，共 6 个 queued variants。
 
 ## 流程总览
 

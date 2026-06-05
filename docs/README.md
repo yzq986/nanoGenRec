@@ -1,6 +1,8 @@
-# docs/ — Design Documentation
+# docs/ — Project Documentation
 
 [English](README.md) | [中文](README.zh.md)
+
+This directory collects durable project documentation: architecture decisions, engineering incident reports, and implementation changelogs. Experiment outcomes are tracked separately under `experiments/logs/`.
 
 | Document | Description |
 |----------|-------------|
