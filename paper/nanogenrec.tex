@@ -8,7 +8,7 @@
 \usepackage{hyperref}
 \usepackage[numbers]{natbib}
 
-\title{nanoGenRec: A Reproducible Framework and Empirical Study for Semantic-ID Generative Recommendation}
+\title{nanoGenRec: A Reproducible Framework for Landing Semantic-ID Generative Recommendation}
 
 \author{
   Ziqing Ye \\
@@ -22,24 +22,24 @@
 \maketitle
 
 \begin{abstract}
-Generative recommendation has recently reframed large-scale retrieval as autoregressive generation over Semantic IDs, with industrial systems reporting gains from model scaling, reinforcement learning, and end-to-end deployment. However, reproducing this line of work remains difficult because the complete pipeline spans item tokenization, behavior sequence construction, next-token prediction, constrained generation, full-recall evaluation, experiment orchestration, and long-running operational logs. We present \textsc{nanoGenRec}, an open-source framework for Semantic-ID generative recommendation, together with a production-scale empirical study on anonymized behavior data. The framework implements Semantic ID tokenization, Transformer+MoE next-token recommendation, SID-constrained beam-search evaluation, YAML-based experiment configuration, duplicate-run detection, queue-based long jobs, and durable experiment logs. Across 51 recorded experiments, we report five empirical findings: (i) NTP loss follows a model-scaling curve $L(N)=2.522+2055.1/N^{0.456}$ from 1.7M to 101.1M active parameters; (ii) behavior-window scaling is non-monotonic under production temporal drift; (iii) tokenizer capacity and embedding scale jointly determine collision, semantic-neighbor retention, and downstream recall; (iv) full-recall evaluation reaches R@500=70.4\% and R@10=14.2\% for an M-tier 4B-SID model; and (v) post-training alignment is sensitive to candidate distribution, with off-policy ECPO collapsing to R@500=2.0\% while on-policy candidates recover to 67.8\%. We position \textsc{nanoGenRec} as a reproducibility artifact and empirical reference for researchers and engineers building Generative Recommendation systems.
+Generative recommendation has recently reframed large-scale retrieval as autoregressive generation over Semantic IDs, with industrial systems reporting gains from model scaling, reinforcement learning, and end-to-end deployment. However, making this paradigm work outside a production paper remains difficult because the useful unit is a full system rather than a single model: item tokenization, behavior sequence construction, next-token training, constrained decoding, full-recall evaluation, experiment governance, and failure diagnosis must all agree. We present \textsc{nanoGenRec}, an open-source framework that lands Semantic-ID generative recommendation as an executable research workflow. The framework implements Semantic ID tokenization, Transformer+MoE next-token recommendation, SID-constrained beam-search evaluation, YAML-based experiment configuration, duplicate-run detection, queue-based long jobs, and durable experiment logs. On anonymized production behavior data, this framework supports 51 recorded experiments and reproduces several useful GR outcomes: a model-scaling curve $L(N)=2.522+2055.1/N^{0.456}$ from 1.7M to 101.1M active parameters; a production behavior-window study showing non-monotonic data scaling under temporal drift; tokenizer sweeps connecting embedding scale, collision, semantic-neighbor retention, and downstream recall; an M-tier 4B-SID full-eval result of R@500=70.4\% and R@10=14.2\%; and a post-training alignment case where off-policy ECPO collapses to R@500=2.0\% while on-policy candidates recover to 67.8\%. We position \textsc{nanoGenRec} as a reproducibility framework and landing record for researchers and engineers turning Generative Recommendation from a paper-level recipe into a working system.
 \end{abstract}
 
 \section{Introduction}
 
 Generative Recommendation (GR) is moving recommender systems from multi-stage retrieve-and-rank pipelines toward autoregressive generation over item tokens. Industrial reports such as OneRec~\citep{onerec}, OneRec-V2~\citep{onerecv2}, OneMall~\citep{onemall}, GenRec~\citep{genrec}, OneLive~\citep{onelive}, and GR4AD~\citep{gr4ad} show that Semantic-ID generation, model scaling, and preference alignment can be viable at production scale.
 
-The public literature now contains strong system diagrams and deployment evidence, yet there is still a practical gap for researchers who want to reproduce the full workflow. A working GR system needs more than a model definition. It needs a tokenizer that maps items into discrete semantic tokens, a behavior preprocessing path that produces autoregressive training sequences, a model and training loop, a constrained generation procedure that maps generated tokens back to items, a full-recall evaluation protocol, and experiment infrastructure that can distinguish real improvements from duplicated baselines, invalid feature plumbing, or inline-evaluation artifacts.
+The public literature now contains strong system diagrams and deployment evidence, yet there is still a practical gap for researchers who want to turn those ideas into a running system. A working GR system needs more than a model definition. It needs a tokenizer that maps items into discrete semantic tokens, a behavior preprocessing path that produces autoregressive training sequences, a model and training loop, a constrained generation procedure that maps generated tokens back to items, a full-recall evaluation protocol, and experiment infrastructure that can distinguish real improvements from duplicated baselines, invalid feature plumbing, or inline-evaluation artifacts. In practice, the system either works end to end or the individual components are hard to interpret.
 
-We introduce \textsc{nanoGenRec}, an open-source framework and empirical record for Semantic-ID-based generative recommendation. The project is built from production-grounded experiments, with private data and deployment-specific details removed. Its purpose is not to claim a new recommendation algorithm. Instead, it provides a reproducible framework, a full evaluation protocol, and an experiment lineage that records both positive results and failure modes.
+We introduce \textsc{nanoGenRec}, an open-source framework and empirical record for landing Semantic-ID-based generative recommendation. The project is built from production-grounded experiments, with private data and deployment-specific details removed. Its purpose is not to claim a new recommendation algorithm. Instead, it shows how the GR stack can be assembled, executed, evaluated, debugged, and iterated in a reproducible workspace. The accompanying experiment lineage records both positive results and failure modes, making the framework useful as a reference implementation and as an operational checklist.
 
 This report makes four contributions:
 
 \begin{enumerate}
-  \item \textbf{Framework.} We describe an end-to-end GR workspace covering Semantic ID tokenization, NTP training, SID-constrained beam search, full-recall evaluation, YAML experiment configuration, duplicate-run checks, and queue-based long jobs.
-  \item \textbf{Empirical scaling.} We report a seven-point NTP model-scaling sweep from 1.7M to 101.1M active parameters and fit a power law with exponent 0.456, close to the OneRec-V2 reported exponent of 0.489.
-  \item \textbf{Production data observations.} We show that behavior-window scaling is non-monotonic in a production setting because recency, user breadth, and per-user sequence depth interact under temporal drift.
-  \item \textbf{Failure-aware reproducibility.} We preserve experiment logs for successes, negative results, invalid runs, and post-training collapses, including an off-policy ECPO failure and an on-policy recovery.
+  \item \textbf{A landed GR framework.} We describe an end-to-end workspace covering Semantic ID tokenization, NTP training, SID-constrained beam search, full-recall evaluation, YAML experiment configuration, duplicate-run checks, and queue-based long jobs.
+  \item \textbf{Reproduced GR behaviors.} Within the same framework, we reproduce model scaling, tokenizer-capacity effects, full-recall baselines, and post-training alignment dynamics that match the concerns raised by recent industrial GR systems.
+  \item \textbf{Production-grounded evidence.} We report a seven-point NTP scaling sweep, a behavior-window study under temporal drift, tokenizer and embedding sweeps, full-eval baselines, and an off-policy/on-policy ECPO comparison.
+  \item \textbf{Failure-aware reproducibility.} We preserve experiment logs for successes, negative results, invalid runs, and post-training collapses, including the conditions under which a GR experiment becomes invalid.
 \end{enumerate}
 
 \section{Background}
@@ -65,6 +65,8 @@ GR papers typically report architecture and production results, while the operat
 
 \section{The nanoGenRec Framework}
 
+\textsc{nanoGenRec} is organized around one practical goal: a researcher should be able to take item embeddings and behavior logs, build Semantic IDs, train a generative recommender, decode valid item candidates, run full-recall evaluation, and trace every reported number back to a config and an experiment log. This turns GR from a collection of paper components into a reproducible loop. The loop is also designed to expose failures: invalid feature plumbing, duplicate baselines, stale behavior windows, collapsed tokenizers, and unstable post-training runs are recorded rather than hidden.
+
 \subsection{Pipeline}
 
 The framework consists of six stages:
@@ -80,11 +82,15 @@ The framework consists of six stages:
 
 \subsection{Experiment Orchestration}
 
-New experiments inherit from a shared YAML base config and override only the parameters being tested. Multi-variant experiments are represented as a variant list. A registry hash excludes runtime paths and environment keys, allowing the runner to surface identical or near-identical historical runs before launching a new job. Queue-friendly wrappers support long-running training and evaluation without turning experiment scripts into brittle chains.
+New experiments inherit from a shared YAML base config and override only the parameters being tested. Multi-variant experiments are represented as a variant list. A registry hash excludes runtime paths and environment keys, allowing the runner to surface identical or near-identical historical runs before launching a new job. Queue-friendly wrappers support long-running training and evaluation without turning experiment scripts into brittle chains. Each completed run updates a local record of the hypothesis, design, metrics, and interpretation, so the repository accumulates a recoverable experiment lineage rather than only final checkpoints.
 
 \subsection{Research-Agent Workflow}
 
 The repository includes an inbox/outbox protocol, paper notes, decision records, and status files. This is a lightweight workflow for human-agent collaboration over a research line. The agent reads papers, proposes ideas, estimates runtime, writes configs, checks prior experiments, and records decisions. The contribution here is operational: the research process is made inspectable and recoverable rather than embedded in transient chat logs or shell history.
+
+\subsection{Landing Criteria}
+
+We treat GR as landed only when four criteria are met. First, generated token sequences must map back to real item IDs through the tokenizer vocabulary. Second, evaluation must use SID-constrained generation over the item space rather than an inline training proxy. Third, experiment changes must be reproducible from configs and traceable to logs. Fourth, failed runs must be diagnosable from recorded metrics and code-path checks. The empirical study below is organized around these criteria: model scaling tests whether the NTP core works, tokenizer sweeps test whether the item representation is usable, full-recall baselines test whether generation retrieves real items, and post-training experiments test whether alignment remains stable after the SFT stage.
 
 \section{Experimental Setup}
 
@@ -115,11 +121,11 @@ L-tier & 512 & 12 & 16 & $\sim$101.1M \\
 
 Full evaluation uses SID-constrained beam search and reports item recall at several cutoffs. Unless otherwise stated, reported R@K values refer to full evaluation rather than inline training evaluation. This distinction matters because inline evaluation uses a limited candidate set and is intended for training health checks.
 
-\section{Empirical Study}
+\section{Framework Validation and Empirical Study}
 
 \subsection{NTP Model Scaling}
 
-We first trained seven model sizes from 1.7M to 101.1M active parameters on a fixed 262M-token dataset. Table~\ref{tab:model-scaling} reports the results.
+The first validation target is the NTP core. If the framework has correctly connected SID tokenization, sequence construction, training, and evaluation, model scaling should produce a coherent curve rather than isolated wins. We trained seven model sizes from 1.7M to 101.1M active parameters on a fixed 262M-token dataset. Table~\ref{tab:model-scaling} reports the results.
 
 \begin{table}[t]
 \centering
@@ -146,7 +152,7 @@ The fitted loss curve is:
 L(N) = 2.522 + \frac{2055.1}{N^{0.456}}.
 \end{equation}
 
-The exponent is close to the 0.489 exponent reported by OneRec-V2~\citep{onerecv2}. Recall improves substantially through the S-tier and M-tier regime, while gains flatten between 71.6M and 101.1M active parameters under the fixed data budget. Figure~\ref{fig:scaling} shows the fitted curve.
+The exponent is close to the 0.489 exponent reported by OneRec-V2~\citep{onerecv2}. This is an important framework-level signal: the local implementation reproduces a recognizable GR scaling behavior while preserving full-recall metrics. Recall improves substantially through the S-tier and M-tier regime, while gains flatten between 71.6M and 101.1M active parameters under the fixed data budget. Figure~\ref{fig:scaling} shows the fitted curve.
 
 \begin{figure}[t]
 \centering
@@ -157,7 +163,7 @@ The exponent is close to the 0.489 exponent reported by OneRec-V2~\citep{onerecv
 
 \subsection{Behavior-Window Scaling}
 
-We next fixed the model tier and varied the behavior window. Standard compute-optimal scaling intuition~\citep{hoffmann2022chinchilla} suggests that more data should reduce loss under an i.i.d. assumption. Production recommendation behavior does not satisfy this assumption. Table~\ref{tab:data-scaling} summarizes the S-tier and M-tier data sweep.
+The second validation target is data plumbing under production time. We fixed the model tier and varied the behavior window. Standard compute-optimal scaling intuition~\citep{hoffmann2022chinchilla} suggests that more data should reduce loss under an i.i.d. assumption. Production recommendation behavior does not satisfy this assumption. Table~\ref{tab:data-scaling} summarizes the S-tier and M-tier data sweep.
 
 \begin{table}[t]
 \centering
@@ -192,7 +198,7 @@ The main observation is non-monotonicity. Extending the window increases the num
 
 \subsection{Tokenizer and Embedding Sweep}
 
-Tokenizer quality affects the irreducible loss floor and the search space exposed to beam decoding. We evaluated 14 tokenizer variants over 0.6B and 4B embeddings, uniform 4096/8192 codebooks, MGMR-style hierarchical codebooks, and FSQ hidden sizes. Table~\ref{tab:tokenizer} shows representative results.
+The third validation target is item representation. Tokenizer quality affects the irreducible loss floor and the search space exposed to beam decoding. We evaluated 14 tokenizer variants over 0.6B and 4B embeddings, uniform 4096/8192 codebooks, MGMR-style hierarchical codebooks, and FSQ hidden sizes. Table~\ref{tab:tokenizer} shows representative results.
 
 \begin{table}[t]
 \centering
@@ -215,7 +221,7 @@ The decisive variable in this sweep is the 8192 codebook setting, which improves
 
 \subsection{Full-Recall Baselines}
 
-Table~\ref{tab:full-eval} reports current full-eval baselines. The strongest observed NTP result is the M-tier model with 4B SID, reaching R@500=70.4\% and R@10=14.2\%.
+The fourth validation target is the full GR retrieval loop. Table~\ref{tab:full-eval} reports current full-eval baselines produced by SID-constrained generation. The strongest observed NTP result is the M-tier model with 4B SID, reaching R@500=70.4\% and R@10=14.2\%.
 
 \begin{table}[t]
 \centering
@@ -236,7 +242,7 @@ L-tier with validated options & 12.8\% & 64.1\% & 20.7 \\
 
 \subsection{Post-Training Alignment}
 
-We also evaluated preference and RL-style alignment methods, including SP-DPO, RF-DPO, GRPO, and ECPO. The most instructive result is the off-policy/on-policy ECPO comparison in Table~\ref{tab:alignment}.
+The final validation target is post-training. We evaluated preference and RL-style alignment methods, including SP-DPO, RF-DPO, GRPO, and ECPO. The most instructive result is the off-policy/on-policy ECPO comparison in Table~\ref{tab:alignment}.
 
 \begin{table}[t]
 \centering
@@ -264,7 +270,7 @@ The off-policy run generates candidates from a reference model whose distributio
 
 \section{Discussion}
 
-\subsection{What the Artifact Makes Reproducible}
+\subsection{What the Framework Makes Reproducible}
 
 The production data cannot be released. However, the artifact makes the following components inspectable and reusable:
 
@@ -277,19 +283,19 @@ The production data cannot be released. However, the artifact makes the followin
   \item known invalid runs and bug records.
 \end{itemize}
 
-This distinction matters. A framework can be reproducible even when a production dataset is not public, provided that the code path, configuration semantics, evaluation protocol, and empirical record are exposed.
+This distinction matters. A GR framework can be useful even when a production dataset is not public, provided that the code path, configuration semantics, evaluation protocol, and empirical record are exposed. The main reproducibility target of \textsc{nanoGenRec} is therefore the working loop: how to construct SIDs, train the model, decode valid items, evaluate full recall, organize experiments, and diagnose failures.
 
 \subsection{Lessons}
 
-Three lessons recur across the experiment lineage. First, full evaluation must be separated from training-time health checks. Second, feature ablations require end-to-end validation across preprocessing, training, and inference; otherwise, experiments can silently compare zeros. Third, post-training alignment in GR is sensitive to candidate distribution, so rollout generation should be treated as part of the algorithm rather than a fixed data-preparation step.
+Three lessons recur across the experiment lineage. First, landing GR requires full evaluation to be separated from training-time health checks. Second, feature ablations require end-to-end validation across preprocessing, training, and inference; otherwise, experiments can silently compare zeros. Third, post-training alignment in GR is sensitive to candidate distribution, so rollout generation should be treated as part of the algorithm rather than a fixed data-preparation step. These lessons are as much about framework design as model design: most failures arise at component boundaries.
 
 \section{Limitations}
 
-This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as engineering evidence rather than final algorithmic conclusions. Finally, public benchmark reproduction remains future work.
+This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as framework-validated engineering evidence rather than final algorithmic conclusions. Finally, public benchmark reproduction remains future work.
 
 \section{Conclusion}
 
-We presented \textsc{nanoGenRec}, an open-source reproducibility framework and empirical study for Semantic-ID generative recommendation. The project contributes an end-to-end framework, full-recall evaluation protocol, experiment orchestration system, and 51-experiment lineage. Empirically, it reports model scaling, non-monotonic behavior-window scaling, tokenizer sweeps, full-recall baselines, and post-training alignment failure modes. We hope the artifact helps researchers and practitioners turn Generative Recommendation from a collection of system diagrams into an inspectable, extensible, and production-grounded research workflow.
+We presented \textsc{nanoGenRec}, an open-source framework for landing Semantic-ID generative recommendation. The project contributes an end-to-end GR workflow, full-recall evaluation protocol, experiment orchestration system, and 51-experiment lineage. Within this framework, we reproduce several valuable GR outputs: model scaling, non-monotonic behavior-window scaling, tokenizer and embedding effects, full-recall baselines, and post-training alignment collapse/recovery. The central result is not a new standalone algorithm, but a working, inspectable path from Semantic-ID construction to real-item generative retrieval and failure-aware iteration. We hope the artifact helps researchers and practitioners turn Generative Recommendation from a collection of system diagrams into an extensible, production-grounded research workflow.
 
 \paragraph{Artifact.}
 The code and experiment logs are available in the public nanoGenRec repository.\footnote{\url{https://github.com/yzq986/nanoGenRec}}
