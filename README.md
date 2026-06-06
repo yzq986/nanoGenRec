@@ -1,6 +1,6 @@
 # gr_demo
 
-[English](README.md) | [中文](README.zh.md)
+[English](README.md) | [Chinese](README.zh.md)
 
 Agentic research infrastructure for industrial generative recommendation on large-scale production behavior data.
 

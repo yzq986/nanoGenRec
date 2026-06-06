@@ -1,5 +1,7 @@
 # Discussions
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Deep-dive Q&A and conceptual analysis on key technical topics.
 
 Unlike `ideas/` (solution designs) or `experiments/` (empirical results), this directory captures
@@ -16,4 +18,4 @@ trade-offs matter.
 | [004-prefix-locked-vs-paper-beam-search.md](004-prefix-locked-vs-paper-beam-search.md) | Prefix-locked vs paper beam search: candidate generation tradeoffs | 2026-04-19 |
 | [005-beam-search-kv-cache.md](005-beam-search-kv-cache.md) | KV cache for beam search: 3-level compute reuse optimization | 2026-04-19 |
 | [006-why-grpo-needs-on-policy-but-dpo-doesnt.md](006-why-grpo-needs-on-policy-but-dpo-doesnt.md) | Why GRPO needs on-policy candidates but DPO doesn't | 2026-04-28 |
-| [007-sid-l2-entropy-collision-floor-ppl.md](007-sid-l2-entropy-collision-floor-ppl.md) | SID L2 entropy、collision rate 与 floor PPL 的对应关系；FSQ bottleneck 根因分析 | 2026-04-29 |
+| [007-sid-l2-entropy-collision-floor-ppl.md](007-sid-l2-entropy-collision-floor-ppl.md) | How SID L2 entropy and collision rate relate to floor PPL; FSQ bottleneck root-cause analysis | 2026-04-29 |

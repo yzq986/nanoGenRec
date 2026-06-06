@@ -1,6 +1,6 @@
 # 001: DPO Gradient Checkpointing + MoE Compatibility + Memory Fragmentation
 
-[English](001-dpo-oom-gradient-checkpointing.md) | [中文](001-dpo-oom-gradient-checkpointing.zh.md)
+[English](001-dpo-oom-gradient-checkpointing.md) | [Chinese](001-dpo-oom-gradient-checkpointing.zh.md)
 
 **Date**: 2026-04-19
 **Context**: EXP-017 SP-DPO training on 8xA100 40GB, 45.8M params

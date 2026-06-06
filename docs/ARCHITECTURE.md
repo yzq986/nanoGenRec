@@ -1,6 +1,6 @@
 # Generative Recommendation Architecture Design
 
-[English](ARCHITECTURE.md) | [中文](ARCHITECTURE.zh.md)
+[English](ARCHITECTURE.md) | [Chinese](ARCHITECTURE.zh.md)
 
 ## References
 

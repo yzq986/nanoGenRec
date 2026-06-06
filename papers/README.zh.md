@@ -1,10 +1,10 @@
 # Downloaded Papers
 
-[English](README.md) | [Chinese](README.zh.md)
+[English](README.md) | [中文](README.zh.md)
 
-Local paper archive for offline reading, text extraction, and idea tracking.
+本地论文归档，用于离线阅读、文本抽取和 idea 跟踪。
 
-Each row links the downloaded PDF, extracted text, and any idea IDs that were filed into [ideas/](../ideas/README.md). This directory is a source library; experiment conclusions should be written under [experiments/logs/](../experiments/logs/README.md).
+每一行链接已下载 PDF、抽取文本，以及归档到 [ideas/](../ideas/README.zh.md) 的 idea ID。这个目录是资料库；实验结论应写到 [experiments/logs/](../experiments/logs/README.md)。
 
 | Arxiv ID | Title | Authors | Date | PDF | Text | Ideas |
 |----------|-------|---------|------|-----|------|-------|
@@ -42,10 +42,10 @@ Each row links the downloaded PDF, extracted text, and any idea IDs that were fi
 | 2604.24073 | FreeScale: Distributed Training for Sequence Recommendation Models with Minimal Scaling Cost | Chenhao Feng et al. (Meta, MLSys 2026) | 2026-04-27 | [pdf](2604.24073.pdf) | [txt](2604.24073.txt) | IDEA-freescale-0 |
 | 2604.22169 | ReCast: Recasting Learning Signals for Reinforcement Learning in Generative Recommendation | Peiyan Zhang et al. (Huawei) | 2026-04-24 | [pdf](2604.22169.pdf) | [txt](2604.22169.txt) | IDEA-recast-0 |
 | 2604.18146 | Modular Representation Compression: Adapting LLMs for Efficient and Effective Recommendations | Yunjia Xi et al. (SJTU + Huawei Noah's Ark, SIGIR 2026) | 2026-04-20 | [pdf](2604.18146.pdf) | [txt](2604.18146.txt) | IDEA-marc-0 |
-| 2604.17878 | RankUp: Towards High-rank Representations for Large Scale Advertising Recommender Systems | Jin Chen et al. (Tencent Weixin) | 2026-04-20 | [pdf](2604.17878.pdf) | [txt](2604.17878.txt) | — (classic CTR ranker; not filed as a GR idea) |
+| 2604.17878 | RankUp: Towards High-rank Representations for Large Scale Advertising Recommender Systems | Jin Chen et al. (Tencent Weixin) | 2026-04-20 | [pdf](2604.17878.pdf) | [txt](2604.17878.txt) | — (classic CTR ranker, 未归纳为 idea) |
 | 2604.25291 | From Local Indices to Global Identifiers: Generative Reranking via Global Action Space | Pengyue Jia et al. (Kuaishou + UCSD + CityU HK) | 2026-04-28 | [pdf](2604.25291.pdf) | [txt](2604.25291.txt) | IDEA-glorank-0 |
 | 2604.25834 | Action-Aware Generative Sequence Modeling for Short Video Recommendation | Wenhao Li et al. (Kuaishou, SIGIR 2026) | 2026-04-28 | [pdf](2604.25834.pdf) | [txt](2604.25834.txt) | IDEA-a2gen-0 |
-| 2604.25839 | Break the Inaccessible Boundary: Distilling Post-Conversion Content for User Retention Modeling (OCARM) | Tianbao Ma et al. (Kuaishou) | 2026-04-28 | [pdf](2604.25839.pdf) | [txt](2604.25839.txt) | — (RTB retention model; two-stage teacher-student distillation for feature leakage; not filed because current NTP has no inaccessible-at-inference feature) |
+| 2604.25839 | Break the Inaccessible Boundary: Distilling Post-Conversion Content for User Retention Modeling (OCARM) | Tianbao Ma et al. (Kuaishou) | 2026-04-28 | [pdf](2604.25839.pdf) | [txt](2604.25839.txt) | — (RTB retention model, 两阶段 teacher-student 蒸馏解决 "feature leakage"; 当前 NTP 无 inaccessible-at-inference 特征, 未归纳为 idea) |
 | 2602.11410 | CADET: Context-Conditioned Ads CTR Prediction With a Decoder-Only Transformer | David Pardoe et al. (LinkedIn) | 2026-02-11 | [pdf](2602.11410.pdf) | [txt](2602.11410.txt) | IDEA-cadet-0 |
 | 2602.13581 | Climber-Pilot: A Non-Myopic Generative Recommendation Model Towards Better Instruction-Following | Da Guo et al. (NetEase Cloud Music) | 2026-02-14 | [pdf](2602.13581.pdf) | [txt](2602.13581.txt) | IDEA-climber-0 |
 | 2602.23964 | RAD-DPO: Robust Adaptive Denoising DPO for Generative Retrieval in E-commerce | Zhiguo Chen et al. (JD.com) | 2026-02-27 | [pdf](2602.23964.pdf) | [txt](2602.23964.txt) | IDEA-raddpo-0 |

@@ -1,6 +1,6 @@
 # Engineering Changelog
 
-[English](CHANGELOG.md) | [中文](CHANGELOG.zh.md)
+[English](CHANGELOG.md) | [Chinese](CHANGELOG.zh.md)
 
 Code and infrastructure changes in reverse chronological order. Experiment results live in `experiments/logs/`.
 

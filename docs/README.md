@@ -1,6 +1,6 @@
 # docs/
 
-[English](README.md) | [中文](README.zh.md)
+[English](README.md) | [Chinese](README.zh.md)
 
 Durable project documentation for architecture, engineering decisions, and implementation history.
 
