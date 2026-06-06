@@ -1,0 +1,29 @@
+from public_benchmarks.movielens_cpu import (
+    build_semantic_ids,
+    filter_sequences,
+    split_train_eval,
+    synthetic_movielens,
+)
+
+
+def test_synthetic_public_movielens_path_builds_examples():
+    data = synthetic_movielens(n_users=32, n_items=40, seed=7)
+    seqs = filter_sequences(data, min_rating=3.0, min_user_items=5, max_users=20)
+    used_items = {mid for items in seqs.values() for mid in items}
+    movies = {mid: data.movies[mid] for mid in used_items}
+
+    sid, clusters = build_semantic_ids(
+        movies,
+        n_clusters=(8, 8, 8),
+        feature_dim=32,
+        kmeans_iters=2,
+        seed=7,
+    )
+    train_examples, eval_examples = split_train_eval(seqs, sid, max_items=20)
+
+    assert clusters == [8, 8, 8]
+    assert sid
+    assert train_examples
+    assert eval_examples
+    assert all(len(example) >= 6 for example in train_examples)
+    assert all(len(example["target_sid"]) == 3 for example in eval_examples)

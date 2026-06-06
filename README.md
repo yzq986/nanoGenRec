@@ -6,6 +6,8 @@ Reproducible Generative Recommendation framework, from Semantic IDs to full-reca
 
 `nanoGenRec` is a from-scratch, end-to-end workspace for Semantic-ID-based generative recommendation on large-scale production behavior data. It combines model code, YAML experiment orchestration, full-recall evaluation, research-agent notes, and durable experiment logs into a reproducible applied research loop.
 
+For users without private data or GPUs, the repository includes a CPU-friendly public MovieLens path that runs the same core loop at smoke-test scale: public ratings -> CPU Semantic IDs -> tiny NTP training -> SID-constrained full-recall evaluation.
+
 The project is also built around a simple AGI-era premise: valuable AI systems should not only train models, but also help generate hypotheses, schedule experiments, evaluate results, and preserve the reasoning trail.
 
 The code is open-sourced after removing private data and deployment-specific details, while preserving the parts that matter for reproducing the modeling ideas, experiment automation, and engineering workflow.
@@ -34,6 +36,7 @@ The project treats recommendation research as an autonomous experimentation prob
 | Tokenizer sweep | 14 Semantic ID variants over 0.6B/4B embeddings, 4096/8192 codebooks, and FSQ hidden sizes | [EXP-049](experiments/logs/exp-049.md) |
 | Best NTP full eval | M-tier 4B SID model reaches R@500=70.4% and R@10=14.2% over ~49K eval items | [EXP-043](experiments/logs/ntp/README.md) |
 | Best post-training recovery | on-policy ECPO recovers off-policy collapse from R@500=2.0% to 67.8% | [EXP-029](experiments/logs/exp-029.md) |
+| Public reproducibility path | CPU MovieLens smoke path with title/genre SIDs, tiny NTP, and constrained beam eval | [public_benchmarks/](public_benchmarks/README.md) |
 | Agentic workflow | inbox/outbox protocol, paper-note memory, YAML config expansion, duplicate-run checks, queue-based execution, and decision records | [research/](research/program.md), [experiments/](experiments/README.md) |
 
 ## Highlights
@@ -45,6 +48,7 @@ The project treats recommendation research as an autonomous experimentation prob
 - **Alignment stack**: SP-DPO, RF-DPO, GRPO, and ECPO experiments on top of SFT checkpoints.
 - **Full-recall evaluation**: beam search with SID constraints, Recall@K, tokenizer proxy metrics, and comparison reports.
 - **Reproducible experiment workflow**: YAML configs, duplicate-run checks, phase-level logs, and queue-based long-running jobs.
+- **Public CPU smoke path**: MovieLens runs without private data, Qwen embeddings, Faiss, or GPUs.
 
 References: [OneRec](https://arxiv.org/abs/2506.13695), [OneRec-V2](https://arxiv.org/abs/2508.20900), [GR4AD](https://arxiv.org/abs/2602.22732), [OneMall](https://arxiv.org/abs/2601.21770).
 
@@ -116,6 +120,18 @@ PYTHONPATH=. torchrun --nproc_per_node=8 run.py <command>
 Install dependencies in the project environment, then run from the repository root:
 
 ```bash
+# Public CPU smoke path: no private data or GPU required
+python run.py public-movielens \
+    --dataset ml-latest-small \
+    --output_dir public_benchmarks/runs/ml-latest-small-smoke \
+    --epochs 1 \
+    --max_users 200 \
+    --clusters 16,16,16 \
+    --embed_dim 32 \
+    --layers 1 \
+    --eval_samples 20 \
+    --beam_size 10
+
 # Train a tokenizer and produce Semantic IDs
 python run.py train --model qwen3-0.6b
 

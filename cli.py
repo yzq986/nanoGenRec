@@ -9,6 +9,7 @@ Usage:
     python -m gr_demo preprocess-sid  --model qwen3-0.6b --behavior_path auto
     python -m gr_demo preprocess-ntp --sid_cache ... --output_dir ... --n_shards 8
     python -m gr_demo train-ntp      --sid_cache experiments/sid_cache/qwen3-0.6b
+    python -m gr_demo public-movielens --dataset ml-latest-small
     python -m gr_demo pack            --rkmeans_s3_path ... --upload
 """
 
@@ -33,6 +34,7 @@ def main():
         print("  sp-dpo-train    Joint NTP+DPO training (SP-DPO/RF-DPO alignment)")
         print("  grpo-train      Joint NTP+GRPO/ECPO training (Phase 3/4)")
         print("  alignment-eval  Evaluate alignment metrics (reward, preference acc)")
+        print("  public-movielens  CPU-friendly public MovieLens reproducibility path")
         print("  pack            Pack model.tar.gz for deployment")
         sys.exit(1)
 
@@ -85,6 +87,9 @@ def main():
     elif command == 'alignment-eval':
         from rl.trainer import alignment_eval_main
         alignment_eval_main()
+    elif command == 'public-movielens':
+        from public_benchmarks.movielens_cpu import main as public_movielens_main
+        public_movielens_main()
     elif command == 'migrate-shards':
         from data.migrate_shards import main as migrate_main
         migrate_main()
@@ -98,7 +103,7 @@ def main():
         print(f"Unknown command: {command}")
         print("Available commands: train, eval, eval-all, compare, hyperparam, "
               "preprocess-sid, preprocess-ntp, train-ntp, sp-dpo-prepare, rf-dpo-prepare, "
-              "sp-dpo-train, grpo-train, eval-ntp, alignment-eval, pack, migrate-shards, "
+              "sp-dpo-train, grpo-train, eval-ntp, alignment-eval, public-movielens, pack, migrate-shards, "
               "download-model, sync-embeddings")
         sys.exit(1)
 

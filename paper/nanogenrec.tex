@@ -304,6 +304,7 @@ The production data cannot be released. However, the artifact makes the followin
 \begin{itemize}
   \item model and tokenizer implementations;
   \item preprocessing and evaluation interfaces;
+  \item a CPU-friendly MovieLens public smoke path;
   \item experiment configs and resolved parameter sets;
   \item full-recall evaluation protocol;
   \item experiment logs with hypotheses, designs, results, and post-hoc analysis;
@@ -318,7 +319,7 @@ Three lessons recur across the experiment lineage. First, landing GR requires fu
 
 \section{Limitations}
 
-This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as framework-validated engineering evidence rather than final algorithmic conclusions. The most important next step is public benchmark reproduction: adding a fully redistributable dataset path would let external users verify not only the code structure but also the reported empirical trends.
+This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The repository includes a CPU-friendly MovieLens smoke path to verify the public framework loop, but it is not intended as a competitive public benchmark. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as framework-validated engineering evidence rather than final algorithmic conclusions. The most important next step is a stronger public benchmark section on redistributable datasets, so external users can verify not only the code structure but also the reported empirical trends.
 
 \section{Conclusion}
 

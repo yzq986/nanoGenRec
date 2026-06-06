@@ -6,6 +6,8 @@ Data loading, export, embedding synchronization, and distributed encoding utilit
 
 This module connects raw item/behavior data to the tokenizer and NTP pipelines. It supports both local and remote paths, but downstream experiments should consume stable cache directories under `experiments/`.
 
+Public benchmark adapters that do not require private data live in [public_benchmarks/](../public_benchmarks/README.md). The MovieLens CPU path is intentionally separate from this production data module because it uses lightweight title/genre SIDs instead of Qwen embedding caches.
+
 ## Files
 
 | File | Purpose |
@@ -20,6 +22,9 @@ This module connects raw item/behavior data to the tokenizer and NTP pipelines. 
 ## Usage
 
 ```bash
+# Public CPU smoke path
+python run.py public-movielens --dataset ml-latest-small --epochs 1
+
 # Distributed embedding from the repo root
 PYTHONPATH=. torchrun --nproc_per_node=8 data/encode_distributed.py \
     --model qwen3-0.6b

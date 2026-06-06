@@ -49,6 +49,6 @@ Main improvements:
 
 Remaining blockers for a stronger score:
 
-- No fully public benchmark path yet.
+- A public MovieLens smoke path now exists, but it is not yet a competitive benchmark section.
 - Production-scale numbers remain non-reproducible outside the private data.
-- The framework still needs a more explicit quickstart experiment on a redistributable dataset for external artifact evaluation.
+- The framework still needs stronger public-dataset runs if the paper targets a venue beyond arXiv/technical report.
