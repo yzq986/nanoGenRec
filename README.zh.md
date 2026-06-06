@@ -16,7 +16,35 @@
 
 参考论文：[OneRec](https://arxiv.org/abs/2506.13695)、[OneRec-V2](https://arxiv.org/abs/2508.20900)、[GR4AD](https://arxiv.org/abs/2602.22732)、[OneMall](https://arxiv.org/abs/2601.21770)。
 
-## 当前结果
+## 技术产出
+
+这个仓库的核心产出不是单个 checkpoint，而是一组围绕 Semantic-ID-based generative recommendation 的训练规律和后训练配方。
+
+### NTP Scaling Law
+
+![NTP scaling law](experiments/results/ntp/exp015-scaling-law.png)
+
+EXP-015 覆盖了 1.7M 到 101M active parameters 的 7 个模型规模，并拟合出：
+
+```text
+L(N) = 2.522 + 2055.1 / N^0.456
+```
+
+这个 exponent 接近 OneRec-V2 报告的 0.489，全量评测 R@500 从 23.6% 提升到 66.2%。当前比较有效的模型规模区间在 50M-70M active parameters 左右，再往上收益开始明显受数据限制。
+
+### Data Scaling Law
+
+![NTP data scaling](experiments/results/ntp/exp016-data-scaling.png)
+
+EXP-016 说明行为窗口变长并不天然单调变好。recency、用户覆盖和单用户序列深度会互相影响，所以数据 scaling 需要显式控制变量，而不是简单地认为“天数越多越好”。
+
+### Post-Training Alignment
+
+![Post-training alignment curves](experiments/results/readme/post_training_alignment.png)
+
+后训练是这个项目从 SFT 往上走的关键。EXP-028 里的 off-policy ECPO 出现 candidate drift，R@500 掉到 2.0%；EXP-029 改成 on-policy candidates 后恢复到 R@500=67.8%。在带特征的 S-tier pipeline 上，DPO 之后继续做 ECPO，把 R@500 从 62.1% 提升到 65.7%。
+
+## 结果索引
 
 | 方向 | 当前最好结果 | 代表实验 | 详情 |
 |------|-------------|----------|------|

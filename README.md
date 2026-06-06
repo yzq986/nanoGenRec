@@ -16,7 +16,35 @@ Generative recommendation research project built around Semantic IDs, sequence m
 
 References: [OneRec](https://arxiv.org/abs/2506.13695), [OneRec-V2](https://arxiv.org/abs/2508.20900), [GR4AD](https://arxiv.org/abs/2602.22732), [OneMall](https://arxiv.org/abs/2601.21770).
 
-## Current Results
+## Technical Results
+
+The core output of this repository is not a single model checkpoint. It is a set of measured training laws and post-training recipes for Semantic-ID-based generative recommendation.
+
+### NTP Scaling Law
+
+![NTP scaling law](experiments/results/ntp/exp015-scaling-law.png)
+
+EXP-015 trained 7 model sizes from 1.7M to 101M active parameters and fit:
+
+```text
+L(N) = 2.522 + 2055.1 / N^0.456
+```
+
+The fitted exponent is close to OneRec-V2's reported 0.489, and full-recall R@500 rises from 23.6% to 66.2%. The useful operating region is around 50M-70M active parameters; beyond that, gains become increasingly data-limited.
+
+### Data Scaling Law
+
+![NTP data scaling](experiments/results/ntp/exp016-data-scaling.png)
+
+EXP-016 shows that simply extending the behavior window is not monotonic. Recency, user breadth, and per-user sequence depth interact, so data scaling needs explicit control instead of "more days is always better".
+
+### Post-Training Alignment
+
+![Post-training alignment curves](experiments/results/readme/post_training_alignment.png)
+
+Post-training is where the project becomes more than SFT. EXP-028 showed an off-policy ECPO collapse at R@500=2.0%; EXP-029 fixed the candidate distribution and recovered to R@500=67.8%. On the feature-rich S-tier pipeline, ECPO after DPO improves R@500 from 62.1% to 65.7%.
+
+## Result Index
 
 | Area | Best Known Result | Representative Run | Details |
 |------|-------------------|--------------------|---------|
