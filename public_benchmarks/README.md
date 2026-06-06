@@ -61,6 +61,21 @@ For a stronger public benchmark, increase `--max_users`, `--clusters`,
 `--embed_dim`, `--layers`, `--epochs`, `--beam_size`, and `--eval_samples`.
 CPU is enough for smoke runs; free T4/L4/A100 time can be used for larger runs.
 
+## Current Smoke Result
+
+A checked-in CPU smoke result is available at
+[results/ml-latest-small-smoke.md](results/ml-latest-small-smoke.md).
+
+Summary:
+
+| Dataset | Device | Users | Items | Model | item_recall@50 | target SID found |
+|---------|--------|-------|-------|-------|----------------|------------------|
+| `ml-latest-small` | CPU | 500 | 5,667 | dense 2-layer, dim=64 | 0.010 | 0.030 |
+
+This result validates the public path. It should not be read as a competitive
+benchmark because it uses weak title/genre hash features, a tiny model, and only
+100 eval samples.
+
 ## Outputs
 
 The output directory contains:

@@ -1,0 +1,22 @@
+{
+  "dataset": "ml-latest-small",
+  "purpose": "CPU public reproducibility smoke path, not a competitive benchmark",
+  "command": "python3 run.py public-movielens --dataset ml-latest-small --output_dir public_benchmarks/runs/ml-latest-small-smoke --epochs 2 --max_users 500 --clusters 32,32,32 --embed_dim 64 --n_heads 4 --layers 2 --batch_size 64 --eval_samples 100 --beam_size 50 --max_seq_len 96 --kmeans_iters 5",
+  "device": "cpu",
+  "n_users": 500,
+  "n_items": 5667,
+  "n_train_examples": 500,
+  "n_eval_examples": 500,
+  "n_eval_samples": 100,
+  "n_clusters_per_layer": [32, 32, 32],
+  "embed_dim": 64,
+  "layers": 2,
+  "epochs": 2,
+  "final_train_loss": 3.5338,
+  "final_train_ppl": 34.25,
+  "item_recall@1": 0.0,
+  "item_recall@5": 0.0,
+  "item_recall@10": 0.0,
+  "item_recall@50": 0.01,
+  "target_sid_found_rate": 0.03
+}

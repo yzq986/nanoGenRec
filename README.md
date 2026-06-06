@@ -36,7 +36,7 @@ The project treats recommendation research as an autonomous experimentation prob
 | Tokenizer sweep | 14 Semantic ID variants over 0.6B/4B embeddings, 4096/8192 codebooks, and FSQ hidden sizes | [EXP-049](experiments/logs/exp-049.md) |
 | Best NTP full eval | M-tier 4B SID model reaches R@500=70.4% and R@10=14.2% over ~49K eval items | [EXP-043](experiments/logs/ntp/README.md) |
 | Best post-training recovery | on-policy ECPO recovers off-policy collapse from R@500=2.0% to 67.8% | [EXP-029](experiments/logs/exp-029.md) |
-| Public reproducibility path | CPU MovieLens smoke path with title/genre SIDs, tiny NTP, and constrained beam eval | [public_benchmarks/](public_benchmarks/README.md) |
+| Public reproducibility path | CPU MovieLens smoke: 500 users, 5,667 items, tiny NTP, item_recall@50=1.0% | [public_benchmarks/results/ml-latest-small-smoke.md](public_benchmarks/results/ml-latest-small-smoke.md) |
 | Agentic workflow | inbox/outbox protocol, paper-note memory, YAML config expansion, duplicate-run checks, queue-based execution, and decision records | [research/](research/program.md), [experiments/](experiments/README.md) |
 
 ## Highlights
