@@ -32,10 +32,10 @@ ep1 (406 steps) = 1 epoch of alignment to exp038, expected to be comparable to E
 
 | Checkpoint | Steps | R@10 | R@500 | PPL | Conclusion |
 |---|---|---|---|---|---|
-| exp037-medium (ref) | — | 11.2% | 62.1% | 23.0 | SP-DPO 起点 |
-| **ep1 (1 epoch)** | 406 | **11.2%** | **62.1%** | **23.6** | ✅ 持平 ref，DPO 无损 |
-| ep2 (2 epochs) | 812 | 10.3% | 59.6% | 26.0 | ❌ NTP 开始过拟合 |
-| final (3 epochs) | 1218 | 9.3% | 52.8% | 33.3 | ❌ 严重过拟合 |
+| exp037-medium (ref) | — | 11.2% | 62.1% | 23.0 | SP-DPO starting point |
+| **ep1 (1 epoch)** | 406 | **11.2%** | **62.1%** | **23.6** | ✅ Flat ref, DPO lossless |
+| ep2 (2 epochs) | 812 | 10.3% | 59.6% | 26.0 | ❌ NTP starts to overfit |
+| final (3 epochs) | 1218 | 9.3% | 52.8% | 33.3 | ❌ Severe overfitting |
 
 **Best checkpoint**: `exp038b-hard-lam03-3ep-ep1` (ep1, R@500=62.1%)
 

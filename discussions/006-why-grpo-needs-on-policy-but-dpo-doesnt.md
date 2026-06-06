@@ -61,10 +61,10 @@ EXP-029 Switch on-policy beam: clip rate 99%→92%, R@500 2%→67.8%.
 
 | | DPO | GRPO |
 |---|---|---|
-| Gradient依赖 | 固定 preference pair 的相对排序 | group 内 advantage × importance ratio |
-| Off-policy 影响 | 步长变化，Direction不变 | importance ratio 偏离 → clip 失效 → Gradient为 0 |
-| KL 约束 | β 项隐式约束，防止漂移 | 无显式约束，policy 自由漂移 |
-| 数据需求 | 离线 preference pairs，一次收集永久有效 | 每步需要 policy 当前分布下的 candidates |
+| Gradient dependency | Fixed relative ordering of preference pairs | Advantage × importance ratio within group |
+| Off-policy influence | Step size changes, Direction remains unchanged | Importance ratio deviates → clip fails → Gradient is 0 |
+| KL constraints | β term implicit constraints to prevent drift | No explicit constraints, policy free drift |
+| Data requirements | Offline preference pairs, once collected and valid forever | Each step requires policy candidates under the current distribution |
 
 **Metaphor**: DPO is "give you two dishes and tell you which one is better" - offline data is completely sufficient. GRPO is "sample from your current menu and evaluate the relative quality" - if the menu is someone else's (ref model), the evaluation results are meaningless to you.
 

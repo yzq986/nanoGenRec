@@ -694,13 +694,13 @@ SIF upgrades the recommendation sequence from **item-level** to **sample-level**
 
 ### Key data
 
-| Metric | 数Value |
+| Metric | Value |
 |------|------|
-| Online A/B (Meituan 外卖, 5% 流量, 7 天) | CTR +2.03%, CVR +1.21%, GMV/session +1.35% |
+| Online A/B (Meituan takeout, 5% traffic, 7 days) | CTR +2.03%, CVR +1.21%, GMV/session +1.35% |
 | Heavy users (L≥500) | CTR +3.12%, CVR +1.87%, GMV/session +2.06% |
-| Cold users (L<10) | CTR +0.53%, CVR +0.31% (Target Token Sample 也有增益) |
-| 数据规模 | 1B+ impressions, 50M+ users, 5M+ items, 600+ feature fields |
-| 量化压缩 | 237x (648 bits vs 153,600 bits raw) |
+| Cold users (L<10) | CTR +0.53%, CVR +0.31% (Target Token Sample also has a gain) |
+| Data scale | 1B+ impressions, 50M+ users, 5M+ items, 600+ feature fields |
+| Quantization compression | 237x (648 bits vs 153,600 bits raw) |
 | Model config | 4 SIF Blocks, 8 heads, d0=16, L=1000, T=27 sub-tokens |
 
 ### Association with the current project
@@ -732,31 +732,31 @@ SIF upgrades the recommendation sequence from **item-level** to **sample-level**
 
 ## Priority summary
 
-| 优先级 | ID | Experiment | 原因 |
+| Priority | ID | Experiment | Reason |
 |--------|-----|------|------|
-| P1 | IDEA-gr4ad-1 | LazyAR 解码器 | 与 ARCHITECTURE.md Lazy Decoder-Only Direction一致；扩展 token 数或 beam 后必需 |
-| P1 | IDEA-onemall-1 | Query-Former 序列压缩 | 3.7x FLOP 减少，但需要更长序列场景 |
-| P1 | IDEA-glide-0 | Soft Prompt Injection | Low成本注入用户表示，Spotify 在线验证 |
-| P1 | IDEA-s2gr-0 | Stepwise Reasoning Tokens | 每步 SID 前插入 think token, 在线验证 |
-| P1 | IDEA-genrank-0 | Architecture > Training Paradigm | 小红书亿级验证，架构比Training范式更重要 |
-| P1 | IDEA-gti-0 | Grounded Token Initialization | LLM SID vocab extension 必需, LinkedIn 验证 |
-| P1 | IDEA-unirec-0 | Chain-of-Attribute Prefix | 贝叶斯理论 + HR@50 +22.6%, 桥接生成与判别 |
-| P1 | IDEA-gems-0 | Multi-Stream Temporal Decoder | 快手 100K+ 序列部署, lifelong GR 工程方案 |
-| P1 | IDEA-hpgr-0 | Session-MIM + Preference Sparse Attn | Huawei WWW 2026, 超越 HSTU 的动态稀疏注意力 |
-| P1 | IDEA-metaidx-0 | 层次化索引 + Test-Time Training | Meta 数十亿用户部署，hierarchical pruning + TTT |
-| P1 | IDEA-oneranker-0 | 统一生成与排序 | Tencent WeiXin GMV +1.34%, DC Loss 可作辅助 loss |
-| P1 | IDEA-orec-think-0 | In-Text Reasoning for GR | 快手 +0.159%, multi-validity reward 可先用于 GRPO |
-| P1 | IDEA-reg4rec-0 | MoE 并行量化 + 推理自反思 | 阿里在线验证, CORP/MSRA 组件可独立落地 |
-| ~~P2~~ ✅ | ~~IDEA-onemall-4~~ | ~~Loss-Free MoE Balancing~~ | ✅ MoE 已实现 (EXP-013), loss-free 为可选微优化 |
-| P2 | IDEA-oneloc-0 | Context-augmented Attention | 需要 encoder-decoder 架构，当前无落地场景 |
-| P2 | IDEA-oneloc-1 | Category Prompt | 需要 encoder-decoder 架构，泛化形式有价Value |
-| P2 | IDEA-oxygen-0 | Fast-Slow Thinking | 架构终极形态参考，当前Phase过于复杂 |
-| P2 | IDEA-llada-0 / IDEA-mdgr-0 | Discrete Diffusion 解码 | 非自回归新范式，MDGR 工业验证 +1.20% revenue |
-| P2 | IDEA-gr2-0 | LLM Reasoning Reranker | Meta 远期方案, 无在线 A/B |
-| P2 | IDEA-higr-0 | Hierarchical Slate Planning | Tencent 验证, 属于 reranking Phase |
-| P1 | IDEA-genrec-1 | Asymmetric Token Merger | JD SIGIR 2026, prompt 长度减半, 一个 Linear 层, 性能无损 |
-| P2 | IDEA-nsgr-0 | Next-Scale 粗到细重排序 | 美团 CTR +2.89%, 但属于 reranking Phase |
-| P2 | IDEA-sif-0 | Sample-Level Tokenization + SIF-Mixer | 美团 CTR +2.03%, ranking Model但 HGAQ 量化+factored attention 有参考价Value |
+| P1 | IDEA-gr4ad-1 | LazyAR decoder | Consistent with ARCHITECTURE.md Lazy Decoder-Only Direction; required after extending the token number or beam |
+| P1 | IDEA-onemall-1 | Query-Former sequence compression | 3.7x FLOP reduction, but requires longer sequence scenarios |
+| P1 | IDEA-glide-0 | Soft Prompt Injection | Low cost injection user said, Spotify online verification |
+| P1 | IDEA-s2gr-0 | Stepwise Reasoning Tokens | Insert think token before each step SID, online verification |
+| P1 | IDEA-genrank-0 | Architecture > Training Paradigm | Xiaohongshu billion-level verification, architecture is more important than Training Paradigm |
+| P1 | IDEA-gti-0 | Grounded Token Initialization | LLM SID vocab extension required, LinkedIn verification |
+| P1 | IDEA-unirec-0 | Chain-of-Attribute Prefix | Bayesian Theory + HR@50 +22.6%, Bridge Generation and Discrimination |
+| P1 | IDEA-gems-0 | Multi-Stream Temporal Decoder | Kuaishou 100K+ sequence deployment, lifelong GR engineering solution |
+| P1 | IDEA-hpgr-0 | Session-MIM + Preference Sparse Attn | Huawei WWW 2026, Dynamic Sparse Attention Beyond HSTU |
+| P1 | IDEA-metaidx-0 | Hierarchical index + Test-Time Training | Meta billions of user deployment, hierarchical pruning + TTT |
+| P1 | IDEA-oneranker-0 | Unified generation and sorting | Tencent WeiXin GMV +1.34%, DC Loss can be used as auxiliary loss |
+| P1 | IDEA-orec-think-0 | In-Text Reasoning for GR | Kuaishou +0.159%, multi-validity reward can be used for GRPO first |
+| P1 | IDEA-reg4rec-0 | MoE parallel quantification + reasoning self-reflection | Alibaba online verification, CORP/MSRA components can be implemented independently |
+| ~~P2~~ ✅ | ~~IDEA-onemall-4~~ | ~~Loss-Free MoE Balancing~~ | ✅ MoE has been implemented (EXP-013), loss-free is an optional micro-optimization |
+| P2 | IDEA-oneloc-0 | Context-augmented Attention | Requires encoder-decoder architecture, currently no implementation scenario |
+| P2 | IDEA-oneloc-1 | Category Prompt | Requires encoder-decoder architecture, generalized form has value Value |
+| P2 | IDEA-oxygen-0 | Fast-Slow Thinking | The ultimate form of architecture reference, the current Phase is too complex |
+| P2 | IDEA-llada-0 / IDEA-mdgr-0 | Discrete Diffusion decoding | Non-autoregressive new paradigm, MDGR industrial verification +1.20% revenue |
+| P2 | IDEA-gr2-0 | LLM Reasoning Reranker | Meta forward plan, no online A/B |
+| P2 | IDEA-higr-0 | Hierarchical Slate Planning | Tencent verification, belongs to reranking Phase |
+| P1 | IDEA-genrec-1 | Asymmetric Token Merger | JD SIGIR 2026, prompt length halved, a Linear layer, no loss in performance |
+| P2 | IDEA-nsgr-0 | Next-Scale coarse-to-fine reranking | Meituan CTR +2.89%, but belongs to reranking Phase |
+| P2 | IDEA-sif-0 | Sample-Level Tokenization + SIF-Mixer | Meituan CTR +2.03%, ranking Model but HGAQ quantification + factored attention has a reference price Value |
 
 ---
 
@@ -1055,12 +1055,12 @@ Kwai Summary Attention (KSA) is a new attention mechanism proposed by the Kuaish
 
 ### Key experimental data
 
-| Metric | Full Attention | Hybrid-KSA | 提升 |
+| Metric | Full Attention | Hybrid-KSA | Improvement |
 |------|---------------|-----------|------|
 | RULER-128K (CPT) | 65.86 | 71.67 | +5.81 |
 | RULER-128K (Scratch) | 48.75 | 65.35 | +16.60 |
-| KV Cache @128K | 18.6 GB | 7.5 GB | 2.5x 减少 |
-| MMLU (CPT) | 71.83 | 70.50 | -1.33 (微降) |
+| KV Cache @128K | 18.6 GB | 7.5 GB | 2.5x reduction |
+| MMLU (CPT) | 71.83 | 70.50 | -1.33 (slight decrease) |
 | GSM8K (Scratch) | 48.29 | 59.14 | +10.85 |
 
 **Core Advantages**:

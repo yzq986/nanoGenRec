@@ -95,14 +95,14 @@ Format:
 
 {Description of the core mechanism of the hypothesis, 1-2 sentences}
 
-| Metric | 当前Value（对照） | 预期变化 | 理由 |
+| Metric | Current Value (control) | Expected change | Reason |
 |------|--------------|---------|------|
-| clip 率 | 95% | ↓ ~20% | sampling 使 ρ≈1 by construction |
-| adv_std | ≈0 | ↑ >0.3 | 候选多样性增加，reward 方差变大 |
-| behavior_coverage | 99% | ↓ ~89% | G 从 512→64，撒网变小 |
-| behavior_mean | 0.65 | ↓ ~0.35 | coverage 下降 + 稀疏 reward |
-| kl_mean | — | ≈0 初始，随Training↑ | 新增Metric，基准待建立 |
-| R@500 | 0.678 | 待定 | 取决于 reward 信号是否足够 |
+| clip rate | 95% | ↓ ~20% | sampling so that ρ≈1 by construction |
+| adv_std | ≈0 | ↑ >0.3 | Candidate diversity increases, reward variance becomes larger |
+| behavior_coverage | 99% | ↓ ~89% | G from 512→64, the net becomes smaller |
+| behavior_mean | 0.65 | ↓ ~0.35 | coverage decrease + sparse reward |
+| kl_mean | — | ≈0 initially, with Training↑ | Add new Metric, benchmark to be established |
+| R@500 | 0.678 | To be determined | Depends on whether the reward signal is sufficient |
 ```
 
 **If an indicator is not recorded in the existing code, you must first add the indicator to the code before writing the experiment**.
@@ -135,9 +135,9 @@ If the hypothesis involves new mechanisms (such as entropy, diversity, on-policy
 
 {hypothetical core mechanism, 1-2 sentences}
 
-| Metric | 当前Value（对照） | 预期变化 | 理由 |
+| Metric | Current Value (control) | Expected change | Reason |
 |------|--------------|---------|------|
-| clip 率 | ? | ↑/↓/→ ? | ... |
+| clip rate | ? | ↑/↓/→ ? | ... |
 | kl_mean | ? | ↑/↓/→ ? | ... |
 | adv_std | ? | ↑/↓/→ ? | ... |
 | behavior_coverage | ? | ↑/↓/→ ? | ... |

@@ -11,11 +11,11 @@
 
 Align3GR's SP-DPO uses beam search to generate rejected candidates, and then divides the difficulty according to prefix n-gram match:
 
-| Difficulty | 定义 | Meaning |
+| Difficulty | Definition | Meaning |
 |-----------|------|------|
-| Easy | L0 ≠ GT | 粗粒度就Different |
-| Medium | L0 = GT, L1 ≠ GT | 粗粒度相同，Medium等难度 |
-| Hard | L0+L1 = GT, L2 ≠ GT | High度相似，仅细粒度Different |
+| Easy | L0 ≠ GT | Coarse-grained is Different |
+| Medium | L0 = GT, L1 ≠ GT | The same coarse-grainedness, Medium and other difficulties |
+| Hard | L0+L1 = GT, L2 ≠ GT | High degree of similarity, only fine-grained Different |
 
 The problem is: **beam search starts from L0 and freely samples, and the L0 of most beam paths is not equal to GT**.
 
@@ -45,11 +45,11 @@ But this is an **indirect effect**, limited by beam size and model improvement. 
 
 Directly lock the GT prefix and beam search the remaining layers:
 
-| 采样方式 | L0 | L1 | L2 | 保证产出 |
+| Sampling method | L0 | L1 | L2 | Guaranteed output |
 |---------|----|----|-----|---------|
-| Paper beam search | 采样 | 采样 | 采样 | 大部分 Easy |
-| Lock L0=GT | **固定** | 采样 | 采样 | 全部 Medium+Hard |
-| Lock L0+L1=GT | **固定** | **固定** | 采样 | 全部 Hard |
+| Paper beam search | Sampling | Sampling | Sampling | Most Easy |
+| Lock L0=GT | **Fixed** | Sampling | Sampling | All Medium+Hard |
+| Lock L0+L1=GT | **Fixed** | **Fixed** | Sampling | All Hard |
 
 Implementation: `constrained_beam_search` adds the `prefix` parameter, skips the beam search of the first P layer, and starts directly from layer P.
 
@@ -102,10 +102,10 @@ rejected is the answer that the model considers to be the most likely answer giv
 
 ## Experimental Design (EXP-017)
 
-| Config | 采样 | 目的 |
+| Config | Sampling | Purpose |
 |--------|------|------|
-| Config 2 | Easy model beam B=200（PaperMethod） | self-play baseline |
-| Config 3 | Easy model prefix-locked B=200 | 渐进锁定采样 |
+| Config 2 | Easy model beam B=200 (PaperMethod) | self-play baseline |
+| Config 3 | Easy model prefix-locked B=200 | Progressive locked sampling |
 
 The two groups share the Easy stage, only the Medium/Hard candidates are different. Compare eval indicators (PPL, Recall, depth_acc_beam).
 

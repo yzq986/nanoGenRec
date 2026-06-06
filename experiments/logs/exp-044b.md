@@ -21,18 +21,18 @@ In EXP-044, the timestamps are all 0 (the pipeline is not connected). This exper
 | exp043-s-0.6b | Baseline: abs pos + time_gap + action + segment |
 | exp044b-torope-ts05 | TO-RoPE ts=0.5 + time_gap + action + segment |
 | exp044b-torope-ts025 | TO-RoPE ts=0.25 + time_gap + action + segment |
-| exp044b-torope-ts05-notg | TO-RoPE ts=0.5 + action + segment（无 time_gap 消融）|
+| exp044b-torope-ts05-notg | TO-RoPE ts=0.5 + action + segment (no time_gap ablation) |
 
 ### Results
 
 ⚠️ **History (invalid result)**: The first eval caused timestamps=0 due to a two-layer train-infer bug, and the result was invalid (R@500≈32%). The results after repair are shown below.
 
-| Config | R@10 | R@500 | PPL | 备注 |
+| Config | R@10 | R@500 | PPL | Remarks |
 |--------|------|-------|-----|------|
 | **exp043-s-0.6b** (baseline) | **11.4%** | **61.2%** | **26.5** | abs pos + time_gap + action + seg |
 | exp044b-torope-ts05 | 12.5% | **62.3%** | 474.9 | TO-RoPE ts=0.5 + time_gap |
-| exp044b-torope-ts025 | 12.5% | **63.6%** | 467.5 | TO-RoPE ts=0.25 + time_gap ← 最佳 |
-| exp044b-torope-ts05-notg | 11.9% | **63.5%** | 480.0 | TO-RoPE ts=0.5，无 time_gap |
+| exp044b-torope-ts025 | 12.5% | **63.6%** | 467.5 | TO-RoPE ts=0.25 + time_gap ← Best |
+| exp044b-torope-ts05-notg | 11.9% | **63.5%** | 480.0 | TO-RoPE ts=0.5, no time_gap |
 
 ### Analysis
 

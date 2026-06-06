@@ -39,15 +39,15 @@ Entry: `python run.py <command>` (not `python -m gr_demo`). DDP uses `torchrun .
 
 | Command | Purpose |
 |---------|---------|
-| `preprocess-sid` | Training tokenizer + 缓存 SID 分配 |
-| `preprocess-ntp` | 构建 NTP Training数据分片 |
-| `train-ntp` | Training NTP Model（DDP via torchrun） |
+| `preprocess-sid` | Training tokenizer + cache SID assignment |
+| `preprocess-ntp` | Build NTP Training data shards |
+| `train-ntp` | Training NTP Model (DDP via torchrun) |
 | `eval-ntp` | Evaluation NTP Model |
-| `sp-dpo-prepare` | 构建 SP-DPO 偏Good对（beam search） |
-| `rf-dpo-prepare` | 构建 RF-DPO 偏Good对（用户反馈） |
-| `sp-dpo-train` | 联合 NTP+DPO 对齐Training |
-| `alignment-eval` | Evaluation对齐指标 |
-| `hyperparam` | 超参网格搜索 |
+| `sp-dpo-prepare` | Build SP-DPO partial Good pair (beam search) |
+| `rf-dpo-prepare` | Build RF-DPO Good pair (user feedback) |
+| `sp-dpo-train` | Combined NTP+DPO alignment training |
+| `alignment-eval` | Evaluation alignment index |
+| `hyperparam` | Hyperparameter grid search |
 
 ### 2.2 Experiment script template
 

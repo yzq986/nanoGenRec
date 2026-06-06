@@ -14,7 +14,7 @@ EXP-044B best (ts=0.25) R@500=63.6%, but PPL=467. Two assumptions:
 - **Fixed**: s-tier, 0.6b SID, ntp_data=exp044b-0.6b-14d (timestamps are connected)
 - **Variable**: torope_time_split, torope_layer_split
 
-| Config | 描述 | torope_time_split | torope_layer_split |
+| Config | Description | torope_time_split | torope_layer_split |
 |--------|------|-------------------|--------------------|
 | A | 2-dim + item-pos fix | 0.25 | 0.0 |
 | B | 2-dim ts=0.5 + item-pos fix | 0.50 | 0.0 |

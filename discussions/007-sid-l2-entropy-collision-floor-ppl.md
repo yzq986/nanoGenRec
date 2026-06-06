@@ -79,11 +79,11 @@ The entropy within the SID conflict group `H(y | SID=sid) = log2(k_sid)` is irre
 
 The observed values ​​of EXP-043 are consistent with the above theoretical direction:
 
-| Embedding | L2 entropy | 有效 slot | 平均冲突 k | floor PPL |
+| Embedding | L2 entropy | Effective slot | Average conflict k | floor PPL |
 |-----------|-----------|----------|-----------|-----------|
-| 0.6B      | 10.58 bits | ~1500    | ~1.3      | 12.46     |
-| 4B        | 8.10 bits  | ~275     | ~1.6      | 11.78*    |
-| 8B        | 7.17 bits  | ~145     | ~3.0      | 12.26     |
+| 0.6B | 10.58 bits | ~1500 | ~1.3 | 12.46 |
+| 4B | 8.10 bits | ~275 | ~1.6 | 11.78* |
+| 8B | 7.17 bits | ~145 | ~3.0 | 12.26 |
 
 \* 4B floor is the lowest: 4B embedding quality is good enough. Even if L2 has a slight collapse, the embedding distinction compensates for part of the conflict loss; 8B conflict is too serious (k≈3), and the embedding quality improvement is no longer enough to offset it.
 

@@ -19,10 +19,10 @@ Do not ask for confirmation — just do it after each coding round.
 
 There are two READMEs for each stage, each performing its own duties without duplication of content:
 
-| 位置 | 受众 | 内容 |
+| Location | Audience | Content |
 |------|------|------|
-| `<phase>/README.md`（`rl/`, `ntp/`, `tokenizer/`, `model/`）| 改代码的人 | FileDescription、接口、实现细节、已验证超参、踩坑记录 |
-| `experiments/logs/<phase>/README.md` | DesignExperiment的人 | EXP 列表、当前 SOTA、下一步ExperimentDirection |
+| `<phase>/README.md` (`rl/`, `ntp/`, `tokenizer/`, `model/`) | People who change the code | FileDescription, interfaces, implementation details, verified super parameters, pitfall records |
+| `experiments/logs/<phase>/README.md` | DesignExperiment people | EXP list, current SOTA, next ExperimentDirection |
 
 The two refer to each other without duplication. After each code change or experiment is completed, the corresponding two READMEs must be updated.
 
@@ -30,12 +30,12 @@ The two refer to each other without duplication. After each code change or exper
 
 `/home/dev/.conda/envs/gr` — All training /eval/preprocess tasks use this environment.
 
-| 包 | Version |
+| Package | Version |
 |----|------|
 | Python | 3.12.13 |
 | torch | 2.7.1+cu128 |
 | CUDA (driver) | 12.8 |
-| faiss-gpu | 1.14.1（GPU count=8） |
+| faiss-gpu | 1.14.1 (GPU count=8) |
 | numpy | 2.4.4 |
 | pandas | 3.0.2 |
 | pyarrow | 24.0.0 |

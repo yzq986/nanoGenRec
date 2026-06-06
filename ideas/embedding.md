@@ -258,12 +258,12 @@ Our adaptation:
 
 ### Why QFormer can solve the problem of EXP-007
 
-| 问题 | 直接 fine-tune (EXP-007) | QFormer |
+| Problem | Direct fine-tune (EXP-007) | QFormer |
 |------|---|---|
-| Gradient信号稀释 | I2I Gradient摊到 600M Parameter，约等于没有 | Gradient集Medium在 QFormer (~30-50M)，底座冻结 |
-| 语义遗忘 | cap_loss 监控不变 = Model没动 | 底座冻结 = 天然保持语义 |
-| 信息瓶颈 | 无，1024d 全部传递 | S×1024 → M×D 强制压缩，学会提取协同相关信息 |
-| 优化目标 | "微调整个表征空间" (太大) | "学会从丰富表征Medium选择什么" (更直接) |
+| Gradient signal dilution | I2I Gradient is spread to 600M Parameter, which is approximately equal to none | Gradient set Medium is in QFormer (~30-50M), the base is frozen |
+| Semantic forgetting | cap_loss monitoring unchanged = Model does not move | Base frozen = naturally maintained semantics |
+| Information bottleneck | None, all 1024d is transmitted | S×1024 → M×D forced compression, learn to extract collaborative related information |
+| Optimization goal | "Fine-tune the entire representation space" (too big) | "Learn what to choose from a rich representation medium" (more direct) |
 
 ### QFormer key design (from BLIP-2 + OneRec)
 
@@ -314,12 +314,12 @@ Output = CrossAttn(Q, K, V) (M × D)
 
 ### Differences from architecture.md IDEA-onemall-1
 
-| | IDEA-onemall-1 (architecture.md) | IDEA-onerec-3 (本 IDEA) |
+| | IDEA-onemall-1 (architecture.md) | IDEA-onerec-3 (this IDEA) |
 |---|---|---|
-| 层面 | NTP ranking Phase | Embedding/Tokenizer Phase |
-| 压缩什么 | 用户行为序列 (1205→160 tokens) | Item 多模态/文本表征 (S→M tokens) |
-| 目的 | 减少 NTP decoder FLOP | 产出用于量化的 item embedding |
-| Training信号 | NTP next-token loss | I2I contrastive + caption loss |
+| Layer | NTP ranking Phase | Embedding/Tokenizer Phase |
+| What to compress | User behavior sequence (1205→160 tokens) | Item multi-modal/textual representation (S→M tokens) |
+| Purpose | Reduce NTP decoder FLOP | Produce item embedding for quantification |
+| Training signal | NTP next-token loss | I2I contrastive + caption loss |
 
 The two are applications of QFormer at different stages. They do not conflict with each other and can coexist.
 
@@ -334,15 +334,15 @@ The two are applications of QFormer at different stages. They do not conflict wi
 
 ## Priority summary
 
-| 优先级 | ID | Experiment | 原因 |
+| Priority | ID | Experiment | Reason |
 |--------|-----|------|------|
-| ~~P0~~ P2 暂缓 | ~~IDEA-onerec-3~~ | ~~QFormer Tokenizer~~ | 暂缓 — NTP+RL 路线已取得进展，embedding 改线 ROI 不明确，RL 链路完成后再Evaluation |
-| P1 | IDEA-onerec-0 | Caption Loss (联合Training) | 已实现 `--cap_loss_weight`, 与 QFormer 配合Usage |
-| P1 | IDEA-onemall-3 | Tokenizer 属性增强 Contrastive | OneMall +1.5% HR，可在 QFormer 基础上叠加 |
-| P1 | IDEA-oneloc-3 | Side-info 融合量化Input | QFormer Input端可融合 side-info |
-| ~~P1~~ ❌ | ~~IDEA-sid-1~~ | ~~直接 fine-tune 协同信号~~ | ❌ EXP-007 full/LoRA + EXP-009 QFormer 全败，HR@50 卡在 0.02 |
-| P2 | IDEA-sid-3 | 多模态语义 ID (ESANS) | 需要多模态 embedding 基建 |
-| P1 | IDEA-marc-0 | Mid-Layer 选择 + Modular Compression | MARC SIGIR 2026 eCPM +2.82% A/B；Phase 1 (layer sweep) 几乎零成本，直接影响 SID 质量上限 |
+| ~~P0~~ P2 Suspended | ~~IDEA-onerec-3~~ | ~~QFormer Tokenizer~~ | Suspended - NTP+RL route has made progress, embedding rerouting ROI is unclear, evaluation will be done after the RL link is completed |
+| P1 | IDEA-onerec-0 | Caption Loss (joint with Training) | Implemented `--cap_loss_weight`, cooperate with QFormer Usage |
+| P1 | IDEA-onemall-3 | Tokenizer attribute enhancement Contrastive | OneMall +1.5% HR, can be superimposed on QFormer |
+| P1 | IDEA-oneloc-3 | Side-info fusion quantization Input | QFormer Input side can be fused side-info |
+| ~~P1~~ ❌ | ~~IDEA-sid-1~~ | ~~Direct fine-tune synergy signal~~ | ❌ EXP-007 full/LoRA + EXP-009 QFormer completely failed, HR@50 stuck at 0.02 |
+| P2 | IDEA-sid-3 | Multimodal Semantic ID (ESANS) | Requires multimodal embedding infrastructure |
+| P1 | IDEA-marc-0 | Mid-Layer selection + Modular Compression | MARC SIGIR 2026 eCPM +2.82% A/B; Phase 1 (layer sweep) almost zero cost, directly affects the SID quality upper limit |
 
 ---
 
@@ -414,11 +414,11 @@ Relationship with IDEA-onerec-3 (QFormer Tokenizer):
 
 **Expectation**: If MRA also holds true on Qwen3 (the paper is reproduced on Llama3/Qwen2), it should be observed that the mid-layer (layer 14-21) semantic_neighbor_HR is significantly better than the final layer (27).
 
-| 假想Result | 解读 | 下一步 |
+| Hypothetical Result | Interpretation | Next Step |
 |---------|------|-------|
-| mid > final 显著 | MRA 在我们场景成立 | 切换默认 layer, 重训 NTP，看端到端 R@K 提升 |
-| mid ≈ final | 我们的 embedding Path不受 MRA 影响（Qwen3 预Training + 无微调可能不符合 MARC Hypothesis） | 跳过 Phase 2，但至少 ruled out 一个变量 |
-| mid < final | MRA 反向 | 意外，需深入Analysis；可能我们的 MLP-FSQ 已经隐式补偿了 |
+| mid > final is significant | MRA is established in our scenario | Switch the default layer, retrain NTP, and see the end-to-end R@K improvement |
+| mid ≈ final | Our embedding Path is not affected by MRA (Qwen3 pre-Training + no fine-tuning may not comply with MARC Hypothesis) | Skip Phase 2, but at least rule out one variable |
+| mid < final | MRA reverse | Unexpected, in-depth Analysis is required; maybe our MLP-FSQ has implicitly compensated |
 
 **Phase 2 — MARC complete framework (high cost, requires fine-tune)**:
 

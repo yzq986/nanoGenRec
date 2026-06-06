@@ -10,7 +10,7 @@ This module provides two categories of **12 indicators** in total, which are use
 
 ## Table of contents
 
-- [1. Intrinsic Metrics (intrinsic indicators, no behavioral data required)] (#一intrinsic-metrics intrinsic indicators do not require behavioral data)
+- [1. Intrinsic Metrics (intrinsic indicators, no behavioral data required)] (#1-intrinsic-metrics intrinsic indicators do not require behavioral data)
   - [1. Reconstruction Loss](#1-reconstruction-loss)
   - [2. Codebook Utilization](#2-codebook-utilization)
   - [3. Token Entropy](#3-token-entropy)
@@ -18,7 +18,7 @@ This module provides two categories of **12 indicators** in total, which are use
   - [5. Effective Dimension](#5-effective-dimension)
   - [6. Semantic ID Collision](#6-semantic-id-collision)
   - [7. Cluster Balance](#7-cluster-balance)
-- [2. Behavior Metrics (behavior indicators, user behavior data is required)] (#二behavior-metrics behavior indicators require user behavior data)
+- [2. Behavior Metrics (behavior indicators, user behavior data is required)] (#2-behavior-metrics behavior indicators require user behavior data)
   - [8. User Semantic Consistency](#8-user-semantic-consistency)
   - [9. Semantic Neighbor Hit Rate](#9-semantic-neighbor-hit-rate)
   - [10. Embedding-Behavior Correlation](#10-embedding-behavior-correlation)
@@ -61,14 +61,14 @@ input_for_loss = residual # Save the normalized input for calculating loss
 
 **Main indicator**: `normalized_loss` (value range [0, +inf), the smaller the better)
 
-| Parameter | 默认Value | Description |
+| Parameter | Default Value | Description |
 |------|--------|------|
-| `normalize_residuals` | `True` | 仅对 layer 0 Input做 L2 归一化（后续层不再归一化） |
-| `chunk_size` | `50000` | 分批处理大小 |
+| `normalize_residuals` | `True` | Only perform L2 normalization on layer 0 Input (subsequent layers will no longer be normalized) |
+| `chunk_size` | `50000` | Batch processing size |
 
 **Quality Threshold**:
 
-| 等级 | 阈Value |
+| Level | Threshold Value |
 |------|------|
 | Excellent | <= 0.05 |
 | Good | <= 0.10 |
@@ -100,9 +100,9 @@ layer_values = [util_depth1, util_depth2, util_depth3]
 
 **layer_values**: `n_unique_prefix / N^depth` for each depth
 
-| Parameter | 默认Value | Description |
+| Parameter | Default Value | Description |
 |------|--------|------|
-| `chunk_size` | `50000` | 分批处理大小 |
+| `chunk_size` | `50000` | Batch processing size |
 
 **Quality Threshold**: No fixed threshold (depends on n_items / N^L ratio), status is `unknown`
 
@@ -144,13 +144,13 @@ depth=3: prefixes = ["a_b_c"] (= full SID)
 
 **layer_values**: `H_depth / log2(N^depth)` for each depth
 
-| Parameter | 默认Value | Description |
+| Parameter | Default Value | Description |
 |------|--------|------|
-| `chunk_size` | `50000` | 分批处理大小 |
+| `chunk_size` | `50000` | Batch processing size |
 
 **Quality Threshold**:
 
-| 等级 | 阈Value |
+| Level | Threshold Value |
 |------|------|
 | Excellent | >= 0.95 |
 | Good | >= 0.90 |
@@ -184,17 +184,17 @@ stats:
 
 **Main indicator**: `std` (standard deviation, the higher the better --> the stronger the discrimination)
 
-| Parameter | 默认Value | Description |
+| Parameter | Default Value | Description |
 |------|--------|------|
-| `sample_size` | `5000` | 采样数量 |
+| `sample_size` | `5000` | Number of samples |
 
 **Quality Threshold**:
 
-| 等级 | 条件 |
+| Level | Conditions |
 |------|------|
-| Excellent | std >= 0.25 **且** 0.1 <= mean <= 0.3 |
-| Good | std >= 0.20 **且** 0.1 <= mean <= 0.4 |
-| Acceptable | 其他 |
+| Excellent | std >= 0.25 **and** 0.1 <= mean <= 0.3 |
+| Good | std >= 0.20 **and** 0.1 <= mean <= 0.4 |
+| Acceptable | Others |
 
 **Example**: 5000 embeddings
 - mean=0.22, std=0.30 --> Excellent: The similarity is widely distributed and the center is reasonable
@@ -234,14 +234,14 @@ top_10_ratio = sum(S[:10]^2) / sum(S^2)
 
 **Main indicator**: `utilization_ratio = dim_95 / D` (value range [0, 1], the higher the better)
 
-| Parameter | 默认Value | Description |
+| Parameter | Default Value | Description |
 |------|--------|------|
-| `sample_size` | `10000` | PCA 采样数 |
-| `variance_thresholds` | `[0.90, 0.95, 0.99]` | 要报告的方差百分比 |
+| `sample_size` | `10000` | Number of PCA samples |
+| `variance_thresholds` | `[0.90, 0.95, 0.99]` | Percentage of variance to report |
 
 **Quality Threshold**:
 
-| 等级 | 阈Value |
+| Level | Threshold Value |
 |------|------|
 | Excellent | >= 0.70 |
 | Good | >= 0.50 |
@@ -284,7 +284,7 @@ prefix_stats[depth] = {
 
 **Quality Threshold**:
 
-| 等级 | 阈Value |
+| Level | Threshold Value |
 |------|------|
 | Excellent | <= 1% |
 | Good | <= 5% |
@@ -326,13 +326,13 @@ Gini = (2 * sum(i * x_i)) / (n * sum(x_i)) - (n+1)/n
 
 **layer_values**: Gini for each depth
 
-| Parameter | 默认Value | Description |
+| Parameter | Default Value | Description |
 |------|--------|------|
-| `chunk_size` | `50000` | 分批处理大小 |
+| `chunk_size` | `50000` | Batch processing size |
 
 **Quality Threshold**:
 
-| 等级 | 阈Value |
+| Level | Threshold Value |
 |------|------|
 | Excellent | <= 0.15 |
 | Good | <= 0.25 |
@@ -393,14 +393,14 @@ Example: Jaccard("12_34_56", "12_34_78") = 2/3 = 0.667
 
 **Main indicator**: `lift_over_random` (the higher the better, indicating that the SID encodes user preferences)
 
-| Parameter | 默认Value | Description |
+| Parameter | Default Value | Description |
 |------|--------|------|
-| `min_positive_items` | `3` | 用户最少正向交互数 |
-| `max_users` | `10000` | 最多采样用户数 |
+| `min_positive_items` | `3` | Minimum number of positive interactions by user |
+| `max_users` | `10000` | Maximum number of sampled users |
 
 **Quality Threshold**:
 
-| 等级 | 阈Value |
+| Level | Threshold Value |
 |------|------|
 | Excellent | >= 30% lift |
 | Good | >= 20% lift |
@@ -435,14 +435,14 @@ If positive_users(C) ∩ positive_users(N) is not empty → hit
 
 **Main indicator**: `mean_hit_rate` (value range [0, 1], the higher the better)
 
-| Parameter | 默认Value | Description |
+| Parameter | Default Value | Description |
 |------|--------|------|
-| `prefix_layers` | `2` | 前 N 层作为"相近"定义 |
-| `max_items` | `5000` | 最多Evaluation内容数 |
+| `prefix_layers` | `2` | First N layers defined as "close" |
+| `max_items` | `5000` | Maximum number of Evaluation contents |
 
 **Quality Threshold**:
 
-| 等级 | 阈Value |
+| Level | Threshold Value |
 |------|------|
 | Excellent | >= 15% |
 | Good | >= 10% |
@@ -476,13 +476,13 @@ If positive_users(C) ∩ positive_users(N) is not empty → hit
 
 **Main indicator**: `spearman_correlation` (value range [-1, 1], higher is better)
 
-| Parameter | 默认Value | Description |
+| Parameter | Default Value | Description |
 |------|--------|------|
-| `n_pairs` | `10000` | 采样内容对数 |
+| `n_pairs` | `10000` | Logarithm of sampling content |
 
 **Quality Threshold**:
 
-| 等级 | 阈Value |
+| Level | Threshold Value |
 |------|------|
 | Excellent | >= 0.30 |
 | Good | >= 0.20 |
@@ -520,14 +520,14 @@ separation = (neg_dist - pos_dist) / neg_dist
 
 **Main indicator**: `mean_separation` (the higher, the better, indicating that positive and negative samples are effectively separated)
 
-| Parameter | 默认Value | Description |
+| Parameter | Default Value | Description |
 |------|--------|------|
-| `min_items` | `2` | 用户最少正/负交互数 |
-| `max_users` | `5000` | 最多采样用户数 |
+| `min_items` | `2` | Minimum number of positive/negative interactions by user |
+| `max_users` | `5000` | Maximum number of sampled users |
 
 **Quality Threshold**:
 
-| 等级 | 阈Value |
+| Level | Threshold Value |
 |------|------|
 | Excellent | >= 15% |
 | Good | >= 10% |
@@ -581,10 +581,10 @@ Beam Search: retain top beam_size candidates at each step
 
 | Metric | Description |
 |------|------|
-| Perplexity | exp(avg_loss / n_layers)，随机Baseline = n_clusters |
-| Depth Acc (beam) | 前缀深度准确率：depth=d 要求 L1..Ld **全部**正确 |
-| Depth Hit@5 | Teacher Forcing 下前缀深度 top-5 命Medium：depth=d 要求 L1..Ld 全部 hit |
-| Depth Hit@10 | 同上，top-10 |
+| Perplexity | exp(avg_loss / n_layers), random Baseline = n_clusters |
+| Depth Acc (beam) | Prefix depth accuracy: depth=d requires L1..Ld **all** correct |
+| Depth Hit@5 | Teacher Forcing Lower prefix depth top-5 Command Medium：depth=d Requirements L1..Ld All hit |
+| Depth Hit@10 | Same as above, top-10 |
 
 ```
 # Beam Search prefix-depth accuracy
@@ -602,18 +602,18 @@ depth=3: L1+L2+L3 are all in top-K
 
 **layer_values**: beam search accuracy of each depth
 
-| Parameter | 默认Value | Description |
+| Parameter | Default Value | Description |
 |------|--------|------|
-| `n_items` | `10` | 历史序列长度 (item 数) |
-| `epochs` | `10` | Training轮数 |
-| `batch_size` | `512` | 批大小 |
-| `beam_size` | `5` | Beam Search 宽度 |
-| `sample_users` | `50000` | 最多采样用户数 |
-| `device` | `cuda` | Training设备 |
+| `n_items` | `10` | Historical sequence length (number of items) |
+| `epochs` | `10` | Number of training rounds |
+| `batch_size` | `512` | Batch size |
+| `beam_size` | `5` | Beam Search width |
+| `sample_users` | `50000` | Maximum number of sampled users |
+| `device` | `cuda` | Training equipment |
 
 **Quality Threshold**:
 
-| 等级 | Perplexity 阈Value |
+| Level | Perplexity Threshold Value |
 |------|------|
 | Excellent | <= 50 |
 | Good | <= 100 |
@@ -629,17 +629,17 @@ depth=3: L1+L2+L3 are all in top-K
 
 ## Overview of indicators
 
-| Metric | 主Value | Direction | 需要Model | 需要 SID | 需要行为 |
+| Metric | Main Value | Direction | Model required | SID required | Behavior required |
 |------|------|------|---------|---------|---------|
-| Reconstruction Loss | normalized_loss | 越Low越Good | Yes | No | No |
+| Reconstruction Loss | normalized_loss | The lower, the better | Yes | No | No |
 | Codebook Utilization | space_utilization | -- | No | Yes | No |
-| Token Entropy | normalized_entropy | 越High越Good | No | Yes | No |
-| Cosine Similarity | std | 越High越Good | No | No | No |
-| Effective Dimension | utilization_ratio | 越High越Good | No | No | No |
-| Semantic ID Collision | collision_rate | 越Low越Good | No | Yes | No |
-| Cluster Balance | gini | 越Low越Good | No | Yes | No |
-| User Semantic Consistency | lift_over_random | 越High越Good | No | Yes | Yes |
-| Semantic Neighbor Hit Rate | mean_hit_rate | 越High越Good | No | Yes | Yes |
-| Embedding-Behavior Correlation | spearman_corr | 越High越Good | No | No | Yes |
-| Positive-Negative Separation | mean_separation | 越High越Good | No | No | Yes |
-| Semantic ID Prediction | perplexity | 越Low越Good | No | Yes | Yes |
+| Token Entropy | normalized_entropy | The higher, the better | No | Yes | No |
+| Cosine Similarity | std | The higher, the better | No | No | No |
+| Effective Dimension | utilization_ratio | The higher, the better | No | No | No |
+| Semantic ID Collision | collision_rate | The lower the better | No | Yes | No |
+| Cluster Balance | gini | The lower, the better | No | Yes | No |
+| User Semantic Consistency | lift_over_random | The higher, the better | No | Yes | Yes |
+| Semantic Neighbor Hit Rate | mean_hit_rate | The higher, the better | No | Yes | Yes |
+| Embedding-Behavior Correlation | spearman_corr | The higher, the better | No | No | Yes |
+| Positive-Negative Separation | mean_separation | The higher, the better | No | No | Yes |
+| Semantic ID Prediction | perplexity | The lower, the better | No | Yes | Yes |

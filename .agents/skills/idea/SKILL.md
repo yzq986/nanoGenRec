@@ -18,13 +18,13 @@ Ideas are organized by improvement dimension, NOT by paper source:
 
 | File | Dimension | When to use |
 |------|-----------|-------------|
-| `ideas/tokenizer.md` | 量化Method | RQ/OPQ/FSQ/Balanced KMeans, collision, codebook utilization |
-| `ideas/embedding.md` | 表征增强 | Collaborative signals, multimodal, attribute enrichment |
-| `ideas/architecture.md` | Model架构 | Decoder design, attention, MoE, sequence compression |
-| `ideas/training.md` | Training目标 | Auxiliary losses, sample weighting, multi-behavior |
-| `ideas/rl-alignment.md` | RL 对齐 | DPO/GRPO/RSPO, reward design |
-| `ideas/inference.md` | 推理优化 | Beam search, decoding strategies |
-| `ideas/scaling.md` | 扩展性 | Scaling laws, model size vs data size |
+| `ideas/tokenizer.md` | Quantitative Method | RQ/OPQ/FSQ/Balanced KMeans, collision, codebook utilization |
+| `ideas/embedding.md` | Representation enhancement | Collaborative signals, multimodal, attribute enrichment |
+| `ideas/architecture.md` | Model architecture | Decoder design, attention, MoE, sequence compression |
+| `ideas/training.md` | Training goals | Auxiliary losses, sample weighting, multi-behavior |
+| `ideas/rl-alignment.md` | RL alignment | DPO/GRPO/RSPO, reward design |
+| `ideas/inference.md` | Inference optimization | Beam search, decoding strategies |
+| `ideas/scaling.md` | Scalability | Scaling laws, model size vs data size |
 
 ## Instructions
 
@@ -82,7 +82,7 @@ Ideas are organized by improvement dimension, NOT by paper source:
 ...
 ---
 ## Priority summary
-| 优先级 | ID | Experiment | 原因 |
+| Priority | ID | Experiment | Reason |
 |--------|-----|------|------|
 | ... | ... | ... | ... |
 ```

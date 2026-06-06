@@ -12,16 +12,16 @@ Each stage is independently measurable, and the indicator regression of the prev
 
 `ntp/baseline.py` — **NTPProbe** (original baseline)
 
-| 项目 | 现状 |
+| Project | Current Status |
 |------|------|
-| 架构 | Decoder-only (nn.TransformerDecoder) |
-| 层数 | 2 |
+| Architecture | Decoder-only (nn.TransformerDecoder) |
+| Number of layers | 2 |
 | d_model / heads / FFN | 256 / 4 / 512 (Dense) |
-| Parameter量 | ~5M |
-| 用户表示 | 无 (行为序列隐式编码) |
+| Parameter amount | ~5M |
+| User Representation | None (behavior sequence implicitly encoded) |
 | Input | 10 items × 3 SID tokens = 30 tokens |
-| 解码 | Beam search (beam=5 Training, 50 eval) |
-| Training | 滑动窗口 (input_30→target_3), per-layer CE, DDP, 1 epoch |
+| Decoding | Beam search (beam=5 Training, 50 eval) |
+| Training | Sliding window (input_30→target_3), per-layer CE, DDP, 1 epoch |
 
 ---
 
@@ -33,13 +33,13 @@ Each stage is independently measurable, and the indicator regression of the prev
 
 ### 1a — S-tier Model (`ntp/model.py`)
 
-| 项目 | NTPProbe → NTPModel |
-|------|---------------------|
-| 层数 | 2 → 6 |
+| Project | NTPProbe → NTPModel |
+|------|--------------------------|
+| Number of layers | 2 → 6 |
 | Heads | 4 → 8 |
 | FFN | Dense 512 → SwiGLU MoE (8E, top-2, expert_dim=1024) |
-| Load balancing | N/A → Loss-Free dynamic bias (替代 Switch aux loss) |
-| Parameter量 | 5M → ~39.5M total / ~11M active |
+| Load balancing | N/A → Loss-Free dynamic bias (replaces Switch aux loss) |
+| Parameter amount | 5M → ~39.5M total / ~11M active |
 
 Loss-Free MoE (DeepSeek-V2 / IDEA-onemall-4):
 ```python
@@ -77,12 +77,12 @@ Predict the next token for each position (standard LM training)
 Causal masking ensures each location only sees the past
 ```
 
-| Comparison | 滑动窗口 | Packed |
+| Comparison | Sliding Window | Packed |
 |------|----------|--------|
-| 样本数 | ~45M | ~2M (每用户 1 条) |
-| 内存 | ~40-60 GB | ~3-4 GB |
-| 数据构建 | Python for-loop (慢) | numpy vectorized (快) |
-| Training信号 | 每条只有 3 个 target token | 每个 position 都产生Gradient |
+| Number of samples | ~45M | ~2M (1 per user) |
+| Memory | ~40-60 GB | ~3-4 GB |
+| Data construction | Python for-loop (slow) | numpy vectorized (fast) |
+| Training signal | Each bar has only 3 target tokens | Each position generates Gradient |
 
 Data construction optimization:
 ```python
@@ -180,24 +180,24 @@ for beam in sorted_beams:
 
 ### Acceptance indicators
 
-| Metric | NTPProbe (baseline) | NTPModel (预期) |
+| Metric | NTPProbe (baseline) | NTPModel (expected) |
 |------|--------------------|--------------------|
-| PPL | baseline | 下降 > 30% |
-| Recall@50 | baseline | 显著提升 (trie constraint) |
-| Recall@500 | baseline | 大幅提升 (全量有效 beam) |
-| Expert 利用率 | N/A | 均匀 (loss-free bias) |
+| PPL | baseline | Decline > 30% |
+| Recall@50 | baseline | Significant improvement (trie constraint) |
+| Recall@500 | baseline | Significant improvement (full beam effective) |
+| Expert Utilization | N/A | Uniform (loss-free bias) |
 | Eval context | 30 tokens | up to 512 tokens |
-| Beam 有效率 | ~10-20% | 100% |
+| Beam effective | ~10-20% | 100% |
 
 ### File list
 
-| File | 改动 |
+| File | Change |
 |------|------|
 | `ntp/model.py` | ExpertFFN, SparseMoEBlock, TransformerLayer, NTPModel, SIDTrie, constrained_beam_search |
-| `ntp/baseline.py` | 不变 (NTPProbe 保留向后兼容) |
+| `ntp/baseline.py` | unchanged (NTPProbe remains backwards compatible) |
 | `ntp/train.py` | build_packed_sequences, PackedSequenceDataset, train_packed, EvalSequenceDataset, eval_collate_fn |
-| `ntp/eval.py` | varlen eval path, SIDTrie 构建, constrained_beam_search 调用 |
-| `ntp/__init__.py` | 导出 SIDTrie, constrained_beam_search |
+| `ntp/eval.py` | varlen eval path, SIDTrie build, constrained_beam_search call |
+| `ntp/__init__.py` | export SIDTrie, constrained_beam_search |
 
 **Risk**: Low. Each component is independently testable and backward compatible.
 
@@ -222,9 +222,9 @@ Stage 2: [prefix_1, ..., prefix_n, sid(item_1), ..., sid(item_10)] → Decoder �
 
 **design**:
 
-| 组件 | 方案 |
+| Components | Solutions |
 |------|------|
-| User embedding Source | 用户近期行为 item 的 content embedding (Qwen3-0.6B) |
+| User embedding Source | Content embedding of user’s recent behavior item (Qwen3-0.6B) |
 | Pooling | Attention-weighted pooling (learnable query) |
 | Projection | MLP(pooled_dim → embed_dim × n_prefix) → reshape |
 | n_prefix | sweep {2, 4, 8} |
@@ -277,11 +277,11 @@ Next 2 layers (SID Generation):
   - beam search expand here
 ```
 
-| 优势 | Description |
+| Advantages | Description |
 |------|------|
-| 推理加速 | beam=500 时，前 4 层不随 beam 增长，只有后 2 层线性增长 |
-| 信息交互 | 前 4 层双向 attention 比纯 causal 更Good地编码用户行为 |
-| 实现简洁 | 不需要独立 encoder，同一套 Transformer Parameter |
+| Inference acceleration | When beam=500, the first 4 layers do not grow with beam, only the last 2 layers grow linearly |
+| Information interaction | The first 4 layers of bidirectional attention encode user behavior better than pure causality |
+| Simple implementation | No independent encoder required, the same set of Transformer Parameter |
 
 Fusion Mechanism (Layer 4 → Layer 5):
 ```python
@@ -315,12 +315,12 @@ Fuse(m, s) = W_f[m * sigmoid(W_g @ s); s]
 └──────────────────────────────┘
 ```
 
-| 组件 | Config |
+| Components | Config |
 |------|------|
 | Encoder layers | 4 (bidirectional, dense FFN) |
 | Decoder layers | 4 (causal self-attn + cross-attn + MoE FFN) |
-| 多行为通道 | short-term / positive-feedback 分别嵌入后拼接 |
-| Encoder Output | 推理时缓存，beam search 只在 decoder 展开 |
+| Multi-behavior channels | short-term / positive-feedback are embedded separately and then spliced |
+| Encoder Output | Cache during inference, beam search is only expanded in decoder |
 
 **Acceptance**:
 - Compare Stage 2 Recall@K
@@ -367,19 +367,19 @@ M compressed tokens (fixed length)
   concat with short-term tokens → Encoder
 ```
 
-| Parameter | 搜索范围 |
+| Parameter | Search scope |
 |------|----------|
 | M (query tokens) | {4, 8, 16} |
 | QFormer layers | {1, 2} |
-| Input序列长度 | {50, 100, 200, 500} |
+| Input sequence length | {50, 100, 200, 500} |
 
 **Layering Strategy** (refer to OneRec + GEMs):
 
-| Time尺度 | 处理方式 | Token 数 |
+| Time scale | Processing method | Token number |
 |----------|----------|----------|
-| Short-term (≤20 items) | 直接Input, 无压缩 | 20 × 3 = 60 |
-| Mid-term (20-200 items) | Query-Former 压缩 | M = 8-16 |
-| Lifelong (200+ items) | 远期: hierarchical K-means + QFormer | 远期 |
+| Short-term (≤20 items) | Direct input, no compression | 20 × 3 = 60 |
+| Mid-term (20-200 items) | Query-Former compression | M = 8-16 |
+| Lifelong (200+ items) | Forward: hierarchical K-means + QFormer | Forward |
 
 **Acceptance**:
 - Fixed FLOP budget: Recall@K with different sequence lengths
@@ -434,11 +434,11 @@ attribute token attribute token
 
 ### Decision basis
 
-| 条件 | 选择 |
+| Conditions | Selection |
 |------|------|
-| 早期 token 错误率High, 属性数据不可用 | 选 A (Reasoning Tokens) |
-| 属性数据可用, beam search 空间过大 | 选 B (CoA Prefix) |
-| 两者都可以 | 选 B (理论保证更强, 线上效果更Good) |
+| Early token error rate is high, attribute data is unavailable | Choose A (Reasoning Tokens) |
+| Attribute data is available, beam search space is too large | Select B (CoA Prefix) |
+| Both are possible | Choose B (theoretical guarantee is stronger, the online effect is better) |
 
 **Acceptance**:
 - Recall@K improvement
@@ -455,13 +455,13 @@ attribute token attribute token
 
 **Source**: OneRec ECPO + IDEA-oxygen-0
 
-| 组件 | 方案 |
+| Components | Solutions |
 |------|------|
-| Reward Model | Multi-tower P-Score (ctr/lvtr/ltr/vtr towers + 聚合) |
-| SFT | RSFT: 过滤底部 50% sessions (按 play duration), 监督微调 |
+| Reward Model | Multi-tower P-Score (ctr/lvtr/ltr/vtr towers + aggregation) |
+| SFT | RSFT: filter bottom 50% sessions (by play duration), supervise fine-tuning |
 | RL | ECPO (Early Clipped GRPO): group_size = 4× beam |
-| 推理 | Beam 扩大到 Pass@512 |
-| 多场景 | SA-GCPO (远期, 当前单场景) |
+| Reasoning | Beam expanded to Pass@512 |
+| Multiple scenarios | SA-GCPO (forward, current single scenario) |
 
 **No rush for this stage**: OneRec paper and GenRank (IDEA-genrank-0) both prove **Architecture > Training Paradigm**. Get the architecture right first and then do RL.
 
@@ -495,11 +495,11 @@ Strong baseline Verified users Inference acceleration Multi-scale 500+ sequences
 
 ## IDEA not included in the current path but worthy of attention
 
-| IDEA | 理由 | 何时考虑 |
+| IDEA | Reasons | When to consider |
 |------|------|----------|
-| IDEA-llada-0 (Discrete Diffusion) | 全新解码范式, 工程复杂度High | Stage 5 后如果 AR 到瓶颈 |
-| IDEA-oxygen-0 (Fast-Slow Thinking) | 需要 LLM 推理环节, 当前过于复杂 | Stage 6 之后 |
-| IDEA-gr2-0 (LLM Reranker) | 属于 reranking, 非 retrieval | 有独立 reranking 需求时 |
-| IDEA-higr-0 (Hierarchical Slate) | 属于 reranking, 5x 推理加速 | slate 推荐场景 |
-| IDEA-hpgr-0 (Session-MIM) | 需要 session 切分 + 两PhaseTraining | 序列足够长时 |
-| IDEA-gti-0 (Grounded Token Init) | 针对 LLM vocab extension | 走 LLM CPT 路线时 |
+| IDEA-llada-0 (Discrete Diffusion) | New decoding paradigm, high engineering complexity | If AR reaches a bottleneck after Stage 5 |
+| IDEA-oxygen-0 (Fast-Slow Thinking) | Requires LLM reasoning, currently too complex | After Stage 6 |
+| IDEA-gr2-0 (LLM Reranker) | Belongs to reranking, not retrieval | When there is a need for independent reranking |
+| IDEA-higr-0 (Hierarchical Slate) | Belongs to reranking, 5x inference acceleration | slate recommended scenarios |
+| IDEA-hpgr-0 (Session-MIM) | Requires session splitting + two PhaseTraining | When the sequence is long enough |
+| IDEA-gti-0 (Grounded Token Init) | For LLM vocab extension | When taking the LLM CPT route |

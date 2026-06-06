@@ -50,12 +50,12 @@ Training: 1 epoch, batch=512, lr=1e-3, CosineAnnealing
 
 ### Key experimental data
 
-| Experiment | 发现 | 关键Metric |
+| Experiment | Discovery | Key Metric |
 |------|------|---------|
-| EXP-013 | S-tier NTP baseline 建立 | PPL=27.05, R@500=58.5% |
-| EXP-014 | ENTP 负样本导出完成 | 130M 正样本行, 31% 有负样本 |
+| EXP-013 | S-tier NTP baseline established | PPL=27.05, R@500=58.5% |
+| EXP-014 | ENTP negative sample export completed | 130M positive sample rows, 31% have negative samples |
 | EXP-015 | Scaling law L(N)=2.522+2055/N^0.456 | irreducible loss=2.522 (PPL≈12.5), M+ loss=2.94 |
-| EXP-016 | Data recency > volume, 14d 最优 | U-shaped loss curve, 更多数据反而更差 |
+| EXP-016 | Data recency > volume, 14d optimal | U-shaped loss curve, more data makes it worse |
 
 **Core insight**: Tokenizer (MLP-FSQ 32-bit) is the current bottleneck rather than model size. M+ (101M) only reduces loss by 0.06 (2.9960→2.9371) compared to S (17.5M). Improving the training signal (contrastive loss, ENTP) is more effective than scaling up the model.
 
@@ -521,12 +521,12 @@ Only do iid→L0 token mapping.
 
 **Data verification - PySpark export vs old streaming walk comparison (03-01~03-31)**:
 
-| Metric | PySpark 导出 | 旧流式 walk (对照) | Description |
+| Metric | PySpark Export | Old Streaming Walk (Contrast) | Description |
 |---|---|---|---|
-| 总曝光行 | ~1.19B | 1,185,707,891 | 一致 |
+| Total Exposure Rows | ~1.19B | 1,185,707,891 | Consistent |
 | Positives (action_bitmap > 0) | 130,995,419 | 124,893,764 | +4.9% |
 | Users | 4,608,606 | 3,042,069 | +51% |
-| 有负样本 | 40,761,718 (31.1% row级) | 2,084,314 (68.5% user级) | 口径Different |
+| There are negative samples | 40,761,718 (31.1% row level) | 2,084,314 (68.5% user level) | Caliber Different |
 
 Difference analysis:
 - **Positives +4.9%**: PySpark does not filter iids outside the SID dictionary, which is ~6M more. The `iid ∈ SID` of `_build_user_items()` on the Python side is filtered and does not affect the final sequence.
@@ -729,26 +729,26 @@ If multiple business expansion is required:
 
 ## Priority summary
 
-| 优先级 | ID | Experiment | 原因 |
+| Priority | ID | Experiment | Reason |
 |--------|-----|------|------|
-| ~~P0~~ ✅ | ~~IDEA-mtgr-0~~ | ~~User-Level Packing + Causal Mask~~ | ✅ 已实现 — `train_packed()` EXP-013 起标配 |
-| ~~P0~~ ❌ | ~~IDEA-onemall-0~~ | ~~NTP In-Batch Contrastive Loss~~ | ❌ EXP-022 负Result：SID 离散空间与 InfoNCE 不兼容 |
-| P1 | IDEA-sid-4 | Token-Space MTP 辅助 Loss | RPG 证明 token-space CE > item-space CE，冷启动友Good |
-| P1 | IDEA-gr4ad-2 | Value-Aware Training | 丰富Training信号，与 IDEA-sid-1 互补 |
-| P1 | IDEA-oneloc-5 | Multi-behavior 序列融合 | Low成本区分Different行为强度 |
-| P1 | IDEA-plum-0 | LLM Continued Pre-Training | YouTube 数十亿用户验证，利用预Training知识 |
-| P1 | IDEA-onerec-1 | RSFT 过滤Low质量Training样本 | 零成本数据质量提升，OneRec 标配 |
-| P1 | IDEA-dualgr-0 | Exposure-Aware NTP Loss | 快手 WWW 2026, 零架构改动引入负信号 |
-| P1 | IDEA-stamp-0 | Semantic Pruning + MTP | 解决 OPQ 长 SID 的Training效率, 1.23x 加速 |
-| P1 | IDEA-tbg-0 | Next Session Prediction + Data Recency | 阿里验证 scaling law, data recency > volume |
-| P1 | IDEA-hstu1b-0 | Task Decomposition (Feedback + Next-Item) | KDD 2026, 历史最大提升, 1B Parameter scaling |
-| P2 | IDEA-sid-5 | Codebook Embedding 聚合 | 依赖 IDEA-sid-0 Phase 2，短 ID 下收益不大 |
-| P2 | IDEA-onerec-2 | SID 替代 VID Input | 大Model场景下有价Value，当前无需 |
-| P2 | IDEA-mbgr-0 | Multi-Business Prediction + BID | 美团部署, 多业务扩展时参考 |
-| P1 | IDEA-sigma-0 | 指令驱动多任务 GR + 自适应融合 | AliExpress 在线验证, 多任务扩展Direction |
-| P1 | IDEA-lemur-0 | 端到端多模态 + Memory Bank | Douyin QAUC +0.81%, Memory Bank Low成本可先验证 |
-| P1 | IDEA-genrec-0 | Page-wise NTP 多标签页面级监督 | JD SIGIR 2026, +9.5% click, 幻觉率降 50%, 推理不变 |
-| P1 | IDEA-rclrec-0 | 反向课程学习稀疏转化 | Alibaba +2.09% revenue, decoder prefix 额外监督 |
+| ~~P0~~ ✅ | ~~IDEA-mtgr-0~~ | ~~User-Level Packing + Causal Mask~~ | ✅ Implemented — `train_packed()` Standard configuration starting from EXP-013 |
+| ~~P0~~ ❌ | ~~IDEA-onemall-0~~ | ~~NTP In-Batch Contrastive Loss~~ | ❌ EXP-022 Negative Result: SID discrete space is incompatible with InfoNCE |
+| P1 | IDEA-sid-4 | Token-Space MTP auxiliary Loss | RPG proves token-space CE > item-space CE, cold start friend Good |
+| P1 | IDEA-gr4ad-2 | Value-Aware Training | Enrich training signals, complementary to IDEA-sid-1 |
+| P1 | IDEA-oneloc-5 | Multi-behavior sequence fusion | Low cost distinguishes Different behavior intensity |
+| P1 | IDEA-plum-0 | LLM Continued Pre-Training | YouTube billions of user verification, leveraging pre-training knowledge |
+| P1 | IDEA-onerec-1 | RSFT filtering Low quality Training sample | Zero-cost data quality improvement, OneRec standard |
+| P1 | IDEA-dualgr-0 | Exposure-Aware NTP Loss | Kuaishou WWW 2026, zero architectural changes introduce negative signals |
+| P1 | IDEA-stamp-0 | Semantic Pruning + MTP | Solve the training efficiency of OPQ long SID, 1.23x acceleration |
+| P1 | IDEA-tbg-0 | Next Session Prediction + Data Recency | Alibaba verification scaling law, data recency > volume |
+| P1 | IDEA-hstu1b-0 | Task Decomposition (Feedback + Next-Item) | KDD 2026, the largest improvement in history, 1B Parameter scaling |
+| P2 | IDEA-sid-5 | Codebook Embedding aggregation | Depends on IDEA-sid-0 Phase 2, little benefit from short ID |
+| P2 | IDEA-onerec-2 | SID replaces VID Input | Valuable Value in large Model scenarios, currently not needed |
+| P2 | IDEA-mbgr-0 | Multi-Business Prediction + BID | Meituan deployment, reference for multi-business expansion |
+| P1 | IDEA-sigma-0 | Instruction-driven multi-tasking GR + adaptive fusion | AliExpress online verification, multi-tasking extension Direction |
+| P1 | IDEA-lemur-0 | End-to-end multi-modal + Memory Bank | Douyin QAUC +0.81%, Memory Bank Low cost can be verified first |
+| P1 | IDEA-genrec-0 | Page-wise NTP multi-label page-level supervision | JD SIGIR 2026, +9.5% click, hallucination rate reduced by 50%, inference unchanged |
+| P1 | IDEA-rclrec-0 | Reverse curriculum learning sparse transformation | Alibaba +2.09% revenue, decoder prefix additional supervision |
 
 ---
 

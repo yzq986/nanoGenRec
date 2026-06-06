@@ -42,11 +42,11 @@ RF-DPO: chosen = what users like, rejected = what users don’t like (real feedb
 
 User feedback is divided into three levels:
 
-| 反馈 | 信号 | 例子 |
+| Feedback | Signal | Example |
 |------|------|------|
-| Liked | 显式正向 | 点赞、购买、收藏 |
-| Neutral | 隐式负向 | 曝光未点击 |
-| Disliked | 显式负向 | 点了"不感兴趣" |
+| Liked | Explicitly positive | Like, purchase, collect |
+| Neutral | Implicit negative | Exposure without clicks |
+| Disliked | Explicit negative | Clicked "Not interested" |
 
 RF-DPO also progresses in two stages:
 
@@ -59,18 +59,18 @@ Hard stage: chosen = liked, rejected = neutral (Subtle distinction: Why was it e
 
 | | SP-DPO | RF-DPO |
 |--|--------|--------|
-| 信号Source | Model自博弈 | 用户真实行为 |
-| 评判标准 | 预测准不准 | 用户喜不喜欢 |
-| 对齐目标 | 生成准确性 | **业务目标**（CTR/转化/留存） |
-| 负样本质量 | 可能误伤Good item | 由用户行为定义，更可靠 |
+| Signal Source | Model Self-Game | User’s Real Behavior |
+| Judgment criteria | Is the prediction accurate | Does the user like it or not |
+| Align Goals | Generate Accuracy | **Business Goals** (CTR/Conversions/Retention) |
+| Negative sample quality | Good items may be accidentally damaged | Defined by user behavior, more reliable |
 
 ### Ablation results (Align³GR, Instruments dataset)
 
 | Method | Recall@10 | vs SP-DPO |
 |------|-----------|-----------|
 | Progressive SP-DPO | 0.1396 | — |
-| + RF-DPO (无渐进) | 0.1414 | +1.3% |
-| + RF-DPO (有渐进) | **0.1442** | **+3.3%** |
+| + RF-DPO (no progression) | 0.1414 | +1.3% |
+| + RF-DPO (with gradient) | **0.1442** | **+3.3%** |
 
 ### Limitations of RF-DPO
 
@@ -109,22 +109,22 @@ Step 4: Optimize with clipped surrogate loss (same clip mechanism as PPO)
 
 | | DPO | GRPO |
 |--|-----|------|
-| Comparison方式 | 1 chosen vs N rejected（二分法） | G 个候选连续排序（相对优势） |
-| 信息利用 | 只用最Good和最差 | **全部候选都产生Gradient** |
-| Reward Source | 隐式（偏Good对蕴含的） | **显式 reward model 打分** |
-| 优化目标 | 拉开 chosen/rejected 的概率差距 | 按 advantage 加权调整所有候选的概率 |
+| Comparison method | 1 chosen vs N rejected (dichotomy) | G candidate continuous ranking (relative advantage) |
+| Information utilization | Only use the best and worst | **All candidates generate Gradient** |
+| Reward Source | Implicit (partially Good vs. implicit) | **Explicit reward model scoring** |
+| Optimization goal | Widen the probability gap between chosen/rejected | Adjust the probabilities of all candidates by advantage weighting |
 
 ### Specific examples
 
 The model generated 5 candidates, reward model scored:
 
-| 候选 | Reward | Advantage (归一化后) | GRPO 做什么 |
+| Candidate | Reward | Advantage (after normalization) | What GRPO does |
 |------|--------|---------------------|------------|
-| A | 0.9 | +1.5 | 大幅推High概率 |
-| B | 0.7 | +0.5 | 适度推High |
-| C | 0.5 | 0.0 | 几乎不动 |
-| D | 0.3 | -0.5 | 适度压Low |
-| E | 0.1 | -1.5 | 大幅压Low |
+| A | 0.9 | +1.5 | Largely push High probability |
+| B | 0.7 | +0.5 | Moderately recommend High |
+| C | 0.5 | 0.0 | Barely moving |
+| D | 0.3 | -0.5 | Moderate pressure Low |
+| E | 0.1 | -1.5 | Significantly suppress Low |
 
 The DPO will only see A (chosen) vs E (rejected), and the B/C/D in between are completely ignored.
 GRPO assigns gradient signals of varying strengths to each of the 5 candidates - **much more information efficient**.
@@ -207,12 +207,12 @@ The online effect of Format reward: **+0.13% App Stay Time, +0.30% Watch Time**.
 
 | Parameter | Value | Description |
 |------|-----|------|
-| δ (early clip margin) | 0.1 | 控制负 advantage 的最大 ratio |
+| δ (early clip margin) | 0.1 | Controls the maximum ratio of negative advantage |
 | Group size (G) | 512 | ~4× inference Pass@K |
-| RL 用户比例 | 1% | 从 RSFT 数据流Medium随机抽取 |
-| Format reward K | 5 | 从 128 候选Medium随机选 |
-| 采样策略 | Beam search | 优于 top-k/top-p（因为 SID 是 trie 结构） |
-| Reference model | On-policy | 优于 off-policy（离线），但在线差异小 |
+| RL user ratio | 1% | Randomly selected from RSFT data flow Medium |
+| Format reward K | 5 | Randomly selected from 128 candidate Mediums |
+| Sampling strategy | Beam search | Better than top-k/top-p (because SID is a trie structure) |
+| Reference model | On-policy | Better than off-policy (offline), but the online difference is small |
 
 ### Group Size Ablation (OneRec, Online)
 
@@ -260,11 +260,11 @@ ECPO "GRPO + early clip to repair stability + format reward to maintain legality
 
 ## Practical path to our project
 
-| Phase | Method | 前置依赖 | 复杂度 | 新增模块 |
+| Phase | Method | Pre-dependency | Complexity | New module |
 |------|------|---------|--------|---------|
-| 1 | SP-DPO | 只需当前 NTP Model | Low | DPO trainer + preference pair 构造 |
-| 2 | RF-DPO | 需要用户行为标签（clicked/not-clicked） | Low-Medium | 行为反馈 pair 构造 |
-| 3 | GRPO | 需要Training reward model | Medium-High | reward model + group sampling |
-| 4 | ECPO | 在 GRPO 基础上改 clip + 加 format reward | High | early clip + format reward + RSFT |
+| 1 | SP-DPO | Only current NTP Model | Low | DPO trainer + preference pair construction |
+| 2 | RF-DPO | Requires user behavior tag (clicked/not-clicked) | Low-Medium | Behavior feedback pair construction |
+| 3 | GRPO | Requires Training reward model | Medium-High | reward model + group sampling |
+| 4 | ECPO | Modify clip + add format reward based on GRPO | High | early clip + format reward + RSFT |
 
 **Current Recommendation**: Start with SP-DPO (minimum front-end dependencies), and gradually upgrade after verifying the DPO framework.

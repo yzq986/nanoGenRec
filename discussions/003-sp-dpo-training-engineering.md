@@ -106,15 +106,15 @@ This is why the final solution is to directly limit the total amount of B×K ins
 
 ### Final graphics memory configuration
 
-| 组件 | 显存 |
+| Components | Video Memory |
 |------|------|
 | ModelParameter (17.5M, bf16) | ~35 MB |
 | Optimizer states (Adam, fp32) | ~140 MB |
-| NTP 激活 (B=46, T=510) | ~10 GB |
-| → NTP backward 后释放 | 0 |
+| NTP activation (B=46, T=510) | ~10 GB |
+| → Release after NTP backward | 0 |
 | Ref no_grad forward (B×K=84, chunked) | ~1 GB peak |
 | Policy with_grad forward (B×K=84) | ~19 GB |
-| 杂项 (buffers, fragmentation) | ~2-3 GB |
+| Miscellaneous (buffers, fragmentation) | ~2-3 GB |
 | **Total peak** | **~22-25 GB** |
 
 There's plenty of headroom on the 40GB A100.
@@ -292,10 +292,10 @@ Reserved as an optional optimization for EXP-019+.
 
 ## Summary
 
-| 问题 | 解法 | 要点 |
+| Problem | Solution | Key Points |
 |------|------|------|
-| NTP+DPO 计算图共存 OOM | 分离 backward | NTP backward 先释放，再做 DPO |
-| B×K 爆炸 | 限制 batch=4, n_rej=20 | with-grad forward 无法 micro-batch |
-| DDP + 双 backward 不兼容 | 手动 all-reduce | 去掉 DDP wrapper，显式同步 |
-| MoE + gradient checkpoint | 放弃 checkpointing | Loss-Free bias 非确定性路由 |
-| 显存波动 | 正常 | NTP 释放→DPO 分配的周期 |
+| NTP+DPO calculation graph coexistence OOM | Separation backward | NTP backward release first, then do DPO |
+| B×K explosion | Limit batch=4, n_rej=20 | With-grad forward cannot micro-batch |
+| DDP + dual backward incompatible | Manual all-reduce | Remove DDP wrapper, explicit synchronization |
+| MoE + gradient checkpoint | Give up checkpointing | Loss-Free bias non-deterministic routing |
+| Video memory fluctuation | Normal | NTP release→DPO allocation cycle |

@@ -57,7 +57,7 @@ This experiment transplants all verified optimizations to L-tier (scale-07, 101.
 
 ### Hypothesis
 
-| Metric | S-tier + TO-RoPE + gate | M-tier bare | 预期 L-tier |
+| Metric | S-tier + TO-RoPE + gate | M-tier bare | Expected L-tier |
 |------|------------------------|-------------|-------------|
 | R@500 | 63.9% | 70.2% | ~72-74% |
 | PPL | 22.7 | 18.5 | ~17-19 |
@@ -231,11 +231,11 @@ The utilization rate of the relative theoretical maximum entropy in parentheses 
 Use S-tier (N≈17.5M active) and M-tier (N≈71.6M active) to connect two points, and inversely deduce the intrinsic floor of each SID (fixed scaling index c=0.456, fitting `L(N) = floor + b/N^c`):
 
 | SID | Joint entropy | floor loss | **floor PPL** | scaling b |
-|-----|--------------|-----------|--------------|-----------|
-| exp013 (旧 0.6B) | — | 2.522 | **12.45** | 2055 |
+|-----|---------------|-----------|---------------|-----------|
+| exp013 (old 0.6B) | — | 2.522 | **12.45** | 2055 |
 | exp026-0.6b | 20.05 bits | 2.523 | **12.46** | 1517 |
-| exp026-4b   | 20.02 bits | 2.466 | **11.78** | 1299 |
-| exp026-8b   | 19.95 bits | 2.507 | **12.26** | 1047 |
+| exp026-4b | 20.02 bits | 2.466 | **11.78** | 1299 |
+| exp026-8b | 19.95 bits | 2.507 | **12.26** | 1047 |
 
 **Key Findings**:
 1. **4B SID floor is the lowest (PPL=11.78)**. It is the tokenizer with the highest theoretical upper limit among the three, which is 0.68 PPL lower than 0.6B.
@@ -303,19 +303,19 @@ This experiment is extended to a complete h-dim sweep (empirical formula fitting
 
 **⚠️ Important bug (discovered on 2026-04-30)**: EXP-045 All newly run preprocess-sids use `num_clusters=1024` (default value), while exp026 uses `num_clusters=4096`. exp-045.sh has `--fsq_levels 12d_4096` but misses `--num_clusters 4096`, causing KMeans clustering to be under-constrained. **All data in the exp045-* directory cannot be directly compared with exp026. The conclusion needs to be verified by re-running `--num_clusters 4096`. **exp026 series data remains credible.
 
-| Model | dim | h | h/dim | collision | Gini_d2 | n_items | num_clusters | 备注 |
+| Model | dim | h | h/dim | collision | Gini_d2 | n_items | num_clusters | Remarks |
 |-------|-----|---|-------|-----------|---------|---------|--------------|------|
 | 0.6b | 1024 | 32 | 0.031 | 9.42% | 0.5448 | 1,110,697 | **1024** | ⚠️ num_clusters bug |
-| 0.6b | 1024 | **64** | 0.063 | 2.21% | 0.5448 | 1,110,697 | **1024** | ⚠️ num_clusters bug，重跑 |
-| ~~0.6b~~ | ~~1024~~ | ~~64~~ | ~~0.063~~ | ~~0.49%~~ | ~~—~~ | ~~1,096,364~~ | ~~4096~~ | ~~数据集Different，作废~~ |
+| 0.6b | 1024 | **64** | 0.063 | 2.21% | 0.5448 | 1,110,697 | **1024** | ⚠️ num_clusters bug, rerun |
+| ~~0.6b~~ | ~~1024~~ | ~~64~~ | ~~0.063~~ | ~~0.49%~~ | ~~—~~ | ~~1,096,364~~ | ~~4096~~ | ~~Data set Different, invalid~~ |
 | 0.6b | 1024 | 128 | 0.125 | 1.25% | 0.5448 | 1,110,697 | **1024** | ⚠️ num_clusters bug |
 | 0.6b | 1024 | 256 | 0.250 | 1.44% | 0.5448 | 1,110,697 | **1024** | ⚠️ num_clusters bug |
-| 4b | 2560 | 64 | 0.025 | 2.76% | 0.3535 | 1,110,697 | 4096 | 复用 exp026，**可信** |
+| 4b | 2560 | 64 | 0.025 | 2.76% | 0.3535 | 1,110,697 | 4096 | Reuse exp026, **Trusted** |
 | 4b | 2560 | 128 | 0.050 | 5.56% | 0.5740 | 1,110,697 | **1024** | ⚠️ num_clusters bug |
 | 4b | 2560 | 512 | 0.200 | 3.13% | 0.5740 | 1,110,697 | **1024** | ⚠️ num_clusters bug |
 | 4b | 2560 | 1024 | 0.400 | 2.99% | 0.5740 | 1,110,697 | **1024** | ⚠️ num_clusters bug |
-| 8b (ref) | 4096 | 64 | 0.016 | 5.44% | 0.3725 | 1,110,695 | 4096 | 复用 exp026，**可信** |
-| **exp026-0.6b-14d (ref)** | 1024 | 64 | 0.063 | **0.49%** | **0.3316** | 1,096,364 | **4096** | **基准，num_clusters 正确** |
+| 8b (ref) | 4096 | 64 | 0.016 | 5.44% | 0.3725 | 1,110,695 | 4096 | Reuse exp026, **Trusted** |
+| **exp026-0.6b-14d (ref)** | 1024 | 64 | 0.063 | **0.49%** | **0.3316** | 1,096,364 | **4096** | **baseline, num_clusters correct** |
 
 Gini_d2 = L1+L2 prefix distribution Gini coefficient (FORGE proxy, the lower the more uniform, positively related to NTP L2 prediction difficulty).
 
@@ -362,10 +362,10 @@ In addition: time_gap_emb was previously blocked by the conditional block of `us
 
 | Config | Description |
 |--------|------|
-| exp044-baseline | absolute pos + segment + time_gap + action（≡ exp043-s-0.6b，未重训）|
-| exp044-torope-ts05 | TO-RoPE time_split=0.5 + segment + action（time_gap 被屏蔽 bug）|
-| exp044-torope-ts025 | TO-RoPE time_split=0.25 + segment + action（time_gap 被屏蔽 bug）|
-| exp044-torope-ts05-noseg | TO-RoPE time_split=0.5 + action only（无 segment）|
+| exp044-baseline | absolute pos + segment + time_gap + action (≡ exp043-s-0.6b, not retrained) |
+| exp044-torope-ts05 | TO-RoPE time_split=0.5 + segment + action (time_gap is blocked bug) |
+| exp044-torope-ts025 | TO-RoPE time_split=0.25 + segment + action (time_gap is blocked bug) |
+| exp044-torope-ts05-noseg | TO-RoPE time_split=0.5 + action only (no segment) |
 
 ### Results
 
@@ -462,7 +462,7 @@ In EXP-044, the timestamps are all 0 (the pipeline is not connected). This exper
 | exp043-s-0.6b | Baseline: abs pos + time_gap + action + segment |
 | exp044b-torope-ts05 | TO-RoPE ts=0.5 + time_gap + action + segment |
 | exp044b-torope-ts025 | TO-RoPE ts=0.25 + time_gap + action + segment |
-| exp044b-torope-ts05-notg | TO-RoPE ts=0.5 + action + segment（无 time_gap 消融）|
+| exp044b-torope-ts05-notg | TO-RoPE ts=0.5 + action + segment (no time_gap ablation) |
 
 ### Results
 
@@ -470,12 +470,12 @@ In EXP-044, the timestamps are all 0 (the pipeline is not connected). This exper
 
 ⚠️ **2026-04-30 re-eval**: Fixed teacher-forced eval timestamps bug (previously all zeros), PPL has been corrected to true values.
 
-| Config | R@10 | R@500 | PPL | L2 PPL | 备注 |
+| Config | R@10 | R@500 | PPL | L2 PPL | Remarks |
 |--------|------|-------|-----|--------|------|
 | **exp043-s-0.6b** (baseline) | **11.4%** | **61.2%** | **26.5** | — | abs pos + time_gap + action + seg |
 | exp044b-torope-ts05 | 8.5% | 53.8% | 41.7 | 18.5 | TO-RoPE ts=0.5 + time_gap |
 | exp044b-torope-ts025 | — | **54.3%** | **47.5** | 27.7 | TO-RoPE ts=0.25 + time_gap ← best R@500 |
-| exp044b-torope-ts05-notg | 8.8% | 56.2% | 40.8 | 18.0 | TO-RoPE ts=0.5，无 time_gap |
+| exp044b-torope-ts05-notg | 8.8% | 56.2% | 40.8 | 18.0 | TO-RoPE ts=0.5, no time_gap |
 
 ### Analysis
 
@@ -665,7 +665,7 @@ ECPO (δ=0.1) reproduces the exp029 magnitude improvement (+4pp) on the features
 | exp037-medium (SP-DPO, ref) | - | 62.1% | - | - |
 | exp038b-ep1 (RF-DPO) | - | 62.1% | - | - |
 | **exp039b-ecpo (this)** | **11.8%** | **65.7%** | **20.0** | **182min** |
-| exp020-hard-lam03 (SOTA 无Feature) | 14.1% | 66.2% | 16.3 | - |
+| exp020-hard-lam03 (SOTA no Feature) | 14.1% | 66.2% | 16.3 | - |
 
 ### Analysis
 
@@ -748,10 +748,10 @@ ep1 (406 steps) = 1 epoch of alignment to exp038, expected to be comparable to E
 
 | Checkpoint | Steps | R@10 | R@500 | PPL | Conclusion |
 |---|---|---|---|---|---|
-| exp037-medium (ref) | — | 11.2% | 62.1% | 23.0 | SP-DPO 起点 |
-| **ep1 (1 epoch)** | 406 | **11.2%** | **62.1%** | **23.6** | ✅ 持平 ref，DPO 无损 |
-| ep2 (2 epochs) | 812 | 10.3% | 59.6% | 26.0 | ❌ NTP 开始过拟合 |
-| final (3 epochs) | 1218 | 9.3% | 52.8% | 33.3 | ❌ 严重过拟合 |
+| exp037-medium (ref) | — | 11.2% | 62.1% | 23.0 | SP-DPO starting point |
+| **ep1 (1 epoch)** | 406 | **11.2%** | **62.1%** | **23.6** | ✅ Flat ref, DPO lossless |
+| ep2 (2 epochs) | 812 | 10.3% | 59.6% | 26.0 | ❌ NTP starts to overfit |
+| final (3 epochs) | 1218 | 9.3% | 52.8% | 33.3 | ❌ Severe overfitting |
 
 **Best checkpoint**: `exp038b-hard-lam03-3ep-ep1` (ep1, R@500=62.1%)
 
@@ -843,17 +843,17 @@ exp036-B (NTP+feat) → EXP-037 SP-DPO → EXP-038 RF-DPO → EXP-039 ECPO
 
 ### Hypothesis
 
-| Metric | exp036-B (NTP+feat) | 预期变化 | 理由 |
+| Metric | exp036-B (NTP+feat) | Expected changes | Reasons |
 |------|---------------------|---------|------|
-| R@10 | 10.9% | ↑ ~13% | SP-DPO Easy+Medium 在 exp017 Medium R@10 从 9.9%→12.5%，features 版预期类似幅度 |
-| R@500 | 59.0% | → 持平或微降 | SP-DPO 对 R@500 影响小（exp017: 58.5%→55.0% Easy，Medium 回升） |
-| PPL | 27.3 | ↑ 微增 | DPO loss 轻微干扰 NTP，符合 exp017 规律（27→28.5 Easy） |
-| depth_acc L0 | — | ↑ | SP-DPO Easy 对 L0 区分有明显改善（exp017: +37%） |
-| clip_fraction | N/A | N/A | SP-DPO Phase无 RL，clip 不适用 |
-| kl_mean | N/A | N/A | SP-DPO Phase无 RL |
-| adv_std | N/A | N/A | SP-DPO Phase无 RL |
-| behavior_coverage | N/A | N/A | SP-DPO Phase无 RL |
-| behavior_mean | N/A | N/A | SP-DPO Phase无 RL |
+| R@10 | 10.9% | ↑ ~13% | SP-DPO Easy+Medium in exp017 Medium R@10 from 9.9%→12.5%, features version expected similar range |
+| R@500 | 59.0% | → Flat or slightly down | SP-DPO has little impact on R@500 (exp017: 58.5%→55.0% Easy, Medium rebounds) |
+| PPL | 27.3 | ↑ Slight increase | DPO loss slightly interferes with NTP, in line with the exp017 rule (27→28.5 Easy) |
+| depth_acc L0 | — | ↑ | SP-DPO Easy has significantly improved L0 discrimination (exp017: +37%) |
+| clip_fraction | N/A | N/A | SP-DPO Phase has no RL, clip is not applicable |
+| kl_mean | N/A | N/A | SP-DPO Phase None RL |
+| adv_std | N/A | N/A | SP-DPO Phase None RL |
+| behavior_coverage | N/A | N/A | SP-DPO Phase None RL |
+| behavior_mean | N/A | N/A | SP-DPO Phase None RL |
 
 ### Design
 - **Variable**: SP-DPO Easy + Medium, prefix-locked beam search, generate pairs based on exp036-full-features
@@ -907,12 +907,12 @@ EXP-023's "all features" config (time_gap + action + segment) R@500 is only 55.0
 
 features (time_gap + action_level + segment_emb) should be able to exceed exp020 after training from scratch after the training-inference gap is repaired:
 
-| Metric | exp020 (no features) | EXP-036 (features, 从头训) | 预期变化 | 理由 |
+| Metric | exp020 (no features) | EXP-036 (features, trained from scratch) | Expected changes | Reasons |
 |------|---------------------|--------------------------|---------|------|
-| PPL | 16.3 | 预期 ≤16.3 | ↓ | features 提供额外区分信号 |
-| R@10 | 14.1% | 预期 ≥14.1% | ↑ | time_gap 区分时效性 |
-| R@500 | 66.2% | 预期 ≥67% | ↑ | action_level 区分交互强度 |
-| TrainingTime | ~62min | ~65min | ↑小 | features embedding 计算量微增 |
+| PPL | 16.3 | Expected ≤16.3 | ↓ | features provide additional distinguishing signals |
+| R@10 | 14.1% | Expected ≥14.1% | ↑ | time_gap distinguishes timeliness |
+| R@500 | 66.2% | Expected ≥67% | ↑ | action_level differentiates interaction strength |
+| TrainingTime | ~62min | ~65min | ↑small | features embedding slightly increases the amount of calculation |
 
 ### Design
 - **Variable**: features on/off (Config A: no features recurrence exp020; Config B: time_gap + action_level + segment)
@@ -926,12 +926,12 @@ features (time_gap + action_level + segment_emb) should be able to exceed exp020
 ### Results
 
 | Metric | Config A (no features) | Config B (full features) | exp020 Baseline | Δ(B-A) |
-|------|----------------------|------------------------|------------|--------|
+|------|-----------------------|------------------------|------------|--------|
 | R@10 | 9.4% | **10.9%** | 14.1% | +1.5pp ✅ |
 | R@500 | 55.3% | **59.0%** | 66.2% | +3.7pp ✅ |
 | PPL | 34.9 | **27.3** | 16.3 | ↓7.6 ✅ |
 | train_loss | 3.620 | **3.507** | — | -0.113 ✅ |
-| Training时长 | 7min50s | 7min58s | ~62min | 相近 |
+| Training duration | 7min50s | 7min58s | ~62min | Similar |
 
 > Note: The absolute values ​​of Config A/B are lower than exp020 (66.2%), because the exp023-14d-features data set is used (the item set is different), which cannot be directly compared with the exp016-14d data used by exp020. **The key conclusion is to look at the B-A difference**.
 
@@ -939,11 +939,11 @@ features (time_gap + action_level + segment_emb) should be able to exceed exp020
 
 **Assumption verification results**:
 
-| Hypothesis | 预期 | 实际 | Conclusion |
+| Hypothesis | Expectation | Actual | Conclusion |
 |------|------|------|------|
-| PPL: B < A | ↓ | 27.3 vs 34.9 (↓7.6) | ✅ 验证 |
-| R@10: B > A | ↑ | 10.9% vs 9.4% (+1.5pp) | ✅ 验证 |
-| R@500: B > A | ↑ | 59.0% vs 55.3% (+3.7pp) | ✅ 验证 |
+| PPL: B < A | ↓ | 27.3 vs 34.9 (↓7.6) | ✅ Verification |
+| R@10: B > A | ↑ | 10.9% vs 9.4% (+1.5pp) | ✅ Verification |
+| R@500: B > A | ↑ | 59.0% vs 55.3% (+3.7pp) | ✅ Verification |
 
 **Key Conclusions**:
 
@@ -997,10 +997,10 @@ EXP-034 verified that ref/policy alignment is only partially improved (clip=95%,
 ### Hypothesis
 
 | Metric | EXP-034 (beam G=512) | EXP-035 (sampling T=1.0 G=64) |
-|------|---------------------|-------------------------------|
-| clip 率 | ~95% | 预期 10~40% |
-| adv_std | ≈0 | 预期 >0（真正Comparison信号）|
-| R@500 | TBD | 预期 ≥ EXP-034 |
+|------|--------------------------|----------------------------------|
+| clip rate | ~95% | expected 10~40% |
+| adv_std | ≈0 | Expected >0 (true Comparison signal) |
+| R@500 | TBD | Expected ≥ EXP-034 |
 
 ### Design
 - **Variable**: `--sampling_temperature 1.0`, `--group_size 64` (beam→sampling)
@@ -1013,26 +1013,26 @@ EXP-034 verified that ref/policy alignment is only partially improved (clip=95%,
 
 ### Results
 
-| Metric | EXP-035 (sampling T=1.0, G=64) | EXP-029 SOTA (beam G=512) | 差距 |
-|------|-------------------------------|--------------------------|------|
+| Metric | EXP-035 (sampling T=1.0, G=64) | EXP-029 SOTA (beam G=512) | Gap |
+|------|----------------------------------|--------------------------|------|
 | R@10 | 0.102 | 0.130 | -0.028 ❌ |
 | R@500 | **0.615** | 0.678 | -0.063 ❌ |
-| clip 率 | 94.8% | 92.3% | 略High |
-| adv_std | 0.595 | — | 有Comparison信号 ✅ |
-| kl_mean | — | — | 新Metric，下次Experiment起记录 |
-| behavior_mean | 0.363 | ~0.65 | Low一半 ❌ |
+| clip rate | 94.8% | 92.3% | slightly High |
+| adv_std | 0.595 | — | Has Comparison signal ✅ |
+| kl_mean | — | — | New Metric, recorded from the next Experiment |
+| behavior_mean | 0.363 | ~0.65 | Low half ❌ |
 | behavior_coverage | 89.2% | ~99% | Low ❌ |
-| train time | 18min | ~70min | 快 4x ✅ |
+| train time | 18min | ~70min | Fast 4x ✅ |
 
 ### Analysis
 
 **Assumption verification results**:
 
-| Hypothesis | 预期 | 实际 | Conclusion |
+| Hypothesis | Expectation | Actual | Conclusion |
 |------|------|------|------|
-| clip 率降至 10~40% | ✅ | 94.8% | ❌ Hypothesis错误 |
-| adv_std > 0 | ✅ | 0.595 | ✅ 有Comparison信号 |
-| R@500 ≥ EXP-034 | ✅ | 0.615 < 0.678 | ❌ 不如 SOTA |
+| clip rate dropped to 10~40% | ✅ | 94.8% | ❌ Hypothesis error |
+| adv_std > 0 | ✅ | 0.595 | ✅ There is Comparison signal |
+| R@500 ≥ EXP-034 | ✅ | 0.615 < 0.678 | ❌ Not as good as SOTA |
 
 **Key findings (post-training analysis)**:
 
@@ -1063,12 +1063,12 @@ EXP-033 falsified the features bug hypothesis: after fixing three features injec
 
 The PPO clip condition is ρ = exp(policy_lp - ref_lp) beyond [1-ε, 1+ε]. exp025 performed beam-passes SFT on exp020, and the log-prob of the two for the same token was systematically different. Starting from exp025, a large number of clips are triggered in the first step, not because the update is too large, but because the initial KL is very large.
 
-| Experiment | policy 起点 | ref model | clip 率 |
+| Experiment | policy starting point | ref model | clip rate |
 |------|------------|-----------|---------|
 | exp031-baseline | exp020 | exp020 | 92.4% ✅ |
 | exp031-features | exp025 | exp020 | 96.4% ❌ |
 | exp033 | exp025 | exp020 | 96.2% ❌ |
-| **EXP-034** | **exp025** | **exp025** | **预期 ~92%** |
+| **EXP-034** | **exp025** | **exp025** | **Expected ~92%** |
 
 ### Hypothesis
 
@@ -1135,11 +1135,11 @@ Features bug is the main reason for the increased clip rate of EXP-031 Config A 
 
 Training 86min (409 steps, 4×A100). Full amount eval n_recall=1000:
 
-| Metric | EXP-033（features fix） | EXP-031A（features bug） | baseline exp020 |
+| Metric | EXP-033 (features fix) | EXP-031A (features bug) | baseline exp020 |
 |------|------------------------|------------------------|-----------------|
 | R@10 | **10.3%** | 10.5% | 14.1% |
 | R@500 | **61.0%** | 61.8% | 66.2% |
-| clip 率 | **96.2%** | 96.4% | — |
+| clip rate | **96.2%** | 96.4% | — |
 | PPL | **24.62** | — | 16.3 |
 | adv_std | 0.580 | — | — |
 | wall_time | 86min | — | — |
@@ -1152,11 +1152,11 @@ Training 86min (409 steps, 4×A100). Full amount eval n_recall=1000:
 
 Compare the key data of the three experiments:
 
-| Experiment | policy 起点 | ref model | KL(policy‖ref) 初始Value | clip 率 |
-|------|------------|-----------|----------------------|---------|
+| Experiment | policy starting point | ref model | KL(policy‖ref) initial Value | clip rate |
+|------|------------|-----------|-----------------------|----------|
 | exp031-baseline | exp020 | exp020 | ≈ 0 | **92.4%** ✅ |
-| exp031-features | exp025 | exp020 | 大 | **96.4%** ❌ |
-| exp033 | exp025 | exp020 | 大 | **96.2%** ❌ |
+| exp031-features | exp025 | exp020 | large | **96.4%** ❌ |
+| exp033 | exp025 | exp020 | large | **96.2%** ❌ |
 
 The trigger condition for PPO clip is that ρ = exp(policy_lp - ref_lp) exceeds [1-ε, 1+ε]. exp025 performs beam-passes SFT on exp020, and the log-prob of the two for the same token is systematically different. When doing RL starting from exp025, a large number of clips have been triggered in the first step. This is not because the update is too large, but because policy and ref are not in the same distribution. The clip window of ε=0.2 is too narrow for this cross-model KL.
 
@@ -1253,7 +1253,7 @@ RL gradient is more effective → R@500 improves from 63.6% to 66.2% over exp020
 
 ### Results
 
-| Config | 起点 SFT | PPL | R@10 | R@500 | clip | adv_std | TrainingDuration |
+| Config | Starting point SFT | PPL | R@10 | R@500 | clip | adv_std | TrainingDuration |
 |--------|---------|-----|------|-------|------|---------|---------|
 | **A: features + full RL** | exp025-beam-passes (63.6%) | 24.2 | 11.1% | 61.8% | 0.964 | 0.580 | 81min |
 | **B: baseline + full RL** | exp020-hard-lam03 (66.2%) | 14.6 | 12.5% | **67.7%** | 0.924 | 0.579 | 80min |
@@ -2058,11 +2058,11 @@ EXP-020: Fine scan λ=0.03/0.05/0.07 to find the sweet spot of PPL vs pref_acc.
 
 SP-DPO (EXP-017) uses model beam search to self-game to generate rejected candidates. RF-DPO further introduces **real user feedback signals** to distinguish signal strength from `action_bitmap` bit operations:
 
-| Tier | 信号 | action_bitmap bits |
+| Tier | Signal | action_bitmap bits |
 |------|------|-------------------|
 | Strong positive | like, share, follow, comment, trade, order | 2,4,8,256,512,1024,2048,131072,262144,524288,1048576 |
 | Weak positive | click, coin/photo/profile click, video view | 1,16,64,128,8192,16384,32768,65536 |
-| Negative | 举报/不喜欢 | bit 31 (sign bit) |
+| Negative | Report/Dislike | bit 31 (sign bit) |
 
 Preference pair structure: pairing within the same user. Chosen = strong positive item, Rejected Easy = negative feedback items, Rejected Hard = weak positive items.
 
@@ -2160,21 +2160,21 @@ SP-DPO (Self-Play DPO, Align³GR, AAAI 2026 Oral) is an entry-level solution for
 
 **Sampling method**: Prefix-locked beam search (all config)
 
-| 采样 pass | 锁定前缀 | 产出难度 | beam_size |
-|-----------|---------|---------|-----------|
-| Pass 1 | 无 | Easy (L0 ≠ GT) | 50 |
+| sampling pass | lock prefix | output difficulty | beam_size |
+|-----------|----------|----------|-----------|
+| Pass 1 | None | Easy (L0 ≠ GT) | 50 |
 | Pass 2 | L0=GT | Medium (L1 ≠ GT) + Hard | 50 |
 | Pass 3 | L0+L1=GT | Hard (L2 ≠ GT) | 50 |
 
 **Experimental Matrix**:
 
-| Config | `--start-from` | M/H 采样Model | Description |
+| Config | `--start-from` | M/H Sampling Model | Description |
 |--------|------|-------------|------|
-| Shared Easy | 1 | SFT (full beam) | Easy DPO baseline, 共享 |
-| Config 1 | 2 | **SFT** prefix-locked | 固定Model + 渐进采样 |
-| Config 2 | 3 | **Easy model** prefix-locked | 渐进Model + 渐进采样 |
-| λ=0.05 | 4 | Easy model | λ 消融 |
-| λ=0.5 | 5 | Easy model | λ 消融 |
+| Shared Easy | 1 | SFT (full beam) | Easy DPO baseline, shared |
+| Config 1 | 2 | **SFT** prefix-locked | Fixed Model + Progressive Sampling |
+| Config 2 | 3 | **Easy model** prefix-locked | Progressive Model + Progressive Sampling |
+| λ=0.05 | 4 | Easy model | λ ablation |
+| λ=0.5 | 5 | Easy model | λ ablation |
 
 **Key comparison**: Config 1 vs 2 → Does the progressive model help?
 
@@ -2336,12 +2336,12 @@ L̂(N) = 2.522 + 2055.1 / N^0.456
 
 ### Predictions
 
-| Active Params | 预测 PPL | 预测 Loss | 性价比 |
+| Active Params | Predict PPL | Predict Loss | Price/Performance |
 |--------------|---------|-----------|--------|
-| 17M (S) | 28 | 3.33 | 当前Baseline |
-| **55M (M)** | **~23** | **~3.15** | **最佳性价比** |
-| 500M (L) | ~15.5 | ~2.74 | 成本High，收益递减 |
-| 1B | ~14.6 | ~2.68 | 接近 floor |
+| 17M (S) | 28 | 3.33 | Current Baseline |
+| **55M (M)** | **~23** | **~3.15** | **Best value for money** |
+| 500M (L) | ~15.5 | ~2.74 | High cost, diminishing returns |
+| 1B | ~14.6 | ~2.68 | Close to floor |
 
 ### Chinchilla Analysis
 
@@ -2349,15 +2349,15 @@ All EXP-015 models are trained on the same 262M tokens. According to Chinchilla'
 
 **Tokens/Param and FLOP efficiency**:
 
-| Config | Active | Tok/Param | FLOP 效率 (loss/PF) | Chinchilla Status |
-|--------|--------|-----------|---------------------|----------------|
-| scale-01 | 1.7M | 152 | — | 过Training 7.6x |
-| scale-02 | 3.6M | 72 | 0.28 | 过Training 3.6x |
-| scale-03 | 5.1M | 52 | 0.16 | 过Training 2.6x |
-| **scale-04** | **17.5M** | **15** | **0.05** | **接近最优 (0.7x)** |
-| scale-05 | 34.5M | 8 | 0.01 | 欠Training 0.4x |
-| scale-06 | 71.6M | 4 | 0.002 | 严重欠Training 0.2x |
-| scale-07 | 101.1M | 3 | 0.002 | 严重欠Training 0.1x |
+| Config | Active | Tok/Param | FLOP efficiency (loss/PF) | Chinchilla Status |
+|--------|--------|----------|------------------------|----------------|
+| scale-01 | 1.7M | 152 | — | Over Training 7.6x |
+| scale-02 | 3.6M | 72 | 0.28 | Over Training 3.6x |
+| scale-03 | 5.1M | 52 | 0.16 | Over Training 2.6x |
+| **scale-04** | **17.5M** | **15** | **0.05** | **Close to optimal (0.7x)** |
+| scale-05 | 34.5M | 8 | 0.01 | Owe Training 0.4x |
+| scale-06 | 71.6M | 4 | 0.002 | Seriously short of Training 0.2x |
+| scale-07 | 101.1M | 3 | 0.002 | Seriously short of Training 0.1x |
 
 **Key Findings**:
 
@@ -2368,11 +2368,11 @@ All EXP-015 models are trained on the same 262M tokens. According to Chinchilla'
 
 **Chinchilla optimal data size**:
 
-| Model | Active Params | Chinchilla 最优 Tokens | 需要天数 |
-|------|-------------|----------------------|---------|
-| S (17M) | 17.5M | 350M | ~41 天 |
-| M (55M) | 55M | 1.1B | ~130 天 |
-| M+ (101M) | 101M | 2.0B | ~240 天 |
+| Model | Active Params | Chinchilla Optimal Tokens | Number of days required |
+|------|-------------|-----------------------|----------|
+| S (17M) | 17.5M | 350M | ~41 days |
+| M (55M) | 55M | 1.1B | ~130 days |
+| M+ (101M) | 101M | 2.0B | ~240 days |
 
 **Conclusion: The current bottleneck is the data, not the model. Adding data first (31→90 days) and then adding the model is the path with the highest ROI. **
 
@@ -2428,7 +2428,7 @@ Available embedding covers 2026-01-25 ~ 2026-03-31 (66 days). Data distribution 
 
 **Truncated analysis** (`max_seq_len=512` → `max_items=170`):
 
-| Config | 截断用户% | Items 丢失% | Raw Items | 有效 Items | **有效 Tokens** |
+| Config | Truncated User % | Items Lost % | Raw Items | Valid Items | **Valid Tokens** |
 |--------|----------|------------|-----------|-----------|----------------|
 | A-7d | 1.5% | 14.5% | 23.9M | ~20.4M | **~61M** |
 | B-14d | 2.6% | 25.4% | 53.1M | ~39.6M | **~119M** |
@@ -2453,7 +2453,7 @@ Available embedding covers 2026-01-25 ~ 2026-03-31 (66 days). Data distribution 
 - **Metric**: eval loss, PPL, item_recall@{10,50,100,500}
 - **Eval Description**: `preprocess-ntp` of each config uses `n_eval_target=50000` to cut split_ts according to time points. There are slight differences in eval sets of different data sizes (different split_ts), but they are all concentrated at the end of the window, which has limited impact on scaling law fitting.
 
-| Config | Model | Data Days | Users | 有效 Tokens | Tok/Param (S) | Tok/Param (M+) |
+| Config | Model | Data Days | Users | Valid Tokens | Tok/Param (S) | Tok/Param (M+) |
 |--------|-------|-----------|-------|------------|---------------|----------------|
 | A-7d | S + M+ | 7 | 1.54M | ~61M | 3.5 | 0.6 |
 | B-14d | S + M+ | 14 | 2.51M | ~119M | 6.8 | 1.2 |
@@ -2488,12 +2488,12 @@ The S file of the C-31d can reuse the EXP-015 scale-04 results, and the M+ file 
 **M+ Model (101M active)**:
 
 | Config | Days | Tokens | Users | PPL | Loss | R@100 | R@500 | TrainingDuration |
-|--------|------|--------|-------|-----|------|-------|-------|---------|
+|--------|------|--------|-------|-----|------|-------|-------|----------|
 | A-7d-M | 7 | 65M | 1.02M | 19.31 | 2.960 | 42.7% | 70.7% | 123min |
 | **B-14d-M** | **14** | **130M** | **1.69M** | **18.96** | **2.942** | **43.0%** | **65.8%** | 207min |
 | C-31d-M | 31 | 262M | 3.04M | 19.39 | 2.965 | 43.2% | 65.8% | 374min |
 | D-62d-M | 62 | 441M | 4.86M | 19.80 | 2.986 | 43.2% | 68.1% | 607min |
-| E-90d-M | 90 | — | 6.18M | *(跳过)* | — | — | — | — |
+| E-90d-M | 90 | — | 6.18M | *(skip)* | — | — | — | — |
 
 ![Data Scaling Law](results/ntp/exp016-data-scaling.png)
 
@@ -2611,12 +2611,12 @@ L_ENTP = −(1/N) Σ log(1 − p_i^(L0)) (L0 token for unclicked exposure)
 
 | Config | α | K | L0 filter | Description |
 |--------|------|---|-----------|------|
-| A (baseline) | 0 | — | — | 直接复用 EXP-013 s-tier Result |
-| B | 0.05 | 5 | ✗ | 保守 (round 1, 已退步) |
-| C | 0.1 | 5 | ✗ | DualGR Paper默认 (round 1, 已退步) |
-| E | 0.05 | 5 | ✓ | 保守 (round 2, L0 collision 过滤) |
-| F | 0.1 | 5 | ✓ | Paper默认 (round 2) |
-| G | 0.2 | 5 | ✓ | 激进 (round 2) |
+| A (baseline) | 0 | — | — | Direct multiplexing EXP-013 s-tier Result |
+| B | 0.05 | 5 | ✗ | Conservative (round 1, regressed) |
+| C | 0.1 | 5 | ✗ | DualGR Paper default (round 1, regressed) |
+| E | 0.05 | 5 | ✓ | Conservative (round 2, L0 collision filter) |
+| F | 0.1 | 5 | ✓ | Paper default (round 2) |
+| G | 0.2 | 5 | ✓ | Aggressive (round 2) |
 
 ### Run
 
@@ -2626,12 +2626,12 @@ L_ENTP = −(1/N) Σ log(1 − p_i^(L0)) (L0 token for unclicked exposure)
 
 **PySpark ENTP export verification (2026-04-16)**:
 
-| Metric | PySpark 导出 | 旧流式 walk (对照) | Description |
+| Metric | PySpark Export | Old Streaming Walk (Contrast) | Description |
 |---|---|---|---|
-| 总曝光行 | ~1.19B | 1,185,707,891 | 一致 |
-| Positives | 130,995,419 | 124,893,764 | +4.9%, 差异 = SID 字典外的 iid（Python 端过滤） |
-| Users | 4,608,606 | 3,042,069 | +51%, 多出的用户只有 SID 外 iid，Python 端过滤后消失 |
-| 有负样本 | 40,761,718 (31.1% row级) | 2,084,314 (68.5% user级) | 口径Different，无矛盾 |
+| Total Exposure Rows | ~1.19B | 1,185,707,891 | Consistent |
+| Positives | 130,995,419 | 124,893,764 | +4.9%, difference = iid outside SID dictionary (Python side filtering) |
+| Users | 4,608,606 | 3,042,069 | +51%, the extra users only have SID external iid, and disappear after filtering on the Python side |
+| There are negative samples | 40,761,718 (31.1% row level) | 2,084,314 (68.5% user level) | Different caliber, no contradiction |
 
 31% row-level negative samples are reasonable: in feed scenarios, users often click continuously (multiple items on the same page), and there is no non-positive between consecutive positives → the latter cannot get neg.
 
@@ -2705,7 +2705,7 @@ New code: `ntp/model.py` (NTPModel) vs `ntp/baseline.py` (NTPProbe).
 
 | Config | Model | Layers | FFN | Params | Description |
 |--------|-------|--------|-----|--------|------|
-| A (baseline) | NTPProbe | 2 | Dense 512 | ~5M | EXP-010 复现 |
+| A (baseline) | NTPProbe | 2 | Dense 512 | ~5M | EXP-010 Reproduction |
 | B (s-tier) | NTPModel | 6 | SwiGLU MoE 8E top-2 | ~42M | Loss-Free bias |
 
 ### Run
@@ -2714,7 +2714,7 @@ New code: `ntp/model.py` (NTPModel) vs `ntp/baseline.py` (NTPProbe).
 
 ### Results
 
-| Metric | Probe (7.5M) | S-tier (45.8M) | 提升 |
+| Metric | Probe (7.5M) | S-tier (45.8M) | Improvement |
 |--------|-------------|----------------|------|
 | PPL | 70.0 | **29.6** | -58% |
 | L0 PPL (cross-item) | 429.1 | **344.8** | -20% |
@@ -2769,15 +2769,15 @@ Checking the original text of OneMall, we found that its production configuratio
 
 ### Design
 
-| Config | L1 (KMeans) | L2 (KMeans) | L3 (FSQ) | FSQ Levels | Bits | 对标 |
+| Config | L1 (KMeans) | L2 (KMeans) | L3 (FSQ) | FSQ Levels | Bits | Benchmarking |
 |--------|-------------|-------------|----------|------------|------|------|
-| A (EXP-008) | 1024 | 1024 | 4096 | [4,4,4,4,4,4] | 32 | 已有 baseline |
-| E | 1024 | 1024 | 1024 | [4,4,4,4,4] | 30 | 等大 1024, multi-level |
-| F | 1024 | 1024 | 1024 | [2]×10 | 30 | 等大 1024, binary |
+| A (EXP-008) | 1024 | 1024 | 4096 | [4,4,4,4,4,4] | 32 | Already have baseline |
+| E | 1024 | 1024 | 1024 | [4,4,4,4,4] | 30 | Equally large 1024, multi-level |
+| F | 1024 | 1024 | 1024 | [2]×10 | 30 | equal to 1024, binary |
 | G | 4096 | 4096 | 4096 | [4,4,4,4,4,4] | 36 | OneMall Config |
 | H | 4096 | 4096 | 4096 | [2]×12 | 36 | OneMall binary |
-| I | OPQ 3×1024 | — | — | — | 30 | 等 bits 对照 E/F |
-| J | OPQ 3×4096 | — | — | — | 36 | 等 bits 对照 G/H |
+| I | OPQ 3×1024 | — | — | — | 30 | etc. bits compared to E/F |
+| J | OPQ 3×4096 | — | — | — | 36 | etc. bits compared to G/H |
 
 - **Fixed**: Qwen3-0.6B 1024D embedding (cached), behavior_data 7d, MLP hidden=64, 50 epochs
 - **Metric**: semantic_neighbor_hit_rate (core), collision_rate, cluster_balance (Gini)
@@ -3021,7 +3021,7 @@ OneRec's core solution: freeze the base and add a trainable QFormer (cross-atten
 | Config | QFormer Layers | Queries (M) | lr | Final HR@50 | Final Loss | TrainingTime |
 |--------|---------------|-------------|------|------------|-----------|---------|
 | BL (raw Qwen3) | — | — | — | 0.0106 | — | — |
-| EXP-007 best (全量FT) | — | — | 1e-5 | 0.0197 | 2.90 | 6756s |
+| EXP-007 best (Full FT) | — | — | 1e-5 | 0.0197 | 2.90 | 6756s |
 | A | 2 | 4 | 1e-4 | 0.0211 | 4.46 | 4460s |
 | B | 2 | 4 | 5e-4 | 0.0214 | 4.41 | 4458s |
 | **C (best)** | **4** | **4** | **1e-4** | **0.0216** | **4.42** | **4549s** |
@@ -3081,11 +3081,11 @@ Goal: Quickly compare two routes and decide which one to enter the NTP stage.
 
 ### Design
 
-| Config | Tokenizer | Tokens | Bits | 已知 collision |
+| Config | Tokenizer | Tokens | Bits | Known collisions |
 |--------|-----------|--------|------|---------------|
 | A | MLP-FSQ h=64 (6d_4096) | 3 | 32 | 0.0411 |
-| B | OPQ 4×256 (等 bits 对照) | 4 | 32 | 0.1063 |
-| C | OPQ 8×256 (最优) | 8 | 64 | 0.0037 |
+| B | OPQ 4×256 (equal bits comparison) | 4 | 32 | 0.1063 |
+| C | OPQ 8×256 (optimal) | 8 | 64 | 0.0037 |
 
 - **Fixed**: Qwen3-0.6B 1024D embedding (cached), behavior_data 7d
 - **Metric**:
@@ -3199,17 +3199,17 @@ This experiment uses **I2I comparative learning** full fine-tune Qwen3-0.6B to i
 
 | Config | τ | lr | Status |
 |--------|------|------|------|
-| D | 0.05 | 1e-4 | 脚本就绪，未产出超越 R1 的Result |
-| E | 0.05 | 3e-4 | 同上 |
-| F | 0.05 | 1e-3 | 同上 |
+| D | 0.05 | 1e-4 | The script is ready and has not produced a Result beyond R1 |
+| E | 0.05 | 3e-4 | Same as above |
+| F | 0.05 | 1e-3 | Same as above |
 
 **Round 3 — LoRA (frozen base, gradient concentrated in adapter)**:
 
 | Config | Method | lr | Status |
 |--------|--------|------|------|
-| G | LoRA r=16 | 1e-4 | 脚本就绪，未产出超越 R1 的Result |
-| H | LoRA r=16 | 5e-4 | 同上 |
-| I | LoRA r=64 | 1e-4 | 同上 |
+| G | LoRA r=16 | 1e-4 | The script is ready, but no Result beyond R1 has been produced |
+| H | LoRA r=16 | 5e-4 | Same as above |
+| I | LoRA r=64 | 1e-4 | Same as above |
 
 ### Analysis
 
@@ -3261,10 +3261,10 @@ OPQ divides 1024D embedding into m independent sub-vectors and quantizes them se
 
 **Comparison matrix**:
 
-| Config | Quantizer | Tokens | Vocab/token | Bits | 子向量维度 |
+| Config | Quantizer | Tokens | Vocab/token | Bits | Subvector dimensions |
 |--------|-----------|--------|-------------|------|-----------|
 | Baseline (EXP-001) | RKMeans 3x1024 | 3 | 1024 | 30 | N/A (residual) |
-| **OPQ-4x256** | **OPQ** | **4** | **256** | **32** | **256D (等 bits 对照)** |
+| **OPQ-4x256** | **OPQ** | **4** | **256** | **32** | **256D (equal bits comparison)** |
 | OPQ-8x256 | OPQ | 8 | 256 | 64 | 128D |
 | OPQ-16x256 | OPQ | 16 | 256 | 128 | 64D |
 | OPQ-32x256 | OPQ | 32 | 256 | 256 | 32D |

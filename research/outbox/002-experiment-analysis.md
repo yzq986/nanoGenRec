@@ -14,24 +14,24 @@ Completed collection and analysis of all results from EXP-022 to EXP-025.
 
 ### Current complete leaderboard (R@500 sorting)
 
-| Rank | Config | PPL | R@10 | R@500 | 关键变量 |
-|------|--------|-----|------|-------|---------|
-| **1** | **exp025-beam-passes** | **25.22** | 10.4% | **63.6%** | seg+time+action, beam传features |
-| 2 | exp023-segment | 25.94 | 10.9% | 61.2% | 仅segment_emb |
-| 3 | exp023-baseline | 28.41 | 11.0% | 60.7% | EXP-016复现 |
-| 4 | exp023-timegap | 28.78 | 10.9% | 60.1% | 仅time_gap (有泄漏) |
+| Rank | Config | PPL | R@10 | R@500 | Key variables |
+|------|--------|-----|------|-------|----------|
+| **1** | **exp025-beam-passes** | **25.22** | 10.4% | **63.6%** | seg+time+action, beam pass features |
+| 2 | exp023-segment | 25.94 | 10.9% | 61.2% | segment_emb only |
+| 3 | exp023-baseline | 28.41 | 11.0% | 60.7% | EXP-016 recurrence |
+| 4 | exp023-timegap | 28.78 | 10.9% | 60.1% | time_gap only (leaks) |
 | 5 | exp024-seg-timegap | ~26 | — | 59.8% | seg + shifted time_gap |
 | 6 | exp022-alpha001 | 27.89 | 10.3% | 59.2% | contrastive α=0.01 |
 | 7 | exp022-dim256 | 29.66 | 10.1% | 58.8% | contrastive dim=256 |
-| 8 | EXP-016 baseline | 27.05 | 9.9% | 58.5% | 原始baseline |
+| 8 | EXP-016 baseline | 27.05 | 9.9% | 58.5% | original baseline |
 | 9 | exp022-temp005 | 28.16 | 10.1% | 58.2% | contrastive τ=0.05 |
 | 10 | exp022-alpha01 | 29.22 | 9.7% | 57.9% | contrastive α=0.1 |
 | 11 | exp022-alpha05 | 29.04 | 9.7% | 56.3% | contrastive α=0.5 |
 | 12 | exp024-seg-all | ~26 | — | ~55% | seg + shifted all |
 | 13 | exp024-seg-action | ~27 | — | 52.9% | seg + shifted action |
-| 14 | exp023-all | 25.16 | 9.5% | 55.0% | all features (有泄漏) |
-| 15 | exp025-action-l2only | 24.85 | 5.5% | 27.0% | action仅L2 (失败) |
-| 16 | exp023-action | 27.50 | 4.9% | 28.5% | 仅action (严重泄漏) |
+| 14 | exp023-all | 25.16 | 9.5% | 55.0% | all features (with leaks) |
+| 15 | exp025-action-l2only | 24.85 | 5.5% | 27.0% | action L2 only (failed) |
+| 16 | exp023-action | 27.50 | 4.9% | 28.5% | action only (serious leak) |
 
 ## 2. Key findings
 
@@ -57,11 +57,11 @@ EXP-023 → EXP-025, segment_emb is always a forward signal and is superimposed 
 
 | IDEA | Status | Conclusion |
 |------|------|------|
-| IDEA-feat-0 (time_gap) | ✅ 已验证 via EXP-023/025 | 有效，需配合beam_passes |
-| IDEA-feat-1 (action_level) | ✅ 已验证 via EXP-023/025 | 有效，需配合beam_passes |
-| IDEA-feat-2 (segment_emb) | ✅ 已验证 via EXP-023 | 确认正向 |
-| IDEA-onemall-0 (contrastive) | ❌ 已测试 via EXP-022 | 无效，discard |
-| IDEA-genrec-0 (PW-NTP) | 🔲 未测试 | **最High优先级下一步** |
+| IDEA-feat-0 (time_gap) | ✅ Verified via EXP-023/025 | Valid, need to cooperate with beam_passes |
+| IDEA-feat-1 (action_level) | ✅ Verified via EXP-023/025 | Valid, need to cooperate with beam_passes |
+| IDEA-feat-2 (segment_emb) | ✅ Verified via EXP-023 | Confirmed forward |
+| IDEA-onemall-0 (contrastive) | ❌ Tested via EXP-022 | Invalid, discard |
+| IDEA-genrec-0 (PW-NTP) | 🔲 Not tested | **Highest priority next step** |
 
 ## 4. Next experimental proposal
 

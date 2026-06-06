@@ -24,11 +24,11 @@ semantic_neighbor_HR: 0.078
 
 ### Key experimental data
 
-| Experiment | 方案 | semantic_neighbor_HR | collision | Conclusion |
+| Experiment | Solution | semantic_neighbor_HR | collision | Conclusion |
 |------|------|---------------------|-----------|------|
-| EXP-008 A | **MLP-FSQ h=64 (3 token, 32 bit)** | **0.0780** | 0.1074 | **赢家** |
-| EXP-008 B | OPQ 4×256 (4 token, 32 bit) | 0.0502 | 0.0351 | 等 bits 对照，输 36% |
-| EXP-008 C | OPQ 8×256 (8 token, 64 bit) | 0.0326 | 0.0006 | collision 最Low但行为最差 |
+| EXP-008 A | **MLP-FSQ h=64 (3 token, 32 bit)** | **0.0780** | 0.1074 | **Winner** |
+| EXP-008 B | OPQ 4×256 (4 token, 32 bit) | 0.0502 | 0.0351 | Compare with other bits, lose 36% |
+| EXP-008 C | OPQ 8×256 (8 token, 64 bit) | 0.0326 | 0.0006 | collision Lowest but worst behavior |
 
 **Core insight**: The lower the collision ≠ the better the behavior quality. Hierarchical structures (KMeans→KMeans→FSQ) preserve embedding neighborhoods better than flat structures (OPQ parallel subvectors), with higher behavior co-occurrence rates for SID prefix neighbors.
 
@@ -123,8 +123,8 @@ Verify the quantification quality of OPQ on our 5M item / 1024D embedding.
 
 **Configuration** (1024D embedding, the main configuration of the benchmark RPG paper):
 
-| 方案 | 子向量维度 | token 数 m | 词表大小 M | 编码空间 |
-|------|-----------|-----------|-----------|----------|
+| Scheme | Subvector dimension | Number of tokens m | Vocabulary size M | Encoding space |
+|------|-----------|-----------|----------|----------|
 | A | 128D | 8 | 256 | 256^8 |
 | B | 64D | 16 | 256 | 256^16 |
 | C | 32D | 32 | 256 | 256^32 |
@@ -159,7 +159,7 @@ New implementation required:
 
 EXP-043 entropy analysis reveals: FSQ MLP hidden=64 is designed for Qwen3-0.6B (1024D) embedding. When the embedding dimension increases, the dimension of the residual vector increases simultaneously, but the FSQ bottleneck remains unchanged, resulting in serious loss of L2 layer information:
 
-| Embedding | Residual Dim | FSQ hidden | L2 entropy | FSQ 有效槽位 | Collision |
+| Embedding | Residual Dim | FSQ hidden | L2 entropy | FSQ effective slot | Collision |
 |-----------|-------------|-----------|-----------|------------|---------|
 | Qwen3-0.6B | ~1024D | 64 | 10.58 bits (91.2%) | ~1500 | **0.49%** |
 | Qwen3-4B | ~2560D | 64 | 8.10 bits (78.7%) | ~275 | 2.76% |
@@ -269,7 +269,7 @@ GR4AD proposes an MGMR coding scheme: (1) Multi-Resolution - the lower layer use
 
 **Variable 1 — Multi-Resolution Codebook Configuration**:
 
-| Config | L1 | L2 | L3 | 总编码空间 |
+| Config | L1 | L2 | L3 | Total coding space |
 |------|------|------|------|-----------|
 | Baseline (EXP-001) | 1024 | 1024 | 1024 | 10^9 |
 | MR-A | 4096 | 1024 | 256 | 10^9 |
@@ -304,7 +304,7 @@ GR4AD proposes an MGMR coding scheme: (1) Multi-Resolution - the lower layer use
 
 OneMall's tokenizer ablation directly verified our EXP-003 direction:
 
-| 方案 | Conflict Rate | Exclusive Rate | HR@50 |
+| Plan | Conflict Rate | Exclusive Rate | HR@50 |
 |------|--------------|----------------|-------|
 | 3-layer ResKmeans | 36% | 86% | 33.9% |
 | 2-layer ResKmeans + 1-layer FSQ | **11%** | **95%** | **35.4%** |
@@ -554,19 +554,19 @@ Effect: The codebook utilization rate increased from ~60% to ~95%, and the SID d
 
 ## Priority summary
 
-| 优先级 | ID | Direction | Status |
+| Priority | ID | Direction | Status |
 |--------|-----|------|------|
-| ~~P0~~ | ~~IDEA-sid-0~~ | ~~OPQ 并行语义 ID~~ | ❌ 关闭 (EXP-008: semantic_neighbor_HR 输 MLP-FSQ) |
-| ~~P1~~ | ~~IDEA-onemall-5~~ | ~~RKMeans+FSQ~~ | ✅ 完成，MLP-FSQ h=64 确认赢家 |
-| ~~P1~~ | ~~IDEA-forge-0~~ | ~~SID Proxy Metrics~~ | ✅ 完成，semantic_neighbor_hit_rate 已实现 |
-| P2 | IDEA-sid-2 | Balanced KMeans | 待定，NTP 后 (collision 非核心Metric) |
-| P2 | IDEA-gr4ad-0 | MGMR 不等大码本 | 待定，NTP 后 (微调收益，优先推 NTP) |
-| P2 | IDEA-quasid-0 | Hamming Repulsion | 待定，NTP 后 (需先确认有害碰撞占比) |
-| P2 | IDEA-pit-0 | Co-gen Tokenizer | 待定，NTP 后 (前置: NTP baseline) |
-| P2 | IDEA-r3vae-0 | Reference Vector SID | 待定，NTP 后 (主要价Value在EvaluationMetric) |
-| P2 | IDEA-unirec-1 | Capacity-Constrained SID | 待定，NTP 后 (与 sid-2 合并Evaluation) |
-| P2 | IDEA-flexcode-0 | 双码本 CF+Semantic + MoE 分配 | 待定，NTP 后 (需 CF model) |
-| P2 | IDEA-crab-0 | Codebook Rebalancing 去偏 | 待定，NTP 后 (post-hoc Method) |
+| ~~P0~~ | ~~IDEA-sid-0~~ | ~~OPQ Parallel Semantics ID~~ | ❌ Close (EXP-008: semantic_neighbor_HR lose MLP-FSQ) |
+| ~~P1~~ | ~~IDEA-onemall-5~~ | ~~RKMeans+FSQ~~ | ✅ Completed, MLP-FSQ h=64 confirmed winner |
+| ~~P1~~ | ~~IDEA-forge-0~~ | ~~SID Proxy Metrics~~ | ✅ Complete, semantic_neighbor_hit_rate implemented |
+| P2 | IDEA-sid-2 | Balanced KMeans | TBD, after NTP (collision non-core Metric) |
+| P2 | IDEA-gr4ad-0 | MGMR unequal large codebook | To be determined, after NTP (fine-tuning revenue, giving priority to NTP) |
+| P2 | IDEA-quasid-0 | Hamming Repulsion | To be determined, after NTP (the proportion of harmful collisions needs to be confirmed first) |
+| P2 | IDEA-pit-0 | Co-gen Tokenizer | TBD, after NTP (prefix: NTP baseline) |
+| P2 | IDEA-r3vae-0 | Reference Vector SID | To be determined, after NTP (Main price Value is in EvaluationMetric) |
+| P2 | IDEA-unirec-1 | Capacity-Constrained SID | TBD, post-NTP (merge Evaluation with sid-2) |
+| P2 | IDEA-flexcode-0 | Dual codebook CF+Semantic + MoE allocation | TBD, after NTP (requires CF model) |
+| P2 | IDEA-crab-0 | Codebook Rebalancing debiasing | To be determined, post-NTP (post-hoc Method) |
 
 ---
 
@@ -799,7 +799,7 @@ AdaSID models SID collision regulation as a **two-stage adaptive process**:
 
 ### Experimental data
 
-| 数据集 | Method | Recall@3 | NDCG@3 | Recall@5 | NDCG@5 |
+| Dataset | Method | Recall@3 | NDCG@3 | Recall@5 | NDCG@5 |
 |--------|------|----------|--------|----------|--------|
 | Toys | QuaSID | 0.0195 | 0.0157 | 0.0273 | 0.0191 |
 | Toys | **AdaSID** | **0.0214** | **0.0175** | **0.0281** | **0.0202** |
@@ -940,7 +940,7 @@ Use **Gaussian Mixture Model** to replace K-Means for residual quantization, and
 
 **Offline (Amazon Review, BERT 768D embeddings, 2-level RQ, 128 codes/level)**:
 
-| Method | RMSE | 码本利用率 (L1/L2) | AUC (FNN w/ Emb) |
+| Method | RMSE | Codebook Utilization (L1/L2) | AUC (FNN w/ Emb) |
 |------|------|-------------------|------------------|
 | VQ-VAE | 0.614 | 33.7% | 0.654 |
 | RQ-VAE | 0.173 | 73.9%/71.8% | 0.659 |
@@ -952,9 +952,9 @@ Use **Gaussian Mixture Model** to replace K-Means for residual quantization, and
 
 **Online A/B (Tencent short video platform, 7 days, hundreds of millions of DAU)**:
 
-| Comparison | Advertiser Value 提升 |
-|------|---------------------|
-| vs 直接 embedding | **+3.600%** |
+| Comparison | Advertiser Value Improvement |
+|------|--------------------------|
+| vs direct embedding | **+3.600%** |
 | vs RQ-VAE | **+1.502%** |
 | vs RQ-KMeans | **+0.613%** |
 

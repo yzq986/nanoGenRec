@@ -71,10 +71,10 @@ OneLoc's scaling experiments revealed a key finding: **The benefit of sequence l
 
 **Experimental Matrix**:
 
-| 维度 | 小 | Medium | 大 |
+| Dimensions | Small | Medium | Large |
 |------|-----|-----|-----|
 | ModelParameter | S-tier (39.5M) | M-tier (~150M) | L-tier (~500M) |
-| 序列长度 | 50 | 100 | 200 |
+| sequence length | 50 | 100 | 200 |
 
 **Design**:
 - Fixed quantization scheme (RKMeans 3x1024 or OPQ)
@@ -206,15 +206,15 @@ MTGenRec is a GR-specific distributed training system built by Meituan based on 
 
 ### Key data
 
-| Metric | 数Value |
+| Metric | Value |
 |------|------|
-| Training数据 | 200M 序列/天, avg 600 tokens, max 3000 |
-| Model规模 | GRM 4G (小) ~ 110G (大) GFLOPs |
+| Training data | 200M sequences/day, avg 600 tokens, max 3000 |
+| Model scale | GRM 4G (small) ~ 110G (large) GFLOPs |
 | GPU Config | 8~128 × A100 80GB SXM4, NVLink 600GB/s |
-| 吞吐提升 | 1.6x~2.4x vs TorchRec |
-| Scaling 效率 | 128 GPU 达到 62.75%~78.5% 理想线性加速 |
-| Online A/B (外卖) | +1.22% 用户下单量, +1.31% PV_CTR (vs 2 年迭代的 DRM) |
-| 用户规模 | 770M 年交易用户, 日峰 98M 订单 |
+| Throughput improvement | 1.6x~2.4x vs TorchRec |
+| Scaling efficiency | 128 GPU reaches 62.75%~78.5% ideal linear acceleration |
+| Online A/B (takeaway) | +1.22% user order volume, +1.31% PV_CTR (vs 2-year iteration of DRM) |
+| User scale | 770M annual trading users, daily peak 98M orders |
 
 ### Association with the current project
 
@@ -246,14 +246,14 @@ MTGenRec is a GR-specific distributed training system built by Meituan based on 
 
 ## Priority summary
 
-| 优先级 | ID | Experiment | 原因 |
+| Priority | ID | Experiment | Reason |
 |--------|-----|------|------|
-| ~~P0~~ 部分完成 | IDEA-oneloc-4 | Scaling Law: 序列长度 vs Model大小 | Model scaling EXP-015 ✅ (~100M 趋平); 序列长度 scaling 待验证 |
-| P1 | IDEA-kunlun-0 | Rec Scaling Laws (MFU + GDPA) | Meta Ads 部署验证; tokenizer 瓶颈突破后成 scale up 关键 |
-| P1 | IDEA-hstu-0 | Sparse Self-Attention Co-design | 21x inference scaling, Comparison Query-Former 路线 |
-| P2 | IDEA-mtgenrec-0 | 分布式 GR Training系统 | 美团部署, 100+ GPU scaling, dynamic batch 可先行参考 |
-| P2 | IDEA-freescale-0 | Meta FreeScale: Load Balancing + SM-Free 通信 | 256×H100 验证, 90% 通信气泡削减; 当前 8 GPU 受益有限, 未来多节点扩展时核心参考 |
-| P2 | IDEA-vlm-0 | Meta VLM: Versioned Late Materialization | Fat Row 墙 @ 4K UIH, 延迟物化破墙推到 64K; A/B Platform A Topline +0.22%/Metrics-C +4.1% |
+| ~~P0~~ Partially completed | IDEA-oneloc-4 | Scaling Law: Sequence length vs Model size | Model scaling EXP-015 ✅ (~100M flattening); Sequence length scaling to be verified |
+| P1 | IDEA-kunlun-0 | Rec Scaling Laws (MFU + GDPA) | Meta Ads deployment verification; tokenizer becomes the key to scale up after breaking through the bottleneck |
+| P1 | IDEA-hstu-0 | Sparse Self-Attention Co-design | 21x inference scaling, Comparison Query-Former Route |
+| P2 | IDEA-mtgenrec-0 | Distributed GR Training system | Meituan deployment, 100+ GPU scaling, dynamic batch for reference |
+| P2 | IDEA-freescale-0 | Meta FreeScale: Load Balancing + SM-Free Communication | 256×H100 verification, 90% communication bubble reduction; current 8 GPUs have limited benefit, core reference for future multi-node expansion |
+| P2 | IDEA-vlm-0 | Meta VLM: Versioned Late Materialization | Fat Row wall @ 4K UIH, delayed materialization wall breaking pushed to 64K; A/B Platform A Topline +0.22%/Metrics-C +4.1% |
 
 ---
 
@@ -380,8 +380,8 @@ Meta's argument: UIH is an **append-only, temporally ordered, immutable** sequen
 
 **Fat Row system efficiency (baseline = 1.0):**
 
-| Tenant | UIH 长度 | Primary Write ↓ | Primary Read ↓ | Lookup Read (新增) | 数据加载延迟 |
-|--------|---------|----------------|---------------|-------------------|-------------|
+| Tenant | UIH length | Primary Write ↓ | Primary Read ↓ | Lookup Read (new) | Data loading delay |
+|--------|---------|----------------|---------------|------------------|-------------|
 | Model A (long) | Long | **-46.2%** | **-70.3%** | +62.7% (streaming) / +24.6% (batch) | +9.7% |
 | Model B (mid) | Mid | -50.9% | — | +16.2% / +6.5% | **-26.4%** |
 | Model C (short) | Short | -47.7% | — | +8.7% / +3.4% | **-36.2%** |

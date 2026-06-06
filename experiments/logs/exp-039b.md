@@ -35,7 +35,7 @@ ECPO (δ=0.1) reproduces the exp029 magnitude improvement (+4pp) on the features
 | exp037-medium (SP-DPO, ref) | - | 62.1% | - | - |
 | exp038b-ep1 (RF-DPO) | - | 62.1% | - | - |
 | **exp039b-ecpo (this)** | **11.8%** | **65.7%** | **20.0** | **182min** |
-| exp020-hard-lam03 (SOTA 无Feature) | 14.1% | 66.2% | 16.3 | - |
+| exp020-hard-lam03 (SOTA no Feature) | 14.1% | 66.2% | 16.3 | - |
 
 ### Analysis
 

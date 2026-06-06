@@ -118,12 +118,12 @@ P(item) = P(L1) × P(L2|L1) × P(L3|L1,L2)
 
 ## Evaluation indicators
 
-| Metric | 定义 | 意义 |
+| Metric | Definition | Meaning |
 |------|------|------|
-| **Perplexity** (主Metric) | exp(avg_loss / n_layers) | 越Low越Good，random baseline = 256 |
-| **All Correct** | 3 层全对的比例 | Beam Search Output |
-| **Layer Acc** | 每层单独的准确率 | Beam Search Output |
-| **Hit@K** | 正确答案在 top-K Medium的比例 | Teacher Forcing 下计算 |
+| **Perplexity** (main Metric) | exp(avg_loss / n_layers) | The lower the better, random baseline = 256 |
+| **All Correct** | Proportions of all 3 layers | Beam Search Output |
+| **Layer Acc** | Individual accuracy for each layer | Beam Search Output |
+| **Hit@K** | Proportion of correct answers in top-K Medium | Calculated under Teacher Forcing |
 
 ### Quality Judgment
 
@@ -203,11 +203,11 @@ Computing semantic_id_prediction...
 
 ### Why Split by time?
 
-| 方案 | 问题 |
+| Solution | Problem |
 |------|------|
-| 随机 split 用户 | Different用户的序列可能Time交错，有泄露 |
-| 用户内 split | 无跨用户学习，但滚动Training时还是可能穿透 |
-| **全局Time split** | 严格保证 eval 在 train 之后，无泄露 |
+| Random split user | The sequence of Different users may have interleaved Time and may be leaked |
+| Intra-user split | No cross-user learning, but penetration may still occur during scrolling training |
+| **Global Time split** | Strictly ensure that eval is after train and there is no leakage |
 
 ### Why use Perplexity?
 

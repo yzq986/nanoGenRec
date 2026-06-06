@@ -12,21 +12,21 @@
 
 ## Experiment matrix
 
-| Config | 温度 τ | 学习率 | max_pairs | Status |
+| Config | Temperature τ | Learning rate | max_pairs | Status |
 |--------|--------|--------|-----------|------|
-| A | 0.05 | 1e-5 | 2M | 完整跑完 |
-| B | 0.07 | 1e-5 | 1M | 提前终止 (HR@50 全程Low于 A) |
-| C | 0.05 | 3e-5 | 500K | 完整跑完 |
+| A | 0.05 | 1e-5 | 2M | Complete run |
+| B | 0.07 | 1e-5 | 1M | Early termination (HR@50 Low in A throughout) |
+| C | 0.05 | 3e-5 | 500K | Complete run |
 
 ## Result comparison
 
-| 指标 | Config A | Config B | Config C |
+| Indicators | Config A | Config B | Config C |
 |------|----------|----------|----------|
 | Final HR@50 | **0.0197** | 0.0148 (partial) | 0.0192 |
 | HR@50 items | 49,437 | 26,174 | 30,352 |
 | Final avg loss | 2.9016 | — | 2.868 |
-| Training时间 | 6756s (~1h53m) | killed | 1912s (~32min) |
-| Loss plateau 起点 | ~step 800 | ~step 800 | ~step 400 |
+| Training time | 6756s (~1h53m) | killed | 1912s (~32min) |
+| Loss plateau starting point | ~step 800 | ~step 800 | ~step 400 |
 
 ## HR@50 Curve
 

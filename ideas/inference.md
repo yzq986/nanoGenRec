@@ -271,16 +271,16 @@ Alibaba's large-scale industrial recommendation: **Advertising revenue +1.79%**,
 
 ## Priority summary
 
-| 优先级 | ID | Experiment | 原因 |
+| Priority | ID | Experiment | Reason |
 |--------|-----|------|------|
-| P1 | IDEA-gr4ad-4 | Dynamic Beam Search | 生产 beam=512 时必需；可与 IDEA-gr4ad-0 配套 |
-| ~~P1~~ ❌ | ~~IDEA-static-0~~ | ~~CSR 约束解码~~ | ❌ 已有等价实现：SIDTrie + constrained_beam_search，EXP-017 起标配 |
-| P1 | IDEA-earn-0 | Register Token 压缩 | 3.79x speedup, 与 LazyAR 互补, KDD 2025 |
-| P1 | IDEA-promise-0 | PRM-guided Beam Search | 快手在线验证, test-time scaling 解锁小Model潜力 |
-| P1 | IDEA-grc-0 | Generation-Reflection-Correction | 阿里 +1.79% revenue, EGRS 控制延迟, 与 GRPO 协同 |
-| P1 | IDEA-orecv2-0 | FP8 PTQ 推理加速 | 快手 OneRec-V2, -49% latency +92% throughput, 0 质量Loss |
-| P1 | IDEA-nezha-0 | Self-Drafting Speculative Decoding | 淘宝 +1.2% revenue, <30ms (10x speedup), hash-set 验证零Model开销 |
-| P2 | IDEA-flame-0 | GR Serving 系统 | 生产部署参考，当前Phase优先级Low |
+| P1 | IDEA-gr4ad-4 | Dynamic Beam Search | Required when producing beam=512; can be used with IDEA-gr4ad-0 |
+| ~~P1~~ ❌ | ~~IDEA-static-0~~ | ~~CSR constraint decoding~~ | ❌ There is an equivalent implementation: SIDTrie + constrained_beam_search, standard configuration starting from EXP-017 |
+| P1 | IDEA-earn-0 | Register Token compression | 3.79x speedup, complementary to LazyAR, KDD 2025 |
+| P1 | IDEA-promise-0 | PRM-guided Beam Search | Kuaishou online verification, test-time scaling unlocks the potential of small models |
+| P1 | IDEA-grc-0 | Generation-Reflection-Correction | Alibaba +1.79% revenue, EGRS control delay, collaboration with GRPO |
+| P1 | IDEA-orecv2-0 | FP8 PTQ inference acceleration | Kuaishou OneRec-V2, -49% latency +92% throughput, 0 quality loss |
+| P1 | IDEA-nezha-0 | Self-Drafting Speculative Decoding | Taobao +1.2% revenue, <30ms (10x speedup), hash-set verification zero Model overhead |
+| P2 | IDEA-flame-0 | GR Serving system | Production deployment reference, current Phase priority Low |
 
 ---
 
@@ -352,11 +352,11 @@ NEZHA introduces speculative decoding into GR to solve the beam search decoding 
 
 ### Key experimental data
 
-| Metric | Vanilla Beam | NEZHA | 改善 |
+| Metric | Vanilla Beam | NEZHA | Improvement |
 |------|-------------|-------|------|
-| 总延迟 (归一化) | 4.86 | 1.86 | **2.6x** |
-| 解码延迟 | 2.95 | 0.78 | **3.8x** |
-| 系统延迟 | 0.91 | 0.08 | **11x** |
+| Total Latency (Normalized) | 4.86 | 1.86 | **2.6x** |
+| Decoding delay | 2.95 | 0.78 | **3.8x** |
+| System latency | 0.91 | 0.08 | **11x** |
 
 Public dataset (Llama-1B, beam=10): same accuracy (H@10 ≈ 0.056-0.041), latency ~10x lower (74ms → 7ms)
 

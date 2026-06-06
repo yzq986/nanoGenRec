@@ -341,14 +341,14 @@ The current model uses absolute learnable position embedding + time_gap bucket e
 
 ## Priority summary
 
-| 优先级 | ID | Feature | 收益 | 实现成本 | 建议 |
+| Priority | ID | Feature | Benefit | Implementation Cost | Recommendation |
 |--------|-----|------|------|---------|------|
-| ~~P0~~ → ✅ | IDEA-feat-0 | Time Gap Embedding | ★★★ | Low | ✅ EXP-036 验证有效，+3.7pp R@500 |
-| ~~P0~~ → ✅ | IDEA-feat-1 | Action Type Embedding | ★★☆ | Low | ✅ EXP-036 包含，三合一联合验证 |
-| ~~P0~~ → ✅ | IDEA-feat-2 | Segment Embedding 解耦 | ★★ | 极Low | ✅ EXP-036 包含，三合一联合验证 |
-| P4 暂缓 | IDEA-feat-3 | Item Category Token | ★★ | Medium | 品类信息已隐含在 text embedding，边际收益有限 |
-| P4 暂缓 | IDEA-feat-4 | User Profile Prefix | ★☆ | Medium | Align³GR ablation 仅 +0.9pp，先做 RL 链路 |
-| **P1** | **IDEA-feat-5** | **TO-RoPE Time+Order Encoding** | **★★★** | **Medium** | **feat-0/1/2 已验证，下一步升级到 TO-RoPE** |
+| ~~P0~~ → ✅ | IDEA-feat-0 | Time Gap Embedding | ★★★ | Low | ✅ EXP-036 Verified valid, +3.7pp R@500 |
+| ~~P0~~ → ✅ | IDEA-feat-1 | Action Type Embedding | ★★☆ | Low | ✅ EXP-036 included, three-in-one joint verification |
+| ~~P0~~ → ✅ | IDEA-feat-2 | Segment Embedding decoupling | ★★ | Extremely Low | ✅ EXP-036 included, three-in-one joint verification |
+| P4 on hold | IDEA-feat-3 | Item Category Token | ★★ | Medium | Category information has been implicit in text embedding, marginal revenue is limited |
+| P4 on hold | IDEA-feat-4 | User Profile Prefix | ★☆ | Medium | Align³GR ablation only +0.9pp, do RL link first |
+| **P1** | **IDEA-feat-5** | **TO-RoPE Time+Order Encoding** | **★★★** | **Medium** | **feat-0/1/2 Verified, next step to upgrade to TO-RoPE** |
 
 **Current Status**: feat-0/1/2 3-in-1 has been verified as valid by EXP-036 (+3.7pp R@500). Next step: Complete RL alignment link (EXP-037→039), then consider feat-5 TO-RoPE for further improvement.
 
@@ -356,11 +356,11 @@ The current model uses absolute learnable position embedding + time_gap bucket e
 
 ## Relations with other ideas/
 
-| 本File | 关联 | 关系Description |
+| This File | Association | Relationship Description |
 |--------|------|---------|
-| IDEA-feat-1 | IDEA-oneloc-5 (training.md) | oneloc-5 分离行为序列, feat-1 在统一序列Medium标注行为 |
-| IDEA-feat-1 | IDEA-gr4ad-2 (training.md) | gr4ad-2 按行为加权 loss, feat-1 让Model学行为表示 |
-| IDEA-feat-3 | IDEA-unirec-0 (architecture.md) | unirec-0 生成 category, feat-3 只注入 category |
-| IDEA-feat-3 | IDEA-glide-0 (architecture.md) | glide-0 soft prompt, feat-3 方案 C 类似 |
-| IDEA-feat-4 | IDEA-mtgr-0 (training.md) | mtgr-0 dynamic masking 支持 profile 双向 attn |
-| IDEA-feat-5 | IDEA-gems-0 (architecture.md) | gems-0 multi-stream temporal, feat-5 是轻量替代 |
+| IDEA-feat-1 | IDEA-oneloc-5 (training.md) | oneloc-5 separates behavior sequences, feat-1 labels behaviors in a unified sequence Medium |
+| IDEA-feat-1 | IDEA-gr4ad-2 (training.md) | gr4ad-2 weights loss by behavior, feat-1 lets Model learn behavioral representation |
+| IDEA-feat-3 | IDEA-unirec-0 (architecture.md) | unirec-0 generates category, feat-3 only injects category |
+| IDEA-feat-3 | IDEA-glide-0 (architecture.md) | glide-0 soft prompt, feat-3 scheme C similar |
+| IDEA-feat-4 | IDEA-mtgr-0 (training.md) | mtgr-0 dynamic masking supports profile bidirectional attn |
+| IDEA-feat-5 | IDEA-gems-0 (architecture.md) | gems-0 multi-stream temporal, feat-5 is a lightweight alternative |

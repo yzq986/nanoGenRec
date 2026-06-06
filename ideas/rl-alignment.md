@@ -427,20 +427,20 @@ Tencent Online A/B: **GMV +1.19%, User Retention +0.8%**.
 
 ## Priority summary
 
-| 优先级 | ID | Experiment | 原因 |
+| Priority | ID | Experiment | Reason |
 |--------|-----|------|------|
-| P1 (框架已实现) | IDEA-onemall-2 | GRPO/DPO 强化学习 | EXP-026 GRPO 框架已实现，EXP-037 DPO ExperimentMedium |
-| P1 | IDEA-oneloc-2 | DPO + 双目标奖励 | DPO 比 PPO 简单，可作为 RL 入门 |
-| **P1 (进行Medium)** | **IDEA-align3-0** | **Progressive DPO (SP→RF)** | **EXP-020 ✅ SOTA 66.2%; EXP-037 SP-DPO features 链路进行Medium** |
-| P1 (待 EXP-037 完成) | IDEA-onerec-3 | ECPO + Format Reward | EXP-039 planned，需先完成 EXP-037/038 |
-| P1 | IDEA-rankgr-0 | Listwise DPO + Rescore | 淘宝验证，RSP 模块是新技术 |
-| P1 | IDEA-sgrec-0 | A2PO + Semantic Judge | 腾讯 +1.19% GMV, 语义-业务不对称门控 |
-| P1 | IDEA-genrec-2 | GRPO-SR + Hybrid Rewards | JD 验证, NLL 正则 + relevance gating 防 reward hacking |
-| **P1 (已验证)** | **IDEA-rpo-0** | **RPO: SFT Loss as DPO Regularizer** | **NeurIPS 2024 理论证明, EXP-019/020 joint NTP+DPO = RPO ✅** |
-| **P1 (已验证)** | **IDEA-spot-0** | **Elastic Tether: β 自适应正则化** | **HKU 2026, 解释 EXP-018 β ablation Result ✅** |
-| P2 | IDEA-gr4ad-3 | RSPO 排序优化 | 收益最大但前置依赖最重 |
-| ❌ 关闭 | ~~IDEA-uni-0~~ | ~~SPO 搜索偏Good优化~~ | 无搜索场景，技术已被 align3-0/onemall-2 覆盖 |
-| P2 | IDEA-gpr-0 | HEPO Hierarchical Policy Opt | 腾讯微信广告部署, Level reward 新思路 |
+| P1 (framework implemented) | IDEA-onemall-2 | GRPO/DPO reinforcement learning | EXP-026 GRPO framework implemented, EXP-037 DPO ExperimentMedium |
+| P1 | IDEA-oneloc-2 | DPO + dual target reward | DPO is simpler than PPO and can be used as an entry into RL |
+| **P1 (for Medium)** | **IDEA-align3-0** | **Progressive DPO (SP→RF)** | **EXP-020 ✅ SOTA 66.2%; EXP-037 SP-DPO features link for Medium** |
+| P1 (to be completed by EXP-037) | IDEA-onerec-3 | ECPO + Format Reward | EXP-039 planned, need to complete EXP-037/038 first |
+| P1 | IDEA-rankgr-0 | Listwise DPO + Rescore | Taobao verification, RSP module is a new technology |
+| P1 | IDEA-sgrec-0 | A2PO + Semantic Judge | Tencent +1.19% GMV, Semantic-Business Asymmetric Gating |
+| P1 | IDEA-genrec-2 | GRPO-SR + Hybrid Rewards | JD verification, NLL regular + relevance gating to prevent reward hacking |
+| **P1 (verified)** | **IDEA-rpo-0** | **RPO: SFT Loss as DPO Regularizer** | **NeurIPS 2024 Theory Proof, EXP-019/020 joint NTP+DPO = RPO ✅** |
+| **P1 (verified)** | **IDEA-spot-0** | **Elastic Tether: β Adaptive Regularization** | **HKU 2026, Explanation EXP-018 β ablation Result ✅** |
+| P2 | IDEA-gr4ad-3 | RSPO sorting optimization | The biggest benefit but the heaviest pre-dependence |
+| ❌ Close | ~~IDEA-uni-0~~ | ~~SPO search is optimized for Good~~ | No search scenario, the technology has been covered by align3-0/onemall-2 |
+| P2 | IDEA-gpr-0 | HEPO Hierarchical Policy Opt | Tencent WeChat advertising deployment, Level reward new ideas |
 
 ---
 
@@ -634,11 +634,11 @@ Conclusion: **Regularization comes from the reward formula itself (tethering eff
 
 **Direct explanation of EXP-018’s β ablation**:
 
-| Config | β | PPL | R@10 | Elastic Tether 解释 |
-|--------|-----|-----|------|-------------------|
-| hard | 0.1 | 50,694 | 8.3% | β 小 → tether 松 → policy 漂移远 → catastrophic forgetting |
-| prog-beta01 | 0.01 | 2.4B | 6.0% | β 极小 → 几乎无 tether → 完全 forgetting |
-| prog-beta50 | 0.5 | 404.9 | 10.2% | β 较大 → tether 紧 → 退化最轻但仍不够 |
+| Config | β | PPL | R@10 | Elastic Tether explained |
+|--------|-----|-----|------|-----------------------------|
+| hard | 0.1 | 50,694 | 8.3% | β small → tether loose → policy drift far → catastrophic forgetting |
+| prog-beta01 | 0.01 | 2.4B | 6.0% | β very small → almost no tether → completely forgetting |
+| prog-beta50 | 0.5 | 404.9 | 10.2% | β larger → tether tight → least degraded but still not enough |
 
 In the 807-step hard DPO training, even if β=0.5 (the tightest tether), r_θ will gradually increase causing the tether to completely relax (λ → 0). At this point the model is in a "zero gradient" state but has strayed too far - tether can only slow down but not pull back. **External regularization (NTP/SFT loss) is required to provide a continuous gradient signal to pull the policy back**.
 
@@ -723,12 +723,12 @@ Existing issues:
 
 ReCast’s mapping for us:
 
-| ReCast 机制 | 对应我们的实现位置 | 改造成本 |
+| ReCast mechanism | Corresponding to our implementation position | Transformation cost |
 |-------------|-------------------|--------|
-| Rollout repair (inject GT) | `rl/trainer.py::_grpo_step`，在 BehaviorReward 计算后、advantage 计算前 | Low — 从 context 的 ground-truth SID 直接构造一条响应替换组内最Low structural score |
-| Structural score φ | 已存在 — prefix cascade L0/L1/L2 match 函数在 `rl/reward.py::BehaviorReward` Medium | 0 — 直接复用 |
-| Boundary contrastive update | 替换 `rl/grpo.py` 里的 normalized advantage 计算 | Medium — 单独分支，保留原 GRPO 作为 ablation |
-| Search-update decoupling | 物理过滤非 (i+, i-) 样本，跳过 old_log_prob / ref_log_prob / update_actor | Medium — 需要改 log_prob 计算Path |
+| Rollout repair (inject GT) | `rl/trainer.py::_grpo_step`, after the BehaviorReward is calculated and before the advantage is calculated | Low — directly constructs a response from the ground-truth SID of the context to replace the lowest Low structural score in the group |
+| Structural score φ | Exists — prefix cascade L0/L1/L2 match function in `rl/reward.py::BehaviorReward` Medium | 0 — Direct reuse |
+| Boundary contrastive update | Replace the normalized advantage calculation in `rl/grpo.py` | Medium — separate branch, retain the original GRPO as ablation |
+| Search-update decoupling | Physically filter non-(i+, i-) samples, skip old_log_prob / ref_log_prob / update_actor | Medium — need to change log_prob calculation Path |
 
 **Differences from existing RL ideas**:
 - vs IDEA-onemall-2 (GRPO baseline): ReCast is GRPO's signal layer plug-in and does not change the external objective
@@ -810,11 +810,11 @@ RAD-DPO identifies **three structural flaws** of standard DPO in SID generative 
 
 Directly target our DPO:
 
-| 我们踩坑 | RAD-DPO 对应修正 |
+| We step on the trap | RAD-DPO corresponding correction |
 |---------|---------------|
-| EXP-018 hard DPO PPL→50K+ forgetting | Gradient detachment 保护 prefix |
-| EXP-026 GRPO sparse reward, std≈0 | Similarity weighting 给弱信号缩放 |
-| EXP-020 只关注 top-1 reward | Multi-label contrastive 覆盖多正例 |
+| EXP-018 hard DPO PPL→50K+ forgetting | Gradient detachment protection prefix |
+| EXP-026 GRPO sparse reward, std≈0 | Similarity weighting scales weak signals |
+| EXP-020 only focuses on top-1 reward | Multi-label contrastive covers multiple positive examples |
 
 Can be orthogonally stacked with IDEA-align3-0 (Progressive DPO) and IDEA-onerec-3 (ECPO). Partially overlaps with IDEA-recast-0 (ReCast): ReCast only leaves the i+/i- poles, RAD-DPO covers all Y_pos.
 
