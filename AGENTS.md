@@ -1,6 +1,6 @@
 # Project Instructions
 
-[English](AGENTS.md) | [Chinese](AGENTS.zh.md)
+[English](AGENTS.md) | [Chinese](AGENTS.md.zh.md)
 
 ## Background task monitoring principles
 

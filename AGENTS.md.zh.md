@@ -1,6 +1,6 @@
 # Project Instructions
 
-[English](AGENTS.md) | [中文](AGENTS.zh.md)
+[English](AGENTS.md) | [中文](AGENTS.md.zh.md)
 
 ## 后台任务监控原则
 
