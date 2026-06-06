@@ -1,5 +1,7 @@
 # 005: KV Cache for Beam Search — 3-Level Compute Reuse
 
+[English](005-beam-search-kv-cache.md) | [Chinese](005-beam-search-kv-cache.zh.md)
+
 **Date**: 2026-04-19
 
 ## Problem

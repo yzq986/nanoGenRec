@@ -1,6 +1,8 @@
 # Research Agent Log
 
-Append-only 时间线。格式见 `schema.md`。
+[English](log.md) | [Chinese](log.zh.md)
+
+Append-only timeline. See `schema.md` for the format.
 
 ---
 
@@ -132,7 +134,7 @@ HIGH RELEVANCE. Three-level alignment: Dual SCID tokenization (user+item jointly
 
 ## [2026-04-22 20:29] PAPER_READ: 2510.20455 (TO-RoPE — Time-and-Order RoPE for GR, Roblox+UMD)
 
-HIGH RELEVANCE — IDEA-feat-5 论文来源. Unified framework: θ_k = (1-λ)·index·ω^p + λ·time·ω^t. Split-by-dim and split-by-head consistently beat HSTU-style relative bias and APE on both public and industrial datasets. Recommended: split-by-dim 50/50 or split-by-head 0.3. +1.6-2.0% HR@10 over HSTU-style bias. FlashAttention compatible.
+HIGH RELEVANCE — IDEA-feat-5 Paper source. Unified framework: θ_k = (1-λ)·index·ω^p + λ·time·ω^t. Split-by-dim and split-by-head consistently beat HSTU-style relative bias and APE on both public and industrial datasets. Recommended: split-by-dim 50/50 or split-by-head 0.3. +1.6-2.0% HR@10 over HSTU-style bias. FlashAttention compatible.
 
 ## [2026-04-22 20:31] PAPER_READ: 2510.16804 (LAC — Layout Is the Model, Action-Item Coupling, Roblox+UMD)
 

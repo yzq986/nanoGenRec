@@ -1,23 +1,25 @@
-## EXP-041B: ENTP-Loss v2 — Session-Level Negatives (behavior_v2 数据)
+## EXP-041B: ENTP-Loss v2 — Session-Level Negatives (behavior_v2 data)
+
+[English](exp-041b.md) | [Chinese](exp-041b.zh.md)
 
 **Date**: 2026-04-29
-**Status**: completed (结论: 无效，session 粒度问题)
+**Status**: completed (Conclusion: invalid, session granularity issue)
 **Results**: experiments/ntp_checkpoints/exp041b-entp{005,01,02}/
 
 ### Background
 
-EXP-041 失败根因是用 `exposure_neg` 替换了 behavior 数据（用户集合不同）。正确做法：以 behavior 正样本序列为主，附加 session 内未点击 item 作为 neg_l0。`export_behavior_v2.py` 已导出此格式（uid, session_id, iid, action_bitmap），n_seqs=1,745,799，has_neg_l0=True，entp_k=5。
+EXP-041 The root cause of the failure is that the behavior data is replaced with `exposure_neg` (the user collection is different). Correct approach: Mainly use positive behavior sample sequences, and append unclicked items in the session as neg_l0. `export_behavior_v2.py` has exported this format (uid, session_id, iid, action_bitmap), n_seqs=1,745,799, has_neg_l0=True, entp_k=5.
 
 ### Hypothesis
 
-behavior_v2 数据包含 session 内负样本，ENTP α=0.1 使 R@500 从 59.0% 提升 +2~4pp。
+The behavior_v2 data contains negative samples within the session. ENTP α=0.1 increases R@500 by +2~4pp from 59.0%.
 
 ### Design
 
-- **Variable**: ENTP weight α ∈ {0.05, 0.1, 0.2}；α=0 直接引用 exp036-full-features
-- **Fixed**: behavior_v2 数据，time_gap+action_level+segment_emb，4096×3 binary SID，1 epoch
-- **Baseline**: exp036-full-features（已有，不重训）
-- **Data**: feed_user_behavior_v2 (2026-03-18~03-31)，n_seqs=1,745,799
+- **Variable**: ENTP weight α ∈ {0.05, 0.1, 0.2}; α=0 directly quotes exp036-full-features
+- **Fixed**: behavior_v2 data, time_gap+action_level+segment_emb, 4096×3 binary SID, 1 epoch
+- **Baseline**: exp036-full-features (existing, no retraining)
+- **Data**: feed_user_behavior_v2 (2026-03-18~03-31), n_seqs=1,745,799
 
 ### Results
 
@@ -30,16 +32,16 @@ behavior_v2 数据包含 session 内负样本，ENTP α=0.1 使 R@500 从 59.0% 
 
 ### Analysis
 
-**结论：ENTP v2 无效，根本原因是 session 粒度错误。**
+**Conclusion: ENTP v2 is invalid, and the root cause is the wrong session granularity. **
 
-1. **`df_4` 不是 session**：`export_behavior_v2.py` 里 `exposed` CTE 用 `df_4 AS session_id`，但 `df_4` 实际是每条 `$AppExposure` 事件的单个 view ID（每次刷新一条曝光一个独立 ID），不是用户会话 ID。
-2. **session 内几乎无负样本空间**：本地验证显示 98% 的 session 只有 1 个曝光 item，1.99% 有 2 个，0 个有 3 个以上。一次曝光事件 = 1 个 item，用户点了那个 item，neg_candidates = 0。
-3. **neg:pos = 1:0.01**：175 万序列中 neg_l0 覆盖率不足 1%，ENTP loss 几乎不触发，等同于纯 NTP 训练。
-4. **PPL 从 27 升至 50**：behavior_v2 数据本身的序列质量比 behavior 差（可能包含了行为较少的用户或 join 导致序列发生变化），导致基础性能下降。
+1. **`df_4` is not session**: `exposed` CTE in `export_behavior_v2.py` uses `df_4 AS session_id`, but `df_4` is actually a single view ID of each `$AppExposure` event (an independent ID is refreshed each time an exposure is refreshed), not a user session ID.
+2. **There is almost no negative sample space within the session**: Local verification shows that 98% of sessions have only 1 exposed item, 1.99% have 2, and 0 have more than 3. An exposure event = 1 item, the user clicked on that item, neg_candidates = 0.
+3. **neg:pos = 1:0.01**: The coverage rate of neg_l0 in 1.75 million sequences is less than 1%, and ENTP loss is almost not triggered, which is equivalent to pure NTP training.
+4. **PPL rises from 27 to 50**: The sequence quality of behavior_v2 data itself is worse than behavior (it may contain users with less behavior or join causes the sequence to change), resulting in a decrease in basic performance.
 
 ### Next Steps
 
-- 若要做 ENTP，需重新定义 session：按时间窗口（如 30min 内）将多次曝光聚合为一个 session，这样每个 session 才有多个 item 可以区分正负
-- 或者回归 OneRec/DualGR 原始方案：用 user-level 曝光负样本（非 session 内），直接 join behavior 数据
+- If you want to do ENTP, you need to redefine the session: aggregate multiple exposures into one session according to the time window (such as within 30 minutes), so that each session has multiple items that can distinguish positive and negative
+- Or return to the original OneRec/DualGR solution: use user-level exposure to negative samples (non-session) and directly join behavior data
 
 ---

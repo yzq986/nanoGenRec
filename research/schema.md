@@ -1,54 +1,56 @@
 # Research Shared Space — Schema
 
-本文档定义 `research/` 目录下所有文件的格式约定。Agent 和人类都遵守这些约定。
+[English](schema.md) | [Chinese](schema.zh.md)
 
-## 文件命名
+This document defines formatting conventions for all files in the `research/` directory. Agents and humans alike abide by these conventions.
 
-所有 `inbox/`、`outbox/`、`decisions/` 中的文件使用：
-- 格式：`NNN-kebab-case-topic.md`
-- 编号**全局递增**（跨所有目录），不重复
-- 例：`001-initial-directive.md`、`002-contrastive-loss-proposal.md`
+## File naming
 
-`paper-notes/` 使用 arxiv ID：`ARXIV_ID.md`（如 `2604.14878.md`）
+All files in `inbox/`, `outbox/`, `decisions/` use:
+- Format: `NNN-kebab-case-topic.md`
+- Numbering **Globally incremented** (across all directories), no duplicates
+- Example: `001-initial-directive.md`, `002-contrastive-loss-proposal.md`
 
-## inbox/ — 人 → Agent
+`paper-notes/` uses arxiv ID: `ARXIV_ID.md` (e.g. `2604.14878.md`)
 
-人类写入，Agent 读取。
+## inbox/ — person → Agent
+
+Humans write, agents read.
 
 ```yaml
 ---
 from: human
 date: "2026-04-22"
 priority: normal  # normal | urgent
-subject: "简短标题"
+subject: "short title"
 ---
 
-正文（markdown）。
+Text (markdown).
 ```
 
-Agent 读完后在 frontmatter 添加 `read: "YYYY-MM-DD HH:MM"`。
+After the Agent finishes reading, add `read: "YYYY-MM-DD HH:MM"` to the frontmatter.
 
-## outbox/ — Agent → 人
+## outbox/ — Agent → Person
 
-Agent 写入，人类读取。
+Agents write, humans read.
 
 ```yaml
 ---
 date: "2026-04-22 14:30"
 type: question     # question | finding | proposal | error
 priority: normal   # normal | urgent
-subject: "简短标题"
+subject: "short title"
 needs_response: true  # true | false
 ---
 
-正文（markdown）。
+Text (markdown).
 ```
 
-人类回复时可以：
-1. 直接在此文件追加 `## Response` 段落
-2. 或写一条新的 inbox 消息引用此 outbox 编号
+Humans can respond by:
+1. Directly append the `## Response` paragraph to this file
+2. Or write a new inbox message referencing this outbox number
 
-## decisions/ — 实验决策记录
+## decisions/ — Experimental decision record
 
 ```yaml
 ---
@@ -59,27 +61,27 @@ confidence: high   # high | medium | low
 ---
 
 ## Summary
-一句话描述实验和假设。
+Describe the experiment and hypothesis in one sentence.
 
 ## Results
 | Config | PPL | R@10 | R@500 | vs Baseline |
 |--------|-----|------|-------|-------------|
 
 ## Rationale
-为什么 merge/discard（2-3 句）。
+Why merge/discard (2-3 sentences).
 
 ## Next Steps
-基于此结果的下一步方向。
+Next steps based on this result.
 ```
 
-## status.md — 状态面板
+## status.md — status panel
 
-YAML frontmatter（机器可读）+ 人类可读叙述。
+YAML frontmatter (machine readable) + human readable narrative.
 
 ```yaml
 ---
 last_updated: "2026-04-22T14:30:00"
-current_task: null  # null 或 {type, experiment, phase, started_at}
+current_task: null # null or {type, experiment, phase, started_at}
 next_experiment_number: 26
 best_result:
   experiment: "exp023-segment"
@@ -89,36 +91,36 @@ total_experiments_run: 0
 ---
 ```
 
-后续跟人类可读的段落：Current State、Recent Activity、Experiment Queue、Open Questions、Blockers。
+Follow with human-readable paragraphs: Current State, Recent Activity, Experiment Queue, Open Questions, Blockers.
 
-## log.md — 时间线
+## log.md — Timeline
 
-Append-only。每条记录：
+Append-only. Each record:
 
 ```markdown
-## [YYYY-MM-DD HH:MM] ACTION_TYPE: 简短描述
+## [YYYY-MM-DD HH:MM] ACTION_TYPE: short description
 
-详细内容（可选）。
+Details (optional).
 ```
 
-ACTION_TYPE 枚举：
-- `STARTUP` — Agent 启动
-- `INBOX_READ` — 读取人类消息
-- `PAPER_READ` — 读完一篇论文
-- `IDEA_PROPOSED` — 提出新 idea
-- `EXPERIMENT_DESIGN` — 设计实验
-- `EXPERIMENT_RUN` — 开始执行实验
-- `EXPERIMENT_EVAL` — 评估实验结果
-- `DECISION` — merge/discard 决策
-- `OUTBOX_WRITE` — 向人类发消息
-- `TOOL_CREATED` — 创建新的分析/估算工具
-- `ERROR` — 错误
-- `IDLE` — 无可执行任务
+ACTION_TYPE enumeration:
+- `STARTUP` — Agent startup
+- `INBOX_READ` — read human messages
+- `PAPER_READ` — finish reading a paper
+- `IDEA_PROPOSED` — Propose new ideas
+- `EXPERIMENT_DESIGN` — Design an experiment
+- `EXPERIMENT_RUN` — start executing an experiment
+- `EXPERIMENT_EVAL` — evaluate experimental results
+- `DECISION` — merge/discard decision
+- `OUTBOX_WRITE` — send a message to a human
+- `TOOL_CREATED` — create new analysis/estimation tools
+- `ERROR` — error
+- `IDLE` — no task to execute
 
-## paper-notes/ — 论文摘要
+## paper-notes/ — paper abstract
 
 ```markdown
-# [论文标题]
+# [paper title]
 
 - **Arxiv**: XXXX.XXXXX
 - **Authors**: ...
@@ -126,18 +128,18 @@ ACTION_TYPE 枚举：
 - **Read date**: YYYY-MM-DD
 
 ## Core Contribution
-- （3 条要点）
+- (3 points)
 
 ## Method
-（1 段摘要）
+(1 paragraph summary)
 
 ## Key Results
-（关键数字/表格）
+(Key Figures/Table)
 
 ## Relevance to gr_demo
-（具体可应用的点）
+(Specific applicable points)
 
 ## Connections
-- → ideas/training.md: IDEA-xxx-N（关联已有 idea）
+- → ideas/training.md: IDEA-xxx-N (associated with idea)
 - → ideas/architecture.md: IDEA-yyy-N
 ```

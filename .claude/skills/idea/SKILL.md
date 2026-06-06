@@ -1,4 +1,6 @@
 ---
+
+[English](SKILL.md) | [Chinese](SKILL.zh.md)
 name: idea
 description: Extract experiment ideas from papers/articles discussed in conversation, file them by improvement dimension into ideas/ topic files
 argument-hint: [topic title]
@@ -16,10 +18,10 @@ Ideas are organized by improvement dimension, NOT by paper source:
 
 | File | Dimension | When to use |
 |------|-----------|-------------|
-| `ideas/tokenizer.md` | 量化方法 | RQ/OPQ/FSQ/Balanced KMeans, collision, codebook utilization |
+| `ideas/tokenizer.md` | 量化Method | RQ/OPQ/FSQ/Balanced KMeans, collision, codebook utilization |
 | `ideas/embedding.md` | 表征增强 | Collaborative signals, multimodal, attribute enrichment |
-| `ideas/architecture.md` | 模型架构 | Decoder design, attention, MoE, sequence compression |
-| `ideas/training.md` | 训练目标 | Auxiliary losses, sample weighting, multi-behavior |
+| `ideas/architecture.md` | Model架构 | Decoder design, attention, MoE, sequence compression |
+| `ideas/training.md` | Training目标 | Auxiliary losses, sample weighting, multi-behavior |
 | `ideas/rl-alignment.md` | RL 对齐 | DPO/GRPO/RSPO, reward design |
 | `ideas/inference.md` | 推理优化 | Beam search, decoding strategies |
 | `ideas/scaling.md` | 扩展性 | Scaling laws, model size vs data size |
@@ -37,29 +39,29 @@ Ideas are organized by improvement dimension, NOT by paper source:
 
 4. **Extract ideas from conversation context**. For each distinct idea, create an entry with:
    - **IDEA-{hash}-{N}**: where `{hash}` is the paper-origin prefix and `{N}` is the globally-incremented sequence number
-   - **优先级**: P0 (critical/strategic) / P1 (high value) / P2 (nice to have)
-   - **来源**: Which section/paper the idea comes from
-   - **状态**: 待讨论 (initial) / 已采纳 → EXP-NNN (when promoted to experiment) / 已否决 (rejected)
+   - **Priority**: P0 (critical/strategic) / P1 (high value) / P2 (nice to have)
+   - **Source**: Which section/paper the idea comes from
+   - **Status**: To be discussed (initial) / Adopted → EXP-NNN (when promoted to experiment) / Rejected (rejected)
 
 5. **Each idea entry must include these sections**:
 
    ```markdown
    ## IDEA-{hash}-{N}: {Title}
 
-   **优先级**: P0/P1/P2
-   **来源**: {paper/section reference}
-   **状态**: 待讨论
+**Priority**: P0/P1/P2
+   **Source**: {paper/section reference}
+   **Status**: To be discussed
 
-   ### 核心思想
+### Core Idea
    {What the paper proposes, in 2-3 sentences}
 
-   ### 与当前项目的关联
+### Association with the current project
    {How it connects to our codebase, existing experiments, architecture decisions}
 
-   ### 实验设计草案
+### Experimental Design Draft
    {Concrete experiment design: variables, configs, baselines, metrics}
 
-   ### 关键问题
+### Key questions
    {Open questions, risks, dependencies that need to be resolved before implementation}
    ```
 
@@ -71,16 +73,16 @@ Ideas are organized by improvement dimension, NOT by paper source:
 
 ```markdown
 # {Dimension Title}
-{维度说明 + 影响范围}
+{Dimension description + scope of influence}
 ---
-## 演进路径
+## Evolution path
 {Text or ASCII diagram showing evolution within this dimension}
 ---
 ## IDEA-{hash}-{N}: {Title}
 ...
 ---
-## 优先级总结
-| 优先级 | ID | 实验 | 原因 |
+## Priority summary
+| 优先级 | ID | Experiment | 原因 |
 |--------|-----|------|------|
 | ... | ... | ... | ... |
 ```

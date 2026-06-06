@@ -1,4 +1,6 @@
 ---
+
+[English](status.md) | [Chinese](status.zh.md)
 last_updated: "2026-04-22T20:35:00"
 current_task: null
 next_experiment_number: 26
@@ -16,7 +18,7 @@ total_papers_read: 15
 
 Idle. Awaiting human response on:
 - outbox/002-experiment-analysis.md (Page-wise NTP proposal)
-- outbox/005-spot-dpo-finding.md (IDEA-spot-0: SPoT-BCO for SP-DPO, 需要 rl/ 源码授权)
+- outbox/005-spot-dpo-finding.md (IDEA-spot-0: SPoT-BCO for SP-DPO, requires rl/ source code authorization)
 
 ## Recent Activity
 
@@ -40,9 +42,9 @@ Idle. Awaiting human response on:
 ## Experiment Queue
 
 Pending ideas (by priority):
-- **IDEA-genrec-0** (P1, training.md): Page-wise NTP — 最高优先级, 需人类授权 ntp/ 源码修改
-- **IDEA-spot-0** (P1, rl-alignment.md): SPoT-BCO 替换 SP-DPO loss — 需人类授权 rl/ 源码修改
-- IDEA-mtgr-0 (P0, training.md): User-Level Packing + Causal Mask — 需人类授权 ntp/ 源码修改
+- **IDEA-genrec-0** (P1, training.md): Page-wise NTP — highest priority, requires human authorization ntp/ source code modification
+- **IDEA-spot-0** (P1, rl-alignment.md): SPoT-BCO replaces SP-DPO loss — human authorization required rl/ source code modification
+- IDEA-mtgr-0 (P0, training.md): User-Level Packing + Causal Mask — requires human authorization ntp/ source code modification
 - IDEA-feat-3 (P2): Item Category Token — lower priority
 - IDEA-feat-4 (P2): User Profile Prefix — lower priority
 
@@ -52,11 +54,11 @@ Completed/Closed:
 
 ## Open Questions
 
-1. [outbox/002] Page-wise NTP 实验是否授权修改 ntp/preprocess.py 和 ntp/train.py?
-2. [outbox/002] Session 分割标准偏好? (时间间隔 >30min vs 按天)
-3. [outbox/005] IDEA-spot-0 (SPoT-BCO for SP-DPO) 是否授权修改 rl/ 源码?
+1. [outbox/002] Does the Page-wise NTP experiment authorize modification of ntp/preprocess.py and ntp/train.py?
+2. [outbox/002] Session splitting standard preference? (Time interval >30min vs by day)
+3. [outbox/005] Is IDEA-spot-0 (SPoT-BCO for SP-DPO) authorized to modify the rl/ source code?
 
 ## Blockers
 
-- 所有高优先级实验均需源码修改授权 (ntp/ 或 rl/)
-- 4 篇论文待读 (可在等待授权期间继续): 2509.21777, 2503.02453, 2410.06682, 2405.16436
+- All high-priority experiments require source code modification authorization (ntp/ or rl/)
+- 4 papers to be read (can be continued while waiting for authorization): 2509.21777, 2503.02453, 2410.06682, 2405.16436

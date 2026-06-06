@@ -1,16 +1,18 @@
 ---
+
+[English](002-experiment-analysis.md) | [Chinese](002-experiment-analysis.zh.md)
 date: "2026-04-22 18:35"
 type: finding
 priority: normal
-subject: "EXP-022~025 趋势分析 + 下一步实验提案"
+subject: "EXP-022~025 Trend Analysis + Next Experiment Proposal"
 needs_response: true
 ---
 
-## 一、实验结果总览
+## 1. Overview of experimental results
 
-完成了对 EXP-022 至 EXP-025 全部结果的收集和分析。
+Completed collection and analysis of all results from EXP-022 to EXP-025.
 
-### 当前完整 leaderboard (R@500 排序)
+### Current complete leaderboard (R@500 sorting)
 
 | Rank | Config | PPL | R@10 | R@500 | 关键变量 |
 |------|--------|-----|------|-------|---------|
@@ -31,72 +33,72 @@ needs_response: true
 | 15 | exp025-action-l2only | 24.85 | 5.5% | 27.0% | action仅L2 (失败) |
 | 16 | exp023-action | 27.50 | 4.9% | 28.5% | 仅action (严重泄漏) |
 
-## 二、关键发现
+## 2. Key findings
 
-### 1. Beam search feature passing 是正确方向 ✅
-EXP-024 (shift) 失败后，EXP-025 beam_passes 彻底解决了 time_gap/action 的训练-推理 gap：
-- R@500: 61.2% → **63.6%** (+2.4pp)，PPL: 25.94 → **25.22** (-0.72)
-- 方法：训练正常使用所有features，beam search时传入 time_gap(已知真值) + action(carry-forward上一个context item)
-- 这证明 side features 本身有价值，之前失败是推理端bug，不是特征无用
+### 1. Beam search feature passing is the right direction ✅
+After EXP-024 (shift) failed, EXP-025 beam_passes completely solved the training-inference gap of time_gap/action:
+- R@500: 61.2% → **63.6%** (+2.4pp), PPL: 25.94 → **25.22** (-0.72)
+- Method: Use all features normally for training, and pass in time_gap (known true value) + action (carry-forward the previous context item) during beam search
+- This proves that side features themselves are valuable. Previous failures were inference-side bugs, not useless features.
 
-### 2. Contrastive loss 无效 ❌
-EXP-022 全5个config都不如baseline。IDEA-onemall-0 可以 close。
-- 最好的 α=0.01 也只+0.7pp R@500，代价是 +0.84 PPL
-- α 越大越差（0.1 → -0.6pp, 0.5 → -2.2pp）
-- 根因推测：SID 是离散 codebook token，embedding 空间对齐对离散 token 预测无直接帮助
+### 2. Contrastive loss is invalid ❌
+EXP-022 All five configs are inferior to baseline. IDEA-onemall-0 can be closed.
+- The best α=0.01 is only +0.7pp R@500, at a cost of +0.84 PPL
+- The larger α is, the worse it is (0.1 → -0.6pp, 0.5 → -2.2pp)
+- Root cause speculation: SID is a discrete codebook token, and embedding space alignment does not directly help discrete token prediction.
 
-### 3. Shift 方案完全错误 ❌
-EXP-024 证明 shift 不仅没修复 gap，还让信号变陈旧导致更差。正确的设计方向是修复推理端而非修改训练数据。
+### 3. The Shift solution is completely wrong ❌
+EXP-024 proves that shift not only fails to repair the gap, but also makes the signal stale and worse. The correct design direction is to repair the inference side rather than modify the training data.
 
-### 4. Segment embedding 稳定正向 ✅
-EXP-023 → EXP-025，segment_emb 始终是正向信号，且与 beam_passes 正交叠加。
+### 4. Segment embedding stable and positive ✅
+EXP-023 → EXP-025, segment_emb is always a forward signal and is superimposed orthogonally with beam_passes.
 
-## 三、P0 Ideas 状态
+## 3. P0 Ideas status
 
-| IDEA | 状态 | 结论 |
+| IDEA | Status | Conclusion |
 |------|------|------|
 | IDEA-feat-0 (time_gap) | ✅ 已验证 via EXP-023/025 | 有效，需配合beam_passes |
 | IDEA-feat-1 (action_level) | ✅ 已验证 via EXP-023/025 | 有效，需配合beam_passes |
 | IDEA-feat-2 (segment_emb) | ✅ 已验证 via EXP-023 | 确认正向 |
 | IDEA-onemall-0 (contrastive) | ❌ 已测试 via EXP-022 | 无效，discard |
-| IDEA-genrec-0 (PW-NTP) | 🔲 未测试 | **最高优先级下一步** |
+| IDEA-genrec-0 (PW-NTP) | 🔲 未测试 | **最High优先级下一步** |
 
-## 四、下一步实验提案
+## 4. Next experimental proposal
 
-### 提案 A: EXP-026 — Page-wise NTP (IDEA-genrec-0) ⭐ 推荐
+### Proposal A: EXP-026 — Page-wise NTP (IDEA-genrec-0) ⭐ Recommended
 
-**为什么现在做这个**：
-- 已读 GenRec 论文 (2604.14878)，JD在线 +9.5% click，幻觉率降50%
-- 与 beam_passes 完全正交 — PW-NTP 改训练目标，beam_passes 改推理端
-- **推理端完全不需要改动**（训练-推理不对称是有意设计）
-- 需要修改的模块：`ntp/preprocess.py`（数据构造）、`ntp/train.py`（dataloader）
-- 不需要修改 `ntp/model.py`（模型结构不变）
+**Why do this now**:
+- Read GenRec paper (2604.14878), JD online +9.5% click, hallucination rate reduced by 50%
+- Completely orthogonal to beam_passes - PW-NTP changes the training target, beam_passes changes the inference end
+- **There is no need to change the inference end at all** (the training-inference asymmetry is intentionally designed)
+- Modules that need to be modified: `ntp/preprocess.py` (data structure), `ntp/train.py` (dataloader)
+- No need to modify `ntp/model.py` (the model structure remains unchanged)
 
-**设计草案**：
-- 数据构造：同一 session/时间窗口内多个正交互 item 拼接为 target 序列
+**Design Draft**:
+- Data structure: multiple positive interaction items within the same session/time window are spliced into a target sequence
 - Baseline: exp025-beam-passes (R@500=63.6%)
-- 对比：point-wise NTP vs page-wise NTP (2/3/5 items per page)
-- 预计训练时间与当前相同（packed sequences，总 token 数不变）
+- Comparison: point-wise NTP vs page-wise NTP (2/3/5 items per page)
+- The expected training time is the same as the current one (packed sequences, the total number of tokens remains unchanged)
 
-**需要人类确认**：
-1. 这涉及修改 `ntp/preprocess.py` 和 `ntp/train.py` 两个源码文件 — 是否授权？
-2. 数据中 session 分割的标准？按时间间隔 >30min 切分？还是按天？
+**Human Confirmation Required**:
+1. This involves modifying two source code files, `ntp/preprocess.py` and `ntp/train.py` - is it authorized?
+2. What is the standard for session segmentation in data? Split by time interval >30min? Or on a daily basis?
 
-### 提案 B: EXP-026 — 在 beam_passes 基础上做 scale-up 验证
+### Proposal B: EXP-026 — scale-up verification based on beam_passes
 
-**为什么考虑**：
-- beam_passes 是新 best，但只在 S-tier (17.5M) 上验证
-- 可以尝试 M-tier 或 L-tier 模型看 side features 的收益是否随模型变大而增大
-- 不需要源码修改，纯 config 调整
+**Why Consider**:
+- beam_passes is new best, but only verified on S-tier (17.5M)
+- You can try M-tier or L-tier models to see whether the benefits of side features increase as the model becomes larger
+- No source code modification required, pure config adjustment
 
-**缺点**：缺少新idea，更像是 validation 而非 exploration
+**Disadvantages**: Lack of new ideas, more like validation than exploration
 
 ---
 
-**我的推荐**：优先做 **提案 A (Page-wise NTP)**。理由：
-1. 它是目前未测试的最高影响力 idea（论文报告 HR@50: 0.62→0.72，巨大提升）
-2. 与已有 beam_passes 改进正交，可以叠加
-3. 改动范围明确（preprocess + dataloader），不涉及模型结构
-4. 需要源码修改，所以需要人类授权才能进行 → 尽早提出
+**My recommendation**: Prioritize **Proposal A (Page-wise NTP)**. Reason:
+1. It is the highest impact idea that has not yet been tested (paper report HR@50: 0.62→0.72, a huge improvement)
+2. Improved orthogonality with existing beam_passes and can be superimposed
+3. The scope of changes is clear (preprocess + dataloader) and does not involve model structure.
+4. Source code modification is required, so human authorization is required → Submit it as early as possible
 
-请回复是否同意提案 A，以及 session 分割标准的偏好。
+Please reply whether you agree with Proposal A and your preference for session splitting criteria.

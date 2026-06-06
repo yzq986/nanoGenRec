@@ -1,13 +1,15 @@
-# RKMeans 超参数网格搜索结果
+# RKMeans hyperparameter grid search results
 
-**生成时间**: 2026-04-13 11:05
-**模型**: qwen3-0.6b (1024d)
-**固定参数**: 3 layers, normalize_residuals=True
-**实验数量**: 1
+[English](report.md) | [Chinese](report.zh.md)
+
+**Generated**: 2026-04-13 11:05
+**Model**: qwen3-0.6b (1024d)
+**Fixed parameters**: 3 layers, normalize_residuals=True
+**#Experiments**: 1
 
 ---
 
-## 1. 完整结果
+## 1. Complete results
 
 | # | clusters | niter | nredo | collision | N^L util | recon_loss | d1 avg | d2 avg | d3 avg | time(s) |
 |---|----------|-------|-------|-----------|----------|------------|--------|----------|----------|---------|
@@ -15,6 +17,6 @@
 
 ---
 
-## 2. 最优配置 (按 collision 排序 Top 5)
+## 2. Optimal configuration (Top 5 sorted by collision)
 
 **#1**: clusters=1024, niter=25, nredo=3, collision=0.1634, time=237s

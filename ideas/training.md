@@ -1,1125 +1,1127 @@
-# Training (训练目标与策略)
+# Training (Training Goals and Strategies)
 
-NTP 模型的训练信号设计：辅助 loss、样本加权、多行为融合等。在不改变模型架构的情况下提升训练质量。
+[English](training.md) | [Chinese](training.zh.md)
 
-**影响范围**: `metrics/sid_prediction.py`, `model/train.py`, `data/export_behavior.py`
+Training signal design of NTP model: auxiliary loss, sample weighting, multi-behavior fusion, etc. Improve training quality without changing the model architecture.
+
+**Scope of influence**: `metrics/sid_prediction.py`, `model/train.py`, `data/export_behavior.py`
 
 ---
 
-## 演进路径
+## Evolution path
 
 ```
-纯 CE loss + MoE aux loss (当前 baseline)
-├── IDEA-mtgr-0: User-Level Sequence Packing + Causal Mask (消除滑窗)
-│   └── 美团 CIKM 2025: 长序列 + dynamic mask, 训练效率大幅提升
-├── IDEA-onemall-0: In-Batch Contrastive Loss (连续语义监督)
-│   └── EXP-013 S-tier baseline 已建立，可直接实验
-├── IDEA-sid-4: Token-Space MTP 辅助 Loss (细粒度 token CE)
-│   └── 与 onemall-0 互补: token-level vs embedding-level
-│   └── EXP-015: irreducible loss=2.522, 改善空间受 tokenizer 限制
-├── IDEA-sid-5: Codebook Embedding 聚合 (item 表示)
-│   └── 依赖 IDEA-sid-0 Phase 2 (OPQ 长 ID)
-├── IDEA-gr4ad-2: Value-Aware 训练 (eCPM token + 样本加权)
-│   └── 引入业务价值信号
-├── IDEA-sigma-0: 指令驱动多任务 GR + 自适应概率融合
+Pure CE loss + MoE aux loss (current baseline)
+├── IDEA-mtgr-0: User-Level Sequence Packing + Causal Mask (eliminate sliding window)
+│ └── Meituan CIKM 2025: long sequence + dynamic mask, greatly improving training efficiency
+├── IDEA-onemall-0: In-Batch Contrastive Loss (continuous semantic supervision)
+│ └── EXP-013 S-tier baseline has been established and can be tested directly
+├── IDEA-sid-4: Token-Space MTP auxiliary Loss (fine-grained token CE)
+│ └── Complementary to onemall-0: token-level vs embedding-level
+│ └── EXP-015: irreducible loss=2.522, room for improvement is limited by tokenizer
+├── IDEA-sid-5: Codebook Embedding aggregation (item representation)
+│ └── Depends on IDEA-sid-0 Phase 2 (OPQ long ID)
+├── IDEA-gr4ad-2: Value-Aware training (eCPM token + sample weighting)
+│ └── Introducing business value signals
+├── IDEA-sigma-0: Instruction-driven multi-task GR + adaptive probabilistic fusion
 │   └── AliExpress: instruction-following + adaptive decoding distribution
-├── IDEA-lemur-0: 端到端多模态 + Memory Bank 增量表征
-│   └── Douyin: 联合优化 + memory bank 解缓存问题, QAUC +0.81%
-├── IDEA-oneloc-5: Multi-behavior 序列融合
-│   └── 区分 click/buy/expose 不同行为强度
-├── IDEA-dualgr-0: Exposure-Aware NTP Loss → EXP-014 数据端完成，NTP 集成待推进
-├── IDEA-tbg-0: Data Recency → EXP-016 ✅ 14d 最优，recency > volume 强力验证
+├── IDEA-lemur-0: End-to-end multi-modal + Memory Bank incremental representation
+│ └── Douyin: joint optimization + memory bank to solve caching problem, QAUC +0.81%
+├── IDEA-oneloc-5: Multi-behavior sequence fusion
+│ └── Distinguish different behavioral intensities of click/buy/expose
+├── IDEA-dualgr-0: Exposure-Aware NTP Loss → EXP-014 data end completed, NTP integration to be advanced
+├── IDEA-tbg-0: Data Recency → EXP-016 ✅ 14d optimal, recency > volume strong verification
 └── IDEA-plum-0: LLM Continued Pre-Training (Google/YouTube)
-    └── 预训练 LLM → CPT on SID 语料 → Fine-tune, 数十亿用户验证
+└── Pre-training LLM → CPT on SID corpus → Fine-tune, verified by billions of users
 ```
 
 ---
 
-## 当前结论 (2026-04-17)
+## Current Conclusion (2026-04-17)
 
-**NTP baseline 已建立，14d 数据窗口确认最优，scaling law 揭示 tokenizer 是瓶颈。**
+**NTP baseline has been established, the 14d data window is confirmed to be optimal, and scaling law reveals that the tokenizer is the bottleneck. **
 
-### 当前 config
+### Current config
 ```
-模型: S-tier (17.5M active, 256d, 6L, 8E top-2 MoE)
-数据: 14d 窗口 (03-17~03-31), ~130M tokens, ~1.69M users
-训练: 1 epoch, batch=512, lr=1e-3, CosineAnnealing
+Model: S-tier (17.5M active, 256d, 6L, 8E top-2 MoE)
+Data: 14d window (03-17~03-31), ~130M tokens, ~1.69M users
+Training: 1 epoch, batch=512, lr=1e-3, CosineAnnealing
 ```
 
-### 关键实验数据
+### Key experimental data
 
-| 实验 | 发现 | 关键指标 |
+| Experiment | 发现 | 关键Metric |
 |------|------|---------|
 | EXP-013 | S-tier NTP baseline 建立 | PPL=27.05, R@500=58.5% |
 | EXP-014 | ENTP 负样本导出完成 | 130M 正样本行, 31% 有负样本 |
 | EXP-015 | Scaling law L(N)=2.522+2055/N^0.456 | irreducible loss=2.522 (PPL≈12.5), M+ loss=2.94 |
 | EXP-016 | Data recency > volume, 14d 最优 | U-shaped loss curve, 更多数据反而更差 |
 
-**核心 insight**: Tokenizer (MLP-FSQ 32-bit) 是当前瓶颈而非模型大小。M+ (101M) 相比 S (17.5M) 仅降低 loss 0.06 (2.9960→2.9371)。改善训练信号 (contrastive loss, ENTP) 比 scale up 模型更有效。
+**Core insight**: Tokenizer (MLP-FSQ 32-bit) is the current bottleneck rather than model size. M+ (101M) only reduces loss by 0.06 (2.9960→2.9371) compared to S (17.5M). Improving the training signal (contrastive loss, ENTP) is more effective than scaling up the model.
 
 ---
 
 ## IDEA-mtgr-0: User-Level Sequence Packing + Causal Mask Training
 
-**优先级**: ~~P0~~ → ✅ 已实现
-**来源**: MTGR (Meituan, arxiv 2505.18654, CIKM 2025)
-**状态**: ✅ 已实现 — `ntp/train.py:train_packed()` + `build_unified_sequences()` 完成，所有训练均已使用 packed mode（EXP-013 起）
+**Priority**: ~~P0~~ → ✅ Implemented
+**Source**: MTGR (Meituan, arxiv 2505.18654, CIKM 2025)
+**Status**: ✅ Implemented — `ntp/train.py:train_packed()` + `build_unified_sequences()` completed, all training has used packed mode (since EXP-013)
 
-### 核心思想
+### Core Idea
 
-当前 `ntp/train.py:build_sequences()` 用 Python for-loop 对 4.5M 用户做滑窗切分，生成数千万个独立 (input_30, target_3) 样本。这有两个问题：
+Currently `ntp/train.py:build_sequences()` uses Python for-loop to perform sliding window segmentation on 4.5M users, generating tens of millions of independent (input_30, target_3) samples. There are two problems with this:
 
-1. **构建慢**: 纯 Python 循环，4.5M 用户 × 滑窗 = 分钟级延迟，DDP 其他 rank 等到超时
-2. **信息浪费**: 滑窗之间大量重叠 token 被重复编码，同一用户的不同窗口无法共享上下文
+1. **Slow build**: Pure Python loop, 4.5M users × sliding window = minute-level delay, DDP other ranks wait until timeout
+2. **Information waste**: A large number of overlapping tokens between sliding windows are repeatedly encoded, and different windows of the same user cannot share context.
 
-MTGR 的核心启发：**不做滑窗切分，直接把每个用户的完整行为序列拼成一个长 SID token 序列**，用 causal mask 让模型在每个位置预测下一个 item 的 SID。
+The core inspiration of MTGR: **Without sliding window segmentation, directly combine each user's complete behavior sequence into a long SID token sequence**, and use causal mask to let the model predict the SID of the next item at each position.
 
 ```
-用户 A 完整序列: [item1_L1, item1_L2, item1_L3, item2_L1, item2_L2, item2_L3, ...]
+User A's complete sequence: [item1_L1, item1_L2, item1_L3, item2_L1, item2_L2, item2_L3, ...]
                   ↓ causal attention ↓
-                  每个位置预测下一个 token, 用 per-layer output_proj
+Predict the next token at each position, using per-layer output_proj
 ```
 
-**等价于所有滑窗位置同时训练，但只做一次 forward pass。**
+**Equivalent to training all sliding window positions at the same time, but only doing one forward pass. **
 
-MTGR 还提出 **Dynamic Masking** 防止信息泄露：
-- 静态上下文（用户 profile）→ 对所有位置可见（双向注意力）
-- 动态行为序列 → 严格 causal（只看过去）
-- 如果 batch 内 pack 多个用户 → block-diagonal mask 防止跨用户注意力
+MTGR also proposed **Dynamic Masking** to prevent information leakage:
+- Static context (user profile) → visible everywhere (bidirectional attention)
+- Dynamic behavioral sequences → strictly causal (only look at the past)
+- If pack multiple users in batch → block-diagonal mask to prevent cross-user attention
 
-### 与当前项目的关联
+### Association with the current project
 
-**直接解决痛点**：
-- `build_sequences()` 消耗分钟级时间 → 改为直接构建用户级长序列，只需 numpy 拼接，秒级完成
-- 数据量不变但 forward pass 更少（一个用户一次 forward vs N 个滑窗 N 次 forward）
-- 训练吞吐大幅提升：同一用户的中间 hidden states 被所有位置复用
+**Directly solve pain points**:
+- `build_sequences()` consumes minutes → Instead, directly build user-level long sequences, just numpy splicing, completed in seconds
+- The amount of data remains the same but there are fewer forward passes (one forward for one user vs N forwards for N sliding windows)
+- Training throughput is greatly improved: the middle hidden states of the same user are reused in all locations
 
-**与 MTGR 的差异**：
-- MTGR 做 ranking（判别式），我们做 NTP（生成式）→ causal mask 天然适用
-- MTGR 聚合 candidates（同一用户 K 个候选），我们聚合 history（同一用户 N 个历史 item）
-- MTGR 用 HSTU（SiLU attention），我们用标准 Transformer → 直接可用
+**Differences from MTGR**:
+- MTGR does ranking (discriminant), we do NTP (generative) → causal mask is naturally applicable
+- MTGR aggregates candidates (K candidates from the same user), and we aggregate history (N historical items from the same user)
+- MTGR uses HSTU (SiLU attention), we use standard Transformer → directly available
 
-### 实验设计草案
+### Experimental Design Draft
 
-**Phase 1 — 用户级长序列 + Causal Mask（核心改动）**:
+**Phase 1 — User-level long sequence + Causal Mask (core changes)**:
 
-替换 `build_sequences()` → `build_packed_sequences()`:
+Replace `build_sequences()` → `build_packed_sequences()`:
 ```python
 def build_packed_sequences(sid_dict, behavior_data):
-    """每个用户 → 一个长 SID token 序列 + causal mask"""
-    # 1. 按用户分组 + 时间排序 (向量化, pandas groupby)
-    # 2. 每个用户: [item1_tokens, item2_tokens, ...] → flat list
-    # 3. 训练时: causal attention, 每个位置预测下一个 token
-    #    target = input shifted by 1 (标准 LM 训练)
-    # 4. per-layer output_proj 根据 position % n_layers 选择
+    """Each user → a long SID token sequence + causal mask"""
+    # 1. Group by user + sort by time (vectorization, pandas groupby)
+    # 2. Each user: [item1_tokens, item2_tokens, ...] → flat list
+    # 3. During training: causal attention, predict the next token at each position
+    # target = input shifted by 1 (standard LM training)
+    # 4. per-layer output_proj is selected based on position % n_layers
 ```
 
-训练循环改为标准 LM 风格：
+The training loop is changed to standard LM style:
 ```python
-# 不再区分 input_tokens / target_tokens
-# 整个序列做 causal attention, loss 在所有位置计算
-logits = model(packed_sequence)  # (B, T, C_layer)
+# No longer distinguish input_tokens / target_tokens
+# Do causal attention on the entire sequence, and loss is calculated at all positions
+logits = model(packed_sequence) # (B, T, C_layer)
 loss = CE(logits[:, :-1], packed_sequence[:, 1:])
 ```
 
-**Phase 2 — Multi-User Packing（进一步提升 GPU 利用率）**:
-- 短序列用户 pack 到同一个 batch 位置（类似 LLM document packing）
-- Block-diagonal attention mask 防止跨用户泄露
-- 需要 FlashAttention 的 varlen API 或自定义 mask
+**Phase 2 — Multi-User Packing (further improves GPU utilization)**:
+- Pack short sequence users to the same batch position (similar to LLM document packing)
+- Block-diagonal attention mask prevents cross-user leakage
+- Requires FlashAttention's varlen API or custom mask
 
-**Phase 3 — Dynamic Masking（引入 side-info）**:
-- 用户 profile token → 双向注意力
-- 行为序列 → 严格 causal
-- 候选 item → 只看自己（如果做 ranking）
+**Phase 3 — Dynamic Masking (introducing side-info)**:
+- User profile token → Bidirectional attention
+- Behavior sequence → strictly causal
+- Candidate item → only look at yourself (if ranking)
 
-### 改动文件
+### Change files
 
-1. `ntp/train.py` — `build_sequences()` → `build_packed_sequences()`, 训练循环改为 LM 风格
-2. `ntp/model.py` — `NTPModel.forward()` 支持长序列 + per-position loss
-3. `ntp/baseline.py` — `SIDSequenceDataset` 适配新数据格式
+1. `ntp/train.py` — `build_sequences()` → `build_packed_sequences()`, the training loop is changed to LM style
+2. `ntp/model.py` — `NTPModel.forward()` supports long sequences + per-position loss
+3. `ntp/baseline.py` — `SIDSequenceDataset` adapts to new data formats
 
-### 关键问题
+### Key questions
 
-1. **Position embedding 长度**: 当前 `pos_emb` 最大 `seq_len + n_sid_layers`。用户级长序列可能有数百个 item × 3 tokens = 上千 token → 需要扩展 pos_emb 或改用 RoPE
-2. **变长序列 padding**: 不同用户序列长度差异大 → naive padding 浪费计算。需要 packing 或 bucket batching
-3. **Eval 不变**: beam search 仍然用固定 n_items 窗口，只是训练方式改变
-4. **Group LayerNorm (MTGR)**: 不同 token 类型（不同 SID 层）分组 LayerNorm，是否有帮助
+1. **Position embedding length**: The current `pos_emb` maximum is `seq_len + n_sid_layers`. User-level long sequences may have hundreds of items × 3 tokens = thousands of tokens → need to extend pos_emb or use RoPE instead
+2. **Variable length sequence padding**: The sequence lengths of different users vary greatly → naive padding wastes calculations. Requires packing or bucket batching
+3. **Eval remains unchanged**: beam search still uses a fixed n_items window, but the training method changes
+4. **Group LayerNorm (MTGR)**: Different token types (different SID layers) group LayerNorm, is it helpful?
 
 ---
 
 ## IDEA-onemall-0: In-Batch Contrastive Auxiliary Loss for NTP Model
 
-**优先级**: P0
-**来源**: OneMall §3.2 Supervised Objectives
-**状态**: ❌ 已测试, 负结果 — EXP-022 全 5 config 均不优于 baseline (详见 experiments/logs/ EXP-022)
+**Priority**: P0
+**Source**: OneMall §3.2 Supervised Objectives
+**Status**: ❌ Tested, negative results — EXP-022 All 5 configs are no better than baseline (see experiments/logs/ EXP-022 for details)
 
-> **实验结论 (2026-04-22)**: EXP-022 测试了 α∈{0.01,0.1,0.5}、dim∈{128,256}、τ∈{0.05,0.07} 共 5 个 config。最好的 α=0.01 仅 +0.7pp R@500 但 PPL 劣化 +0.84。α 越大越差。根因：SID 是离散 token，InfoNCE 连续空间对齐对离散预测无帮助。**不再追。**
+> **Experimental Conclusion (2026-04-22)**: EXP-022 tested a total of 5 configs α∈{0.01,0.1,0.5}, dim∈{128,256}, τ∈{0.05,0.07}. The best α=0.01 is only +0.7pp R@500 but PPL degrades by +0.84. The bigger α is, the worse it is. Root cause: SID is a discrete token, and InfoNCE continuous space alignment is not helpful for discrete prediction. **No more chasing. **
 
-### 核心思想
+### Core Idea
 
-在 NTP 自回归训练的同时，加一个 two-tower 风格的 in-batch contrastive loss 作为辅助目标。具体做法: 最后一个 SID token 的隐层表示 s₃^L（已编码完整 SID 序列信息）与目标 item embedding f_item 做 InfoNCE 对比学习。OneMall 报告该任务达到 **98% accuracy@1**，说明 s₃^L 已经高质量编码了 item 信息。
+While NTP autoregressive training, a two-tower style in-batch contrastive loss is added as an auxiliary objective. Specific method: The hidden layer representation s₃^L of the last SID token (complete SID sequence information has been encoded) is compared with the target item embedding f_item for InfoNCE comparative learning. OneMall reported that the task reached **98% accuracy@1**, indicating that s₃^L has encoded item information with high quality.
 
-辅助对比 loss 的作用:
-- 为 Transformer 提供 embedding 空间的连续监督信号（NTP 只有离散 token CE loss）
-- 防止 SID 表示退化为只关心 token 分类而丢失语义连续性
-- 正则化效果，改善泛化
+The role of auxiliary comparison loss:
+- Provide continuous supervision signals in the embedding space for Transformer (NTP only has discrete token CE loss)
+- Prevent SID representation from degenerating into only caring about token classification and losing semantic continuity
+- Regularization effect to improve generalization
 
-### 与当前项目的关联
+### Association with the current project
 
-- NTP 模型在 `metrics/sid_prediction.py:AutoregressiveNTPModel`，当前仅有 `CE_loss + 0.01 * aux_loss(MoE balance)`
-- item embedding 已有现成的 Qwen3 embedding（`model/encode.py`），训练时可直接加载
-- 实现成本极低: 在 s₃ 位置加一个 MLP projection head → InfoNCE with in-batch negatives
-- **与 IDEA-sid-1 (协同信号 embedding) 正交**: IDEA-sid-1 改善 embedding 本身，本 IDEA 改善 NTP 模型训练
+- The NTP model is in `metrics/sid_prediction.py:AutoregressiveNTPModel`, currently only `CE_loss + 0.01 * aux_loss(MoE balance)`
+- item embedding already has ready-made Qwen3 embedding (`model/encode.py`), which can be loaded directly during training
+- Very low implementation cost: add an MLP projection head at the s₃ position → InfoNCE with in-batch negatives
+- **Orthogonal to IDEA-sid-1 (co-signal embedding)**: IDEA-sid-1 improves embedding itself, and this IDEA improves NTP model training
 
-### 实验设计草案
+### Experimental Design Draft
 
-**修改 `metrics/sid_prediction.py`**:
-1. 新增 `ContrastiveHead`: MLP(embed_dim → 128) 投影到对比空间
-2. 取 s₃ 位置的隐层输出 → ContrastiveHead → l2_normalize
-3. 目标 item embedding → MLP(1024 → 128) → l2_normalize
+**Modify `metrics/sid_prediction.py`**:
+1. Added `ContrastiveHead`: MLP(embed_dim → 128) projected to contrast space
+2. Take the hidden layer output at the s₃ position → ContrastiveHead → l2_normalize
+3. Target item embedding → MLP(1024 → 128) → l2_normalize
 4. InfoNCE loss (temperature=0.05, in-batch negatives)
 
-**训练 loss**:
+**training loss**:
 ```
 L = L_NTP + 0.01 * L_moe_balance + α * L_contrastive
 ```
 
-**变量**:
+**Variables**:
 - α ∈ {0.01, 0.1, 0.5, 1.0}
 - projection dim ∈ {64, 128, 256}
 - temperature ∈ {0.05, 0.07, 0.1}
 
-**基线**: EXP-016 14d-S (PPL=27.05, loss=2.9960, R@500=58.5%)
+**Baseline**: EXP-016 14d-S (PPL=27.05, loss=2.9960, R@500=58.5%)
 
-**评估指标**: beam search Recall@{10,50,100,500}, SID accuracy@{1,2,3}, 训练收敛速度
+**Evaluation indicators**: beam search Recall@{10,50,100,500}, SID accuracy@{1,2,3}, training convergence speed
 
-### 关键问题
+### Key questions
 
-1. batch size 需要足够大以提供足量 in-batch negatives — 当前 batch size 是多少？可能需要增大
-2. s₃ 隐层是否需要 stop-gradient (asymmetric design) 还是两边都 backprop
-3. 训练早期 contrastive loss 可能主导梯度，需要 warmup 策略（先纯 NTP 若干 epoch 再加 contrastive）
+1. The batch size needs to be large enough to provide a sufficient number of in-batch negatives — what is the current batch size? may need to be increased
+2. Does the s₃ hidden layer need stop-gradient (asymmetric design) or backprop on both sides?
+3. In the early stage of training, contrastive loss may dominate the gradient, and a warmup strategy is required (pure NTP first for several epochs and then add contrastive)
 
 ---
 
-## IDEA-sid-4: Token-Space MTP 辅助 Loss (适用于自回归模型)
+## IDEA-sid-4: Token-Space MTP auxiliary Loss (applicable to autoregressive models)
 
-**优先级**: P1
-**来源**: RPG (KDD'25, arxiv 2506.05781) §2.2.1 Multi-Token Prediction
-**状态**: 待讨论 — 受 irreducible loss floor 约束
+**Priority**: P1
+**Source**: RPG (KDD'25, arxiv 2506.05781) §2.2.1 Multi-Token Prediction
+**Status**: To be discussed — subject to irreducible loss floor
 
-> **NTP 阶段更新 (2026-04-17)**: EXP-015 scaling law 显示 irreducible loss a=2.522 (PPL≈12.5)，M+ (101M) 已达 loss=2.94，距 floor 仅 0.42。MTP 辅助 loss 仍有价值但改善空间受 tokenizer 上限限制。主要收益在冷启动 item 和 R@10 精度提升，而非大幅降低 loss。
+> **NTP stage update (2026-04-17)**: EXP-015 scaling law shows irreducible loss a=2.522 (PPL≈12.5), M+ (101M) has reached loss=2.94, only 0.42 from floor. MTP auxiliary loss is still valuable but the room for improvement is limited by the tokenizer upper limit. The main benefit is the cold start item and R@10 accuracy improvement, rather than a significant reduction in loss.
 
-### 核心思想
+### Core Idea
 
-RPG 的 MTP loss 将 item 预测分解为各 token 独立的 CE loss 之和: ℒ = -Σⱼ log P(c_j | s)。这比传统 item-level CE 有两个关键优势:
-1. **细粒度语义学习**: 在 token 空间（M 个类）而非 item 空间（N >> M 个类）优化，模型学到的是 sub-item 级别的语义特征
-2. **冷启动友好**: 低频 item 与高频 item 共享 token，通过 token 共现获得充分训练信号。RPG 在所有频次桶 ([0,5] 到 [16,20]) 均显著优于 TIGER
+RPG's MTP loss decomposes item prediction into the sum of independent CE losses for each token: ℒ = -Σⱼ log P(c_j | s). This has two key advantages over traditional item-level CE:
+1. **Fine-grained semantic learning**: Optimized in token space (M categories) rather than item space (N >> M categories), the model learns sub-item level semantic features
+2. **Cold start friendly**: Low-frequency items and high-frequency items share tokens, and sufficient training signals are obtained through token co-occurrence. RPG significantly outperforms TIGER in all frequency buckets ([0,5] to [16,20])
 
-**关键洞察**: 这个 loss 不要求并行预测 — 可以作为辅助目标加到任何 SID 模型上。即使在自回归模型中，最后一个 token 的隐层表示 h_L 编码了完整序列信息，可以对 h_L 施加 MTP loss 来强化语义理解。
+**Key Insight**: This loss does not require parallel prediction — it can be added as an auxiliary objective to any SID model. Even in the autoregressive model, the hidden layer representation h_L of the last token encodes the complete sequence information, and MTP loss can be applied to h_L to enhance semantic understanding.
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前 NTP 模型 (`metrics/sid_prediction.py:AutoregressiveNTPModel`) 只有逐 token CE loss + MoE aux loss
-- **与 IDEA-onemall-0 (In-Batch Contrastive Loss) 互补**: onemall-0 用 item embedding 做对比，本 IDEA 用 token-level CE 做细粒度监督
-- 即使最终走自回归路线 (不用 RPG 的并行预测)，MTP 辅助 loss 也是有价值的正则化
-- 如果走 IDEA-sid-0 (OPQ 并行 ID)，MTP 就是 primary loss
+- The current NTP model (`metrics/sid_prediction.py:AutoregressiveNTPModel`) only has token-by-token CE loss + MoE aux loss
+- **Complementary to IDEA-onemall-0 (In-Batch Contrastive Loss)**: onemall-0 uses item embedding for comparison, and this IDEA uses token-level CE for fine-grained supervision
+- Even if you end up going the autoregressive route (parallel prediction without RPG), MTP-assisted loss is a valuable regularization
+- If you use IDEA-sid-0 (OPQ parallel ID), MTP is primary loss
 
-### 实验设计草案
+### Experimental Design Draft
 
-**方案 A — 作为自回归模型的辅助 loss**:
-1. 取最后一个 SID token 位置的隐层表示 h_3^L
-2. 对 h_3^L 加 m 个独立 MLP projection heads (m = SID token 数)
-3. 每个 head 输出 M 维 logits → CE loss
-4. 总 loss: `L_NTP + α * L_MTP + 0.01 * L_moe`
+**Option A — as an auxiliary loss for autoregressive models**:
+1. Get the hidden layer representation h_3^L of the last SID token position
+2. Add m independent MLP projection heads to h_3^L (m = number of SID tokens)
+3. Each head outputs M-dimensional logits → CE loss
+4. Total loss: `L_NTP + α * L_MTP + 0.01 * L_moe`
 
-**方案 B — 直接作为 parallel prediction primary loss** (= IDEA-sid-0 Phase 2):
-1. 用户序列 → Transformer encoder → s
-2. s → m 个 MLP heads → m 个 softmax → MTP loss
-3. 推理: graph-constrained decoding
+**Option B — directly as parallel prediction primary loss** (= IDEA-sid-0 Phase 2):
+1. User sequence → Transformer encoder → s
+2. s → m MLP heads → m softmax → MTP loss
+3. Inference: graph-constrained decoding
 
-**变量** (方案 A):
+**Variables** (Option A):
 - α ∈ {0.1, 0.5, 1.0}
-- 是否与 IDEA-onemall-0 (contrastive loss) 叠加
+- Whether to overlap with IDEA-onemall-0 (contrastive loss)
 
-**评估**: SID accuracy, beam search Recall@K, 冷启动 item 子集的 Recall
+**Evaluation**: SID accuracy, beam search Recall@K, cold start item subset Recall
 
-### 关键问题
+### Key questions
 
-1. 方案 A 需要最后位置的隐层同时编码 "下一个 item 的所有 token" 信息 — 是否与自回归训练的 teacher forcing 冲突？(teacher forcing 时 h_3 已经看到了 target 的前 3 个 token)
-2. 如果用 BOS 位置的隐层 h_0（只编码用户序列，没看到 target token），是否更合理？
-3. 与 IDEA-onemall-0 的关系: 两者都在同一个隐层位置施加额外 loss，可能有梯度冲突
+1. Solution A requires the hidden layer at the last position to simultaneously encode "all tokens of the next item" information - does it conflict with teacher forcing of autoregressive training? (h_3 has already seen the first 3 tokens of target during teacher forcing)
+2. Is it more reasonable to use the hidden layer h_0 at the BOS position (which only encodes the user sequence and does not see the target token)?
+3. Relationship with IDEA-onemall-0: Both apply additional loss at the same hidden layer position, and there may be gradient conflicts.
 
 ---
 
-## IDEA-sid-5: SID Codebook Embedding 聚合作为 Item 表示
+## IDEA-sid-5: SID Codebook Embedding aggregation represented as Item
 
-**优先级**: P2
-**来源**: RPG (KDD'25) §2.1.2 Semantic ID Embedding Aggregation
-**状态**: 待讨论
+**Priority**: P2
+**Source**: RPG (KDD'25) §2.1.2 Semantic ID Embedding Aggregation
+**Status**: To be discussed
 
-### 核心思想
+### Core Idea
 
-RPG 用 SID 的 codebook embedding 的 mean/max pooling 作为 item 表示，替代原始高维 embedding。每个 codebook j 有一个可学习 embedding table E_j ∈ ℝ^(M×d)。item 的 SID = (c_1, ..., c_m)，其表示为:
+RPG uses the mean/max pooling of the codebook embedding of the SID as the item representation, replacing the original high-dimensional embedding. Each codebook j has a learnable embedding table E_j ∈ ℝ^(M×d). SID of item = (c_1, ..., c_m), which is expressed as:
 
 `v_item = Pool(E_1[c_1], E_2[c_2], ..., E_m[c_m])`
 
-这样 item 表示的维度 = d（与 token embedding 维度相同），与 item 总数 N 无关。所有 item 共享 m 个大小为 M 的 codebook，总 embedding 参数 = m × M × d（远小于 N × d 的全 embedding table）。
+In this way, the dimension represented by the item = d (the same as the token embedding dimension), has nothing to do with the total number of items N. All items share m codebooks of size M, and the total embedding parameters = m × M × d (much smaller than the full embedding table of N × d).
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前 NTP 模型的 item embedding 是 SID token 的 lookup + positional encoding，已经隐式用了类似的 codebook embedding
-- RPG 的聚合方式更显式: mean pooling 所有 codebook embedding → 单向量表示
-- 可用于: (1) item retrieval (2) item 冷启动 (3) 作为 ranking model 的 item feature
-- 但当前 NTP 模型只有 3 个 token (RKMeans)，聚合收益不大。如果切换到 OPQ (16~64 token)，聚合方式变得重要
+- The item embedding of the current NTP model is the lookup + positional encoding of the SID token, and a similar codebook embedding has been implicitly used.
+- RPG's aggregation method is more explicit: mean pooling all codebook embedding → single vector representation
+- Can be used for: (1) item retrieval (2) item cold start (3) item feature as ranking model
+- But the current NTP model only has 3 tokens (RKMeans), and the aggregation benefits are not large. If you switch to OPQ (16~64 tokens), the aggregation method becomes important
 
-### 实验设计草案
+### Experimental Design Draft
 
-**前置: IDEA-sid-0 Phase 2 (OPQ + 并行预测模型)**
+**Prerequisite: IDEA-sid-0 Phase 2 (OPQ + parallel prediction model)**
 
-**验证**:
-1. 训练好并行预测模型后，提取 codebook embeddings
-2. 对每个 item 做 mean/max pooling → item vector
-3. 用 item vector 做 ANN retrieval → 对比 graph decoding 的 recall
-4. 分析: pooled embedding 是否保留了足够的语义区分度？
+**Verification**:
+1. After training the parallel prediction model, extract the codebook embeddings
+2. Do mean/max pooling → item vector for each item
+3. Use item vector to do ANN retrieval → compare recall of graph decoding
+4. Analysis: Does pooled embedding retain sufficient semantic distinction?
 
-**评估**: cosine similarity 分布, retrieval recall@K, t-SNE 可视化
+**Evaluation**: cosine similarity distribution, retrieval recall@K, t-SNE visualization
 
-### 关键问题
+### Key questions
 
-1. mean pooling 是否会丢失 token 间的交互信息？RPG 论文没有对 mean vs max 做消融
-2. 只有在 OPQ (长 ID) 场景才有意义 — 3 个 token 的 mean pooling 太粗糙
-3. 与 FAISS 检索的关系: 如果 pooled embedding 质量足够好，可以用传统 ANN 代替 graph decoding
-
----
-
-## IDEA-gr4ad-2: Value-Aware 训练目标 (VSL + eCPM Token)
-
-**优先级**: P1
-**来源**: GR4AD §VSL
-**状态**: 待讨论
-
-### 核心思想
-
-GR4AD 在 NTP 训练中引入两个价值感知机制: (1) eCPM Token Prediction — 在语义 ID 序列末尾追加一个离散化的 eCPM token，让模型同时预测"推什么"和"值多少钱"；(2) Value-Aware Sample Weighting — 按用户长期价值和行为深度（购买 > 点击）加权训练样本。
-
-### 与当前项目的关联
-
-- `metrics/sid_prediction.py` 当前训练目标是纯 CE loss，所有样本等权
-- 我们的数据中有行为类型（点击、购买、收藏等），在 `data/export_behavior.py` 中已定义
-- eCPM token 的思想可以泛化为 **任意业务价值 token** — 比如 item 热度桶、CTR 桶等
-- **与 IDEA-sid-1 (协同信号增强) 互补**: IDEA-sid-1 改进 embedding 表示，本 IDEA 改进训练信号
-
-### 实验设计草案
-
-**变量 1 — 价值 token 追加**:
-- 将 item 的某个连续指标（如行为频次、热度）离散化为 N 个桶
-- 语义 ID 从 `"L1_L2_L3"` 扩展为 `"L1_L2_L3_V"`，V ∈ {0, ..., N-1}
-- NTP 模型在预测 L3 后继续预测 V token
-- 推理时: V token 的 logits 可作为辅助排序信号（类似 GR4AD 用 eCPM 做 reranking）
-
-**变量 2 — 样本加权**:
-- 购买样本 weight=3.0, 收藏 weight=2.0, 点击 weight=1.0（需根据数据分布调参）
-- 在 `sid_prediction.py` 训练循环中加 sample weight
-
-**评估**: Hit@K (基础), weighted Hit@K (高价值 item 权重更高), 价值 token 预测准确率
-
-### 关键问题
-
-1. 我们的 demo 数据中业务价值信号是否充分？如果只有点击数据，sample weighting 退化为等权
-2. 价值 token 增加序列长度 → 推理成本增加，但只增加 1 个 token，可接受
-3. 离散化桶数 N 的选择: 太少信息量不够，太多导致长尾稀疏
+1. Will mean pooling lose the interaction information between tokens? The RPG paper does not ablate mean vs max
+2. It only makes sense in OPQ (long ID) scenarios — the mean pooling of 3 tokens is too rough
+3. Relationship with FAISS retrieval: If the quality of pooled embedding is good enough, traditional ANN can be used instead of graph decoding
 
 ---
 
-## IDEA-oneloc-5: Multi-behavior Sequence 融合
+## IDEA-gr4ad-2: Value-Aware training target (VSL + eCPM Token)
 
-**优先级**: P1
-**来源**: OneLoc §2.3.1 Multi-behavior Sequence
-**状态**: 待讨论
+**Priority**: P1
+**Source**: GR4AD §VSL
+**Status**: To be discussed
 
-### 核心思想
+### Core Idea
 
-OneLoc 区分三种行为序列: watch (浏览), click (点击), pay (购买)，每种行为的序列长度不同 (256/32/10)。三种序列 concat 后统一输入 encoder。不同行为代表不同强度的兴趣信号。
+GR4AD introduces two value-aware mechanisms in NTP training: (1) eCPM Token Prediction - Appends a discretized eCPM token at the end of the semantic ID sequence, allowing the model to predict "what to push" and "how much it is worth" at the same time; (2) Value-Aware Sample Weighting - weights training samples according to the user's long-term value and behavioral depth (purchase > click).
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前 `data/export_behavior.py` 导出行为数据，但处理方式需要确认
-- 当前 NTP 模型 (`metrics/sid_prediction.py`) 输入是单一序列
-- 如果我们有多种行为信号 (展现/点击/购买/收藏)，分离不同行为的序列可能比混合在一起更有效
-- **与 IDEA-sid-1 (协同信号增强) 有交集**: 行为序列本身就是协同信号的来源
+- `metrics/sid_prediction.py` The current training target is pure CE loss, all samples are equally weighted
+- There are behavior types (clicks, purchases, collections, etc.) in our data, which are defined in `data/export_behavior.py`
+- The idea of eCPM token can be generalized to **any business value token** — such as item popularity bucket, CTR bucket, etc.
+- **Complementary to IDEA-sid-1 (collaborative signal enhancement)**: IDEA-sid-1 improves embedding representation, and this IDEA improves the training signal
 
-### 实验设计草案
+### Experimental Design Draft
 
-**前提**: 需要行为数据包含行为类型标注
+**Variable 1 — value token appended**:
+- Discretize a continuous indicator of the item (such as frequency of behavior, popularity) into N buckets
+- Semantic ID expanded from `"L1_L2_L3"` to `"L1_L2_L3_V"`, V ∈ {0, ..., N-1}
+- NTP model continues to predict V token after predicting L3
+- During inference: The logits of V token can be used as auxiliary ranking signals (similar to GR4AD using eCPM for reranking)
 
-**方案**:
-- 按行为强度分离序列: `S_expose` (长), `S_click` (中), `S_purchase` (短)
-- 每种序列独立 embedding → concat → 输入 encoder
-- 或: 用 behavior type embedding 标注每个 item，统一序列但加入类型信号
+**Variable 2 — Sample weighting**:
+- Purchase sample weight=3.0, collect weight=2.0, click weight=1.0 (parameters need to be adjusted according to data distribution)
+- Add sample weight to `sid_prediction.py` training loop
 
-**评估**: 单一混合序列 vs 分行为序列 的 NTP recall
+**Evaluation**: Hit@K (basic), weighted Hit@K (high-value items have higher weights), value token prediction accuracy
 
-### 关键问题
+### Key questions
 
-1. 行为数据是否包含行为类型? 需要检查 `data/export_behavior.py` 的 schema
-2. 不同行为的序列长度比例如何确定 (OneLoc 用 256/32/10)
-3. 实现复杂度: 需要修改数据 pipeline + 模型输入处理
+1. Are the business value signals in our demo data sufficient? If there is only click data, sample weighting degenerates into equal weighting
+2. The value token increases the sequence length → the reasoning cost increases, but only 1 token is added, which is acceptable
+3. Selection of the number of discretization buckets N: too few will not provide enough information, too many will lead to long tail sparseness
+
+---
+
+## IDEA-oneloc-5: Multi-behavior Sequence fusion
+
+**Priority**: P1
+**Source**: OneLoc §2.3.1 Multi-behavior Sequence
+**Status**: To be discussed
+
+### Core Idea
+
+OneLoc distinguishes three behavior sequences: watch (browse), click (click), pay (purchase), and the sequence length of each behavior is different (256/32/10). The three sequences are uniformly input to the encoder after concat. Different behaviors represent interest signals of different strengths.
+
+### Association with the current project
+
+- Currently `data/export_behavior.py` exports behavioral data, but the processing method needs to be confirmed
+- The current NTP model (`metrics/sid_prediction.py`) input is a single sequence
+- If we have multiple behavioral signals (impression/click/purchase/collection), it may be more effective to separate the different behavioral sequences rather than mixing them together
+- **Intersection with IDEA-sid-1 (Coordinated Signal Enhancement)**: The behavioral sequence itself is the source of the coordinated signal
+
+### Experimental Design Draft
+
+**Prerequisite**: Behavior data needs to contain behavior type annotations
+
+**Plan**:
+- Separate sequences by action intensity: `S_expose` (long), `S_click` (medium), `S_purchase` (short)
+- Each sequence is independently embedding → concat → input encoder
+- Or: Mark each item with behavior type embedding, unify the sequence but add type signals
+
+**Evaluation**: NTP recall of a single mixed sequence vs. a branched sequence
+
+### Key questions
+
+1. Does the behavior data contain behavior types? You need to check the schema of `data/export_behavior.py`
+2. How to determine the sequence length ratio of different behaviors (OneLoc uses 256/32/10)
+3. Implementation complexity: data pipeline + model input processing needs to be modified
 
 ---
 
 ## IDEA-plum-0: LLM Continued Pre-Training for Generative Recommendation
 
-**优先级**: P1
-**来源**: PLUM (Google/YouTube, arxiv 2510.07784, Oct 2025)
-**状态**: 待讨论
+**Priority**: P1
+**Source**: PLUM (Google/YouTube, arxiv 2510.07784, Oct 2025)
+**Status**: To be discussed
 
-### 核心思想
+### Core Idea
 
-PLUM 是 YouTube 大规模部署的 LLM-based 生成式推荐框架，核心是三阶段训练:
+PLUM is an LLM-based generative recommendation framework deployed on a large scale by YouTube. Its core is three-stage training:
 
-1. **Item Tokenization via Semantic IDs**: 视频 → SID 映射
-2. **Continued Pre-Training (CPT)**: 在推荐域数据上继续预训练 LLM，让模型学会 SID 词表和用户行为模式
-3. **Task-Specific Fine-Tuning**: 直接训练模型根据用户上下文生成推荐 item 的 SID
+1. **Item Tokenization via Semantic IDs**: Video → SID Mapping
+2. **Continued Pre-Training (CPT)**: Continue to pre-train LLM on recommended domain data to let the model learn the SID vocabulary and user behavior patterns
+3. **Task-Specific Fine-Tuning**: Directly train the model to generate the SID of recommended items based on user context.
 
-关键发现:
-- CPT 是将通用 LLM 适配为推荐模型的关键步骤
-- 相比 YouTube 已高度优化的生产模型 (大规模 embedding table)，PLUM 实现了 **substantial improvements**
-- 已部署到 **数十亿 YouTube 用户**
+Key findings:
+- CPT is a key step in adapting a general LLM to a recommendation model
+- PLUM implements **substantial improvements** compared to YouTube's highly optimized production model (large-scale embedding table)
+- Deployed to **Billions of YouTube Users**
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前 NTP 模型是从零训练的 39.5M 小模型，没有利用预训练 LLM 的知识
-- PLUM 证明了: 即使在推荐这样的非自然语言任务中，LLM 预训练知识 (world knowledge + sequence modeling) 仍然有价值
-- **潜在实验**: 用 Qwen3-0.5B 做 CPT → fine-tune 替代当前从零训练的 `AutoregressiveNTPModel`
-- 与 IDEA-oneloc-4 (Scaling Law) 直接相关: LLM backbone 自带参数量 scaling，只需研究 CPT 数据量和序列长度
+- The current NTP model is a 39.5M small model trained from scratch, without utilizing the knowledge of pre-trained LLM
+- PLUM proves that LLM pre-trained knowledge (world knowledge + sequence modeling) is still valuable even in non-natural language tasks such as recommendation
+- **Potential experiment**: Use Qwen3-0.5B for CPT → fine-tune to replace the current `AutoregressiveNTPModel` trained from scratch
+- Directly related to IDEA-oneloc-4 (Scaling Law): LLM backbone comes with parameter scaling, you only need to study the CPT data volume and sequence length
 
-### 实验设计草案
+### Experimental Design Draft
 
-**方案 A (轻量 — LoRA CPT)**:
-1. 基座: Qwen3-0.5B (与当前 embedding 模型同系列)
-2. 扩展词表: 加入 SID vocab (每层 1024 tokens → 总 3072 新 token)
-3. CPT 数据: 用户行为序列 SID 化 → 构造 "user_seq → next_item_sid" 样本
-4. LoRA fine-tune (rank=64), 8xA100, ~数小时
-5. 评估: Qwen3-0.5B-CPT vs 当前 AutoregressiveNTPModel 的 Recall@K
+**Option A (Lightweight — LoRA CPT)**:
+1. Base: Qwen3-0.5B (same series as the current embedding model)
+2. Expanded vocabulary: Add SID vocab (1024 tokens per layer → 3072 new tokens in total)
+3. CPT data: user behavior sequence SID → construct "user_seq → next_item_sid" sample
+4. LoRA fine-tune (rank=64), 8xA100, ~several hours
+5. Evaluation: Qwen3-0.5B-CPT vs current AutoregressiveNTPModel’s Recall@K
 
-**方案 B (重量 — Full CPT)**:
-- Full fine-tune Qwen3-0.5B on SID 语料
-- 更大计算成本，但上限更高
+**Option B (Weight — Full CPT)**:
+- Full fine-tune Qwen3-0.5B on SID corpus
+- Greater computational cost, but higher ceiling
 
-### 关键问题
+### Key questions
 
-1. 0.5B 模型做 CPT 的计算成本: 8xA100 能否在合理时间 (< 1天) 完成
-2. SID vocab 扩展: 新 token 的 embedding 初始化策略 (随机 vs 语义初始化)
-3. 与当前 39.5M 模型的公平对比: 参数量差 10x+，需要同时对比 FLOPS
-
----
-
-## IDEA-onerec-1: RSFT (Reject Sampling Fine-Tuning — 过滤低质量训练样本)
-
-**优先级**: P1
-**来源**: OneRec (arxiv 2506.13695v4) §Post-training
-**状态**: 待讨论
-
-### 核心思想
-
-OneRec 的 post-training 阶段不是直接在全量数据上继续训练，而是先用 **Reject Sampling** 过滤: 按用户播放时长将曝光 session 排序，**丢弃后 50% 低质量 session**，只在高质量数据上做 NTP fine-tune。
-
-这解决了"曝光≠喜欢"的问题 — 用户被推荐但没看完的内容不应该作为正样本训练。
-
-### 与当前项目的关联
-
-- 当前 NTP 训练 (`sid_prediction.py`) 使用所有 `action > 0` 的行为作为正样本，包含大量低质量交互 (点了但没看完)
-- RSFT 本质是**训练数据质量控制**，不改模型架构，实现成本极低
-- 可以在 EXP-007 (contrastive fine-tune) 中也应用: 只用高质量 pair 训练
-
-### 实验设计草案
-
-- 按 `event_cnt` 或行为强度 (like/share > click > view) 过滤训练数据
-- 对比: 全量 vs top 50% 高质量数据 的 NTP recall
-
-### 关键问题
-
-1. 我们的行为数据有 `event_cnt` 但没有播放时长 — 需要找替代质量指标
-2. 过滤比例 50% 可能太激进，需要调参
+1. The computational cost of CPT for 0.5B model: 8xA100 Can it be completed in a reasonable time (< 1 day)
+2. SID vocab extension: embedding initialization strategy for new tokens (random vs. semantic initialization)
+3. A fair comparison with the current 39.5M model: the parameter difference is 10x+, and FLOPS needs to be compared at the same time
 
 ---
 
-## IDEA-onerec-2: SID 替代 VID 作为 Encoder 输入 (消除稀疏 Embedding Table)
+## IDEA-onerec-1: RSFT (Reject Sampling Fine-Tuning — filtering out low-quality training samples)
 
-**优先级**: P2
-**来源**: OneRec (arxiv 2506.13695v4) §Semantic ID vs VID Input
-**状态**: 待讨论
+**Priority**: P1
+**Source**: OneRec (arxiv 2506.13695v4) §Post-training
+**Status**: To be discussed
 
-### 核心思想
+### Core Idea
 
-OneRec 在 2.6B 规模实验中发现: 用 Semantic ID token 直接作为 encoder 的 item 输入（而非传统的 VID sparse embedding），性能相当甚至更好 (P-score +1.74%)。好处是**消除了巨大的 sparse embedding table** (N × d 参数)，替换为极小的 SID codebook embedding (L × K × d 参数)。
+The post-training phase of OneRec does not directly continue training on the full amount of data, but first uses **Reject Sampling** to filter: sort the exposed sessions according to the user's playback time, **discard 50% of the low-quality sessions**, and only perform NTP fine-tuning on high-quality data.
 
-### 与当前项目的关联
+This solves the "exposure ≠ likes" problem - content that users have been recommended but not finished should not be used as positive samples for training.
 
-- 当前 NTP 模型用 SID tokens 作为输入，已经是这个范式
-- 但 OneRec 证明了: 在更大模型规模下，SID 输入不会损失性能，且带来巨大的参数效率提升
-- 对我们的启发: 不需要维护 item embedding table，SID codebook embedding 够用
+### Association with the current project
 
-### 关键问题
+- The current NTP training (`sid_prediction.py`) uses all behaviors with `action > 0` as positive samples, including a large number of low-quality interactions (clicked but did not finish)
+- The essence of RSFT is **training data quality control**, without changing the model architecture, and the implementation cost is extremely low
+- Can also be applied in EXP-007 (contrastive fine-tune): only train with high-quality pairs
 
-1. 在小模型 (5M probe) 下可能没有差异
-2. 在 LLM backbone (IDEA-plum-0) 场景下更有价值
+### Experimental Design Draft
+
+- Filter training data by `event_cnt` or behavior intensity (like/share > click > view)
+- Comparison: NTP recall of full volume vs top 50% high-quality data
+
+### Key questions
+
+1. Our behavioral data has `event_cnt` but no playback duration - we need to find alternative quality indicators
+2. The filtering ratio of 50% may be too aggressive and needs to be adjusted.
+
+---
+
+## IDEA-onerec-2: SID replaces VID as Encoder input (eliminates sparse Embedding Table)
+
+**Priority**: P2
+**Source**: OneRec (arxiv 2506.13695v4) §Semantic ID vs VID Input
+**Status**: To be discussed
+
+### Core Idea
+
+OneRec found in a 2.6B scale experiment that using Semantic ID token directly as the item input of the encoder (instead of traditional VID sparse embedding) has equivalent or even better performance (P-score +1.74%). The advantage is that the huge sparse embedding table is eliminated (N × d parameters) and replaced by a very small SID codebook embedding (L × K × d parameters).
+
+### Association with the current project
+
+- The current NTP model uses SID tokens as input, which is already this paradigm
+- But OneRec has proven that: at a larger model scale, SID input will not lose performance and will bring huge parameter efficiency improvements.
+- Inspiration for us: No need to maintain item embedding table, SID codebook embedding is enough
+
+### Key questions
+
+1. There may be no difference in small models (5M probe)
+2. More valuable in LLM backbone (IDEA-plum-0) scenario
 
 ---
 
 ## IDEA-dualgr-0: Exposure-Aware NTP Loss (ENTP-Loss)
 
-**优先级**: P1
-**来源**: DualGR (Kuaishou, arxiv 2511.12518, Nov 2025, WWW 2026)
-**状态**: EXP-014 实验中 — PySpark 负样本导出完成，NTP 集成待验证
+**Priority**: P1
+**Source**: DualGR (Kuaishou, arxiv 2511.12518, Nov 2025, WWW 2026)
+**Status**: EXP-014 Experiment in progress - PySpark negative sample export completed, NTP integration to be verified
 
-> **NTP 阶段更新 (2026-04-17)**: EXP-014 已完成 PySpark 端 ENTP 负样本导出和数据验证 (130M 行, 31% 有负样本)。Python 端 `load_exposure_neg_data()` 已实现。L0 层碰撞导致部分负样本与正样本共享 L1 cluster，需要在 ENTP loss 中处理。NTP 集成待下阶段推进。
+> **NTP phase update (2026-04-17)**: EXP-014 Completed PySpark-side ENTP negative sample export and data verification (130M rows, 31% with negative samples). Python side `load_exposure_neg_data()` has been implemented. L0 layer collision causes some negative samples to share the L1 cluster with positive samples, which needs to be processed in ENTP loss. NTP integration will be advanced in the next phase.
 
-### 核心思想
+### Core Idea
 
-DualGR 发现标准 NTP loss 只学"用户点了什么"，但忽略了"用户看了但没点什么"这个强负信号。ENTP-Loss 引入 **exposure-aware 负样本**:
+DualGR found that standard NTP loss only learned "what the user clicked", but ignored the strong negative signal of "the user looked but didn't click anything". ENTP-Loss introduces **exposure-aware negative samples**:
 
-- 把 **unclicked exposures** 作为 **coarse-level hard negatives**
-- 在 SID 第一层 (coarse level) 用这些负样本增强学习信号
-- 效果: 模型更快识别用户兴趣衰退 (timely interest fade-out)
+- treat **unclicked exposures** as **coarse-level hard negatives**
+- Use these negative samples to enhance the learning signal at the SID first layer (coarse level)
+- Effect: The model identifies user interest fading faster (timely interest fade-out)
 
-DualGR 还提出:
-1. **Dual-Branch Long/Short-Term Router (DBR)**: 分离长短期兴趣，selective activation
-2. **Search-based SID Decoding (S2D)**: 限制 fine-level 解码在 coarse bucket 内
+DualGR also proposes:
+1. **Dual-Branch Long/Short-Term Router (DBR)**: Separate long-term and short-term interests, selective activation
+2. **Search-based SID Decoding (S2D)**: restrict fine-level decoding to coarse bucket
 
-快手短视频在线 A/B: **video views +0.527%, watch time +0.432%**。WWW 2026。
+Kuaishou short video online A/B: **video views +0.527%, watch time +0.432%**. WWW 2026.
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前 NTP 训练 (`sid_prediction.py`) 只用正样本 (用户行为序列)，没有负信号
-- ENTP-Loss 是 **零架构改动** 的训练改进: 只需在 loss 计算中加入曝光未点击的 SID 作为负样本
-- 与 IDEA-onerec-1 (RSFT) 互补: RSFT 过滤低质量正样本，ENTP 引入高质量负样本
-- 与 IDEA-onemall-0 (contrastive loss) 正交: onemall-0 在 embedding 空间做对比，ENTP 在 NTP 的 CE loss 中引入负信号
+- Currently NTP training (`sid_prediction.py`) only uses positive samples (user behavior sequences), no negative signals
+- ENTP-Loss is a training improvement with **zero architectural changes**: just add exposed unclicked SIDs as negative samples in the loss calculation
+- Complementary to IDEA-onerec-1 (RSFT): RSFT filters low-quality positive samples, ENTP introduces high-quality negative samples
+- Orthogonal to IDEA-onemall-0 (contrastive loss): onemall-0 compares in the embedding space, ENTP introduces negative signals in the CE loss of NTP
 
-### 实验设计草案
+### Experimental Design Draft
 
-**实现**:
-1. 对每个训练样本，收集同 session 的曝光未点击 item SIDs
-2. 在 NTP loss 中，对 coarse level (第一层 SID token) 的 softmax 概率:
-   - 降低对 unclicked-exposure SID token 的概率
-   - 具体: 在 CE loss 中加入 margin/penalty 项
-3. 变量: penalty weight, 只在 L1 还是全层都用负信号
+**Implementation**:
+1. For each training sample, collect the unclicked item SIDs of the same session.
+2. In NTP loss, the softmax probability of coarse level (first layer SID token):
+   - Reduce the probability of unclicked-exposure SID token
+   - Specific: Add margin/penalty items to CE loss
+3. Variable: penalty weight, use negative signal only in L1 or all layers
 
-**评估**: NTP recall@K, 特别关注"兴趣变化"场景 (用户最近行为转向新类目)
+**Evaluation**: NTP recall@K, paying special attention to the "interest change" scenario (the user's recent behavior has shifted to new categories)
 
-### 实现记录
+### Implementation record
 
-**PySpark 端 ENTP 负样本导出 (2026-04-16)**:
+**PySpark side ENTP negative sample export (2026-04-16)**:
 
-实现方式: `data/export_exposure.py` 新增 ENTP section，Spark SQL window function
-`pos_grp = cumsum(action_bitmap > 0)` 分段，每段 non-positive 作为下一个 positive 的负样本，
-COLLECT_LIST + SORT_ARRAY + SLICE 取最近 K=5 个。输出 compact parquet `feed_user_exposure_neg/`。
-Python 端 `load_exposure_neg_data()` 加载 ~130M 行（秒级），`_build_sequences_from_exposure()`
-只做 iid→L0 token 映射。
+Implementation method: `data/export_exposure.py` Added ENTP section, Spark SQL window function
+`pos_grp = cumsum(action_bitmap > 0)` segmentation, each non-positive segment is used as the negative sample of the next positive,
+COLLECT_LIST + SORT_ARRAY + SLICE takes the nearest K=5. Output compact parquet `feed_user_exposure_neg/`.
+Python side `load_exposure_neg_data()` loads ~130M rows (seconds), `_build_sequences_from_exposure()`
+Only do iid→L0 token mapping.
 
-**数据验证 — PySpark 导出 vs 旧流式 walk 对比 (03-01~03-31)**:
+**Data verification - PySpark export vs old streaming walk comparison (03-01~03-31)**:
 
-| 指标 | PySpark 导出 | 旧流式 walk (对照) | 说明 |
+| Metric | PySpark 导出 | 旧流式 walk (对照) | Description |
 |---|---|---|---|
 | 总曝光行 | ~1.19B | 1,185,707,891 | 一致 |
 | Positives (action_bitmap > 0) | 130,995,419 | 124,893,764 | +4.9% |
 | Users | 4,608,606 | 3,042,069 | +51% |
-| 有负样本 | 40,761,718 (31.1% row级) | 2,084,314 (68.5% user级) | 口径不同 |
+| 有负样本 | 40,761,718 (31.1% row级) | 2,084,314 (68.5% user级) | 口径Different |
 
-差异分析:
-- **Positives +4.9%**: PySpark 不过滤 SID 字典外 iid，多出 ~6M。Python 端 `_build_user_items()` 的 `iid ∈ SID` 过滤兜底，不影响最终序列
-- **Users +51%**: 多出的 1.5M 用户只有 SID 字典外 iid，Python 端过滤后不足 2 个 valid item，不产出序列
-- **有负样本 31% vs 68.5%**: 口径不同无矛盾。31% 是 row 级（131M 正样本行里 41M 有 neg），68.5% 是 user 级（3M 用户里 2M 有 neg）。Feed 场景用户常连续点击（同页多 item），连续 positive 之间无 non-positive → 后者拿不到 neg
-- 旧流式 walk 最终 3,042,069 users / 76M items / 59M neg tokens；PySpark 导出经 Python 端过滤后应得到一致结果
+Difference analysis:
+- **Positives +4.9%**: PySpark does not filter iids outside the SID dictionary, which is ~6M more. The `iid ∈ SID` of `_build_user_items()` on the Python side is filtered and does not affect the final sequence.
+- **Users +51%**: The extra 1.5M users only have iids outside the SID dictionary. After filtering on the Python side, there are less than 2 valid items and no sequence is generated.
+- **There are negative samples 31% vs 68.5%**: There is no contradiction in the caliber. 31% are row-level (41M of 131M positive sample rows have neg), and 68.5% are user-level (2M of 3M users have neg). In the feed scenario, users often click continuously (multiple items on the same page), and there is no non-positive between consecutive positives → the latter cannot get neg.
+- Old streaming walk ended up with 3,042,069 users / 76M items / 59M neg tokens; PySpark export should give consistent results after filtering on the Python side
 
-**性能对比**:
-- 旧流式 walk: Phase 1 读 620 文件 2917s + Phase 2 groupby 1350s = **~71 min**
-- PySpark 导出: Spark 集群分钟级 + Python load_exposure_neg_data() **~30s**
+**Performance comparison**:
+- Old streaming walk: Phase 1 read 620 files 2917s + Phase 2 groupby 1350s = **~71 min**
+- PySpark export: Spark cluster minute level + Python load_exposure_neg_data() **~30s**
 
-### 关键问题
+### Key questions
 
-1. ~~需要行为数据包含"曝光未点击"信息~~ ✅ `export_exposure.py` 已有完整曝光序列
-2. Hard negative 太强可能导致模型过于保守 (偏向热门 item)
-3. Long/short-term 分支 (DBR) 需要更大的架构改动，可以独立拆分
+1. ~~The behavioral data needs to include "exposure without click" information~~ ✅ `export_exposure.py` already has a complete exposure sequence
+2. Hard negative that is too strong may cause the model to be too conservative (biased towards popular items)
+3. Long/short-term branch (DBR) requires larger architectural changes and can be split independently
 
 ---
 
 ## IDEA-stamp-0: Semantic Adaptive Pruning + Multi-step Auxiliary Prediction (STAMP)
 
-**优先级**: P1
-**来源**: STAMP (Alibaba, arxiv 2604.05329, Apr 2026)
-**状态**: 待讨论
+**Priority**: P1
+**Source**: STAMP (Alibaba, arxiv 2604.05329, Apr 2026)
+**Status**: To be discussed
 
-### 核心思想
+### Core Idea
 
-STAMP 发现高粒度 SID 存在 **Semantic Dilution Effect**: SID 越长越精细，冗余 token 越多，稀释了学习信号 → 训练效率下降 + 性能不单调波动。
+STAMP found that high-granularity SID exists **Semantic Dilution Effect**: The longer and more refined the SID, the more redundant tokens there are, which dilutes the learning signal → training efficiency decreases + performance does not fluctuate monotonically.
 
-双端优化:
-1. **Semantic Adaptive Pruning (SAP)** — 输入端: 前向传播中动态过滤冗余 SID token，将 noisy 序列压缩为 compact 信息密集表示
-2. **Multi-step Auxiliary Prediction (MAP)** — 输出端: 用 multi-token prediction 目标替代 single-token NTP，densify 监督信号
+Double-ended optimization:
+1. **Semantic Adaptive Pruning (SAP)** — Input: dynamically filter redundant SID tokens in forward propagation, compressing noisy sequences into compact information-dense representations
+2. **Multi-step Auxiliary Prediction (MAP)** — Output: replace single-token NTP with multi-token prediction target, densify supervision signal
 
-**结果**: **1.23-1.38x 训练加速, 17.2%-54.7% VRAM 减少**，性能不降。
+**Results**: **1.23-1.38x training acceleration, 17.2%-54.7% VRAM reduction**, no performance degradation.
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前 3 层 SID 短序列下不存在 semantic dilution 问题
-- **但如果切到 OPQ (16-64 token)**，semantic dilution 会成为关键问题:
-  - 64 个 SID token 中很多可能是冗余的 (低信息量子向量)
-  - STAMP 的 SAP 可以动态剪掉冗余 token → 解决 OPQ 长 SID 的训练效率问题
-- MAP (multi-step prediction) 与 IDEA-sid-4 (MTP auxiliary loss) 方向一致，但 STAMP 更聚焦于作为 **SID 稀疏信号的补偿**
-- 1.23-1.38x 训练加速对 8xA100 环境有实际价值
+- There is no semantic dilution problem under the current 3-layer SID short sequence.
+- **But if you switch to OPQ (16-64 token)**, semantic dilution will become a key issue:
+  - Many of the 64 SID tokens may be redundant (low information quantum vectors)
+  - STAMP's SAP can dynamically cut off redundant tokens → solve the training efficiency problem of OPQ long SID
+- MAP (multi-step prediction) is in the same direction as IDEA-sid-4 (MTP auxiliary loss), but STAMP is more focused as a compensation for **SID sparse signals**
+- 1.23-1.38x training speedup of real value for 8xA100 environments
 
-### 实验设计草案
+### Experimental Design Draft
 
-**前置: IDEA-sid-0 Phase 2 (OPQ 长 SID)**
+**Prefix: IDEA-sid-0 Phase 2 (OPQ long SID)**
 
-**Phase 1 — MAP (可立即实验)**:
-- 在当前 NTP 模型中，除了预测下一个 token，同时预测未来 2-3 个 token
-- 增加 2-3 个 projection heads，multi-token CE loss
+**Phase 1 — MAP (can be tested immediately)**:
+- In the current NTP model, in addition to predicting the next token, it also predicts 2-3 tokens in the future
+- Add 2-3 projection heads, multi-token CE loss
 - L = L_NTP + α * L_MAP
 
-**Phase 2 — SAP (OPQ 后)**:
-- 对 OPQ 长 SID 序列，训练 gating module 动态选择信息密集的 token
-- 被 prune 的 token 不参与后续 attention 计算
+**Phase 2 — SAP (Post-OPQ)**:
+- For OPQ long SID sequences, train the gating module to dynamically select information-dense tokens
+- The prune token does not participate in subsequent attention calculations
 
-**评估**: 训练时间, VRAM 用量, Recall@K
+**Evaluation**: Training time, VRAM usage, Recall@K
 
-### 关键问题
+### Key questions
 
-1. 当前 3 token SID 太短，pruning 没意义 → 主要价值在 OPQ 路线
-2. MAP 与 IDEA-sid-4 (MTP) 重叠，但 STAMP 的动机不同 (densify signal vs cold-start)
+1. The current 3 token SID is too short and pruning is meaningless → the main value lies in the OPQ route
+2. MAP overlaps with IDEA-sid-4 (MTP), but STAMP has different motivations (densify signal vs cold-start)
 
 ---
 
-## IDEA-tbg-0: Next Session Prediction (NSP) — 替代 Item-by-Item 自回归
+## IDEA-tbg-0: Next Session Prediction (NSP) — Replacement of Item-by-Item autoregression
 
-**优先级**: P1
-**来源**: TBGRecall (Alibaba, arxiv 2508.11977, Aug 2025)
-**状态**: Phase 1 (Data Recency) 已被 EXP-016 验证 ✅ — Phase 2 (NSP) 待实验
+**Priority**: P1
+**Source**: TBGRecall (Alibaba, arxiv 2508.11977, Aug 2025)
+**Status**: Phase 1 (Data Recency) Verified by EXP-016 ✅ — Phase 2 (NSP) To be tested
 
-> **NTP 阶段更新 (2026-04-17)**: EXP-016 Data Scaling Law 实验强力验证了 **data recency > data volume**: 14d (130M tokens) 是最优训练窗口，31d/62d/90d 数据量更大但 loss 更高 (U-shaped curve)。原因: 更多天数 = 更多用户 (1.02M→6.18M) 而非更长序列，3 天曝光周期导致旧用户行为模式不适用于当前 eval 分布。Phase 1 结论已融入生产配置 (14d 数据窗口)。Phase 2 NSP 作为独立实验方向保留。
+> **NTP phase update (2026-04-17)**: The EXP-016 Data Scaling Law experiment strongly verified that **data recency > data volume**: 14d (130M tokens) is the optimal training window, 31d/62d/90d has larger data volume but higher loss (U-shaped curve). Reason: More days = more users (1.02M→6.18M) instead of a longer sequence, 3-day exposure period causes old user behavior patterns not applicable to the current eval distribution. Phase 1 conclusions are integrated into the production configuration (14d data window). Phase 2 NSP is retained as an independent experimental direction.
 
-### 核心思想
+### Core Idea
 
-标准 GR 逐 item 自回归生成 (A→B→C→D)，存在强序列依赖。TBGRecall 提出 **Next Session Prediction (NSP)**: 将行为划分为多个 session，每个 session 有一个 session token + 多个 item token:
+Standard GR is generated item-by-item autoregressively (A→B→C→D), with strong sequence dependence. TBGRecall proposes **Next Session Prediction (NSP)**: Divide behavior into multiple sessions, each session has a session token + multiple item tokens:
 
 ```
 [S1] item1 item2 item3 [S2] item4 item5 [S3] → predict [S4] item6 item7
 ```
 
-session 内 item 无序 (消除 positional bias)，session 间有序 (保留时间依赖)。
+The items within the session are disordered (eliminating positional bias), and the items between sessions are ordered (retaining time dependence).
 
-另一关键发现: **data recency > data volume** — 用少量最近数据训练 > 用大量历史数据训练。
+Another key finding: **data recency > data volume** — train with a small amount of recent data > train with a large amount of historical data.
 
-在公开数据集和阿里工业数据集上均展示 **clear scaling law trend**。
+**clear scaling law trend** is displayed on both public data sets and Alibaba industrial data sets.
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前 NTP 模型逐 item 预测，每个 item 的 SID 序列是独立自回归的
-- NSP 提供了 **更高层的抽象**: 预测"下一个 session"而非"下一个 item"
-- **data recency insight** 直接可用: 训练时给近期行为更高权重，或只用最近 N 天数据
-- 与 IDEA-onerec-1 (RSFT) 互补: RSFT 过滤低质量样本，NSP 改变建模粒度
+- The current NTP model predicts item by item, and the SID sequence of each item is independently autoregressive.
+- NSP provides **higher level abstraction**: predict "next session" instead of "next item"
+- **data recency insight** is directly available: give more weight to recent behaviors during training, or only use the last N days of data
+- Complementary to IDEA-onerec-1 (RSFT): RSFT filters low-quality samples, NSP changes the modeling granularity
 
-### 实验设计草案
+### Experimental Design Draft
 
-**Phase 1 — Data Recency 验证 (零成本)**:
-- 在当前 NTP 训练中，对比: 全量历史 vs 最近 30 天 vs 最近 7 天
-- 如果 recency > volume，可以大幅降低训练成本
+**Phase 1 — Data Recency Validation (Zero Cost)**:
+- In the current NTP training, comparison: full history vs last 30 days vs last 7 days
+- If recency > volume, the training cost can be greatly reduced
 
 **Phase 2 — Session-Level Prediction**:
-- 在用户行为中划分 session (按时间间隔 > 30 min)
-- 在 NTP 输入中插入 [SESSION] token
-- session 内 item 随机打乱 (去除位置 bias)
+- Divide sessions among user behaviors (by time intervals > 30 min)
+- Insert [SESSION] token in NTP input
+- Randomly shuffle items within the session (remove position bias)
 
-### 关键问题
+### Key questions
 
-1. Session 划分规则: 按时间间隔? 按行为类型?
-2. Session 内无序可能丢失 fine-grained 时间信号
-3. 当前行为数据是否有 timestamp 支持 session 划分
+1. Session division rules: By time interval? By behavior type?
+2. The fine-grained time signal may be lost due to disorder in the Session.
+3. Whether the current behavior data has a timestamp that supports session division
 
 ---
 
-## IDEA-hstu1b-0: Task Decomposition for Scaling (Feedback + Next-Item 分离)
+## IDEA-hstu1b-0: Task Decomposition for Scaling (Feedback + Next-Item separation)
 
-**优先级**: P1
-**来源**: Scaling Recommender Transformers to 1B (arxiv 2507.15994, Jul 2025, KDD 2026)
-**状态**: 待讨论 — 受 scaling law flattening 限制
+**Priority**: P1
+**Source**: Scaling Recommender Transformers to 1B (arxiv 2507.15994, Jul 2025, KDD 2026)
+**Status**: Awaiting discussion — subject to scaling law flattening
 
-> **NTP 阶段更新 (2026-04-17)**: EXP-015 scaling law L(N)=2.522+2055/N^0.456 显示 M+ (101M active) 已达 loss=2.94，距 irreducible floor (2.522) 仅 0.42。论文在 176M→1B 才看到 task decomposition scaling 效果，而我们当前场景 scaling law 在 ~100M 已趋平（tokenizer 是瓶颈而非模型大小）。优先级维持 P1 但实际收益可能有限。
+> **NTP stage update (2026-04-17)**: EXP-015 scaling law L(N)=2.522+2055/N^0.456 shows that M+ (101M active) has reached loss=2.94, which is only 0.42 from the irreducible floor (2.522). The paper only saw the effect of task decomposition scaling at 176M→1B, while the scaling law of our current scenario has leveled off at ~100M (the tokenizer is the bottleneck rather than the model size). Priority remains P1 but actual benefits may be limited.
 
-### 核心思想
+### Core Idea
 
-在 HSTU/Generative Recommenders 框架上，将自回归学习 **分解为两个子任务**:
+Based on the HSTU/Generative Recommenders framework, autoregressive learning is decomposed into two subtasks:
 
-1. **Feedback Prediction**: 预测用户对已展示 item 的反馈 (like/dislike/skip)
-2. **Next-Item Prediction**: 预测用户接下来会交互的 item
+1. **Feedback Prediction**: Predict user feedback (like/dislike/skip) on displayed items
+2. **Next-Item Prediction**: Predict the item that the user will interact with next
 
-这个分解在 176M → 1B 参数范围内保持有效 scaling。
+This decomposition remains valid over the parameter range 176M → 1B scaling.
 
-音乐流媒体平台部署: **listening time +2.26%, user likes +6.37%** — 作者声称是该平台深度学习系统历史上最大单次提升。KDD 2026。
+Music streaming platform deployment: **listening time +2.26%, user likes +6.37%** — The author claims this is the largest single improvement in the history of the platform’s deep learning system. KDD2026.
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前 NTP 模型只做 next-item prediction (任务 2)，完全没有 feedback prediction (任务 1)
-- Task decomposition 的 insight: **用户反馈本身是有价值的监督信号**，不仅仅是"预测下一个 item"
-- 实现简单: 在用户序列中加入 feedback token (liked/skipped/watched_full)，让模型同时预测 feedback + next item
-- 与 IDEA-oneloc-5 (Multi-behavior) 有关联但不同: oneloc-5 区分行为类型作为输入，本 IDEA 把 feedback 作为预测目标
+- The current NTP model only does next-item prediction (Task 2), and no feedback prediction (Task 1) at all.
+- Task decomposition insight: **User feedback itself is a valuable supervision signal**, not just "predicting the next item"
+- Simple implementation: add feedback token (liked/skipped/watched_full) to the user sequence and let the model predict feedback + next item at the same time
+- Related to IDEA-oneloc-5 (Multi-behavior) but different: oneloc-5 distinguishes behavior types as input, this IDEA uses feedback as the prediction target
 
-### 实验设计草案
+### Experimental Design Draft
 
-**方案 — Dual-Task NTP**:
-1. 用户序列: `item1 [FEEDBACK:like] item2 [FEEDBACK:skip] item3 → predict [FEEDBACK:?] item4`
-2. 模型同时预测 feedback token 和 next-item SID
+**Scheme — Dual-Task NTP**:
+1. User sequence: `item1 [FEEDBACK:like] item2 [FEEDBACK:skip] item3 → predict [FEEDBACK:?] item4`
+2. The model predicts feedback token and next-item SID at the same time
 3. `L = L_next_item + α * L_feedback`
-4. 变量: α ∈ {0.1, 0.5, 1.0}
+4. Variable: α ∈ {0.1, 0.5, 1.0}
 
-**评估**: NTP recall@K (core metric) + feedback prediction accuracy (auxiliary metric)
+**Evaluation**: NTP recall@K (core metric) + feedback prediction accuracy (auxiliary metric)
 
-### 关键问题
+### Key questions
 
-1. 需要行为数据包含反馈类型 (like/skip/watch_full 等)
-2. 当前 39.5M 小模型下分解是否有价值? 论文在 >176M 才看到 scaling 效果
-3. Feedback token 增加序列长度 ~2x → 训练成本增加
+1. Behavior data needs to include feedback type (like/skip/watch_full, etc.)
+2. Is decomposition valuable under the current 39.5M small model? The paper only sees the scaling effect when it is >176M
+3. Feedback token increases sequence length ~2x → training cost increases
 
 ---
 
 ## IDEA-mbgr-0: Multi-Business Generative Recommendation (BID + MBP + LDR)
 
-**优先级**: P2
-**来源**: MBGR (Meituan, arxiv 2025, WWW 2026)
-**状态**: 待定
+**Priority**: P2
+**Source**: MBGR (Meituan, arxiv 2025, WWW 2026)
+**Status**: Pending
 
-> **P2 原因**: 多业务扩展是部署期需求，当前单业务 NTP baseline 尚未建立。核心技术 (Business-aware SID, MBP heads, Label Dynamic Routing) 在多业务扩展时直接参考。
+> **P2 Reason**: Multi-service expansion is a requirement during the deployment period, and the current single-service NTP baseline has not yet been established. Core technologies (Business-aware SID, MBP heads, Label Dynamic Routing) are directly referenced when expanding multiple businesses.
 
-### 核心思想
+### Core Idea
 
-MBGR 是美团在多业务场景 (外卖、酒旅、到店等) 的生成式推荐部署。核心挑战：不同业务的 item 共享同一 SID 空间导致业务间干扰。三个关键技术：
+MBGR is Meituan’s generative recommendation deployment in multiple business scenarios (takeout, wine travel, in-store, etc.). Core challenge: Items from different businesses share the same SID space, causing interference between businesses. Three key technologies:
 
-1. **Business-aware SID (BID)**: 在 SID 序列前追加一个 Business ID token，让模型区分不同业务的 item 空间。SID 从 `"L1_L2_L3"` 变为 `"BIZ_L1_L2_L3"`
-2. **Multi-Business Prediction (MBP)**: 每个业务一个独立的 prediction head，共享 encoder 但 head 独立。类似 multi-task learning 但在 SID 空间
-3. **Label Dynamic Routing (LDR)**: 动态调整不同业务的训练样本权重，解决业务间数据量不均衡（外卖数据 >> 酒旅数据）
+1. **Business-aware SID (BID)**: Append a Business ID token before the SID sequence to allow the model to distinguish the item spaces of different businesses. SID changed from `"L1_L2_L3"` to `"BIZ_L1_L2_L3"`
+2. **Multi-Business Prediction (MBP)**: Each business has an independent prediction head, sharing the encoder but the head is independent. Similar to multi-task learning but in SID space
+3. **Label Dynamic Routing (LDR)**: Dynamically adjust the training sample weights of different businesses to solve the imbalance of data volume between businesses (takeaway data >> wine and travel data)
 
-美团在线 A/B: 多业务联合训练 > 单业务独立训练，**全业务平均 CTR +1.2%，长尾业务 CTR +3.5%**。WWW 2026。
+Meituan Online A/B: Multi-business joint training > Single-business independent training, **average CTR for all businesses +1.2%, long-tail business CTR +3.5%**. WWW 2026.
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前项目只有单一推荐场景，BID 暂不需要
-- **MBP heads 的思想可泛化**: 如果要区分不同行为类型 (click/buy/share)，可以每种行为一个 prediction head
-- LDR 与 IDEA-onerec-1 (RSFT) 和 IDEA-gr4ad-2 (Value-Aware) 相关：都是训练样本加权策略
-- **多业务扩展时的首选参考方案**: 当推荐系统需要服务多个业务线时，BID + MBP 是最低成本的扩展方案
+- The current project only has a single recommended scenario, and the BID is not needed yet.
+- **The idea of ​​MBP heads can be generalized**: If you want to distinguish different behavior types (click/buy/share), you can have one prediction head for each behavior
+- LDR is related to IDEA-onerec-1 (RSFT) and IDEA-gr4ad-2 (Value-Aware): both training sample weighting strategies
+- **The preferred reference solution for multi-business expansion**: When the recommendation system needs to serve multiple business lines, BID + MBP is the lowest-cost expansion solution
 
-### 实验设计草案
+### Experimental Design Draft
 
-**当前不实验，作为多业务扩展参考**。
+**Currently not experimental, only used as a reference for multi-service expansion**.
 
-如果需要多业务扩展:
-1. 在 SID 前加 BIZ token (vocab 按业务数扩展)
-2. Encoder 共享，prediction head 按业务拆分
-3. LDR: 按业务 loss 动态调权 (类似 GradNorm)
+If multiple business expansion is required:
+1. Add BIZ token before SID (vocab is expanded according to the number of services)
+2. Encoder is shared, prediction head is split according to business
+3. LDR: Dynamic weight adjustment based on business loss (similar to GradNorm)
 
-### 关键问题
+### Key questions
 
-1. 当前单业务场景无需 BID
-2. MBP 的 head 数量随业务增长 → 参数膨胀
-3. LDR 的动态路由策略需要充分的多业务数据验证
+1. The current single business scenario does not require BID
+2. The number of MBP heads increases with business → parameter expansion
+3. LDR’s dynamic routing strategy requires sufficient multi-service data verification
 
 ---
 
-## 优先级总结
+## Priority summary
 
-| 优先级 | ID | 实验 | 原因 |
+| 优先级 | ID | Experiment | 原因 |
 |--------|-----|------|------|
 | ~~P0~~ ✅ | ~~IDEA-mtgr-0~~ | ~~User-Level Packing + Causal Mask~~ | ✅ 已实现 — `train_packed()` EXP-013 起标配 |
-| ~~P0~~ ❌ | ~~IDEA-onemall-0~~ | ~~NTP In-Batch Contrastive Loss~~ | ❌ EXP-022 负结果：SID 离散空间与 InfoNCE 不兼容 |
-| P1 | IDEA-sid-4 | Token-Space MTP 辅助 Loss | RPG 证明 token-space CE > item-space CE，冷启动友好 |
-| P1 | IDEA-gr4ad-2 | Value-Aware 训练 | 丰富训练信号，与 IDEA-sid-1 互补 |
-| P1 | IDEA-oneloc-5 | Multi-behavior 序列融合 | 低成本区分不同行为强度 |
-| P1 | IDEA-plum-0 | LLM Continued Pre-Training | YouTube 数十亿用户验证，利用预训练知识 |
-| P1 | IDEA-onerec-1 | RSFT 过滤低质量训练样本 | 零成本数据质量提升，OneRec 标配 |
+| ~~P0~~ ❌ | ~~IDEA-onemall-0~~ | ~~NTP In-Batch Contrastive Loss~~ | ❌ EXP-022 负Result：SID 离散空间与 InfoNCE 不兼容 |
+| P1 | IDEA-sid-4 | Token-Space MTP 辅助 Loss | RPG 证明 token-space CE > item-space CE，冷启动友Good |
+| P1 | IDEA-gr4ad-2 | Value-Aware Training | 丰富Training信号，与 IDEA-sid-1 互补 |
+| P1 | IDEA-oneloc-5 | Multi-behavior 序列融合 | Low成本区分Different行为强度 |
+| P1 | IDEA-plum-0 | LLM Continued Pre-Training | YouTube 数十亿用户验证，利用预Training知识 |
+| P1 | IDEA-onerec-1 | RSFT 过滤Low质量Training样本 | 零成本数据质量提升，OneRec 标配 |
 | P1 | IDEA-dualgr-0 | Exposure-Aware NTP Loss | 快手 WWW 2026, 零架构改动引入负信号 |
-| P1 | IDEA-stamp-0 | Semantic Pruning + MTP | 解决 OPQ 长 SID 的训练效率, 1.23x 加速 |
+| P1 | IDEA-stamp-0 | Semantic Pruning + MTP | 解决 OPQ 长 SID 的Training效率, 1.23x 加速 |
 | P1 | IDEA-tbg-0 | Next Session Prediction + Data Recency | 阿里验证 scaling law, data recency > volume |
-| P1 | IDEA-hstu1b-0 | Task Decomposition (Feedback + Next-Item) | KDD 2026, 历史最大提升, 1B 参数 scaling |
+| P1 | IDEA-hstu1b-0 | Task Decomposition (Feedback + Next-Item) | KDD 2026, 历史最大提升, 1B Parameter scaling |
 | P2 | IDEA-sid-5 | Codebook Embedding 聚合 | 依赖 IDEA-sid-0 Phase 2，短 ID 下收益不大 |
-| P2 | IDEA-onerec-2 | SID 替代 VID 输入 | 大模型场景下有价值，当前无需 |
+| P2 | IDEA-onerec-2 | SID 替代 VID Input | 大Model场景下有价Value，当前无需 |
 | P2 | IDEA-mbgr-0 | Multi-Business Prediction + BID | 美团部署, 多业务扩展时参考 |
-| P1 | IDEA-sigma-0 | 指令驱动多任务 GR + 自适应融合 | AliExpress 在线验证, 多任务扩展方向 |
-| P1 | IDEA-lemur-0 | 端到端多模态 + Memory Bank | Douyin QAUC +0.81%, Memory Bank 低成本可先验证 |
+| P1 | IDEA-sigma-0 | 指令驱动多任务 GR + 自适应融合 | AliExpress 在线验证, 多任务扩展Direction |
+| P1 | IDEA-lemur-0 | 端到端多模态 + Memory Bank | Douyin QAUC +0.81%, Memory Bank Low成本可先验证 |
 | P1 | IDEA-genrec-0 | Page-wise NTP 多标签页面级监督 | JD SIGIR 2026, +9.5% click, 幻觉率降 50%, 推理不变 |
 | P1 | IDEA-rclrec-0 | 反向课程学习稀疏转化 | Alibaba +2.09% revenue, decoder prefix 额外监督 |
 
 ---
 
-## IDEA-sigma-0: 指令驱动多任务生成式推荐 + 自适应概率融合
+## IDEA-sigma-0: Instruction-driven multi-task generative recommendation + adaptive probabilistic fusion
 
-**优先级**: P1
-**来源**: SIGMA, Alibaba/AliExpress (arxiv 2602.22913)
-**状态**: 待讨论
+**Priority**: P1
+**Source**: SIGMA, Alibaba/AliExpress (arxiv 2602.22913)
+**Status**: To be discussed
 
-### 核心思想
+### Core Idea
 
-阿里 AliExpress 部署的 SIGMA 将生成式推荐从 "交互驱动的 next-item prediction" 扩展为 "指令驱动的多任务推荐"。三个关键设计: (1) 统一 semantic-collaborative 潜在空间 — 同时捕获语义关系和协同关系，item grounding 不依赖单一信号; (2) Hybrid item tokenization — 精确建模 + 高效生成的平衡; (3) 自适应概率融合 (Adaptive Probabilistic Fusion) — 根据任务类型 (recall/ranking/diversity) 动态校准生成分布，同一个模型用不同 instruction 服务不同推荐需求。大规模 SFT 数据集支持 instruction following。AliExpress 在线 A/B 验证有效。
+SIGMA deployed by AliExpress expands generative recommendations from "interaction-driven next-item prediction" to "instruction-driven multi-task recommendation". Three key designs: (1) Unified semantic-collaborative latent space - simultaneously captures semantic relationships and collaborative relationships, item grounding does not rely on a single signal; (2) Hybrid item tokenization - a balance of accurate modeling + efficient generation; (3) Adaptive Probabilistic Fusion - dynamically calibrate the generation distribution according to task type (recall/ranking/diversity), the same model uses different instructions to serve different recommendation needs. Large-scale SFT data sets are supported with instruction following. AliExpress online A/B verification is valid.
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前 NTP 只做单一 recall 任务，SIGMA 的 instruction-following 思路可以扩展模型能力
-- Adaptive Probabilistic Fusion 对推理阶段有直接价值: 同一个模型可以用 "precision" 或 "diversity" instruction 控制输出分布
-- Hybrid item tokenization 可能包含对 MLP-FSQ tokenizer 的改进方向
-- SFT dataset 构造方法可以参考: 将现有行为数据转化为多任务 instruction 格式
+- Currently NTP only performs a single recall task, and SIGMA’s instruction-following idea can expand model capabilities.
+- Adaptive Probabilistic Fusion has direct value for the inference stage: the same model can control the output distribution with "precision" or "diversity" instruction
+- Hybrid item tokenization may include improvements to MLP-FSQ tokenizer
+- For the SFT dataset construction method, please refer to: Convert existing behavioral data into multi-task instruction format
 
-### 实验设计草案
+### Experimental Design Draft
 
 **Phase 1 — Adaptive Decoding Temperature per Task**:
-- 最简实现: 不同 beam search temperature 模拟不同 task instruction
+- The simplest implementation: different beam search temperatures simulate different task instructions
 - recall task → low temperature (precision), diversity task → high temperature
-- 评估: Recall@K vs Coverage@K 的 trade-off
+- Evaluation: Recall@K vs Coverage@K trade-off
 
 **Phase 2 — Instruction Prefix for NTP**:
-- 在行为序列前加 task instruction token (e.g., [RECALL], [DIVERSE], [SIMILAR])
-- 训练时用不同 label 策略: RECALL→下一个点击, DIVERSE→随机正例, SIMILAR→same-category 正例
-- 需要 multi-task SFT 数据构造
+- Add task instruction token (e.g., [RECALL], [DIVERSE], [SIMILAR]) before the behavior sequence
+- Use different label strategies during training: RECALL→next click, DIVERSE→random positive examples, SIMILAR→same-category positive examples
+- Requires multi-task SFT data structure
 
-### 关键问题
+### Key questions
 
-1. AliExpress 的多任务需求 (recall/ranking/diversity) 在当前单一 recall 场景下价值有限
-2. Instruction-following 需要更大的 backbone (当前 small decoder 难以理解复杂 instruction)
-3. Adaptive Probabilistic Fusion 的实现细节需要看 full paper
-4. 更适合系统成熟后扩展多任务能力时引入
+1. AliExpress’s multi-tasking requirements (recall/ranking/diversity) have limited value in the current single recall scenario
+2. Instruction-following requires a larger backbone (currently small decoder has difficulty understanding complex instructions)
+3. The implementation details of Adaptive Probabilistic Fusion need to be read in the full paper
+4. More suitable for introduction when the system matures and expands multi-task capabilities.
 
 ---
 
-## IDEA-lemur-0: 端到端多模态推荐 + Memory Bank 增量表征
+## IDEA-lemur-0: End-to-end multi-modal recommendation + Memory Bank incremental representation
 
-**优先级**: P1
-**来源**: LEMUR, ByteDance/Douyin (arxiv 2511.10962)
-**状态**: 待讨论
+**Priority**: P1
+**Source**: LEMUR, ByteDance/Douyin (arxiv 2511.10962)
+**Status**: To be discussed
 
-### 核心思想
+### Core Idea
 
-字节跳动在抖音搜索和广告部署的 LEMUR 是首个大规模端到端多模态推荐系统: 联合优化多模态 encoder 和推荐模型，而非 "先预训练多模态模型，再冻结表征训练推荐模型" 的两阶段方案。核心创新是 Memory Bank 机制: 训练过程中增量积累历史多模态表征，避免对用户长历史序列做完整多模态 forward pass 的巨大计算开销。抖音搜索部署一个月后: query change rate decay -0.843%, QAUC +0.81%。
+LEMUR deployed by Bytedance in Douyin search and advertising is the first large-scale end-to-end multi-modal recommendation system: jointly optimizing the multi-modal encoder and recommendation model, instead of the two-stage solution of "pre-training the multi-modal model first, and then freezing the representation to train the recommendation model". The core innovation is the Memory Bank mechanism: during the training process, historical multi-modal representations are incrementally accumulated to avoid the huge computational overhead of doing a complete multi-modal forward pass on the user's long history sequence. One month after Douyin search deployment: query change rate decay -0.843%, QAUC +0.81%.
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前项目用 Qwen3 冻结 embedding → tokenizer → NTP 的三阶段 pipeline，LEMUR 验证端到端联合训练的优势
-- Memory Bank 机制对长序列 NTP 有直接价值: 无需每次训练都重新计算历史 item 的 embedding，用缓存 + 增量更新
-- 当前 NTP 训练中 item embedding 是 pre-computed & frozen，如果要做 end-to-end，Memory Bank 是解决计算瓶颈的关键
-- 与 IDEA-onerec-3 (QFormer Tokenizer) 方向一致: 都追求打破 frozen embedding 的限制
+- The current project uses Qwen3 to freeze the three-stage pipeline of embedding → tokenizer → NTP, and LEMUR verifies the advantages of end-to-end joint training
+- The Memory Bank mechanism has direct value for long sequence NTP: there is no need to recalculate the embedding of historical items for each training, use cache + incremental update
+- In current NTP training, item embedding is pre-computed & frozen. If end-to-end is to be done, Memory Bank is the key to solving the computing bottleneck.
+- In the same direction as IDEA-onerec-3 (QFormer Tokenizer): both pursue breaking the limitations of frozen embedding
 
-### 实验设计草案
+### Experimental Design Draft
 
 **Phase 1 — Embedding Memory Bank for NTP Training**:
-- 在 NTP 训练中维护 item embedding memory bank (size = item pool)
-- 每个 epoch 开始时用当前 encoder 更新 memory bank (或用 EMA)
-- 对比: frozen embedding vs memory bank (定期更新) vs full end-to-end
-- 评估: Recall@K + 训练效率 (FLOPs per epoch)
+- Maintain item embedding memory bank (size = item pool) during NTP training
+- Update the memory bank with the current encoder at the beginning of each epoch (or use EMA)
+- Comparison: frozen embedding vs memory bank (regularly updated) vs full end-to-end
+- Evaluation: Recall@K + training efficiency (FLOPs per epoch)
 
 **Phase 2 — End-to-End Multimodal Training**:
-- 解冻 Qwen3 embedding encoder，与 NTP 联合训练
-- 用 Memory Bank 缓存中间表征，每 N steps 更新
-- 前置: 需要 GPU 内存优化 (gradient checkpointing, mixed precision)
+- Unfreeze Qwen3 embedding encoder and train jointly with NTP
+- Use Memory Bank to cache intermediate representations, updated every N steps
+- Frontend: requires GPU memory optimization (gradient checkpointing, mixed precision)
 
-### 关键问题
+### Key questions
 
-1. End-to-end 训练需要远超当前的 GPU 资源
-2. Memory Bank 的 staleness: 缓存表征与当前 encoder 不同步 → 需要验证影响
-3. 当前 MLP-FSQ tokenizer 是在 frozen embedding 上训练的，end-to-end 意味着 tokenizer 也要重训
-4. Phase 1 (Memory Bank alone) 相对低成本，值得先验证
+1. End-to-end training requires far more than current GPU resources
+2. Memory Bank’s staleness: The cache representation is out of sync with the current encoder → the impact needs to be verified
+3. The current MLP-FSQ tokenizer is trained on frozen embedding, and end-to-end means that the tokenizer must also be retrained.
+4. Phase 1 (Memory Bank alone) is relatively low-cost and worth verifying first.
 
 ---
 
-## IDEA-genrec-0: Page-wise NTP 训练目标 (多标签页面级监督)
+## IDEA-genrec-0: Page-wise NTP training objective (multi-label page-level supervision)
 
-**优先级**: P1
-**来源**: GenRec, JD.com (arxiv 2604.14878, SIGIR 2026)
-**状态**: 待讨论
+**Priority**: P1
+**Source**: GenRec, JD.com (arxiv 2604.14878, SIGIR 2026)
+**Status**: To be discussed
 
-### 核心思想
+### Core Idea
 
-JD 的 GenRec 提出 Page-wise NTP (PW-NTP): 将同一请求页面内用户的多个正交互 (点击+购买+曝光) 拼接成一个 target 序列做自回归训练，而非 vanilla NTP 对每个正样本独立建模。解决了工业分页机制导致的 "相同输入、多个有效输出" 的 one-to-many 歧义问题。实验显示 PW-NTP 比 vanilla NTP: (1) 收敛更快; (2) HR@50 从 0.62 提升到 0.72; (3) 幻觉率降低 50% (7.8% → 4.96%)。JD 在线 A/B: 点击 +9.5%, 成交 +8.7%。推理时仍用标准 point-wise beam search，训练-推理不对称是有意设计。
+JD's GenRec proposed Page-wise NTP (PW-NTP): splicing multiple positive interactions (clicks + purchases + exposure) of users on the same request page into a target sequence for autoregressive training, instead of vanilla NTP modeling each positive sample independently. Solve the one-to-many ambiguity problem of "same input, multiple valid outputs" caused by the industrial paging mechanism. Experiments show that PW-NTP: (1) converges faster than vanilla NTP; (2) HR@50 increases from 0.62 to 0.72; (3) the hallucination rate is reduced by 50% (7.8% → 4.96%). JD Online A/B: Clicks +9.5%, Deals +8.7%. Standard point-wise beam search is still used for inference, and the training-inference asymmetry is intentionally designed.
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前 NTP 训练是 point-wise: 一个 (history, target_item) pair 一条训练样本
-- PW-NTP 可以直接在现有数据上实现: 把同一 session 内多个正样本拼接成 target 序列
-- 与 IDEA-onemall-0 (Contrastive Loss) 互补: PW-NTP 改善 SFT 阶段, Contrastive 是额外辅助 loss
-- 训练-推理不对称设计意味着**推理端完全不需要改动**
-- 幻觉率降低对 SID 体系特别有价值: 减少生成无效 SID 组合
+- The current NTP training is point-wise: a (history, target_item) pair and a training sample
+- PW-NTP can be implemented directly on existing data: splicing multiple positive samples in the same session into a target sequence
+- Complementary to IDEA-onemall-0 (Contrastive Loss): PW-NTP improves the SFT stage, Contrastive is an additional auxiliary loss
+- Training-inference asymmetric design means that **the inference side does not need to be modified at all**
+- The reduction in hallucination rate is particularly valuable for SID systems: reducing the generation of invalid SID combinations
 
-### 实验设计草案
+### Experimental Design Draft
 
 **Phase 1 — Session-level Multi-Target NTP**:
-- 数据构造: 将同一 session (或同一天) 内用户的多个正交互 item SID 拼接为 target
-- 按交互强度排序: buy > click > expose
-- 训练: 标准自回归 loss 但 target 是多 item 序列
-- Baseline: 当前 point-wise NTP
-- 评估: HR@K, NDCG@K, HaR (幻觉率)
+- Data structure: Splice multiple positive interaction item SIDs of users in the same session (or the same day) into a target
+- Sort by interaction intensity: buy > click > expose
+- Training: standard autoregressive loss but target is a multi-item sequence
+- Baseline: current point-wise NTP
+- Assessment: HR@K, NDCG@K, HaR (hallucination rate)
 
-**Phase 2 — 加入行为类型 token**:
-- 在 target 序列中插入行为类型 token: `<buy> SID1 SID2 SID3 <click> SID4 SID5 SID6 ...`
-- 探索不同排序策略对性能的影响
+**Phase 2 — Add behavior type token**:
+- Insert the behavior type token in the target sequence: `<buy> SID1 SID2 SID3 <click> SID4 SID5 SID6 ...`
+- Explore the impact of different sorting strategies on performance
 
-### 关键问题
+### Key questions
 
-1. 数据格式变化: 当前 dataloader 需要改造，支持变长 target 序列
-2. 推理不变但训练 batch 内序列长度增加 → GPU 内存压力
-3. 与 IDEA-dualgr-0 (ENTP-Loss) 有部分重叠: 都关注多行为训练，需要比较或融合
+1. Data format changes: The current dataloader needs to be modified to support variable-length target sequences.
+2. Inference remains unchanged but the sequence length in the training batch increases → GPU memory pressure
+3. There is some overlap with IDEA-dualgr-0 (ENTP-Loss): both focus on multi-behavior training and need to be compared or integrated.
 
 ---
 
-## IDEA-rclrec-0: 反向课程学习解决稀疏转化建模
+## IDEA-rclrec-0: Reverse curriculum learning to solve sparse transformation modeling
 
-**优先级**: P1
-**来源**: RCLRec, Alibaba International (arxiv 2603.28124)
-**状态**: 待讨论
+**Priority**: P1
+**Source**: RCLRec, Alibaba International (arxiv 2603.28124)
+**Status**: To be discussed
 
-### 核心思想
+### Core Idea
 
-阿里国际电商 RCLRec 提出 Reverse Curriculum Prefix Module (RCPM): 对每个转化目标，从用户历史中反向选择 k 个与转化最相关的行为，将其 SID token 作为 decoder prefix，与目标转化 token 拼接做 teacher forcing。核心 insight: 转化行为前通常有一组聚类的相关行为 (同品类浏览/比较)，直接提取这些关键子序列作为额外监督。加入 curriculum quality-aware loss 确保选出的 prefix 确实提升转化预测。在线 A/B: 广告收入 +2.09%, 订单 +1.86%。
+Alibaba International E-commerce RCLRec proposed the Reverse Curriculum Prefix Module (RCPM): for each conversion target, k behaviors most relevant to conversion are reversely selected from the user history, and their SID tokens are used as decoder prefix, and are spliced ​​with the target conversion token for teacher forcing. Core insight: Before conversion behavior, there is usually a set of clustered related behaviors (same category browsing/comparison), and these key subsequences are directly extracted as additional supervision. Adding curriculum quality-aware loss ensures that the selected prefix actually improves conversion predictions. Online A/B: Ad revenue +2.09%, Orders +1.86%.
 
-### 与当前项目的关联
+### Association with the current project
 
-- 当前 NTP 训练不区分行为类型，转化行为极稀疏 (通常 <2% interactions)
-- RCPM 可以作为 NTP 训练的增强模块: 对高价值目标 (购买) 提供额外的 decoder-side supervision
-- 与 IDEA-genrec-0 (PW-NTP) 互补: PW-NTP 解决 one-to-many 歧义, RCLRec 解决 conversion sparsity
-- 与 IDEA-oneloc-5 (Multi-behavior 序列) 互补: oneloc-5 是 encoder 端行为融合, RCLRec 是 decoder 端课程注入
-- 需要 encoder-decoder 架构 (当前是 decoder-only) → 可能需要适配
+- Current NTP training does not distinguish between behavior types, and conversion behaviors are extremely sparse (usually <2% interactions)
+- RCPM can be used as an enhancement module for NTP training: providing additional decoder-side supervision for high-value targets (purchases)
+- Complementary to IDEA-genrec-0 (PW-NTP): PW-NTP resolves one-to-many ambiguity, RCLRec resolves conversion sparsity
+- Complementary to IDEA-oneloc-5 (Multi-behavior sequence): oneloc-5 is encoder-side behavior fusion, RCLRec is decoder-side course injection
+- Requires encoder-decoder architecture (currently decoder-only) → May require adaptation
 
-### 实验设计草案
+### Experimental Design Draft
 
 **Phase 1 — Decoder Prefix for High-Value Targets**:
-- 对训练样本中的购买行为, 从 encoder hidden states 中选 top-k 相关历史 item
-- 将选出的 k 个 item SID 作为 decoder prefix, 拼接在目标 SID 前
-- 用 scaled dot-product 做 relevance scoring
-- Baseline: 标准 NTP (无 prefix)
-- 评估: Recall@K (conversion items), NDCG@K
+- For the purchase behavior in the training sample, select the top-k related historical items from the encoder hidden states
+- Use the selected k item SIDs as decoder prefix and splice them in front of the target SID
+- Use scaled dot-product for relevance scoring
+- Baseline: Standard NTP (no prefix)
+- Assessment: Recall@K (conversion items), NDCG@K
 
 **Phase 2 — Quality-Aware Loss**:
-- 加入 hinge loss: 确保有 prefix 的转化 NLL < 无 prefix 的 NLL + margin
-- 调节 margin 和 loss weight
+- Add hinge loss: ensure conversion NLL with prefix < NLL without prefix + margin
+- Adjust margin and loss weight
 
-### 关键问题
+### Key questions
 
-1. 当前是 decoder-only 架构, RCLRec 需要 encoder-decoder → 需要改造或用 prefix-LM 方式适配
-2. RCPM 的 top-k 选择需要可微化 (IBQ straight-through estimator)
-3. 前置: 需要多行为训练数据 (目前数据中是否有行为类型标注?)
-4. k=4 是论文推荐值, 需要在我们的数据上调参
+1. Currently it is a decoder-only architecture, RCLRec requires encoder-decoder → needs to be modified or adapted using prefix-LM method
+2. The top-k selection of RCPM needs to be differentiable (IBQ straight-through estimator)
+3. Pre-requisite: Multi-behavior training data is required (Is there any behavior type annotation in the current data?)
+4. k=4 is the recommended value in the paper, and the parameters need to be adjusted based on our data.
 
 ---
 
-## IDEA-lac-0: Lagged Action Conditioning (动作延迟条件化)
+## IDEA-lac-0: Lagged Action Conditioning
 
-**优先级**: ~~P1~~ → ✅ 已实现并验证
-**来源**: The Layout Is the Model (Roblox, arxiv 2510.16804)
-**状态**: ✅ 已实现 — EXP-025 实现了 shift 方案（=LAC）并修复 beam search feature passing；EXP-036 full-features 采用 lag action_level，已成为标准训练配置
+**Priority**: ~~P1~~ → ✅ Implemented and verified
+**Source**: The Layout Is the Model (Roblox, arxiv 2510.16804)
+**Status**: ✅ Implemented — EXP-025 implements the shift scheme (=LAC) and fixes beam search feature passing; EXP-036 full-features adopts lag action_level, which has become the standard training configuration
 
-### 核心思想
+### Core Idea
 
-GR 中同时建模 item 和 action (行为类型/观看时长等) 时，token layout 决定了信息泄漏和条件化关系。论文提出三个设计原则：
-1. **最大化 item/action 信号** (input 和 output 都要用)
-2. **保持 "action given item" 的条件方向** (先看到 item 再预测 action)
-3. **无信息泄漏** (预测 item 时不能看到该 item 的 action)
+When modeling items and actions (behavior type/viewing duration, etc.) simultaneously in GR, token layout determines information leakage and conditional relationships. The paper proposes three design principles:
+1. **Maximize item/action signal** (use both input and output)
+2. **Keep the condition direction of "action given item"** (see the item first and then predict the action)
+3. **No information leakage** (you cannot see the action of the item when predicting the item)
 
 **Lagged Action Conditioning (LAC)**:
-- 非交错布局: 每个 token 只是 item SID (不单独给 action 一个 token)
-- **Lag**: item_i 的 action 作为 item_{i+1} 的输入 feature（延迟一个 item）
-- 这样预测 item_{i+1} 时能看到 item_i 的 action（有信息增量），但看不到 item_{i+1} 自己的 action（无泄漏）
-- 推理时: 生成 item_{i+1} 的 SID 后，action_{i+1} 未知，用最后已知的 action_i 的值
+- Non-staggered layout: each token is just the item SID (no separate token is given to the action)
+- **Lag**: The action of item_i is used as the input feature of item_{i+1} (delay one item)
+- In this way, when predicting item_{i+1}, you can see the action of item_i (with information increment), but you cannot see the action of item_{i+1} itself (no leakage)
+- During inference: After generating the SID of item_{i+1}, action_{i+1} is unknown, use the last known value of action_i
 
-### 与我们 EXP-023/024/025 的关系
+### Relationship to our EXP-023/024/025
 
-**这就是我们在 EXP-024 中尝试的 shift 方案的理论版本！** 但我们的 shift 实现在 flat token 级别操作，LAC 是在 item 级别做 lag:
-- 我们的 EXP-024 shift: 每个 item 的 3 token 用上一个 item 的 features → **等价于 LAC**
-- EXP-024 结果不佳的原因: **不是 LAC 思路错，而是 beam search incremental path 没传 features**
-- EXP-025 修复了 beam search feature passing → 应重新评估 LAC (shift) + beam passes 的组合
+**This is the theoretical version of the shift scheme we tried in EXP-024! ** But our shift implementation operates at the flat token level, and LAC does lag at the item level:
+- Our EXP-024 shift: 3 tokens for each item use the features of the previous item → **Equivalent to LAC**
+- The reason for the poor results of EXP-024: **It is not that the LAC idea is wrong, but that the beam search incremental path does not pass features**
+- EXP-025 Fixed beam search feature passing → combination of LAC (shift) + beam passes should be re-evaluated
 
-### 实验设计
+### Experimental design
 
-重新评估 EXP-024 shift + EXP-025 beam passes 的组合:
-1. 用 shifted 数据 (exp024-14d-shifted) 训练
-2. Beam search 传入 `gen_action_level = last context item's action` (即 LAC 的推理逻辑)
-3. 对比 EXP-025 beam-passes (不 shift, 传真值)
+Re-evaluate the combination of EXP-024 shift + EXP-025 beam passes:
+1. Train with shifted data (exp024-14d-shifted)
+2. Beam search passes in `gen_action_level = last context item's action` (that is, the reasoning logic of LAC)
+3. Compare EXP-025 beam-passes (without shift, fax value)
 
-### 关键问题
+### Key questions
 
-1. LAC 在论文中用的是 explicit action token (watchtime 等)，我们的 action_level 是更粗的 bitmap 分桶
-2. 论文 backbone 是 85M 参数，我们 17.4M active → 小模型是否有足够容量利用 action 信号
-3. 需要验证: shift + beam_passes vs 不 shift + beam_passes 哪个更好
+1. LAC uses explicit action token (watchtime, etc.) in the paper, and our action_level is a thicker bitmap bucket
+2. The backbone of the paper is 85M parameters, and our 17.4M active → does the small model have enough capacity to utilize the action signal?
+3. Need to verify: Which one is better: shift + beam_passes vs not shift + beam_passes?
 
 ---
 
-## IDEA-onelive-0: BOS 全局时间注入 + Gated Attention
+## IDEA-onelive-0: BOS global time injection + Gated Attention
 
-**优先级**: P2
-**来源**: OneLive (Kuaishou, arxiv 2602.08612)
-**状态**: 待讨论
+**Priority**: P2
+**Source**: OneLive (Kuaishou, arxiv 2602.08612)
+**Status**: To be discussed
 
-### 核心思想
+### Core Idea
 
-OneLive 在快手直播推荐中部署的两个时间建模技术:
+Two temporal modeling technologies deployed by OneLive in Kuaishou live broadcast recommendations:
 
-1. **BOS 时间注入**: 在 [BOS] token 注入 multi-granular temporal features
+1. **BOS temporal injection**: Inject multi-granular temporal features into [BOS] token
    ```
    x_BOS = x_BOS + MLP(Concat(x_Hour, x_Day, x_Week))
    ```
-   用当前时刻的 hour-of-day / day-of-week / week 做 embedding，通过 MLP 融合后加到 BOS token
-   - 优点: 极简实现，不改 attention 结构
-   - 缺点: 只编码 "当前请求时刻"，不编码序列内各 item 的时间
+   Use the hour-of-day / day-of-week / week of the current moment for embedding, and add it to the BOS token after fusion through MLP
+   - Advantages: minimalist implementation, does not change the attention structure
+   - Disadvantage: only encodes "current request time", not encoding the time of each item in the sequence
 
-2. **Gated Attention 时间感知**: 在 attention 输出上加 element-wise gate
+2. **Gated Attention Time Perception**: Add element-wise gate to the attention output
    ```
    Score(X) = σ(X · W_θ)
    O = MultiHeadAttn(Q, K, V) ⊙ Score(X) · W_O
    ```
-   让模型学习抑制时间上不相关的 context
+   Let the model learn to suppress temporally irrelevant context
 
-### 对我们的适配
+### Adaptation to us
 
-BOS 时间注入方案可以最低成本验证"全局时间是否有用":
-1. 在第一个 token 位置（或新增一个 [BOS] token）注入 hour/dayofweek embedding
-2. 不改位置编码，不改 attention
-3. 如果有效 → 再升级到 TO-RoPE (feat-5)
+The BOS time injection scheme can verify "whether the global time is useful" at the lowest cost:
+1. Inject hour/dayofweek embedding in the first token position (or add a [BOS] token)
+2. Do not change position coding or attention.
+3. If valid → upgrade to TO-RoPE (feat-5)
 
-### 关键问题
+### Key questions
 
-1. 我们的 NTP 序列没有 [BOS] token — 需要新增还是注入到第一个 item 的第一个 SID token
-2. 直播场景的时间敏感度远高于内容推荐 — 效果可能打折扣
-3. 快手论文没有单独 ablation BOS 时间注入的贡献
+1. Our NTP sequence does not have [BOS] token — does it need to be added or injected into the first SID token of the first item?
+2. The time sensitivity of live broadcast scenes is much higher than that of content recommendations - the effect may be compromised
+3. The Kuaishou paper does not have a single contribution of ablation BOS time injection
 
 ---
 
-## IDEA-tca-0: Token-level CF Soft Label Alignment (CF 信号注入 NTP Loss)
+## IDEA-tca-0: Token-level CF Soft Label Alignment (CF signal injection NTP Loss)
 
-**优先级**: P1
-**来源**: TCA4Rec, USTC + Ant Group (arxiv 2601.18457, WWW 2026)
-**状态**: 待讨论
+**Priority**: P1
+**Source**: TCA4Rec, USTC + Ant Group (arxiv 2601.18457, WWW 2026)
+**Status**: To be discussed
 
-### 核心思想
+### Core Idea
 
-TCA4Rec 解决 NTP 模型缺乏 collaborative filtering 信号的核心问题。核心 insight: CF 模型做 **item-level** 排序，NTP 做 **token-level** 预测，两者优化粒度不匹配 → 之前的方法只能把 CF 作为 soft prompt 或 representation bias 被动注入。
+TCA4Rec solves the core problem of the NTP model lacking collaborative filtering signals. Core insight: The CF model does **item-level** sorting, and NTP does **token-level** prediction. The optimization granularity of the two does not match → The previous method can only passively inject CF as a soft prompt or representation bias.
 
-TCA4Rec 提出 **显式 token-level CF alignment**:
+TCA4Rec proposes **explicit token-level CF alignment**:
 
-1. **Collaborative Tokenizer**: 从预训练 CF 模型 (如 SASRec) 获取 item-level logits (z_u,i = dot(e_u, e_i))，通过三步变换为 token-level 分布:
-   - Step 1: 收集当前 decode position 的 valid items (前缀匹配)
-   - Step 2: Softmax 归一化为概率分布 π_u,i
-   - Step 3: 按 next token 聚合 (共享同一 next token 的 items 概率求和)
-   
-2. **Soft Label Alignment**: 将 CF token-level 分布与 one-hot 标签融合: ỹ_j(v) = (1-α)·1_{v=y_j} + α·p_u(v|y_{<j})
+1. **Collaborative Tokenizer**: Obtain item-level logits (z_u,i = dot(e_u, e_i)) from a pre-trained CF model (such as SASRec), and transform it into a token-level distribution through three steps:
+   - Step 1: Collect valid items of the current decode position (prefix matching)
+   - Step 2: Softmax normalized to probability distribution π_u,i
+   - Step 3: Aggregate by next token (sum of the probabilities of items sharing the same next token)
+
+2. **Soft Label Alignment**: Fusion of CF token-level distribution with one-hot label: ỹ_j(v) = (1-α)·1_{v=y_j} + α·p_u(v|y_{<j})
 3. **Soft NTP Loss**: L_soft = -Σ log(Σ ỹ_j(v)·P(v|x_u,y_{<j}))
 
-α=0 退化为标准 NTP, α=1 完全跟 CF。最优 α ≈ 0.01~0.05 (CF 信号作为 gentle regularizer)。
+α=0 degenerates to standard NTP, α=1 completely follows CF. Optimal α ≈ 0.01~0.05 (CF signal as gentle regularizer).
 
-**与 Auxiliary KL Loss 的关键区别**: Soft NTP 的梯度是 **adaptive** (权重 q_j 依赖模型当前预测 P_j)，而 KL 用固定权重 ỹ_j。Adaptive 权重使模型能平衡 CF 信号和自身世界知识。
+**Key difference from Auxiliary KL Loss**: Soft NTP's gradient is **adaptive** (weight q_j depends on the model's current prediction P_j), while KL uses fixed weight ỹ_j. Adaptive weights allow the model to balance the CF signal with its own world knowledge.
 
-**核心结果**:
-- 在 4 种 LLM-based 推荐架构上一致提升 (TallRec, LLaRA, CoLLM, MSL)
+**Core results**:
+- Consistently improved on 4 LLM-based recommendation architectures (TallRec, LLaRA, CoLLM, MSL)
 - MSL+TCA on Toys: NDCG@5 0.0145→0.0332 (+129%), H@5 0.0204→0.0452 (+121%)
-- 对 SID-based 方法也有效: TIGER+TCA, LETTER+TCA
-- Collaborative Consistency 随 α 单调增加，但性能先升后降 (α 过大引入 CF 噪声)
-- Model-agnostic + plug-and-play: 不改模型架构，只改 loss
+- Also valid for SID-based methods: TIGER+TCA, LETTER+TCA
+- Collaborative Consistency increases monotonically with α, but the performance first increases and then decreases (too large α introduces CF noise)
+- Model-agnostic + plug-and-play: Do not change the model architecture, only change the loss
 
-### 与当前项目的关联
+### Association with the current project
 
-- **直接回应 NTP 缺乏 cross-user signal 的问题**: CF 模型的 logits 天然包含 cross-user collaborative 信号，TCA 通过 loss 层面注入
-- 我们的 NTP 模型用 SID (不是 item title text)，Collaborative Tokenizer 需要适配:
-  - SID token 空间 (L1=1024, L2=1024, L3=4096) vs LLM vocab
-  - 前缀匹配变成 SID 前缀匹配 (L1 → L1+L2 → L1+L2+L3)
-  - 概率聚合按 SID token group 而非 text token
-- 前置条件: 需要一个预训练的 CF 模型 (SASRec) — 与 IDEA-flexcode-0 共享此依赖
-- 与 IDEA-onemall-0 (In-Batch Contrastive Loss) 互补: onemall-0 在 representation 层加 CL loss，TCA 在 output token distribution 层加 soft label
-- **Zero model architecture change** — 只改 loss function → 实验成本极低
+- **Direct response to NTP's lack of cross-user signal**: The logits of the CF model naturally contain the cross-user collaborative signal, and TCA is injected through the loss layer
+- Our NTP model uses SID (not item title text), and the Collaborative Tokenizer needs to be adapted:
+  - SID token space (L1=1024, L2=1024, L3=4096) vs LLM vocab
+  - Prefix matching becomes SID prefix matching (L1 → L1+L2 → L1+L2+L3)
+  - Probability aggregation by SID token group instead of text token
+- Prerequisite: requires a pretrained CF model (SASRec) — shares this dependency with IDEA-flexcode-0
+- Complementary to IDEA-onemall-0 (In-Batch Contrastive Loss): onemall-0 adds CL loss to the representation layer, and TCA adds soft label to the output token distribution layer
+- **Zero model architecture change** — only change the loss function → extremely low experimental cost
 
-### 实验设计草案
+### Experimental Design Draft
 
-**Phase 1 — 预训练 SASRec CF 模型**:
-- 在相同用户行为序列上训练 SASRec → 获取 user/item embedding
-- 为每个训练样本计算 CF logits (user dot-product all items)
+**Phase 1 — Pretrained SASRec CF model**:
+- Train SASRec on the same user behavior sequence → obtain user/item embedding
+- Calculate CF logits for each training sample (user dot-product all items)
 
 **Phase 2 — Collaborative Tokenizer for SID**:
-- 对每个 decode position j (L1/L2/L3):
-  - 根据已生成的 SID 前缀筛选 valid items
-  - Softmax normalize CF logits
-  - 按 SID layer-j token 聚合概率
-- 产出: 每个训练样本每个 decode position 的 token-level CF 分布
+- For each decode position j (L1/L2/L3):
+  - Filter valid items based on generated SID prefix
+  -Softmax normalize CF logits
+  - Aggregate probability by SID layer-j token
+- Output: token-level CF distribution for each decode position of each training sample
 
 **Phase 3 — Soft NTP Training**:
-- 修改 NTP loss: (1-α)·CE + α·CF_soft_label
-- 超参搜索 α ∈ {0.001, 0.005, 0.01, 0.05, 0.1}
+- Modify NTP loss: (1-α)·CE + α·CF_soft_label
+- Hyperparameter search α ∈ {0.001, 0.005, 0.01, 0.05, 0.1}
 
-### 关键问题
+### Key questions
 
-1. **效率**: 每个训练样本需要计算 CF logits (dot product with all items) — 5M items 时是否可行? 可能需要 ANN 近似 top-K
-2. SASRec CF 模型的质量是否足够? 论文用的是 academic datasets (19K users)，我们规模大很多
-3. SID token 空间远小于 LLM vocab → 前缀匹配的 valid item set 在 L1 层可能很大 (每个 L1 token 对应 ~5000 items)
-4. 与 IDEA-flexcode-0 的 CF 模型可以共享，但 TCA 的 CF 信号注入方式更轻量 (只改 loss)
+1. **Efficiency**: Is it feasible when each training sample needs to calculate CF logits (dot product with all items) — 5M items? ANN may be needed to approximate top-K
+2. Is the quality of the SASRec CF model sufficient? The paper uses academic datasets (19K users), our scale is much larger
+3. The SID token space is much smaller than the LLM vocab → the valid item set for prefix matching may be large at the L1 layer (each L1 token corresponds to ~5000 items)
+4. The CF model of IDEA-flexcode-0 can be shared, but TCA’s CF signal injection method is more lightweight (only the loss is changed)
 
 ---
 
-## IDEA-climber-0: TAMIP — Time-Aware Multi-Item Prediction + Consumption Lag 诊断
+## IDEA-climber-0: TAMIP — Time-Aware Multi-Item Prediction + Consumption Lag Diagnosis
 
-**优先级**: P1
-**来源**: Climber-Pilot (NetEase Cloud Music, arxiv 2602.13581, Feb 2026)
-**状态**: 待讨论 — Consumption Lag 诊断可立即跑, TAMIP 训练范式需改 NTP loss
+**Priority**: P1
+**Source**: Climber-Pilot (NetEase Cloud Music, arxiv 2602.13581, Feb 2026)
+**Status**: To be discussed - Consumption Lag diagnosis can be run immediately, TAMIP training paradigm needs to be changed NTP loss
 
-### 核心思想
+### Core Idea
 
-**1. Consumption Lag (诊断级洞见)**
+**1. Consumption Lag (diagnostic level insights)**
 
-大规模推荐的曝光是**批量并行**的：一次 request 给用户同时曝光 m 个 items。但 interaction log 把这 m 个 items 记为**序列** `{i_1, i_2, ..., i_m}` — 这个"顺序"是日志生成的机械产物, **不是真实用户意图的因果链**。
+The exposure of large-scale recommendations is **batch parallel**: one request exposes m items to the user at the same time. But interaction log records these m items as **sequence** `{i_1, i_2, ..., i_m}` - this "sequence" is a mechanical product of log generation, **not a causal chain** of real user intentions.
 
-论文论断: NTP 训练在这种数据上会学到**虚假的序列相关性** (spurious sequential pattern), 即把"同次曝光的 item 先后出现"当作真实 causal 信号来学。这是 NTP 训练的隐形偏差。
+Thesis conclusion: NTP training will learn **spurious sequential pattern** (spurious sequential pattern) on this kind of data, that is, "items with the same exposure appearing one after another" will be learned as real causal signals. This is an invisible bias in NTP training.
 
 **2. TAMIP (Time-Aware Multi-Item Prediction)**
 
-修正方案两个组件:
-- **多分支预测 backbone**: 在 shared user representation `h_n` 之上构建 K 个独立 transformer 分支, 每个分支预测 `i_{n+1}, i_{n+2}, ..., i_{n+K}`。K=1 退化为标准 NTP
-- **Time-Aware Masking**: 训练 attention mask 识别"窄时间窗 Δτ 内共同出现"的 item 对, 屏蔽它们之间的 causal attention (允许非因果平行 attention)
+Two components of the correction plan:
+- **Multi-branch prediction backbone**: Build K independent transformer branches on top of shared user representation `h_n`, each branch predicts `i_{n+1}, i_{n+2}, ..., i_{n+K}`. K=1 degrades to standard NTP
+- **Time-Aware Masking**: train attention mask to identify item pairs that "co-occur within a narrow time window Δτ" and mask the causal attention between them (allowing non-causal parallel attention)
 
-训练损失: `L_TAMIP = Σ_{k=1..K} L(i_{n+k} | S_n, time-mask)`
+Training loss: `L_TAMIP = Σ_{k=1..K} L(i_{n+k} | S_n, time-mask)`
 
-**3. CGSA (Condition-Guided Sparse Attention, SFT 阶段)**
+**3. CGSA (Condition-Guided Sparse Attention, SFT stage)**
 
-SFT 阶段加 condition instruction tokens (音乐流派/语言/freshness 等业务约束), attention mask 在 generation 强制符合约束。
+In the SFT stage, condition instruction tokens (music genre/language/freshness and other business constraints) are added, and the attention mask is forced to comply with the constraints in generation.
 
-**4. 结果**: NetEase Cloud Music 在线 A/B **+4.24% 核心业务指标**
+**4. Results**: NetEase Cloud Music Online A/B **+4.24% Core Business Metrics**
 
-### 与当前项目的关联
+### Association with the current project
 
-**Consumption Lag 观察对我们极为重要** — 我们 behavior 数据结构与论文一样, 日志 ordering 不保证反映真实因果。可能已影响 EXP-036/EXP-020 等 baseline 的 NTP loss quality。
+**Consumption Lag observation is extremely important to us** — Our behavior data structure is the same as the paper, and the log ordering is not guaranteed to reflect the true cause and effect. It may have affected the NTP loss quality of baselines such as EXP-036/EXP-020.
 
-**TAMIP 适配**:
-- 改 `ntp/train.py` 为 multi-SID prediction: 预测下 K 个 item 的 SID
-- 用户行为 timestamp 做 masking — EXP-044B 已接通 `rel_hours` pipeline, 可复用
+**TAMIP Adaptation**:
+- Change `ntp/train.py` to multi-SID prediction: predict the SIDs of the next K items
+- User behavior timestamp is used for masking — EXP-044B has been connected to the `rel_hours` pipeline and can be reused
 
-**CGSA 适配**: 当前无 business constraint, 未来上线控制多样性时采纳
+**CGSA Adaptation**: Currently no business constraint, will be adopted when controlling diversity online in the future
 
-### 实验设计草案
+### Experimental Design Draft
 
-**Phase 0 — Consumption Lag 诊断 (0.5 天)**:
-1. 统计 NTP 训练数据中 (user, item_k, item_{k+1}) 的 timestamp gap
-2. Δt 分布有显著峰值在极短处 (<1 min) → 强 Consumption Lag 证据
-3. 报告相邻 item 中 "同窗口 (Δt<5min)" 占比
+**Phase 0 — Consumption Lag Diagnosis (0.5 days)**:
+1. Count the timestamp gap of (user, item_k, item_{k+1}) in NTP training data
+2. The Δt distribution has a significant peak at a very short time (<1 min) → strong Consumption Lag evidence
+3. Report the proportion of "same window (Δt<5min)" among adjacent items
 
 **Phase 1 — TAMIP K=2**:
-1. `ntp/model.py::_forward_packed` 加第二个 prediction head
-2. `L = L_{NTP, i_{n+1}} + α · L_{NTP, i_{n+2}}` (α=0.5 默认)
-3. 对比 baseline NTP K=1 (R@500=66.2%) vs TAMIP K=2 / K=3
+1. `ntp/model.py::_forward_packed` adds a second prediction head
+2. `L = L_{NTP, i_{n+1}} + α · L_{NTP, i_{n+2}}` (α=0.5 default)
+3. Compare baseline NTP K=1 (R@500=66.2%) vs TAMIP K=2 / K=3
 
-**Phase 2 — Time-Aware Mask** (依赖 EXP-044B timestamp pipeline):
-1. Mask 规则: `|t_i - t_j| < Δτ` 阻止 causal attention
-2. Δτ 扫描 {1m, 5m, 30m, 2h}
+**Phase 2 — Time-Aware Mask** (relies on EXP-044B timestamp pipeline):
+1. Mask rule: `|t_i - t_j| < Δτ` prevents causal attention
+2. Δτ scan {1m, 5m, 30m, 2h}
 
-### 关键问题
+### Key questions
 
-1. **数据端**: EXP-044B `rel_hours` pipeline 已接通, 可直接复用 timestamp
-2. **K 值选择**: K=2-4, K 越大开销越大
-3. **与 IDEA-stamp-0 (MTP) 重叠**: stamp-0 是"多 step 预测同 item 内 tokens"; TAMIP 是"多 step 预测后续 items"。两者正交, 可组合
-4. **Consumption Lag 可能被 IDEA-feat-0 (TimeGap bucket, ✅ EXP-036) 吸收**: TimeGap 间接编码 gap, TAMIP 显式训练目标修正。Phase 0 诊断后决定
+1. **Data terminal**: EXP-044B `rel_hours` pipeline is connected, timestamp can be reused directly
+2. **K value selection**: K=2-4, the larger K, the greater the overhead.
+3. **Overlaps with IDEA-stamp-0 (MTP)**: stamp-0 is "multi-step prediction of tokens within the same item"; TAMIP is "multi-step prediction of subsequent items". The two are orthogonal and can be combined
+4. **Consumption Lag may be absorbed by IDEA-feat-0 (TimeGap bucket, ✅ EXP-036)**: TimeGap indirect encoding gap, TAMIP explicit training target modification. Phase 0 Decision after diagnosis
 
-### 相关 idea
+### Related ideas
 
-- IDEA-stamp-0 (Semantic Pruning + MTP): 正交 (item 内 vs item 间)
-- IDEA-feat-0 (TimeGap Bucket, ✅ EXP-036): 间接编码 lag
-- IDEA-torope-0 (Time-and-Order RoPE): 时间差调制 position
-- IDEA-dualgr-0 (ENTP-Loss): 负样本机制
-- IDEA-lac-0 (LAC, ✅ EXP-025/036): action 延迟避免泄漏
+- IDEA-stamp-0 (Semantic Pruning + MTP): Orthogonal (within item vs between items)
+- IDEA-feat-0 (TimeGap Bucket, ✅ EXP-036): indirect encoding lag
+- IDEA-torope-0 (Time-and-Order RoPE): time difference modulation position
+- IDEA-dualgr-0 (ENTP-Loss): Negative sample mechanism
+- IDEA-lac-0 (LAC, ✅ EXP-025/036): action delay to avoid leakage

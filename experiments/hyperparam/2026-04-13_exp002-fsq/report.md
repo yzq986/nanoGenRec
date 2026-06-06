@@ -1,15 +1,17 @@
-# RKMeans + FSQ 超参数网格搜索结果
+# RKMeans + FSQ hyperparameter grid search results
 
-**生成时间**: 2026-04-13 11:29
-**模型**: qwen3-0.6b (1024d)
-**固定参数**: 3 layers, normalize_residuals=True
-**量化器**: rkmeans_fsq (2 KMeans + 1 FSQ)
+[English](report.md) | [Chinese](report.zh.md)
+
+**Generated**: 2026-04-13 11:29
+**Model**: qwen3-0.6b (1024d)
+**Fixed parameters**: 3 layers, normalize_residuals=True
+**Quantizer**: rkmeans_fsq (2 KMeans + 1 FSQ)
 **FSQ configs**: 4d_4096, 5d_4375, 6d_4096
-**实验数量**: 3
+**#Experiments**: 3
 
 ---
 
-## 1. 完整结果
+## 1. Complete results
 
 | # | clusters | L3 | niter | nredo | collision | N^L util | recon_loss | d1 avg | d2 avg | d3 avg | time(s) |
 |---|----------|----|-------|-------|-----------|----------|------------|--------|----------|----------|---------|
@@ -19,7 +21,7 @@
 
 ---
 
-## 2. 最优配置 (按 collision 排序 Top 5)
+## 2. Optimal configuration (Top 5 sorted by collision)
 
 **#1**: clusters=1024, niter=25, nredo=3, L3=FSQ(6d_4096), collision=0.333, time=178s
 

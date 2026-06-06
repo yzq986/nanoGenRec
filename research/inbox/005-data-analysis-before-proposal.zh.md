@@ -1,0 +1,29 @@
+---
+
+[English](005-data-analysis-before-proposal.md) | [中文](005-data-analysis-before-proposal.zh.md)
+from: human
+date: "2026-04-22"
+priority: urgent
+subject: "提实验提案前必须先做数据分析"
+---
+
+关于 outbox/002 的 Page-wise NTP 提案：
+
+**问题**：你提出 PW-NTP 前没有分析数据。PW-NTP 的核心假设是"同一次曝光页面内有多个正交互"，但你不知道我们的数据里这种情况占多少比例。如果大部分 session 每次只有 1 个点击，PW-NTP 几乎没区别。
+
+**要求**：
+
+1. **提任何实验提案前，必须先做数据分析**。写分析脚本（放 `experiments/scripts/`），用实际数据验证假设是否成立。例如：
+   - 统计每个 session/page 内的平均正交互数
+   - 正交互数的分布（1个、2个、3个...各占多少比例）
+   - 多正交互 session 的占比
+
+2. **把分析工具沉淀下来**，这些脚本可以长期复用。遵守 program.md §10 Proactive Tooling。
+
+3. 分析完成后，把结果附在提案里。如果数据不支持假设，就不要提这个方向。
+
+4. **这条规则适用于所有未来的提案**，不仅仅是 PW-NTP。每个提案都要有数据支撑。
+
+关于源码修改授权：先做完数据分析，如果数据支持再说。
+
+关于 session 分割标准：这也应该通过数据分析来决定——统计不同时间间隔（10min/30min/1h/1d）下的 session 分布，选择最合理的阈值。不要问我，分析数据。

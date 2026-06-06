@@ -1,19 +1,21 @@
 # 003: SP-DPO Training Engineering — OOM, DDP, and Joint Optimization
 
+[English](003-sp-dpo-training-engineering.md) | [Chinese](003-sp-dpo-training-engineering.zh.md)
+
 **Date**: 2026-04-18
-**Context**: EXP-017 SP-DPO 实现过程中遇到的工程挑战和解决方案
+**Context**: Engineering challenges and solutions encountered during the implementation of EXP-017 SP-DPO
 
 ---
 
-## 背景
+## Background
 
-SP-DPO 的论文只有 loss 公式和消融表格，没有训练工程细节。把它跑起来——尤其是在 8xA100 40GB 上跑 Joint NTP+DPO 训练——踩了大量坑。这篇 discussion 记录关键工程问题和解法。
+The SP-DPO paper only has loss formulas and ablation tables, but no training engineering details. Getting it running - especially the Joint NTP+DPO training on the 8xA100 40GB - went through a lot of pitfalls. This discussion documents key engineering issues and solutions.
 
 ---
 
-## 1. Joint NTP+DPO 训练流程
+## 1. Joint NTP+DPO training process
 
-每个 training step 做两件事：
+Each training step does two things:
 
 ```
 Step i:
@@ -22,8 +24,8 @@ Step i:
   │    input: (context, ground_truth_next_hop)    │
   │    loss:  cross-entropy on 3-layer SID        │
   │    → ntp_loss.backward()                      │
-  │    → gradients 累积到 policy_model.grad        │
-  │    → 释放 NTP 计算图                           │
+│ → gradients are accumulated into policy_model.grad │
+│ → Release NTP calculation graph │
   ├─────────────────────────────────────────────┤
   │ 2. DPO forward + backward                    │
   │    a) ref_model no_grad forward → ref logprobs│
@@ -31,82 +33,82 @@ Step i:
   │    c) softmax_dpo_loss(policy, ref, chosen,   │
   │       rejected, mask, beta)                   │
   │    → (λ * dpo_loss).backward()                │
-  │    → gradients 累积到 policy_model.grad        │
+│ → gradients are accumulated into policy_model.grad │
   ├─────────────────────────────────────────────┤
   │ 3. optimizer.step()                           │
   │    total gradient ≈ ∇ntp + λ·∇dpo             │
   └─────────────────────────────────────────────┘
 ```
 
-关键：**两次 backward 分开做**。如果让 NTP 和 DPO 的计算图同时存在，显存直接爆。NTP backward 完后释放所有中间激活，再做 DPO forward+backward。
+Key: **Do backward twice separately**. If the calculation graphs of NTP and DPO are allowed to exist at the same time, the video memory will directly explode. After NTP backward is completed, all intermediate activations are released, and then DPO forward+backward is performed.
 
-最终的 loss：
+Final loss:
 ```
-total_loss = ntp_loss + λ * dpo_loss     (λ=0.1)
+total_loss = ntp_loss + λ * dpo_loss (λ=0.1)
 ```
 
-但**不是**在 loss 层面加完再统一 backward，而是分别 backward，梯度自然叠加。
+But it is not **to add the loss layer and then unify backward, but to go backward separately, and the gradients are naturally superimposed.
 
 ---
 
-## 2. 显存分析：为什么 DPO 比 NTP 贵那么多
+## 2. Video memory analysis: why DPO is so much more expensive than NTP
 
-### NTP 的显存情况
+### NTP memory status
 
-NTP 一个 batch 就是普通的 (B, T) 序列做 cross-entropy，跟任何 LM 没区别。
-B=46, T=510 → 每个样本的激活 ~230MB → 总激活 ~10GB，加上模型参数 ~1GB → ~12GB。
+A batch of NTP is an ordinary (B, T) sequence for cross-entropy, which is no different from any LM.
+B=46, T=510 → activations per sample ~230MB → total activations ~10GB, plus model parameters ~1GB → ~12GB.
 
-### DPO 的 B×K 爆炸
+### DPO’s B×K Explosion
 
-DPO 需要对 1 chosen + N rejected 都算 log-prob。对于 batch=4, n_rejected=20：
+DPO needs to count 1 chosen + N rejected as log-prob. For batch=4, n_rejected=20:
 
 ```
-每个 preference pair:
+Each preference pair:
   chosen:   1 sequence
   rejected: up to 20 sequences
-  → 最多 21 sequences per pair
+→ up to 21 sequences per pair
 
 batch_size=4:
   4 × 21 = 84 sequences (B×K expansion)
 ```
 
-**问题**：这 84 个序列的 policy forward 必须带梯度，计算图要保留到 backward()。
+**Question**: The policy forward of these 84 sequences must have gradients, and the calculation graph must be retained until backward().
 
 ```
-84 sequences × ~230 MB/sequence ≈ 19 GB (仅激活)
-+ ref model 的 no_grad forward 已经释放
-+ 模型参数 ~1GB
-→ 总共 ~20-25 GB（舒适范围）
+84 sequences × ~230 MB/sequence ≈ 19 GB (activated only)
++ no_grad forward of ref model has been released
++ Model parameters ~1GB
+→ ~20-25 GB total (comfortable range)
 ```
 
-但如果 n_rejected=20, batch=8：
+But if n_rejected=20, batch=8:
 ```
 8 × 21 = 168 sequences × 230 MB ≈ 38 GB → OOM on 40GB A100
 ```
 
-### 为什么 micro-batching 救不了 with-grad forward
+### Why micro-batching cannot save with-grad forward
 
-直觉：把 84 个序列分成 4 个 chunk of 21，分批 forward，不就行了？
+Intuition: Wouldn’t it be enough to divide the 84 sequences into 4 chunks of 21 and forward them in batches?
 
-**对 no_grad forward（ref model）有效**：每个 chunk forward 完取出结果，释放中间状态，下一个 chunk 复用显存。
+**Effective for no_grad forward (ref model)**: After each chunk forward, the results are retrieved, the intermediate state is released, and the next chunk reuses the video memory.
 
-**对 with_grad forward（policy model）无效**：每个 chunk 的计算图必须保留到最后统一 backward()。4 个 chunk 的计算图**全部同时存在于显存中**，跟一次性 forward 84 个没区别。
+**Not valid for with_grad forward (policy model)**: The calculation graph of each chunk must be retained until the last unified backward(). The calculation graphs of the 4 chunks all exist in the video memory at the same time, which is no different from forwarding 84 chunks at a time.
 
 ```
-Chunk 1: forward → 保留计算图 (~5GB)
-Chunk 2: forward → 保留计算图 (~5GB)   ← chunk 1 的图还在
-Chunk 3: forward → 保留计算图 (~5GB)   ← 1+2 的图还在
-Chunk 4: forward → 保留计算图 (~5GB)   ← 1+2+3 的图还在
-                                       ← 总共 20GB，跟不分 chunk 一样
+Chunk 1: forward → keep calculation graph (~5GB)
+Chunk 2: forward → Keep the calculation graph (~5GB) ← The graph of chunk 1 is still there
+Chunk 3: forward → Keep the calculation graph (~5GB) ← The graph of 1+2 is still there
+Chunk 4: forward → Keep the calculation graph (~5GB) ← The graph of 1+2+3 is still there
+← 20GB in total, the same as not dividing into chunks
 ```
 
-这就是为什么最终方案是**直接限制 B×K 总量**，而不是 micro-batching。
+This is why the final solution is to directly limit the total amount of B×K instead of micro-batching.
 
-### 最终显存配置
+### Final graphics memory configuration
 
 | 组件 | 显存 |
 |------|------|
-| 模型参数 (17.5M, bf16) | ~35 MB |
+| ModelParameter (17.5M, bf16) | ~35 MB |
 | Optimizer states (Adam, fp32) | ~140 MB |
 | NTP 激活 (B=46, T=510) | ~10 GB |
 | → NTP backward 后释放 | 0 |
@@ -115,56 +117,56 @@ Chunk 4: forward → 保留计算图 (~5GB)   ← 1+2+3 的图还在
 | 杂项 (buffers, fragmentation) | ~2-3 GB |
 | **Total peak** | **~22-25 GB** |
 
-在 40GB A100 上有充足余量。
+There's plenty of headroom on the 40GB A100.
 
 ---
 
-## 3. DDP 不兼容：从踩坑到手动 All-Reduce
+## 3. DDP incompatibility: from pitfalls to manual All-Reduce
 
-### 问题
+### question
 
-PyTorch DDP 假设每个 step 只有一次 forward-backward。SP-DPO 有两次：
+PyTorch DDP assumes that there is only one forward-backward per step. SP-DPO has two:
 
 ```python
-# DDP 的期望：
+# DDP expectations:
 model.forward() → loss.backward() → model.step()
 
-# SP-DPO 的实际：
-model.forward()  → ntp_loss.backward()     # 第一次
-model.forward()  → dpo_loss.backward()     # 第二次（DDP 已经同步了第一次的梯度）
+# Actual SP-DPO:
+model.forward() → ntp_loss.backward() # First time
+model.forward() → dpo_loss.backward() # The second time (DDP has synchronized the gradient of the first time)
 model.step()
 ```
 
-第一次 backward 触发 DDP 自动 all-reduce，但我们还没做完 DPO 的 backward。
-DDP 不知道后面还有梯度要加。
+The first backward triggers DDP’s automatic all-reduce, but we haven’t finished DPO’s backward yet.
+DDP doesn’t know that there are gradients to be added later.
 
-### 尝试过的方案
+### Tried solutions
 
-**方案 1：`no_sync()` context manager**
+**Option 1: `no_sync()` context manager**
 
 ```python
 with ddp_model.no_sync():
     ntp_loss.backward()
     dpo_loss.backward()
-# 退出 no_sync 时自动同步
+# Automatically synchronize when exiting no_sync
 ```
 
-**失败原因**：DPO forward 必须用 raw model（不经过 DDP wrapper），因为 DPO 内部有 per-layer output projection 等直接访问。`raw_model.forward()` 产生的 backward 不经过 DDP 的 hook，所以 `no_sync()` 的 deferred sync 永远不会触发。
+**Cause of failure**: DPO forward must use raw model (without going through DDP wrapper), because DPO has direct access to per-layer output projection and so on. The backward generated by `raw_model.forward()` does not go through the DDP hook, so the deferred sync of `no_sync()` will never be triggered.
 
-**方案 2：MoE + 小 batch → undefined gradients**
+**Option 2: MoE + small batch → undefined gradients**
 
-NTP batch=32 + MoE (8 experts, top_k=2) → 某些 expert 在某些 rank 上可能完全收不到 token → 该 expert 参数的 gradient = None → DDP all-reduce 在跨 rank 遇到 None vs non-None → 错误。
+NTP batch=32 + MoE (8 experts, top_k=2) → Some experts may not receive tokens at all on certain ranks → The gradient of the expert parameter = None → DDP all-reduce encounters None vs non-None → errors across ranks.
 
-### 最终方案：去掉 DDP，手动 All-Reduce
+### Final solution: remove DDP and manually All-Reduce
 
 ```python
-# 不用 DDP wrapper
-raw_policy = policy_model  # 直接用原模型
+# No DDP wrapper required
+raw_policy = policy_model # Use the original model directly
 
 # ... NTP backward ...
 # ... DPO backward ...
 
-# 所有梯度都累积好之后，手动同步
+# After all gradients are accumulated, synchronize manually
 if world_size > 1:
     for p in policy_model.parameters():
         if p.grad is not None:
@@ -173,80 +175,80 @@ if world_size > 1:
 optimizer.step()
 ```
 
-优点：
-- 完全控制同步时机
-- 兼容任意多次 backward
-- 不受 DDP hook 限制
-- None gradient 可以安全跳过
+Advantages:
+- Full control over sync timing
+- Compatible with any number of backwards
+- Not restricted by DDP hooks
+- None gradient can be safely skipped
 
-缺点：
-- 多了一次显式循环所有参数（模型只有 17.5M，开销可忽略）
-- 没有 DDP 的 gradient bucketing 优化（但 17.5M 参数的通信量极小）
+Disadvantages:
+- One more explicit loop through all parameters (the model is only 17.5M, the overhead is negligible)
+- No gradient bucketing optimization of DDP (but the communication volume of 17.5M parameters is minimal)
 
 ---
 
-## 4. Gradient Checkpointing 与 MoE 不兼容
+## 4. Gradient Checkpointing is not compatible with MoE
 
-为了降低 B×K 的激活显存，尝试过 gradient checkpointing（前向时不保存中间激活，backward 时重新计算）。
+In order to reduce the activation memory of B×K, gradient checkpointing was tried (intermediate activations are not saved in the forward direction and recalculated in the backward direction).
 
-### 失败原因：MoE 的 Loss-Free Balancing
+### Reason for failure: MoE’s Loss-Free Balancing
 
-模型用的是 Loss-Free MoE（DeepSeek-V3 风格），每个 expert 有一个**动态 bias**，运行时根据负载实时调整：
+The model uses Loss-Free MoE (DeepSeek-V3 style). Each expert has a **dynamic bias**, which is adjusted in real time according to the load during runtime:
 
 ```python
-# 前向时记录的路由：token → expert 3, expert 7
-# 重新计算时，dynamic bias 已经变了 → token → expert 3, expert 5
-# → 输出 shape 不匹配 → 崩溃
+#Route recorded in forward direction: token → expert 3, expert 7
+# When recalculating, the dynamic bias has changed → token → expert 3, expert 5
+# → output shape mismatch → crash
 ```
 
-Gradient checkpointing 要求**重新前向的输出和原始前向完全一致**。但 MoE 的 dynamic bias 在两次前向之间可能不同（因为中间有其他 batch 经过改变了统计量）。
+Gradient checkpointing requires that the output of the re-forward is exactly the same as the original forward. But the dynamic bias of MoE may be different between the two forwards (because other batches have changed the statistics in the middle).
 
-这是 MoE + Gradient Checkpointing 的一个**已知兼容性问题**，短期内无法绕过（除非重写 MoE 路由逻辑来保存和恢复 bias 状态）。
+This is a **known compatibility issue** with MoE + Gradient Checkpointing and cannot be bypassed in the short term (unless the MoE routing logic is rewritten to save and restore bias state).
 
 ---
 
-## 5. NTP 和 DPO 分别优化什么
+## 5. What do NTP and DPO optimize respectively?
 
-### NTP Loss（交叉熵）
+### NTP Loss (Cross Entropy)
 
 ```
 L_NTP = -Σ log P(sid_layer_i | context, sid_layer_1..i-1)
 ```
 
-- **目标**：让模型在每个位置预测正确 token 的概率尽可能高
-- **优化的是**：绝对准确性（average per-position accuracy）
-- **不关心**：模型对其他候选打了多高的分
+- **Goal**: Let the probability of the model predicting the correct token at each position be as high as possible
+- **Optimized for**: absolute accuracy (average per-position accuracy)
+- **Don't care**: How high the model scored other candidates
 
-### DPO Loss（Softmax-DPO）
+### DPO Loss (Softmax-DPO)
 
 ```
 L_DPO = -log σ(-logsumexp_l[ β(log π/π_ref(rejected_l) - log π/π_ref(chosen)) ])
 ```
 
-- **目标**：让 chosen 相对 rejected 的概率差距拉大
-- **优化的是**：ranking quality（排序质量）
-- **不关心**：chosen 的绝对概率是多少，只要它比 rejected 高就行
+- **Goal**: Increase the probability gap between chosen and rejected
+- **Optimization is**: ranking quality (ranking quality)
+- **Don't care**: What is the absolute probability of chosen, as long as it is higher than rejected
 
-### Joint Training 的效果
+### Effect of Joint Training
 
 ```
 total gradient = ∇L_NTP + λ · ∇L_DPO
 ```
 
-- NTP gradient 保持模型的基础生成能力不退化
-- DPO gradient 微调概率分布，让 ground truth 在候选中排名更靠前
-- λ=0.1 表示 DPO 的调整力度是 NTP 的 1/10 —— 是微调，不是大改
+- NTP gradient keeps the model’s basic generation capabilities from degrading
+- DPO gradient fine-tunes the probability distribution to make the ground truth rank higher among the candidates
+- λ=0.1 means that the adjustment intensity of DPO is 1/10 of NTP - it is a fine adjustment, not a major change
 
-这就是为什么 **Recall@K 是真正的评估指标**而不是 perplexity：
-- PPL 衡量的是绝对概率（NTP 的目标）
-- Recall@K 衡量的是 ground truth 能否进入 top-K（DPO 的目标）
-- SP-DPO 可能让 PPL 变差（绝对概率下降），但 Recall 改善（排名提升）
+This is why **Recall@K is the real evaluation metric** and not perplexity:
+- PPL measures absolute probability (the goal of NTP)
+- Recall@K measures whether the ground truth can enter top-K (the goal of DPO)
+- SP-DPO may make PPL worse (absolute probability decreases), but Recall improves (ranking increases)
 
 ---
 
-## 6. 训练 Loss 行为
+## 6. Training Loss behavior
 
-正常训练日志 (EXP-017, Config 1: Easy, 前 400 步)：
+Normal training log (EXP-017, Config 1: Easy, first 400 steps):
 
 ```
 step  50: loss=3.07  ntp=2.79  dpo=2.81  lr=1.0e-04
@@ -255,40 +257,40 @@ step 200: loss=3.06  ntp=2.79  dpo=2.67  lr=1.0e-04
 step 400: loss=3.06  ntp=2.79  dpo=2.67  lr=1.0e-04
 ```
 
-解读：
-1. **NTP loss 稳定 (~2.79)** — 好的。NTP 已经训练到位，不应该因为 DPO 而大幅波动。如果 NTP loss 突然上升，说明 DPO 在破坏基础能力。
-2. **DPO loss 下降 (2.95→2.67)** — 好的。模型在学会区分 chosen vs rejected。
-3. **Total loss 缓慢下降** — 由 DPO 贡献，因为 λ=0.1 所以变化幅度小。
-4. **显存波峰波谷** — 正常。NTP backward 释放激活 → 谷；DPO forward 重新分配 → 峰。每个 step 都有这个周期。
+Interpretation:
+1. **NTP loss stable (~2.79)** — OK. NTP is well trained and should not fluctuate significantly due to DPO. If NTP loss suddenly rises, it means that DPO is destroying basic capabilities.
+2. **DPO loss decreased (2.95→2.67)** — Okay. The model learns to distinguish chosen vs rejected.
+3. **Total loss decreases slowly** — contributed by DPO, because λ=0.1 so the change amplitude is small.
+4. **Video Memory Peaks and Troughs** — Normal. NTP backward releases activation → valley; DPO forward reallocates → peak. Each step has this cycle.
 
 ---
 
-## 7. 未来优化方向：Chunked Backward
+## 7. Future optimization direction: Chunked Backward
 
-当前 B×K=84 是硬约束。如果要更大的 batch（论文用 batch=1024），需要 chunked backward：
+Currently B×K=84 is a hard constraint. If you want a larger batch (the paper uses batch=1024), you need chunked backward:
 
 ```
-1. 先 no_grad forward 全部 B×K 个序列，收集 hidden states 在每个 prediction position 的值
-2. 分 chunk forward+backward:
+1. First no_grad forward all B×K sequences and collect the value of hidden states at each prediction position
+2. Divide chunk forward+backward:
    for chunk in chunks:
        h_chunk = hidden_chunk.detach().requires_grad_(True)
        logits = output_proj(h_chunk)
        lp = log_softmax(logits).gather(...)
        loss_chunk = dpo_loss(lp, ...)
        loss_chunk.backward()
-       # chunk 的计算图立即释放
-3. 总梯度 = 所有 chunk 梯度之和
+# The calculation graph of chunk is released immediately
+3. Total gradient = sum of gradients of all chunks
 ```
 
-核心 insight：Softmax-DPO loss 只需要每个序列在 3 个 prediction position 的 hidden state（不是整个序列的激活）。可以先用 no_grad 拿到这些 hidden states，再分批算 loss 和梯度。
+Core insight: Softmax-DPO loss only requires the hidden state of 3 prediction positions for each sequence (not the activation of the entire sequence). You can first use no_grad to get these hidden states, and then calculate the loss and gradient in batches.
 
-但 **hidden states → output → loss 的反向传播不能穿透回 Transformer**，所以这只优化了 output projection 层的梯度。要完整优化 Transformer 参数，需要更复杂的 gradient relay 机制。
+But the backpropagation of hidden states → output → loss cannot penetrate back to the Transformer, so this only optimizes the gradient of the output projection layer. To fully optimize Transformer parameters, a more complex gradient relay mechanism is required.
 
-留作 EXP-019+ 的可选优化。
+Reserved as an optional optimization for EXP-019+.
 
 ---
 
-## 总结
+## Summary
 
 | 问题 | 解法 | 要点 |
 |------|------|------|

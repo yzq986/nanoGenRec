@@ -1,4 +1,6 @@
 ---
+
+[English](SKILL.md) | [Chinese](SKILL.zh.md)
 name: experiment
 description: Record an experiment entry in experiments/logs/ with structured format (Background → Hypothesis → Design → Results → Analysis → Next Steps), and generate a runnable .sh script
 argument-hint: [experiment title]
@@ -19,8 +21,8 @@ Record a new experiment entry in `experiments/logs/` using the project's structu
 3. **Extract experiment info from conversation context**:
    - Title: Use the argument if provided, otherwise infer from discussion
    - Background: Current state and problem being solved
-   - Hypothesis: Expected results and reasoning — **必须逐指标列出预期变化方向**（见下方 Hypothesis 要求）
-   - Design: Variables, fixed params, metrics, data — **如现有 metrics 不足以验证假设，必须新增 metrics**
+   - Hypothesis: Expected results and reasoning — **Expected direction of change must be listed metric by metric** (see Hypothesis requirements below)
+   - Design: Variables, fixed params, metrics, data — **If existing metrics are not enough to verify the hypothesis, new metrics must be added**
    - Results/Analysis/Next Steps: Fill if results are available in conversation, otherwise leave placeholder
 
 4. **Determine status**:
@@ -41,38 +43,38 @@ Record a new experiment entry in `experiments/logs/` using the project's structu
    - Make the script executable-ready (include `#!/bin/bash` and `set -e`)
    - Add `echo` lines for progress visibility between commands
    - If the experiment has multiple configs (e.g. baseline + variants), include all of them
-   - **Smoke test (Phase 0)**: 脚本**必须**在正式实验前加一个 smoke test 阶段，用 ~1% 数据 + 极少步数跑通完整 pipeline（数据加载 → 模型 forward/backward → 保存）。验证通过后再启动大实验。训练脚本应支持 `--dry_run` 参数实现此功能。`set -e` 确保 smoke test 失败时整个脚本停止。
-   - **ETA 显示**: 训练脚本**必须**在日志中显示 ETA（预计剩余时间）。每次打印 loss 时同时显示 ETA，epoch 结束时显示总剩余时间。格式: `ETA 2h35m` 或 `ETA 12m30s`。
-   - **每阶段计时**: 脚本**必须**记录每个阶段（训练、eval）的耗时，方便后续实验估算时间预算。每个 config 的训练/eval 前后用 `$(date +%s)` 记录时间戳，训练结束时打印 `(${TRAIN_MIN}min)` 格式的耗时，eval 结束后打印 total。示例：
+   - **Smoke test (Phase 0)**: The script **must** add a smoke test stage before the formal experiment, using ~1% data + very few steps to run through the complete pipeline (data loading → model forward/backward → save). After the verification is passed, start the big experiment. Training scripts should support the `--dry_run` parameter to achieve this functionality. `set -e` ensures that the entire script stops if the smoke test fails.
+   - **ETA Display**: The training script **must** display the ETA (estimated time remaining) in the log. ETA is also displayed each time loss is printed, and the total remaining time is displayed at the end of epoch. Format: `ETA 2h35m` or `ETA 12m30s`.
+   - **Timing of each stage**: The script **must** record the time spent in each stage (training, eval) to facilitate the estimation of time budget for subsequent experiments. Use `$(date +%s)` to record the timestamp before and after the training/eval of each config. At the end of the training, the time consumption in the format of `(${TRAIN_MIN}min)` is printed. After the eval is completed, total is printed. Example:
      ```bash
      T0=$(date +%s)
      torchrun ... run.py grpo-train ...
      T1=$(date +%s)
      TRAIN_MIN=$(( (T1 - T0) / 60 ))
-     echo "  Training complete  (${TRAIN_MIN}min)"
+     echo "Training complete (${TRAIN_MIN}min)"
      T2=$(date +%s)
      torchrun ... run.py eval-ntp ...
      T3=$(date +%s)
      EVAL_MIN=$(( (T3 - T2) / 60 ))
      TOTAL_MIN=$(( (T3 - T0) / 60 ))
-     echo "  Total: train=${TRAIN_MIN}min  eval=${EVAL_MIN}min  total=${TOTAL_MIN}min"
+     echo "Total: train=${TRAIN_MIN}min eval=${EVAL_MIN}min total=${TOTAL_MIN}min"
      ```
-     脚本末尾还应从 `train_meta.json` 读取 `wall_time_s` 打印汇总：
+     The `wall_time_s` print summary should also be read from `train_meta.json` at the end of the script:
      ```bash
      python3 -c "
-     import json, os
+     import json,os
      for name in ['exp-NNN-config-a', 'exp-NNN-config-b']:
          path = 'experiments/ntp_checkpoints/' + name + '/train_meta.json'
          if os.path.exists(path):
              m = json.load(open(path))
              w = m.get('train', {}).get('wall_time_s', 0)
-             print(f'  {name}: train={int(w)//60}min{int(w)%60}s')
+             print(f' {name}: train={int(w)//60}min{int(w)%60}s')
      " 2>/dev/null || true
      ```
-   - **GPU 利用策略**: 实验环境是 **8 x A100 (40GB)**。根据实验类型选择不同的并行策略：
-     - **DDP 训练类实验**（如对比学习微调、NTP 训练）：每个 config 占满全部 8 卡 `torchrun --nproc_per_node=8`，多个 config 串行执行。原因：DDP 8 卡比 4 卡吞吐翻倍 + 对比学习 negatives 翻倍，串行反而总 wall time 更短。
-     - **非 DDP 独立实验**（如超参搜索、量化评测）：用 `CUDA_VISIBLE_DEVICES` 将不同 config 分配到不同 GPU 并行跑（`&` 后台 + `wait`）。
-     - 每个 config 结果出来就立即 `git commit + ./push.sh`（用 `flock` 串行化 git 操作避免并行冲突）。
+   - **GPU Utilization Strategy**: The experimental environment is **8 x A100 (40GB)**. Choose different parallel strategies based on the type of experiment:
+     - **DDP training experiments** (such as contrastive learning fine-tuning, NTP training): each config occupies all 8 cards `torchrun --nproc_per_node=8`, multiple configs are executed serially. Reason: The throughput of DDP 8 cards is doubled compared to 4 cards + the negatives of comparative learning are doubled, and the total wall time of serial is shorter.
+     - **Non-DDP independent experiments** (such as hyperparameter search, quantitative evaluation): use `CUDA_VISIBLE_DEVICES` to allocate different configs to different GPUs for parallel running (`&` background + `wait`).
+     - Immediately `git commit + ./push.sh` after each config result comes out (use `flock` to serialize git operations to avoid parallel conflicts).
    - The Run Commands section in log.md should reference this script: `bash experiments/scripts/exp-{nnn}.sh`
    - **At the end of the script**, add git commit + push to auto-persist results:
      ```bash
@@ -83,57 +85,57 @@ Record a new experiment entry in `experiments/logs/` using the project's structu
      ./push.sh
      ```
 
-## Hypothesis 要求（强制）
+## Hypothesis requirements (mandatory)
 
-每次写 Hypothesis 时，**必须用表格逐指标列出预期变化方向和理由**。不允许只写笼统的文字描述。
+Every time you write a hypothesis, you must use a table to list the expected direction of change and the reasons for each indicator. General text descriptions are not allowed.
 
-格式：
+Format:
 ```markdown
 ### Hypothesis
 
-{假设的核心机制描述，1-2 句话}
+{Description of the core mechanism of the hypothesis, 1-2 sentences}
 
-| 指标 | 当前值（对照） | 预期变化 | 理由 |
+| Metric | 当前Value（对照） | 预期变化 | 理由 |
 |------|--------------|---------|------|
 | clip 率 | 95% | ↓ ~20% | sampling 使 ρ≈1 by construction |
 | adv_std | ≈0 | ↑ >0.3 | 候选多样性增加，reward 方差变大 |
 | behavior_coverage | 99% | ↓ ~89% | G 从 512→64，撒网变小 |
 | behavior_mean | 0.65 | ↓ ~0.35 | coverage 下降 + 稀疏 reward |
-| kl_mean | — | ≈0 初始，随训练↑ | 新增指标，基准待建立 |
+| kl_mean | — | ≈0 初始，随Training↑ | 新增Metric，基准待建立 |
 | R@500 | 0.678 | 待定 | 取决于 reward 信号是否足够 |
 ```
 
-**如果某个指标在现有代码中没有被记录，必须先在代码中新增该指标，再写实验**。
+**If an indicator is not recorded in the existing code, you must first add the indicator to the code before writing the experiment**.
 
-## Metrics 要求（强制）
+## Metrics required (mandatory)
 
-核心 RL 指标（每个实验都必须记录）：
-- `clip_fraction`：PPO clip 率
-- `kl_mean`：KL(π_θ || π_ref)，跨实验可比的 policy 漂移指标
-- `adv_std`（advantage_std）：advantage 的标准差，反映对比信号强度
-- `behavior_coverage`：有非零 reward 的 context 比例
-- `behavior_mean`：平均 behavior reward（注意受 G 影响，跨实验对比需标注 G）
-- `R@500`（全量 eval）：最终业务指标
+Core RL metrics (must be logged for every experiment):
+- `clip_fraction`: PPO clip rate
+- `kl_mean`: KL(π_θ || π_ref), a policy drift metric comparable across experiments
+- `adv_std` (advantage_std): the standard deviation of advantage, reflecting the contrast signal strength
+- `behavior_coverage`: the proportion of contexts with non-zero reward
+- `behavior_mean`: average behavior reward (note that it is affected by G, cross-experimental comparisons need to be marked with G)
+- `R@500` (full eval): final business indicator
 
-如果假设涉及新的机制（如 entropy、diversity、on-policy ratio 等），**必须在实验前把对应指标加入代码**，不能事后才发现没有数据。
+If the hypothesis involves new mechanisms (such as entropy, diversity, on-policy ratio, etc.), the corresponding indicators must be added to the code before the experiment, and you cannot find out afterwards that there is no data.
 
 ## Entry Format
 
 ```markdown
 ## EXP-{NNN}: {Title}
 
-**Date**: {今天日期 YYYY-MM-DD}
+**Date**: {Today’s date YYYY-MM-DD}
 **Status**: {planned|running|completed}
-**Results**: {结果目录链接，如 [./hyperparam/YYYY-MM-DD_xxx/](./hyperparam/YYYY-MM-DD_xxx/)，若无则写 TBD}
+**Results**: {Result directory link, such as [./hyperparam/YYYY-MM-DD_xxx/](./hyperparam/YYYY-MM-DD_xxx/), if not, write TBD}
 
 ### Background
-{当前状态、要解决的问题}
+{Current status, problems to be solved}
 
 ### Hypothesis
 
-{假设的核心机制，1-2 句话}
+{hypothetical core mechanism, 1-2 sentences}
 
-| 指标 | 当前值（对照） | 预期变化 | 理由 |
+| Metric | 当前Value（对照） | 预期变化 | 理由 |
 |------|--------------|---------|------|
 | clip 率 | ? | ↑/↓/→ ? | ... |
 | kl_mean | ? | ↑/↓/→ ? | ... |
@@ -143,22 +145,22 @@ Record a new experiment entry in `experiments/logs/` using the project's structu
 | R@500 | ? | ↑/↓/→ ? | ... |
 
 ### Design
-- **Variable**: {实验变量}
-- **Fixed**: {固定参数}
-- **Metric**: {评估指标，如现有不够需新增}
-- **Data**: {数据集}
+- **Variable**: {experimental variable}
+- **Fixed**: {Fixed parameters}
+- **Metric**: {Evaluation indicators, if the existing ones are not enough, add new ones}
+- **Data**: {data set}
 
 ### Run
 `bash experiments/scripts/exp-{nnn}.sh`
 
 ### Results
-{跑完后填写，含表格；未完成则写 TBD}
+{Fill it out after finishing the run, including the form; if not completed, write TBD}
 
 ### Analysis
-{结果解读；未完成则写 TBD}
+{Interpretation of results; if not completed, write TBD}
 
 ### Next Steps
-{下一步计划；未完成则写 TBD}
+{Next step plan; if not completed, write TBD}
 
 ---
 ```
@@ -239,27 +241,27 @@ echo ""
 echo "EXP-002 complete!"
 ```
 
-## 启动实验后：加入队列
+## After starting the experiment: Join the queue
 
-每次生成实验脚本后，**必须**将该实验追加到队列文件，并确认守护 cron 存活：
+Each time you generate an experiment script, you must append the experiment to the queue file and confirm that the daemon cron is alive:
 
-### 1. 追加到队列
+### 1. Append to queue
 ```bash
-echo "exp-NNN.sh  /tmp/expNNN.log  EXP-NNN complete!" >> experiments/queue.txt
+echo "exp-NNN.sh /tmp/expNNN.log EXP-NNN complete!" >> experiments/queue.txt
 ```
 
-如果实验有多个中间 checkpoint（multi-epoch），加 POST_HOOK：
+If the experiment has multiple intermediate checkpoints (multi-epoch), add POST_HOOK:
 ```bash
-echo "exp-NNN.sh  /tmp/expNNN.log  EXP-NNN complete!  EVAL_MID_CHECKPOINTS=exp-NNN-output-name" >> experiments/queue.txt
+echo "exp-NNN.sh /tmp/expNNN.log EXP-NNN complete! EVAL_MID_CHECKPOINTS=exp-NNN-output-name" >> experiments/queue.txt
 ```
 
-### 2. 如果是第一个实验（队列为空），还需要：
+### 2. If this is the first experiment (the queue is empty), you also need:
 ```bash
-# 启动实验
+# Start experiment
 nohup bash experiments/scripts/exp-NNN.sh --no-smoke > /tmp/expNNN.log 2>&1 &
 EXP_PID=$!
 
-# 初始化 queue_state.json
+#Initialize queue_state.json
 python3 -c "
 import json
 state = {
@@ -272,17 +274,17 @@ state = {
 json.dump(state, open('experiments/queue_state.json', 'w'), indent=2)
 "
 
-# 确认守护 cron 存在（CronList），没有则用 CronCreate 创建（见 CLAUDE.md 守护 Cron prompt）
+# Confirm that the daemon cron exists (CronList), if not, use CronCreate to create it (see CLAUDE.md daemon Cron prompt)
 ```
 
-### 3. 如果队列已有实验在跑，只需追加
-守护 cron 会自动检测 queue.txt 的新条目，上一个实验完成后自动启动新追加的实验，无需其他操作。
+### 3. If there are already experiments running in the queue, just append
+The daemon cron will automatically detect new entries in queue.txt, and automatically start the newly added experiment after the previous experiment is completed, without any other operations.
 
-### queue.txt 完整格式参考
+### queue.txt full format reference
 ```
-# 注释行忽略，空行忽略
-# SCRIPT            LOG                  DONE_STRING           POST_HOOK(可选)
-exp-038b.sh  /tmp/exp038b.log  EXP-038B complete!  EVAL_MID_CHECKPOINTS=exp038b-hard-lam03-3ep
-exp-039b.sh  /tmp/exp039b.log  EXP-039B complete!
-exp-040.sh   /tmp/exp040.log   EXP-040 complete!
+# Comment lines are ignored, blank lines are ignored
+# SCRIPT LOG DONE_STRING POST_HOOK (optional)
+exp-038b.sh /tmp/exp038b.log EXP-038B complete! EVAL_MID_CHECKPOINTS=exp038b-hard-lam03-3ep
+exp-039b.sh /tmp/exp039b.log EXP-039B complete!
+exp-040.sh /tmp/exp040.log EXP-040 complete!
 ```

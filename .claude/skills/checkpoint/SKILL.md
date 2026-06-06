@@ -1,4 +1,6 @@
 ---
+
+[English](SKILL.md) | [Chinese](SKILL.zh.md)
 name: checkpoint
 description: Update ideas & experiment docs when a phase concludes — mark closed/deferred ideas with reasons, preserve all original detail, update priorities
 argument-hint: [phase description, e.g. "tokenizer phase done, MLP-FSQ wins"]
@@ -33,32 +35,32 @@ Update the header — **do NOT delete any original content**:
 ```markdown
 ## IDEA-{hash}-{N}: {Title}
 
-**优先级**: ~~{old}~~ → ❌ 关闭
-**来源**: {unchanged}
-**状态**: ~~{old status}~~ → {experiment} 后关闭
+**Priority**: ~~{old}~~ → ❌ Close
+**Source**: {unchanged}
+**Status**: ~~{old status}~~ → Close after {experiment}
 
-> **关闭原因 ({date})**: {1-2 sentences explaining what experiment showed and why this idea is closed. Include key numbers.}
+> **Reason for closure ({date})**: {1-2 sentences explaining what experiment showed and why this idea is closed. Include key numbers.}
 ```
 
-- Keep all original sections (核心思想, 实验设计草案, 关键问题, etc.) intact.
-- The `> **关闭原因**` blockquote is **appended** right after the status line, before 核心思想.
+- Keep all original sections (core ideas, draft experimental design, key questions, etc.) intact.
+- The `> **Close reason**` blockquote is **appended** right after the status line, before core idea.
 
 #### Completed ideas (successfully validated and adopted)
 
 ```markdown
-**优先级**: ~~{old}~~ → ✅ 完成
-**状态**: ✅ {one-line summary of what was achieved} ({experiment IDs})
+**Priority**: ~~{old}~~ → ✅ Complete
+**Status**: ✅ {one-line summary of what was achieved} ({experiment IDs})
 
-> **完成记录 ({date})**: {1-2 sentences on what was confirmed and adopted.}
+> **Complete record ({date})**: {1-2 sentences on what was confirmed and adopted.}
 ```
 
 #### Deferred ideas (still potentially valid but deprioritized)
 
 ```markdown
-**优先级**: ~~{old}~~ → P2 ({when to revisit, e.g. "NTP 后"})
-**状态**: 待定，降级
+**Priority**: ~~{old}~~ → P2 ({when to revisit, e.g. "After NTP"})
+**Status**: Pending, downgraded
 
-> **降级原因 ({date})**: {Why deprioritized now. What would trigger re-evaluation. Reference key experimental evidence.}
+> **Reason for downgrade ({date})**: {Why deprioritized now. What would trigger re-evaluation. Reference key experimental evidence.}
 ```
 
 #### Active ideas unaffected by this phase
@@ -67,33 +69,33 @@ Leave unchanged.
 
 ### Step 3: Update the evolution tree
 
-If the topic file has a `## 演进路径` section, update the tree to show experiment outcomes:
+If the topic file has a `## Evolution path` section, update the tree to show experiment outcomes:
 
 - Add `→ EXP-NNN ❌` or `→ EXP-NNN ✅` after explored branches
 - Add result summaries as child nodes
-- Add new branches for deferred ideas with `→ P2 (条件)`
+- Add new branches for deferred ideas with `→ P2 (condition)`
 
-### Step 4: Add/update a "当前结论" section
+### Step 4: Add/update a "Current Conclusion" section
 
-At the top of the affected topic file (after the intro, before 演进路径), add or update:
+At the top of the affected topic file (after the intro, before evolution path), add or update:
 
 ```markdown
-## 当前结论 ({date})
+## Current conclusion ({date})
 
 **{One-line conclusion}**
 
-### 当前 config
+### Current config
 {Current best configuration in code block}
 
-### 关键实验数据
+### Key experimental data
 {Summary table of decisive experiments with key metrics}
 
-**核心 insight**: {The most important lesson learned}
+**Core insight**: {The most important lesson learned}
 ```
 
 ### Step 5: Update the priority summary table
 
-At the bottom of the topic file, update the `## 优先级总结` table:
+At the bottom of the topic file, update the `## Priority summary` table:
 - Closed ideas: strikethrough with status
 - Completed ideas: strikethrough with ✅
 - Deferred ideas: new priority with brief reason
@@ -103,8 +105,8 @@ At the bottom of the topic file, update the `## 优先级总结` table:
 1. **Update the file index table**: idea counts, P0 column
 2. **Update the global priority tables** (P0/P1/P2):
    - Move closed/completed ideas to strikethrough with status
-   - Move deferred ideas to the P2 section with `(条件)` suffix
-3. **If a "演进记录" subsection exists** under design principles, append the new phase conclusions. If not, create one after the design principles section.
+   - Move deferred ideas to the P2 section with `(condition)` suffix
+3. **If a "evolution record" subsection exists** under design principles, append the new phase conclusions. If not, create one after the design principles section.
 4. **Preserve all original design principles text** — only append, never rewrite original thinking.
 
 ### Step 7: Update `experiments/logs/`
@@ -115,7 +117,7 @@ For any experiments that were concluded as part of this phase but not yet marked
 
 ## Anti-patterns (DO NOT)
 
-- **DO NOT delete original idea content** (核心思想, 实验设计, 关键问题, etc.). These record the original thinking process.
+- **DO NOT delete original idea content** (core ideas, experimental design, key issues, etc.). These record the original thinking process.
 - **DO NOT rewrite design principles or strategic thinking**. Append evolution, don't overwrite.
 - **DO NOT change IDEA IDs or hash prefixes**. These are permanent provenance markers.
 - **DO NOT collapse multiple ideas into one**. Each idea retains its own entry.
@@ -128,18 +130,18 @@ After all updates, produce a summary:
 ```
 ## Checkpoint: {phase description}
 
-### 关闭 ({N})
+### Close ({N})
 - IDEA-xxx-N: {title} — {reason}
 
-### 完成 ({N})
+### Done ({N})
 - IDEA-xxx-N: {title} — {what was adopted}
 
-### 降级 ({N})
+### Downgrade ({N})
 - IDEA-xxx-N: {title} — P2 ({condition})
 
-### 不变 ({N})
+### unchanged ({N})
 - {list of unaffected ideas, if relevant}
 
-### 下一阶段
+### Next stage
 {What the next research phase focuses on}
 ```

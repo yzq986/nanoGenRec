@@ -1,8 +1,10 @@
 # Project Instructions
 
-## 后台任务监控原则
+[English](AGENTS.md) | [Chinese](AGENTS.zh.md)
 
-**绝对禁止 `sleep` + 检查结果。** 启动后台进程后，直接报告"已启动，PID=XXX"然后结束这个 turn。结果由 cron 守护进程（每 2 分钟触发）异步检查。在同一个 turn 里 sleep/tail/poll 是浪费时间且多余的。
+## Background task monitoring principles
+
+**Absolutely disallows `sleep` + checking results. ** After starting the background process, directly report "Started, PID=XXX" and then end the turn. Results are checked asynchronously by the cron daemon (triggered every 2 minutes). Sleep/tail/poll in the same turn is a waste of time and redundant.
 
 ## Auto commit & push
 
@@ -13,22 +15,22 @@ Every time a coding task finishes (implementation complete, no more pending chan
 
 Do not ask for confirmation — just do it after each coding round.
 
-## README 分工原则
+## README Principles of division of labor
 
-各阶段有两个 README，各司其职，不重复内容：
+There are two READMEs for each stage, each performing its own duties without duplication of content:
 
 | 位置 | 受众 | 内容 |
 |------|------|------|
-| `<phase>/README.md`（`rl/`, `ntp/`, `tokenizer/`, `model/`）| 改代码的人 | 文件说明、接口、实现细节、已验证超参、踩坑记录 |
-| `experiments/logs/<phase>/README.md` | 设计实验的人 | EXP 列表、当前 SOTA、下一步实验方向 |
+| `<phase>/README.md`（`rl/`, `ntp/`, `tokenizer/`, `model/`）| 改代码的人 | FileDescription、接口、实现细节、已验证超参、踩坑记录 |
+| `experiments/logs/<phase>/README.md` | DesignExperiment的人 | EXP 列表、当前 SOTA、下一步ExperimentDirection |
 
-两者互相引用，不重复。每次代码变更或实验完成后，对应的两个 README 都要更新。
+The two refer to each other without duplication. After each code change or experiment is completed, the corresponding two READMEs must be updated.
 
-## gr conda env 标准配置
+## gr conda env standard configuration
 
-`/home/dev/.conda/envs/gr` — 所有训练/eval/preprocess 任务使用此环境。
+`/home/dev/.conda/envs/gr` — All training /eval/preprocess tasks use this environment.
 
-| 包 | 版本 |
+| 包 | Version |
 |----|------|
 | Python | 3.12.13 |
 | torch | 2.7.1+cu128 |
@@ -38,13 +40,13 @@ Do not ask for confirmation — just do it after each coding round.
 | pandas | 3.0.2 |
 | pyarrow | 24.0.0 |
 
-**重建方法**（如需从头搭）：
+**Reconstruction method** (if you need to build it from scratch):
 ```bash
 /root/miniconda3/bin/conda create -n gr python=3.12 -y
 /home/dev/.conda/envs/gr/bin/pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128
 /root/miniconda3/bin/conda install -n gr -c pkgs/main faiss-gpu=1.14.1 -y
 /home/dev/.conda/envs/gr/bin/pip install numpy pandas pyarrow PyYAML pytest -i https://mirrors.aliyun.com/pypi/simple/
-# 注意：conda 安装 faiss 后可能降 numpy 到 1.x，需强制重装：
+# Note: After installing faiss in conda, numpy may be downgraded to 1.x, and a forced reinstallation is required:
 /home/dev/.conda/envs/gr/bin/pip install --force-reinstall "numpy>=2.0" -i https://mirrors.aliyun.com/pypi/simple/
 ```
 
@@ -63,7 +65,7 @@ sys.path.insert(0, repo_root)  # adds gr-demo/ itself
 The CLI entry point is always `python run.py <command>`, NOT `python -m gr_demo`.
 For DDP/torchrun, use `torchrun ... run.py <command>`.
 
-**Shell 脚本 (.sh) 也必须设置 PYTHONPATH**：脚本顶部（`set -euo pipefail` 之后）加：
+**Shell scripts (.sh) must also set PYTHONPATH**: add at the top of the script (after `set -euo pipefail`):
 
 ```bash
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -71,23 +73,23 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 cd "${REPO_ROOT}"
 ```
 
-注意是 `${REPO_ROOT}` 本身（即 `gr-demo/`），**不是父目录**。
+Note that it is `${REPO_ROOT}` itself (i.e. `gr-demo/`), **not the parent directory**.
 
-## 新实验标准流程
+## New experimental standard process
 
-**所有新实验走 `run_exp.py` + YAML，不再写 `.sh` 训练脚本。**
+**All new experiments use `run_exp.py` + YAML, and no longer write `.sh` training scripts. **
 
-### 1. 创建 YAML config
+### 1. Create YAML config
 
-新建 `experiments/configs/exp-NNN.yaml`，**必须先 Read `experiments/configs/_base.yaml`** 确认 defaults，然后只写需要覆盖的参数：
+Create a new `experiments/configs/exp-NNN.yaml`, **You must first Read `experiments/configs/_base.yaml`** to confirm the defaults, and then only write the parameters that need to be overwritten:
 
 ```yaml
 name: exp047
 description: "..."
 base: _base.yaml
 
-sid_cache_name: exp026-0.6b-14d     # grep 已有 yaml 确认当前标准
-ntp_data_name: exp026-0.6b-14d      # 若复用其他实验数据，显式指定
+sid_cache_name: exp026-0.6b-14d # grep already has yaml to confirm the current standard
+ntp_data_name: exp026-0.6b-14d # If reusing other experimental data, specify it explicitly
 
 variants:
   - name: exp047-a
@@ -96,41 +98,41 @@ variants:
     torope_time_split: 0.50
 ```
 
-多 variant 对比实验用 `variants:` 列表；单 config 实验省略 `variants:`。
+Use the `variants:` list for multi-variant comparison experiments; omit `variants:` for single-config experiments.
 
-### 2. 必须确认的参数（写 YAML 前 grep）
+### 2. Parameters that must be confirmed (grep before writing YAML)
 
-**禁止凭记忆编造：**
+**No fabrication from memory:**
 
 1. **`sid_cache_name`** — grep `sid_cache_name:` in `experiments/configs/`
-2. **`ntp_data_name`** — 复用已有数据时，grep 对应 exp 脚本确认目录名
-3. **`date_start` / `date_end`** — grep 最近 yaml 确认日期范围
-4. **已有 baseline** — `--check` 会自动显示相似实验，直接复用，不要重训
+2. **`ntp_data_name`** — When reusing existing data, grep corresponds to the exp script to confirm the directory name.
+3. **`date_start` / `date_end`** — grep latest yaml confirmation date range
+4. **Existing baseline** — `--check` will automatically display similar experiments and reuse them directly without retraining.
 
-### 3. 运行
+### 3. Run
 
 ```bash
-# 检查：显示每个 variant 的相似历史实验（防重训）
+# Check: display similar historical experiments for each variant (anti-retraining)
 python experiments/run_exp.py experiments/configs/exp-NNN.yaml --check
 
-# 运行所有 variants
+# Run all variants
 python experiments/run_exp.py experiments/configs/exp-NNN.yaml --no-smoke --commit
 
-# 只跑某个 variant（断点续跑）
+# Only run a certain variant (continue running from breakpoint)
 python experiments/run_exp.py experiments/configs/exp-NNN.yaml --only exp047-a --no-smoke
 ```
 
-### 4. 加入队列（后台跑）
+### 4. Join the queue (running in the background)
 
 ```bash
 echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!" >> experiments/queue.txt
 ```
 
-`run_config.sh` 是通用 wrapper，内部调用 `run_exp.py --no-smoke --commit`。
+`run_config.sh` is a general wrapper that internally calls `run_exp.py --no-smoke --commit`.
 
-### 5. 需要新 preprocess 时
+### 5. When a new preprocess is needed
 
-`preprocess-sid` 和 `preprocess-ntp` 的日期范围必须兼容，SID 覆盖的 item 集合必须包含 NTP 行为数据中的 item。必须显式指定 `--date_start/--date_end`，不要用 `auto`。
+The date ranges of `preprocess-sid` and `preprocess-ntp` must be compatible, and the item collection covered by SID must contain items in the NTP behavioral data. `--date_start/--date_end` must be specified explicitly, do not use `auto`.
 
 ## Git remotes
 
@@ -143,109 +145,109 @@ echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN c
 - **Push**: `./push.sh` handles all remotes. Never push manually.
 - **Pull**: `git pull company master --rebase && git pull company2 master --rebase`
 
-## 分布式代码陷阱
+## Distributed code trap
 
-**禁止用 `hash()` 做跨进程路由**：Python 3.3+ 默认随机化 `PYTHONHASHSEED`，`torchrun` 每个 rank 是独立进程，`hash(key) % n` 会导致 item 静默丢弃或重复（已踩坑：4B embedding cache 33% 数据重复）。必须用 `hashlib.sha256`。
+**It is forbidden to use `hash()` for cross-process routing**: Python 3.3+ defaults to randomization `PYTHONHASHSEED`, `torchrun`. Each rank is an independent process, `hash(key) % n` will cause items to be silently discarded or repeated (trapped: 4B embedding cache 33% data duplication). Must use `hashlib.sha256`.
 
-## 设计实验前必须确认数据 pipeline
+## The data pipeline must be confirmed before designing experiments
 
-**在设计使用新特征的实验前，必须先确认 data pipeline 是否已包含该特征。**
+**Before designing an experiment using a new feature, you must first confirm whether the data pipeline already contains the feature. **
 
-检查顺序：
-1. `ntp/preprocess.py`：`save_shard` / `load_shard` 是否存储/读取该特征？
-2. `ntp/train.py`：`build_unified_sequences` 是否填充？`side_features_lists` 是否传入？
-3. `ntp/model.py`：`embed_with_features` 是否会用到？
+Check order:
+1. `ntp/preprocess.py`: `save_shard` / `load_shard` Whether to store/read this feature?
+2. `ntp/train.py`: Is `build_unified_sequences` populated? Is `side_features_lists` passed in?
+3. `ntp/model.py`: Will `embed_with_features` be used?
 
-如果任意一环缺失，必须**先接通 pipeline**，再开始实验。绝不能跑完后发现特征全程为 0。
+If any link is missing, the pipeline must be connected first before starting the experiment. Never find out after running that the features are all 0.
 
-已踩坑：EXP-044 TO-RoPE，timestamps 代码里传了但全为 0（pipeline 未接通），TO-RoPE vs baseline 对比无效。
+Trampled: EXP-044 TO-RoPE, timestamps are passed in the code but all are 0 (pipeline is not connected), TO-RoPE vs baseline comparison is invalid.
 
 ## Code quality
 
-- **不确定的 API 必须验证**：先用 Grep 或 WebSearch 确认，不要凭记忆猜。已踩坑：`torch.cuda.get_device_properties().total_memory`（不是 `total_mem`）。
-- **实现优化不能破坏数学语义**：公式拆成多步实现时，原本框架隐式保证的数学性质变成需要手动维护的不变量。写完回到原始公式逐项核对。
-- **只改 eval 代码不需要重训**：改动只影响推理/评测路径时，直接用已有 checkpoint re-eval，不要浪费 GPU 重训。
-- **禁止在新实验中重跑已有 config 作对照**：参数完全一致的 config 直接引用已有结果，在 log.md 里写 `参考 EXP-NNN：R@500=xx.x%`。
+- **Uncertain APIs must be verified**: Confirm with Grep or WebSearch first, don't guess from memory. Trampled: `torch.cuda.get_device_properties().total_memory` (not `total_mem`).
+- **Implementation optimization must not destroy mathematical semantics**: When the formula is split into multi-step implementation, the mathematical properties implicitly guaranteed by the original framework become invariants that need to be manually maintained. After writing, go back to the original formula and check it item by item.
+- **Only changing the eval code does not require retraining**: When the change only affects the inference/evaluation path, directly use the existing checkpoint re-eval, and do not waste GPU retraining.
+- **It is prohibited to rerun existing configs for comparison in new experiments**: The config with exactly the same parameters directly refers to the existing results, and writes `Reference EXP-NNN: R@500=xx.x%` in log.md.
 
-## Eval 对齐规则
+## Eval alignment rules
 
-**`train-ntp` 的 inline eval ≠ 全量 eval，不能与 baseline 直接比较。**
+**`train-ntp`’s inline eval ≠ full eval, cannot be directly compared with baseline. **
 
-- inline eval：beam search 仅 250 items/rank（1000 total），是快速健康检查，绝对数字不可信。
-- 全量 eval：
+- inline eval: beam search only 250 items/rank (1000 total), is a quick health check, the absolute number cannot be trusted.
+- full eval:
   ```bash
   torchrun --nproc_per_node=N run.py eval-ntp \
       --checkpoint experiments/ntp_checkpoints/<name> \
       --n_recall 1000
   ```
-- 每次新实验跑完，补全量 eval 后更新三处文档：
-  1. `experiments/logs/<phase>/exp-NNN.md` — 单实验详细记录
-  2. `experiments/logs/<phase>/README.md` — 阶段汇总 SOTA
-  3. `README.md` — 根目录 homepage
-- `train_meta.json` 里的 eval keys 是 `item_recall@10` / `item_recall@500`（带 `@`，不是 `_`）。
+- Each time a new experiment is run, three documents are updated after completing the eval:
+  1. `experiments/logs/<phase>/exp-NNN.md` — detailed record of a single experiment
+  2. `experiments/logs/<phase>/README.md` — phase summary SOTA
+  3. `README.md` — root directory homepage
+- The eval keys in `train_meta.json` are `item_recall@10` / `item_recall@500` (with `@`, not `_`).
 
 ## Research Agent Mode
 
-当作为自主研究 Agent 运行时（用户指示 "follow research/program.md" 或类似指令）：
+When running as an autonomous research agent (user directive "follow research/program.md" or similar):
 
-1. **先读 `research/program.md`** — 完整操作手册
-2. **检查 `research/inbox/`** 获取人类指令
-3. **执行实验前估算运行时间**：`python experiments/scripts/estimate_runtime.py --active_params <N> --total_tokens <T> --gpus 8`
-4. **不超过 30 分钟时间预算**（除非人类明确批准）
-5. **不修改源码**（`ntp/`, `rl/`, `model/`, `data/`, `eval/`）除非通过 outbox 获得人类批准
-6. **每个动作完成后** 更新 `research/status.md` + `research/log.md` + commit + push
-7. 所有通信格式见 `research/schema.md`
+1. **Read first `research/program.md`** — Complete Operation Manual
+2. **Check `research/inbox/`** for human instructions
+3. **Estimate running time before executing experiments**: `python experiments/scripts/estimate_runtime.py --active_params <N> --total_tokens <T> --gpus 8`
+4. **No more than 30 minutes time budget** (unless explicitly approved by a human)
+5. **No modification of source code** (`ntp/`, `rl/`, `model/`, `data/`, `eval/`) unless human approval is obtained through outbox
+6. **After each action is completed** Update `research/status.md` + `research/log.md` + commit + push
+7. See `research/schema.md` for all communication formats
 
-## 实验排队与 Cron 监控
+## Experiment queuing and Cron monitoring
 
-队列由两个文件管理：
+The queue is managed by two files:
 
-- `experiments/queue.txt` — 实验队列，追加即生效
-- `experiments/queue_state.json` — 当前状态，cron 读这个决定做什么
+- `experiments/queue.txt` — Experiment queue, it will take effect immediately after appending
+- `experiments/queue_state.json` — the current state, cron reads this to decide what to do
 
-**启动新实验 / 追加队列：**
+**Start new experiment/append queue:**
 ```bash
-echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!" >> experiments/queue.txt
+echo "run_config.sh experiments/configs/exp-NNN.yaml /tmp/expNNN.log exp-NNN complete!" >> experiments/queue.txt
 ```
 
-**首次启动（队列为空时）：**
+**First start (when queue is empty):**
 ```bash
 nohup bash experiments/scripts/run_config.sh experiments/configs/exp-NNN.yaml > /tmp/expNNN.log 2>&1 &
 cat > experiments/queue_state.json <<EOF
 {"current": "run_config.sh", "log": "/tmp/expNNN.log", "done_string": "exp-NNN complete!", "status": "running", "pid": $!}
 EOF
-# 确认守护 cron 存在（CronList 检查），没有就创建
+# Confirm that the daemon cron exists (CronList check), create it if not
 ```
 
-**守护 Cron 参数：间隔 2 分钟，durable=true。**
+**Guardian Cron parameters: interval 2 minutes, durable=true. **
 
-**守护 Cron prompt（每个 session 只需一个）：**
+**Guard Cron prompt (only one per session):**
 ```
-实验队列守护进程 — 读取 experiments/queue_state.json 和 experiments/queue.txt 管理实验链。
-每次触发：
-1. 读 queue_state.json，检查当前实验 log 是否出现 done_string
-2. 如果 status=pending_gpu：检查 log 文件是否存在且有内容（说明 GPU 侧已启动），如有则改 status=running
-3. 未完成：报告进度（grep "step \|EXP-" LOG | tail -3），继续等待
-4. 出错（log 有 Traceback/Error/exitcode : 1）：告知用户，state 改为 error，停止
+Experiment queue daemon - reads experiments/queue_state.json and experiments/queue.txt to manage the experiment chain.
+Every trigger:
+1. Read queue_state.json and check whether done_string appears in the current experiment log.
+2. If status=pending_gpu: Check whether the log file exists and has content (indicating that the GPU side has been started), if so, change status=running
+3. Not completed: report progress (grep "step \|EXP-" LOG | tail -3), continue to wait
+4. An error occurs (the log has Traceback/Error/exitcode: 1): inform the user, change the state to error, and stop.
 
-**早停检查 — 如发现以下任意情况，立即执行 early-stop 流程（见下），告知用户：**
-- log 中出现 Traceback / Error / exitcode : 1（非 SIGTERM）
-- 连续 3 次检查 step 数字没有增加（训练卡住）
-- reward_mean 持续为 0 超过 50 steps（reward 信号消失）
-- advantage_mean 绝对值 > 50（数值爆炸）
-- clip_fraction > 0.99 且持续 20+ steps（策略崩溃）
+**Early stop check - If any of the following conditions are found, immediately execute the early-stop process (see below) and notify the user:**
+- Traceback/Error/exitcode: 1 (not SIGTERM) appears in log
+- Check the step number 3 times in a row without increasing (training stuck)
+- reward_mean continues to be 0 for more than 50 steps (reward signal disappears)
+- advantage_mean absolute value > 50 (numerical explosion)
+- clip_fraction > 0.99 for 20+ steps (strategy crashes)
 
-**R@500 早停检查 — 每次有新的 inline eval 结果时执行：**
-- 从 log 中 grep 所有 `item_recall@500:` 行，提取数值列表（去重相邻重复，每 epoch 最多取 1 个值）
-- 计算历史最佳值 best_r500，取最新值 latest_r500
-- 如果 best_r500 >= 0.45 且 latest_r500 < best_r500 - 0.10：触发早停（R@500 下跌超过 10pp）
-- 如果 best_r500 < 0.45 但 latest_r500 < 0.30 且已跑了 >= 2 个 epoch：触发早停（基础性能不及格）
-- 否则：报告 "R@500: latest=X.XX best=X.XX"，继续等待
+**R@500 Early stop check - executed every time there is a new inline eval result: **
+- Grep all `item_recall@500:` lines from the log and extract a list of values (removing adjacent duplicates, taking at most 1 value per epoch)
+- Calculate the historical best value best_r500 and take the latest value latest_r500
+- If best_r500 >= 0.45 and latest_r500 < best_r500 - 0.10: trigger early stop (R@500 falls more than 10pp)
+- If best_r500 < 0.45 but latest_r500 < 0.30 and has run >= 2 epochs: trigger early stop (basic performance fails)
+- Otherwise: report "R@500: latest=X.XX best=X.XX" and continue to wait.
 
-实现提取的 bash 命令：
+bash command to implement extraction:
 ```bash
 grep 'item_recall@500:' LOG | awk '{print $2}' | python3 -c "
-import sys
+importsys
 vals=[float(l) for l in sys.stdin]
 deduped=[]
 for v in vals:
@@ -256,21 +258,21 @@ if deduped:
 "
 ```
 
-**Early-stop 流程：**
-  a. pkill -f "<current脚本名>" 并 pkill -f "torchrun.*<实验名关键词>"
-  b. 更新 queue_state.json status=stopped
-  c. 告知用户（说明触发原因和最后的 R@500 数字）
-  d. 不启动下一个实验，保持 cron 存活
+**Early-stop process:**
+  a. pkill -f "<current script name>" and pkill -f "torchrun.*<experiment name keyword>"
+  b. Update queue_state.json status=stopped
+  c. Inform user (state trigger reason and final R@500 number)
+  d. Do not start the next experiment and keep cron alive.
 
-**效果预警 — 告知用户但不自动停止：**
-- reward_mean 在 100 steps 后仍 < 0.1
+**Effectiveness warning — inform the user but do not automatically stop:**
+- reward_mean still < 0.1 after 100 steps
 
-5. 完成：
-   a. 执行 post_hook（如 EVAL_MID_CHECKPOINTS：串行 eval ep1/ep2，找最优 checkpoint）
-   b. 读 train_meta.json，更新三处：`experiments/logs/<phase>/exp-NNN.md`、`experiments/logs/<phase>/README.md` SOTA 行、`README.md` 根目录 homepage
+5. Complete:
+   a. Execute post_hook (such as EVAL_MID_CHECKPOINTS: serial eval ep1/ep2, find the optimal checkpoint)
+   b. Read train_meta.json and update three places: `experiments/logs/<phase>/exp-NNN.md`, `experiments/logs/<phase>/README.md` SOTA line, `README.md` root directory homepage
    c. git add experiments/ && git commit -m "EXP-XXX complete: ..." && ./push.sh
-   d. 读 queue.txt，找下一个未完成的实验，nohup 启动，更新 queue_state.json
-   e. 如队列已空：state 改为 done，告知用户，保持 cron 存活
+   d. Read queue.txt, find the next unfinished experiment, start nohup, and update queue_state.json
+   e. If the queue is empty: change state to done, inform the user, and keep cron alive.
 ```
 
-**不要用脚本 chain（A 末尾调用 B）来排队实验**，因为前序实验可能已经在后台跑了。
+**Don't use a script chain (calling B at the end of A) to queue experiments**, because the previous experiment may have been running in the background.

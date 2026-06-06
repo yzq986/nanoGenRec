@@ -1,15 +1,17 @@
 ## EXP-044C: TO-RoPE Item-Pos Fix + 3-dim RoPE
 
+[English](exp-044c.md) | [Chinese](exp-044c.zh.md)
+
 **Date**: 2026-04-29
 **Status**: completed
 
 ### Background
-EXP-044B best (ts=0.25) R@500=63.6%，但 PPL=467。两个假设：
-1. position-RoPE 用 token-level index (0,1,2,3,4,5…)，但 time-RoPE 把同一 item 内所有 token 视为同时 → 冲突信号，可能导致 PPL 异常高。修复：用 item-level position (`pos//L`)。
-2. SID layer index (0/1/2，即 pos%L) 加为第3个 RoPE 维度，让 attention 直接感知层间距离。
+EXP-044B best (ts=0.25) R@500=63.6%, but PPL=467. Two assumptions:
+1. Position-RoPE uses token-level index (0,1,2,3,4,5…), but time-RoPE treats all tokens in the same item as simultaneous → conflict signals, which may cause PPL to be abnormally high. Fix: Use item-level position (`pos//L`).
+2. SID layer index (0/1/2, i.e. pos%L) is added as the third RoPE dimension, allowing attention to directly perceive the distance between layers.
 
 ### Design
-- **Fixed**: s-tier, 0.6b SID, ntp_data=exp044b-0.6b-14d（timestamps 已接通）
+- **Fixed**: s-tier, 0.6b SID, ntp_data=exp044b-0.6b-14d (timestamps are connected)
 - **Variable**: torope_time_split, torope_layer_split
 
 | Config | 描述 | torope_time_split | torope_layer_split |
@@ -32,17 +34,17 @@ EXP-044B best (ts=0.25) R@500=63.6%，但 PPL=467。两个假设：
 
 ### Analysis
 
-1. **Item-pos fix 对 R@500 无显著改善**：A vs 044B best 几乎持平（63.5% vs 63.6%）。position 冲突假设未得到验证，或影响太小。
+1. **Item-pos fix has no significant improvement on R@500**: A vs 044B best is almost the same (63.5% vs 63.6%). The position conflict hypothesis is not verified, or the effect is too small.
 
-2. **ts=0.5 略优于 ts=0.25**（B=63.9% vs A=63.5%），与 044B 结论一致（B=63.5% > C=62.3%，注：044B B/C 已修复）。更多 head_dim 留给 time-RoPE 有一定帮助。
+2. **ts=0.5 is slightly better than ts=0.25** (B=63.9% vs A=63.5%), which is consistent with the conclusion of 044B (B=63.5% > C=62.3%, Note: 044B B/C has been fixed). More head_dim left to time-RoPE helps somewhat.
 
-3. **3-dim RoPE 没有改善，反而略有下降**：C=62.4%，D=63.7%（D 与 B 基本持平）。将 layer 作为第 3 个 RoPE 维度没有带来收益，可能原因：SID layer（0/1/2）信息量有限，挤占 head_dim 的代价大于收益。
+3. **3-dim RoPE did not improve, but decreased slightly**: C=62.4%, D=63.7% (D is basically the same as B). Using layer as the third RoPE dimension does not bring benefits. The possible reason is: SID layer (0/1/2) has limited information content, and the cost of occupying head_dim is greater than the benefits.
 
-4. **PPL 持续偏高且随 layer_split 增加**：pos fix 后 PPL 反而更高（613 vs 467），说明 item-level position 对模型来说更难优化（语言模型任务里 token-level position 更自然）。PPL 高与 R@500 好共存，说明 PPL 不是这个任务的好代理指标。
+4. **PPL continues to be high and increases with layer_split**: After pos fix, PPL is higher (613 vs 467), indicating that item-level position is more difficult to optimize for the model (token-level position is more natural in language model tasks). The coexistence of high PPL and R@500 indicates that PPL is not a good proxy indicator for this task.
 
 ### Next Steps
-- TO-RoPE 最优配置：2-dim ts=0.5（B，R@500=63.9%），作为新 baseline
-- 3-dim RoPE 暂不推进
-- 下一步优先：EXP-045 FSQ sweep（修复 behavior_path 对齐后重跑）
+- TO-RoPE optimal configuration: 2-dim ts=0.5 (B, R@500=63.9%), as the new baseline
+- 3-dim RoPE will not be promoted yet
+- Next step first: EXP-045 FSQ sweep (fix behavior_path alignment and rerun)
 
 ---

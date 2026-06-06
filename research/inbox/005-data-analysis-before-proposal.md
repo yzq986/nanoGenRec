@@ -1,27 +1,29 @@
 ---
+
+[English](005-data-analysis-before-proposal.md) | [Chinese](005-data-analysis-before-proposal.zh.md)
 from: human
 date: "2026-04-22"
 priority: urgent
-subject: "提实验提案前必须先做数据分析"
+subject: "Data analysis must be done before proposing an experiment"
 ---
 
-关于 outbox/002 的 Page-wise NTP 提案：
+Page-wise NTP proposal for outbox/002:
 
-**问题**：你提出 PW-NTP 前没有分析数据。PW-NTP 的核心假设是"同一次曝光页面内有多个正交互"，但你不知道我们的数据里这种情况占多少比例。如果大部分 session 每次只有 1 个点击，PW-NTP 几乎没区别。
+**Question**: You did not analyze the data before proposing PW-NTP. The core assumption of PW-NTP is "there are multiple positive interactions within the same exposure page", but you don't know what proportion of this situation accounts for our data. If most sessions only have 1 click per session, PW-NTP will make little difference.
 
-**要求**：
+**Require**:
 
-1. **提任何实验提案前，必须先做数据分析**。写分析脚本（放 `experiments/scripts/`），用实际数据验证假设是否成立。例如：
-   - 统计每个 session/page 内的平均正交互数
-   - 正交互数的分布（1个、2个、3个...各占多少比例）
-   - 多正交互 session 的占比
+1. **Data analysis must be done before making any experimental proposal**. Write analysis scripts (put in `experiments/scripts/`) and use actual data to verify whether the hypothesis is true. For example:
+   - Count the average number of positive interactions within each session/page
+   - The distribution of positive interactions (1, 2, 3...what proportion each accounts for)
+   - Proportion of multi-positive interactive sessions
 
-2. **把分析工具沉淀下来**，这些脚本可以长期复用。遵守 program.md §10 Proactive Tooling。
+2. **Precipitate analysis tools** so that these scripts can be reused for a long time. Comply with program.md §10 Proactive Tooling.
 
-3. 分析完成后，把结果附在提案里。如果数据不支持假设，就不要提这个方向。
+3. After the analysis is completed, attach the results to the proposal. If the data doesn't support the hypothesis, don't mention it.
 
-4. **这条规则适用于所有未来的提案**，不仅仅是 PW-NTP。每个提案都要有数据支撑。
+4. **This rule applies to all future proposals**, not just PW-NTPs. Every proposal must be supported by data.
 
-关于源码修改授权：先做完数据分析，如果数据支持再说。
+Regarding source code modification authorization: Complete the data analysis first, and then talk if the data supports it.
 
-关于 session 分割标准：这也应该通过数据分析来决定——统计不同时间间隔（10min/30min/1h/1d）下的 session 分布，选择最合理的阈值。不要问我，分析数据。
+Regarding the session segmentation standard: This should also be determined through data analysis - count the session distribution under different time intervals (10min/30min/1h/1d) and choose the most reasonable threshold. Don't ask me, analyze the data.

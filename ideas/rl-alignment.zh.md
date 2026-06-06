@@ -1,0 +1,842 @@
+# RL Alignment (强化学习对齐)
+
+[English](rl-alignment.md) | [中文](rl-alignment.zh.md)
+
+用 RL/DPO/GRPO 将生成式推荐模型与业务目标对齐。属于 NTP 模型训练稳定后的进阶优化，前置依赖重。
+
+**影响范围**: 新增 `model/rl_trainer.py`, `metrics/sid_prediction.py`
+
+---
+
+## 演进路径
+
+```
+NTP 纯监督学习 (当前 baseline)
+├── IDEA-onemall-2: GRPO/DPO (OneMall 方案)
+│   └── GRPO > DPO, 768 候选 normalized advantage
+├── IDEA-oneloc-2: DPO + 双目标奖励 (OneLoc 方案)
+│   └── popularity + diversity 双目标
+├── IDEA-align3-0: Progressive DPO (Align³GR, 快手, AAAI 2026 Oral)
+│   └── SP-DPO (自博弈) → RF-DPO (真实反馈), 无需外部 reward model
+│   └── EXP-017 SP-DPO ✅, EXP-018 RF-DPO pure DPO ❌ (forgetting), EXP-020 joint NTP+DPO ✅ SOTA 66.2%, EXP-037 SP-DPO features 进行中
+├── IDEA-rpo-0: RPO — SFT Loss as Adversarial Regularizer (NeurIPS 2024)
+│   └── L = L_DPO + ηβ·L_SFT, 理论证明 SFT 正则防 overoptimization
+│   └── 我们的 joint NTP+DPO (EXP-019) 本质是 RPO
+├── IDEA-spot-0: Elastic Tether — DPO reward 的隐式正则化 (HKU 2026)
+│   └── β 控制 tether 松紧度: β 大 → tether 紧 → 防遗忘
+├── IDEA-rankgr-0: Listwise DPO + Rescore (RankGR, 淘宝)
+│   └── IAP (listwise DPO 解码) + RSP (轻量 rescore), 近万 QPS
+├── ~~IDEA-uni-0~~: Search Preference Optimization (UniSearch, 快手) ❌ 关闭
+│   └── reward model + user feedback, 搜索场景 (无搜索场景，技术被 align3-0 覆盖)
+├── IDEA-gr4ad-3: RSPO (GR4AD 方案)
+│   └── list-wise Lambda-weighted, NDCG-inspired
+│   └── 最强但前置依赖最重
+├── IDEA-sgrec-0: A2PO + Personalized Semantic Judge (S-GRec, 腾讯)
+│   └── 语义-业务不对称门控, GMV +1.19%
+└── IDEA-recast-0: Repair-then-Contrast Signal (Huawei, Apr 2026)
+    └── 稀疏 reward 下: rollout 修复 all-zero 组 + O(1) boundary 更新, Pass@1 +9~36%
+```
+
+---
+
+## IDEA-onemall-2: GRPO/DPO 强化学习对齐
+
+**优先级**: P1
+**来源**: OneMall §3.3 Reinforcement Learning Policy
+**状态**: 框架已实现 — EXP-026 实现了 GRPO 基础设施 (`rl/grpo.py`, `rl/reward.py`, `rl/trainer.py`); EXP-037 正在运行 SP-DPO (features 链路) 验证 DPO 路线
+
+### 核心思想
+
+用 RL 将检索模型 (generative NTP) 与排序模型对齐。具体做法:
+1. **Reward Model**: 线上排序模型（使用全量 user/item/cross features）作为 reward model，输出 CTR/CVR/EGPM 预测
+2. **Reference Model**: 定期从 policy model 同步参数，用 beam search 采样候选集
+3. **Policy Optimization**: GRPO 或 DPO 优化 policy model
+
+OneMall 关键发现:
+- **GRPO > DPO**: GRPO 在所有候选段 (Top10/100/500) 均优于 DPO
+- GRPO 对全部 768 个采样候选计算 normalized advantage，DPO 仅用 pairwise
+- RL loss weight = 0.5，过大会降低 SID accuracy
+- 仅用 2% 训练样本做 RL
+
+### 与当前项目的关联
+
+- 当前 **完全没有 RL 相关代码**，属于全新能力建设
+- NTP 模型已有 beam search 基础设施 (`BeamSearchModule`)，可复用于候选采样
+- 没有线上排序模型，需要构造 proxy reward:
+  - 方案 A: 离线 CTR 预估模型作为 reward
+  - 方案 B: 基于行为数据的 reward (clicked=1, bought=5, exposed_not_clicked=0)
+  - 方案 C: embedding 相似度作为 reward (简单但弱)
+- **依赖 NTP 模型先达到合理基线性能**，否则 RL fine-tuning 无意义
+
+### 实验设计草案
+
+**阶段 1: Offline Reward Model (简化版)**
+
+构造 reward 函数:
+```
+r(user, item) = α * is_clicked + β * is_bought + γ * embedding_sim
+```
+
+**阶段 2: GRPO Implementation**
+
+新增 `model/rl_trainer.py`:
+1. Reference model: 冻结的 NTP model checkpoint
+2. Policy model: 当前训练中的 NTP model
+3. 每个 user query: beam search 采样 N 个候选 (N=64~256，受限于 GPU 内存)
+4. 对每个候选计算 reward → normalize → advantage
+5. GRPO loss: clipped importance-weighted advantage (clip ratio 1±0.2)
+
+**Joint loss**:
+```
+L = L_NTP + 0.5 * L_GRPO + α * L_contrastive
+```
+
+**基线**: NTP-only (no RL)
+
+**评估**: 离线 Recall@K + reward score 分布变化
+
+### 关键问题
+
+1. **Reward model 质量是根本瓶颈**: 没有线上排序模型，proxy reward 可能引入 bias
+2. **采样成本高**: 每个 query 做 beam search 采样 N 个候选 → 训练速度可能下降 10x+
+3. **Reference model 同步频率**: OneMall 未详细说明，需要实验确定
+4. **建议先完成 IDEA-onemall-0 (contrastive loss)，建立更强的 NTP 基线后再做 RL**
+
+---
+
+## IDEA-oneloc-2: DPO 对齐 + 双目标奖励函数
+
+**优先级**: ~~P1~~ → 已被 align3-0 覆盖
+**来源**: OneLoc §2.5 Reinforcement Learning
+**状态**: 已被 IDEA-align3-0 完全覆盖 — align3-0 的 SP-DPO + RF-DPO 链路即为本 IDEA 的超集。EXP-017/018/019/020 已完整验证 DPO 对齐框架；EXP-037 正在 features 链路上复现。oneloc-2 的"双目标奖励"概念可在 RF-DPO 阶段的 reward 设计中参考，不需要单独实验。
+
+### 核心思想
+
+预训练的 NTP 模型只拟合曝光数据，无法做细粒度多目标平衡。OneLoc 用 DPO 做后对齐:
+1. 用预训练模型 beam search 生成 N 个候选
+2. 用奖励函数 (地理距离 + GMV) 对候选打分
+3. 取最高分为 positive、最低分为 negative，构造 preference pair
+4. DPO loss 联合 NTP loss 训练: `L = L_ntp + λ·L_dpo`
+
+### 与当前项目的关联
+
+- **当前项目零 RL/DPO 代码**，这是全新的模块
+- ARCHITECTURE.md 中 OneRec V1 paper 也用了 RL alignment，说明这不是 OneLoc 特有的
+- 对我们的意义: **用 DPO 来对齐 NTP 模型到业务目标**，例如:
+  - 奖励 1: item popularity / CTR 预估分 (替代 OneLoc 的 GMV)
+  - 奖励 2: diversity / category coverage (替代 OneLoc 的地理距离)
+- DPO 比 PPO 简单得多，不需要 critic 网络，只需要 preference pairs
+
+### 实验设计草案
+
+**Step 1: 构造奖励函数**
+- `R_popularity(v)`: item 的历史 CTR 或 interaction count (已有 `data/export_behavior.py`)
+- `R_diversity(v, S)`: 推荐 item 与历史序列的 category 差异度
+
+**Step 2: 生成 preference pairs**
+- 用训练好的 NTP 模型 beam search 生成 top-N (N=50) 候选
+- 对每个候选计算 reward score
+- 选 top-1 为 positive, bottom-1 为 negative
+
+**Step 3: DPO 训练**
+- 在 `model/train.py` 或新文件中实现 DPO loss
+- 关键超参: λ (DPO 权重, OneLoc 用 0.05), β (DPO temperature)
+- 训练: 先 NTP 预训练 → 冻结 reference model → NTP + DPO 联合训练
+
+**评估**:
+- 预训练 only vs DPO-aligned: recall, NDCG
+- DPO-aligned 的 reward 分布变化 (推荐的 item 是否更符合目标)
+
+### 关键问题
+
+1. **前置依赖**: 需要 NTP 模型先训练到足够好 (当前 `AutoregressiveNTPModel` 可能还需要架构升级)
+2. 奖励函数设计: 用什么替代 GMV 和地理距离? 需要与业务目标对齐
+3. 负样本质量: beam search 的 bottom-1 是否真的是 "bad" recommendation? 可能需要更精细的 pair 构造
+4. 计算成本: 每个训练样本需要一次 beam search → N 个候选 → reward scoring，训练速度可能大幅下降
+5. **优先级判断**: RL alignment 是"锦上添花"，应在基础 NTP 模型和量化方案稳定后再做
+
+---
+
+## IDEA-gr4ad-3: RSPO 排序优化 (Ranking-Guided Softmax Preference Optimization)
+
+**优先级**: P2
+**来源**: GR4AD §RSPO, Table 1
+**状态**: 待讨论
+
+### 核心思想
+
+GR4AD 提出 list-wise RL 方法 RSPO: 将 beam search 产出的候选列表按 eCPM 排序，用 NDCG-inspired Lambda 权重做偏好优化。相比 DPO (+0.70%) 和 GRPO (+0.65%)，RSPO 带来 +1.06% 增量。核心创新: (1) Lambda 权重 ℳᵢⱼ 关注排序位置交换的 NDCG 收益；(2) Reference gating Cᵢⱼ 在参考模型不可靠时自动关闭 KL 约束。
+
+### 与当前项目的关联
+
+- 当前 NTP 模型只做监督学习，没有任何 RL/preference optimization
+- **前置依赖重**: 需要先有 (1) 合理的 reward signal（IDEA-gr4ad-2 的价值 token）；(2) 足够好的 beam search 产出多个候选（当前 beam=5 候选太少）
+- 实现复杂度高: 需要 reference model、reward model、Lambda NDCG 计算、online learning pipeline
+- 更适合作为系统成熟后的进阶优化
+
+### 实验设计草案
+
+**简化版 — Offline DPO 起步**:
+1. 用当前 NTP 模型 beam search 产出 top-K 候选
+2. 按行为数据构造偏好对: 被点击的 item > 未被点击的 item
+3. 先实现 DPO loss 验证框架，再升级到 RSPO
+
+**进阶版 — RSPO**:
+- 在 DPO 基础上替换 pairwise loss 为 list-wise Lambda-weighted softmax loss
+- 加入 reference gating 机制
+
+**评估**: Hit@K, NDCG@K, 与纯 SL 模型对比
+
+### 关键问题
+
+1. **数据要求高**: 需要同一 context 下多个候选的真实反馈，当前 demo 数据不一定有
+2. 训练稳定性: RL 方法调参困难，reference model 需要定期更新
+3. 收益依赖于 beam search 质量 — 如果 beam search 本身不够好（候选同质化），排序优化价值有限
+4. 建议优先级在 IDEA-gr4ad-0/gr4ad-1/gr4ad-2 之后
+
+---
+
+## IDEA-align3-0: Progressive DPO (SP-DPO → RF-DPO 三层对齐)
+
+**优先级**: P1
+**来源**: Align³GR (Kuaishou, arxiv 2511.11255, Nov 2025, AAAI 2026 Oral)
+**状态**: 实验进行中 — 完整 NTP baseline 链路:
+- EXP-017 SP-DPO ✅ R@10 15.4%
+- EXP-018 RF-DPO pure DPO ❌ forgetting (β ablation 解释见 IDEA-spot-0)
+- EXP-019/020 joint NTP+DPO ✅ SOTA: R@500=66.2%, PPL=16.3 (exp020-hard-lam03)
+- Features 链路 (EXP-036→037→038→039): EXP-036 SFT 起点 R@500=59.0%，EXP-037 SP-DPO 进行中，EXP-038 RF-DPO 待跑，EXP-039 ECPO 待跑
+
+### 核心思想
+
+Align³GR 提出统一三层对齐框架:
+
+1. **Token-level Alignment**: Dual tokenization 融合语义和协同信号 (与 IDEA-pit-0 有关联)
+2. **Behavior Modeling-level Alignment**: 双向语义对齐增强行为建模
+3. **Preference-level Alignment**: **Progressive DPO** — 先 SP-DPO (自博弈) 再 RF-DPO (真实反馈):
+   - **SP-DPO (Self-Play DPO)**: 模型自己生成候选集，按 reward 排序构造 preference pairs → 不需要外部 reward model
+   - **RF-DPO (Real-Feedback DPO)**: 用真实用户行为反馈替换自博弈 reward → 更准确的对齐信号
+
+**结果**: Recall@10 +17.8%, NDCG@10 +20.2% (offline). 快手工业部署在线 A/B 显著提升。AAAI 2026 Oral。
+
+### 与当前项目的关联
+
+- 直接强化 IDEA-onemall-2 (GRPO/DPO): Progressive DPO 是一种更稳定的 DPO 训练策略
+- **SP-DPO 解决了"没有外部 reward model"的痛点**: 用自博弈替代外部 reward
+- 当前项目没有线上排序模型做 reward，SP-DPO 是最实际的 RL 入门方案
+- RF-DPO 阶段可以用行为数据 (clicked > not-clicked) 替代线上反馈
+
+### 实验设计草案
+
+**Phase 1 — SP-DPO**:
+1. 训练好 NTP baseline
+2. 用 NTP 模型 beam search 生成 top-K 候选
+3. 用简单 reward (embedding similarity to ground truth) 对候选排序
+4. Top-1 = positive, Bottom-1 = negative → DPO loss
+
+**Phase 2 — RF-DPO**:
+1. 用行为数据: clicked item = positive, exposed-but-not-clicked item = negative
+2. 替换 SP-DPO 的 preference pairs
+
+### 关键问题
+
+1. 与 IDEA-onemall-2 (GRPO) 的关系: Progressive DPO 和 GRPO 哪个更好? 可以做对比实验
+2. SP-DPO 的 reward 设计: 用什么作为 "自博弈" 的评判标准
+
+---
+
+## IDEA-rankgr-0: Listwise DPO + Two-Phase Decode-Rescore
+
+**优先级**: P1
+**来源**: RankGR (Alibaba/Taobao, arxiv 2602.08575, Feb 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+RankGR 将生成式检索分为两阶段:
+
+1. **Initial Assessment Phase (IAP)**: 在自回归解码中注入 **listwise DPO**，让模型理解候选间的偏序关系
+2. **Refined Scoring Phase (RSP)**: 对 IAP 的 top-λ 候选，用轻量评分模块重新打分 (建模候选与输入序列的交互)
+
+两阶段在统一 GR 模型中联合优化。淘宝"猜你喜欢"在线验证 + 近万 QPS 实时服务。
+
+### 与当前项目的关联
+
+- **直接增强 IDEA-gr4ad-3 (RSPO)**: RankGR 的 listwise DPO 是 RSPO 的工业验证版本
+- RSP (rescore 阶段) 是新技术: 不需要外部 reranking 模型，在 GR 模型内部加一个轻量 scorer
+- 可以与 IDEA-gr4ad-4 (Dynamic Beam Search) 配合: IAP 用小 beam 快速筛选，RSP 对 top candidates 精细打分
+
+### 实验设计草案
+
+**Phase 1 — Listwise DPO in NTP**:
+- 训练 NTP 时，对同一 user 的 beam search 结果按行为信号排序
+- 构造 listwise preference → DPO loss
+
+**Phase 2 — RSP Module**:
+- 在 NTP decoder 输出端加一个 cross-attention scorer
+- 输入: user 行为序列 + 候选 SID → 输出: 精细分数
+- 用分数 rerank top-K 候选
+
+### 关键问题
+
+1. RSP 的计算开销: 对每个 top-λ 候选做 cross-attention，推理延迟增加多少
+2. 与 IDEA-gr4ad-4 (Dynamic Beam) 的配合: beam 产出 → RSP rescore → 最终 top-K
+
+---
+
+## IDEA-uni-0: Search Preference Optimization (SPO)
+
+**优先级**: ~~P2~~ → ❌ 关闭
+**来源**: UniSearch (Kuaishou, arxiv 2509.06887, Sep 2025)
+**状态**: ❌ 关闭 — 当前无搜索场景，核心 RL 技术已被 IDEA-align3-0 (Progressive DPO) 和 IDEA-onemall-2 (GRPO) 完全覆盖
+
+### 核心思想
+
+UniSearch 用 **Search Preference Optimization (SPO)** 将 reward model 和用户真实反馈融入生成式搜索:
+
+1. 训练 reward model 对生成候选打分
+2. 用真实用户反馈 (点击、停留时长) 作为额外信号
+3. 将 reward 信号通过 preference optimization 注入生成器
+
+快手直播搜索部署: **近年最大单次实验提升**。
+
+### 与当前项目的关联
+
+- SPO 本质上是 GRPO/DPO 的搜索场景特化版本
+- 与 IDEA-onemall-2 (GRPO) 和 IDEA-align3-0 (Progressive DPO) 有重叠
+- 独特价值: reward model 的训练方法和 user feedback 的融合方式可以借鉴
+- **优先级低**: 当前不做搜索场景，核心 RL 技术已被其他 idea 覆盖
+
+### 关键问题
+
+1. 与 IDEA-onemall-2 / IDEA-align3-0 的去重: SPO 的独特贡献是什么?
+2. 当前无搜索场景，价值有限
+
+---
+
+## IDEA-onerec-3: ECPO (Early Clipped GRPO) + Format Reward
+
+**优先级**: P1
+**来源**: OneRec (arxiv 2506.13695v4) §ECPO + §Format Reward
+**状态**: 待讨论
+
+### 核心思想
+
+OneRec 对 GRPO 做了两个关键改进:
+
+**1. ECPO (Early Clipped GRPO)**:
+标准 GRPO 的 clipping 对负 advantage 样本不够激进 — policy 仍然可能给坏样本分配较高概率。ECPO 引入 **early clipping**: 当样本 advantage 为负时，用更紧的 clip 上界压制 policy ratio:
+
+$$\pi_{\theta_{old}}'(o_i|u) = \max\left(\frac{\text{sg}(\pi_\theta(o_i|u))}{1+\epsilon+\delta}, \pi_{\theta_{old}}(o_i|u)\right)$$
+
+$\delta=0.1$，让坏样本更快被压制。同时因为 RSFT 和 RL 并行训练，移除了 KL 散度项。
+
+**2. Format Reward (合法性奖励)**:
+RL 训练中模型可能生成非法 SID token（不在 codebook 中）。Format Reward 给合法输出 advantage=1，非法输出 advantage=0，作为独立的 reward 信号:
+
+$$A_i = \begin{cases} 1 & \text{if } o_i \in I_{\text{legal}} \\ 0 & \text{if } o_i \notin I_{\text{legal}} \end{cases}$$
+
+关键发现: 用 **random sampling** 而非 top-k 选择候选做 format reward，否则合法性先升后降。
+
+### 与当前项目的关联
+
+- IDEA-onemall-2 已有 GRPO 基础设计，ECPO 是直接升级
+- Format Reward 解决了一个实际问题: beam search 生成无效 SID（IDEA-static-0 的 CSR 约束解码也解决此问题，但在训练侧而非推理侧）
+- OneRec 实验: group_size=512 最优 (+1.82% App Stay Time)，约为推理 Pass@K 的 4 倍
+
+### 关键问题
+
+1. 依赖 NTP 模型足够好才有意义 — 当前阶段先不做
+2. RSFT 与 RL 并行训练的工程复杂度高
+
+---
+
+## IDEA-gpr-0: HEPO — Hierarchy Enhanced Policy Optimization
+
+**优先级**: P2
+**来源**: GPR (Tencent/Weixin Channels, arxiv 2511.10138, Nov 2025)
+**状态**: 待讨论
+
+### 核心思想
+
+GPR 是腾讯微信视频号广告的 one-model 生成式推荐框架，其 RL 组件 **HEPO (Hierarchy Enhanced Policy Optimization)** 利用 SID 的层级结构做对齐:
+
+- 结合 MTP (Multi-Token Prediction), Value-Aware Fine-Tuning, 和 HEPO 三阶段联合训练
+- HEPO 利用 SID 的 coarse-to-fine 层级信息设计 reward (不同层级的预测正确性给不同 reward)
+- 统一 interest modeling + value alignment + policy optimization
+
+微信视频号广告全量部署: **GMV 和 CTCVR 显著提升** (具体数字在论文正文)。
+
+### 与当前项目的关联
+
+- HEPO 利用 SID 层级结构做 hierarchical reward 是新思路 — 区别于 GRPO/DPO 的 flat reward
+- 例: 预测对了 L1 但错了 L2/L3 → 部分 reward (比完全预测错好)
+- 与 IDEA-onerec-3 (ECPO + Format Reward) 互补: ECPO 关注 clipping，HEPO 关注 hierarchical reward structure
+
+### 关键问题
+
+1. 依赖 RL 基础设施成熟后实施
+2. 论文全文细节需要补充 HEPO 的具体算法
+3. 适合在 GRPO/DPO 基础方案验证后作为进阶改进
+
+---
+
+## IDEA-sgrec-0: A2PO + Personalized Semantic Judge (Asymmetric Advantage)
+
+**优先级**: P1
+**来源**: S-GRec (Tencent, arxiv 2025)
+**状态**: 待讨论
+
+### 核心思想
+
+S-GRec 发现标准 GRPO/DPO 在生成式推荐中存在 **语义-业务目标不对称** 问题：语义上相似的候选在业务价值上可能差异巨大（如两个相似视频，一个高 GMV 一个低 GMV），但标准 RL 给它们相似的 advantage。S-GRec 提出两个机制：
+
+1. **A2PO (Asymmetric Advantage Policy Optimization)**: 对 positive 和 negative 候选使用不同的 advantage 计算方式。Positive 候选用标准 normalized advantage，negative 候选额外乘以一个 **semantic gating factor** — 语义上离正样本越近但业务价值越差的负样本，penalty 越重
+2. **Personalized Semantic Judge**: 训练一个轻量判别器，输入用户历史 + 候选 SID，输出语义匹配度和业务价值的联合评分。作为 RL 的 reward model，替代纯业务指标 reward
+
+核心 insight: **在语义空间中距离近但业务价值差的 hard negative 是最有信息量的训练信号**。
+
+腾讯在线 A/B: **GMV +1.19%, 用户留存 +0.8%**。
+
+### 与当前项目的关联
+
+- 与 IDEA-onemall-2 (GRPO) 直接兼容：A2PO 是 GRPO 的 advantage 计算改进，不改变整体框架
+- 与 IDEA-align3-0 (Progressive DPO) 互补：align3-0 解决训练稳定性 (SP→RF progressive)，sgrec-0 解决 advantage 质量
+- Personalized Semantic Judge 可以复用 SID embedding 空间中的距离信息，实现成本适中
+- **语义-业务不对称门控**是新思路：利用 SID 的层级结构判断语义距离（L1 相同 = coarse 相似，L1/L2/L3 全同 = 高度相似）
+
+### 实验设计草案
+
+**Phase 1 — A2PO (在 GRPO 基础上改进)**:
+1. 对 GRPO 的 advantage 计算，加入 semantic gating:
+   - `gated_adv = adv * semantic_gate(candidate, positive)`
+   - `semantic_gate = sigmoid(α * (1 - cosine_sim(sid_embed_candidate, sid_embed_positive)))`
+2. 只对 negative advantage 应用 gating，positive 保持不变（asymmetric）
+
+**Phase 2 — Personalized Semantic Judge**:
+1. 轻量 MLP: `[user_repr, candidate_sid_embed] → score`
+2. 训练数据: 用户行为中的 positive (clicked) 和 negative (exposed-not-clicked) pair
+3. 用 judge score 替代简单 reward 信号
+
+### 关键问题
+
+1. 前置依赖 GRPO 基础设施 (IDEA-onemall-2)
+2. Semantic gating 的 α 超参敏感性：过大会完全忽略远样本，过小退化为标准 GRPO
+3. Personalized Semantic Judge 的训练数据需要曝光未点击样本
+
+---
+
+## 优先级总结
+
+| 优先级 | ID | 实验 | 原因 |
+|--------|-----|------|------|
+| P1 (框架已实现) | IDEA-onemall-2 | GRPO/DPO 强化学习 | EXP-026 GRPO 框架已实现，EXP-037 DPO 实验中 |
+| P1 | IDEA-oneloc-2 | DPO + 双目标奖励 | DPO 比 PPO 简单，可作为 RL 入门 |
+| **P1 (进行中)** | **IDEA-align3-0** | **Progressive DPO (SP→RF)** | **EXP-020 ✅ SOTA 66.2%; EXP-037 SP-DPO features 链路进行中** |
+| P1 (待 EXP-037 完成) | IDEA-onerec-3 | ECPO + Format Reward | EXP-039 planned，需先完成 EXP-037/038 |
+| P1 | IDEA-rankgr-0 | Listwise DPO + Rescore | 淘宝验证，RSP 模块是新技术 |
+| P1 | IDEA-sgrec-0 | A2PO + Semantic Judge | 腾讯 +1.19% GMV, 语义-业务不对称门控 |
+| P1 | IDEA-genrec-2 | GRPO-SR + Hybrid Rewards | JD 验证, NLL 正则 + relevance gating 防 reward hacking |
+| **P1 (已验证)** | **IDEA-rpo-0** | **RPO: SFT Loss as DPO Regularizer** | **NeurIPS 2024 理论证明, EXP-019/020 joint NTP+DPO = RPO ✅** |
+| **P1 (已验证)** | **IDEA-spot-0** | **Elastic Tether: β 自适应正则化** | **HKU 2026, 解释 EXP-018 β ablation 结果 ✅** |
+| P2 | IDEA-gr4ad-3 | RSPO 排序优化 | 收益最大但前置依赖最重 |
+| ❌ 关闭 | ~~IDEA-uni-0~~ | ~~SPO 搜索偏好优化~~ | 无搜索场景，技术已被 align3-0/onemall-2 覆盖 |
+| P2 | IDEA-gpr-0 | HEPO Hierarchical Policy Opt | 腾讯微信广告部署, 层级 reward 新思路 |
+
+---
+
+## RF-DPO 踩坑记录：`--max_steps` 的真正作用是配比控制，不是 epoch 控制
+
+**重要性：极高 — 每次重跑 RF-DPO 都会踩这个坑**
+
+### 核心 Insight
+
+`--max_steps` 在 Joint NTP+DPO 模式下的作用是**截断 NTP，使 NTP 处理量与 DPO 处理量保持 1:1**。
+它不控制 DPO 看几遍数据，也不控制"训练轮数"。
+
+### 807 步的由来（exp019/020 的设计）
+
+```
+exp018 hard preference pairs: 4,312 对
+DPO batch_size: 16
+DPO 一遍数据: 4312 / 16 = 269 batches
+目标: DPO 跑 3 遍 = 269 × 3 = 807 DPO batches
+
+旧数据集 (exp016/017 时代): NTP 每 epoch ~1,700 步
+--max_steps 807 把 NTP 从 1,700 步/epoch 截断到 807 步（约 0.47 epoch）
+
+结果: NTP 处理 807 批 ≈ DPO 处理 807 批 → NTP:DPO ≈ 1:1
+```
+
+**这就是 807 的来源：不是"DPO 跑 3 轮"，而是"让 NTP 步数等于 DPO 3-轮的批数"。**
+
+### 为什么 1:1 比例很重要
+
+- DPO 信号在 Joint 训练中权重是 `λ * dpo_loss`（λ=0.03）
+- 如果 NTP 步数远多于 DPO 步数 → DPO 被 NTP 淹没，对齐信号不足
+- exp019/020 成功的关键：通过 `--max_steps 807` 保证 DPO 占 NTP 训练量的 ~100%
+
+### 当前数据集的问题（exp023）
+
+```
+当前数据集 (exp023-14d-features): NTP 每 epoch ~406 步
+--max_steps 807 > 406（NTP loader 本身更短）→ 截断无效
+
+实际训练步数 = min(406, 807) = 406
+DPO 在 406 步内随机抽批次 → DPO 实际跑 ~1.5 轮（而非 3 轮）
+```
+
+exp038/038b 失败/效果差的根本原因：NTP:DPO 比例失调，DPO 信号不足。
+
+### 正确做法（重跑 RF-DPO 时的 checklist）
+
+1. 先算 DPO 目标步数：`target_steps = (n_pairs / dpo_batch_size) × target_dpo_epochs`
+   - exp018 hard: `(4312 / 16) × 3 = 807`
+2. 检查 NTP loader 长度：`n_train / (batch_size × world_size)`
+   - exp023: `1,709,380 / (526 × 4) ≈ 812` — 等等，实测是 406，需要确认
+3. 如果 NTP loader 长度 < target_steps → `--max_steps` 无效 → 需要 trainer 支持 `ntp_epochs`（NTP multi-epoch）
+4. 如果 NTP loader 长度 > target_steps → `--max_steps target_steps` 正确截断
+
+### trainer.py 相关代码
+
+```python
+# rl/trainer.py, Joint 模式
+n_batches = min(len(ntp_loader), max_steps)  # NTP 步数上限
+# DPO 在每步以 Bernoulli(p=rl_data_ratio) 随机抽插
+```
+
+`dpo_epochs` 参数**只在 `pure_dpo=True` 模式下有效**，在 Joint 模式下被忽略。
+
+### 结论
+
+重新设计 RF-DPO 时，要先确认：
+- `len(ntp_loader)` vs `(n_pairs / dpo_batch_size) × 3`
+- 如果 NTP loader 更短，必须在 trainer 里加 NTP multi-epoch 支持（类似 `ntp_epochs` 参数），才能真正还原 exp019/020 的 1:1 配比
+
+---
+
+## IDEA-genrec-2: GRPO-SR + Hybrid Rewards (防 Reward Hacking 的 RL 对齐)
+
+**优先级**: P1
+**来源**: GenRec, JD.com (arxiv 2604.14878, SIGIR 2026)
+**状态**: 待讨论
+
+### 核心思想
+
+JD GenRec 在 GRPO 基础上提出两个关键改进防止 reward hacking:
+
+1. **Hybrid Reward + Relevance Gate**: 用 dense reward model (SIM-based) 估计偏好分数 r_pref，但加一个 relevance gate G = I(sim > τ) 过滤语义不相关的高 reward 候选。不满足 gate 的候选 reward 置零。同时对已知正样本 (用户实际点击/购买) 强制赋予组内最高 reward，校正 reward model 的估计偏差。
+
+2. **NLL Supervised Regularization (SR)**: 在 GRPO 目标中加入 NLL 正则项 (对正样本的负对数似然)，将 policy 锚定到真实用户行为分布，替代标准 KL 散度惩罚。
+
+消融实验: 去掉 Gate G 后，HR@50 从 0.74 降到 0.70, HaR 从 2.68% 涨到 1.96% — 看似幻觉降了但 HR 大降 → reward hacking 现象明确。在线: SFT + GRPO-SR 比纯 SFT 再提升 +1% click, +1.4% transaction。
+
+### 与当前项目的关联
+
+- 直接增强 IDEA-onemall-2 (GRPO/DPO): GenRec 的 GRPO-SR 是 GRPO 的工业验证改进版
+- Relevance Gate 对 SID 体系特别重要: SID 空间中可能存在 "有效但语义无关" 的组合
+- NLL 正则替代 KL 散度 → 实现更简单, 不需要 reference model 的完整推理
+- Reward calibration (正样本强制赋 max reward) 是实用技巧
+
+### 实验设计草案
+
+**Phase 1 — GRPO-SR on NTP baseline**:
+- 在 NTP 基线上接 GRPO-SR: rollout 生成 G 个候选, 用 reward model 打分
+- Reward model 初期可用 SID embedding cosine similarity 替代 SIM
+- 加入 relevance gate: cosine_sim(generated_sid, positive_sid) > τ
+- NLL 正则: α * (-log P(positive_item | history))
+- 评估: Recall@K, reward distribution, HaR
+
+**Phase 2 — Dense Reward Model**:
+- 训练专门的 reward model (SIM-based 或 user preference model)
+- 加入 positive calibration: 正样本的 reward = max(group rewards)
+
+### 关键问题
+
+1. 前置依赖: NTP SFT baseline + GRPO 基础设施 (IDEA-onemall-2)
+2. Reward model 的选择: SIM-based (需要训练) vs 简单 embedding similarity (可快速启动)
+3. Gate 阈值 τ 的调参: 过高则过度过滤, 过低则不起作用
+4. JD 的 improvement (+1% over SFT) 在 GRPO 基础上是 marginal → 优先做好 SFT
+
+---
+
+## IDEA-rpo-0: RPO — SFT Loss as Adversarial Regularizer for DPO
+
+**优先级**: P1
+**来源**: RPO (ByteDance + Northwestern + Stanford, arxiv 2405.16436, NeurIPS 2024)
+**状态**: **已验证** — EXP-019 joint NTP+DPO 本质是 RPO
+
+### 核心思想
+
+RPO 理论证明：在 DPO 训练中加入 SFT loss 作为正则项可以 **provably mitigate reward overoptimization**:
+
+```
+L_RPO = L_DPO + ηβ · L_SFT(chosen)
+```
+
+关键理论发现：
+1. DPO 内置的 β KL 约束 **只控制梯度 scale，不控制方向** — 不足以防止 overoptimization
+2. SFT loss 额外修正梯度方向，将 policy 锚定到高质量 response 分布
+3. 从 adversarial reward model 角度推导：SFT loss 等价于对最差情况 reward model 的惩罚
+
+实验：RPO 在 Zephyr-7b-beta 和 Zephyr-7b-gemma 上一致优于 DPO，有效防止 chosen response 概率在训练中下降（overoptimization 的典型症状）。
+
+### 与当前项目的关联
+
+**直接理论支持我们的 joint NTP+DPO 设计**:
+- 我们的 `total_loss = ntp_loss + λ * dpo_loss` 就是 RPO 的 `L_RPO = L_SFT + (1/ηβ) * L_DPO`
+- 我们的 λ 对应 RPO 的 1/(ηβ)
+- RPO 论文用 η=1，即 SFT 和 DPO 权重量级相当 → 支持我们 λ=0.1~0.5 的搜索范围
+
+**解释 EXP-018 结果**:
+- Pure DPO (无 SFT 正则) → catastrophic forgetting → PPL 爆炸
+- β=0.5 退化最轻但仍不够 → RPO 理论: β 只控制 scale 不够, 需要 SFT loss 控制 direction
+- EXP-019 加入 NTP (=SFT) 正则 → 预期修复 forgetting
+
+### 实验设计
+
+**已在 EXP-019 中实现**:
+- Config 2 (λ=0.1), Config 3 (λ=0.5), Config 4 (λ=0.01) → 验证 RPO 的 ηβ 权重选择
+- 预期: λ 过小 → 回到 EXP-018 的 forgetting; λ 过大 → NTP 主导冲掉 DPO signal
+- Sweet spot 预计在 λ=0.1~0.5
+
+### 关键问题
+
+1. RPO 用 chosen response 做 SFT, 我们用 NTP 训练数据 → 分布可能不同, 但正则化效果类似
+2. Multi-epoch NTP 问题: RPO 理论没有讨论 SFT 数据重复 → 我们的 ~4.5 epoch 可能导致 NTP overfitting
+3. 如果 EXP-019 验证了 joint NTP+DPO 有效, 下一步可以试 RPO 原始形式: 只在 DPO chosen sample 上做 SFT (而非整个 NTP dataset)
+
+---
+
+## IDEA-spot-0: Elastic Tether — DPO Reward 公式的隐式正则化
+
+**优先级**: P1
+**来源**: SPoT (HKU, arxiv 2603.01683, Mar 2026)
+**状态**: **解释了 EXP-018 β ablation 结果**
+
+### 核心思想
+
+SPoT 揭示了 DPO reward 公式 `r(x,y) = β log(π/π_ref)` 自带的 **Elastic Tether** 正则化效应:
+
+梯度缩放系数 λ = 1 - σ(r_θ(x, y+)):
+- **Acquisition Mode** (π 接近 π_ref): r ≈ 0 → λ ≈ 0.5 → 正常学习
+- **Saturation Mode** (π 远离 π_ref): r → ∞ → λ → 0 → 梯度消失，自动停止更新
+
+当 r_θ = 10 时, λ = 4.5×10⁻⁵ — 比 SFT 的常数 gradient 小 22,000 倍。
+
+对照实验:
+- SFT+ (proximal data) → forgetting (IFEval 持续下降)
+- DPO (同样数据) → 不 forgetting (IFEval 稳定)
+- **Reward-SFT (只有 chosen, 无 rejected, 但用 reward 公式)** → 也不 forgetting!
+
+结论: **正则化来自 reward 公式本身（log π/π_ref 的 tethering effect），而非负样本**。β 越大 tether 越紧。
+
+### 与当前项目的关联
+
+**直接解释 EXP-018 的 β ablation**:
+
+| Config | β | PPL | R@10 | Elastic Tether 解释 |
+|--------|-----|-----|------|-------------------|
+| hard | 0.1 | 50,694 | 8.3% | β 小 → tether 松 → policy 漂移远 → catastrophic forgetting |
+| prog-beta01 | 0.01 | 2.4B | 6.0% | β 极小 → 几乎无 tether → 完全 forgetting |
+| prog-beta50 | 0.5 | 404.9 | 10.2% | β 较大 → tether 紧 → 退化最轻但仍不够 |
+
+807 步的 hard DPO 训练中, 即使 β=0.5 (最紧 tether), r_θ 也会逐渐增大导致 tether 完全松弛 (λ → 0)。此时模型处于 "zero gradient" 状态但已偏离太远 — tether 只能减速不能回拉。**需要外部正则化 (NTP/SFT loss) 提供持续的 gradient 信号将 policy 拉回**。
+
+### 实验设计
+
+**EXP-019 已覆盖核心验证**。
+
+进一步实验方向:
+1. **Reward-SFT baseline**: 只用 chosen preference pair 做 reward-based SFT (无 negative), 对比 DPO → 验证 tethering 是否在推荐场景也成立
+2. **β schedule**: 训练初期用小 β (快速学习), 后期逐渐增大 β (收紧 tether 防 forgetting)
+3. **Monitor r_θ during training**: 记录 implicit reward 的增长轨迹, 验证 tether 何时松弛
+
+### 关键问题
+
+1. SPoT 的实验是在 LLM (Qwen3-8B) 上做的, 推荐模型 (45.8M) 行为可能不同
+2. Elastic Tether 是对单步梯度的分析, 807 步的累积效应可能不同
+3. 与 RPO (IDEA-rpo-0) 互补: RPO 加 SFT loss 修正方向, Elastic Tether 解释 β 的 scale 控制作用
+
+---
+
+## IDEA-recast-0: ReCast — Repair-then-Contrast Signal for Sparse-Hit GRPO
+
+**优先级**: P1
+**来源**: ReCast (Huawei, arxiv 2604.22169, Apr 2026)
+**状态**: 待讨论 — 直接针对 EXP-026 踩过的 "reward std≈0, 96% 零 reward 样本" 问题
+
+### 核心思想
+
+ReCast 观察到通用 group-based RL (GRPO 系) 在**稀疏命中 (sparse-hit) 生成式推荐**下的根本问题不是 reward assignment，而是 **"many sampled groups never become learnable at all"**。在 OpenOneRec 的代表性 RL 设置里：
+- **85% 的 rollout group 是 all-zero** (group 内所有候选都没命中 GT)
+- 另 13% 是 single-hit (一个偶然命中主导更新, 噪声大)
+- 只有 2% 是多命中 group
+- 样本级 96% 是 zero reward
+
+标准 GRPO normalize 这种 group 会产生：reward std ≈ 0 → advantage 爆炸 / 梯度不稳定。这正是我们 EXP-026 踩的坑 (要靠 `std < 1e-6` group skip + `adv.clamp(-5, 5)` + `log_rho.clamp(-10, 10)` 硬约束来缓解)。ReCast 从 **signal construction** 层面根本修复：
+
+**1. Rollout Repair (注入 GT 作为 positive anchor)**
+
+对 all-zero group, 从 ground-truth 构造一个合法正例 `R_anc` 替换组内"信息量最低"的响应 (按 structural score 排序取 arg min)。这让所有原本浪费的 rollout 变成可学习单元。已有 positive 的 group 不改动。
+
+**2. Structural Score φ (层级 SID prefix 匹配)**
+
+对 3-token SID `p = (pa, pb, pc)` 和 GT `t = (ta, tb, tc)`:
+```
+φ(p,t) = 1.0   if p == t               # 完全匹配
+         0.1   if (pa,pb) == (ta,tb)   # 前 2 层匹配
+         0.01  if pa == ta             # 只第 1 层匹配
+         0     otherwise
+```
+structural score 只用于 **within-group ranking**（选 hardest negative 和 repair 时的 arg min），不改外部 reward。**这正是我们 BehaviorReward prefix cascade 的对称表达** — 我们是把 L0/L1/L2 用作 reward 本身，ReCast 是把它用作候选排序 key。
+
+**3. Boundary Contrastive Update (O(1) 更新支持)**
+
+对 repair 后的 group：
+- `i+ = argmax_i ri` (最高 reward 的正例)
+- `i- = argmax_{ri=0} ui` (structural score 最高的未命中样本，即"最接近但没对上")
+- advantage = +w / -w / 0 (其余全 0)
+
+把 full-group normalization 替换成 **只更新这一对**。搜索宽度 G 保持，actor 更新宽度从 O(G) 降到 O(1)。Rollout budget 继续探索罕见正例，但 actor 不再为无信息量的中间样本付学习开销。
+
+**4. Search–Update Decoupling 的系统收益**
+
+Wsearch = G, Wupdate = O(1) 带来：
+- actor-side update time **16.60× 加速**
+- peak memory **-16.5%**
+- actor MFU **+14.2%**
+- Pass@1 **+9.1% ~ +36.6%** (5 个任务，Qwen3-1.7B baseline)
+- matched-budget 优势: ReCast 用 **4.1% rollout budget** 达到 baseline 全量性能
+- 优势随模型规模扩大 (Qwen3-14B 更受益)
+
+### 与当前项目的关联
+
+**这是对 EXP-026 踩坑最直接的补丁。** 我们的 `rl/trainer.py::_grpo_step` 当前路径是：
+```python
+# 每个 context 的 768 candidates → BehaviorReward (SID exact + prefix cascade)
+# → normalized advantage → clip → loss
+```
+现存问题：
+- 85% 全零 group 被 `std < 1e-6` skip 掉 — 这些 rollout 的 GPU 时间全部浪费
+- 少数非零 group 主导梯度，训练信号不稳
+- step log 里 `reward metric` 经常全 0，难以诊断
+
+ReCast 对我们的映射：
+
+| ReCast 机制 | 对应我们的实现位置 | 改造成本 |
+|-------------|-------------------|--------|
+| Rollout repair (inject GT) | `rl/trainer.py::_grpo_step`，在 BehaviorReward 计算后、advantage 计算前 | 低 — 从 context 的 ground-truth SID 直接构造一条响应替换组内最低 structural score |
+| Structural score φ | 已存在 — prefix cascade L0/L1/L2 match 函数在 `rl/reward.py::BehaviorReward` 中 | 0 — 直接复用 |
+| Boundary contrastive update | 替换 `rl/grpo.py` 里的 normalized advantage 计算 | 中 — 单独分支，保留原 GRPO 作为 ablation |
+| Search-update decoupling | 物理过滤非 (i+, i-) 样本，跳过 old_log_prob / ref_log_prob / update_actor | 中 — 需要改 log_prob 计算路径 |
+
+**与现有 RL ideas 的差异化**：
+- vs IDEA-onemall-2 (GRPO baseline): ReCast 是 GRPO 的 signal layer 插件，不改外部 objective
+- vs IDEA-onerec-3 (ECPO): ECPO 改 clip 边界，ReCast 改候选选取 — **正交，可组合**
+- vs IDEA-sgrec-0 (A2PO): A2PO 给负例加 semantic gating；ReCast 直接只保留一个"最硬"负例 — 更极端，系统收益更大
+- vs IDEA-gpr-0 (HEPO): HEPO 用层级 reward，ReCast 用层级 structural ranking — 都利用 SID 层级但作用点不同
+
+### 实验设计草案
+
+**前置**: EXP-037/EXP-038 (SP-DPO, RF-DPO) 稳定后，EXP-039 (ECPO) 或新 EXP-040 (ReCast) 二选一
+
+**EXP-040 — ReCast on top of EXP-026 GRPO pipeline** (本地 8 GPU):
+
+**配置**:
+- Checkpoint: exp020-hard-lam03 (R@500=66.2% baseline)
+- Rollout size G = 64 (保持 EXP-026 设置)
+- Structural score: 直接用 `BehaviorReward` 的 prefix match (L0=0.01, L1=0.1, L2=1.0)
+- Repair: 从 context 的 ground-truth next-item 取其 SID, 用该 SID 构造一条生成输出替换组内 `ui` 最低者
+- Boundary pair: `i+` = 最高 reward; `i-` = 未命中中 structural score 最高者
+
+**对比**:
+| Config | Rollout 利用率 | Pass@1 / R@10 | actor update time | notes |
+|--------|--------------|---------------|------------------|-------|
+| A. EXP-026 GRPO (baseline) | ~15% (85% skip) | ? | T0 | 已有结果 |
+| B. + rollout repair only | 100% | ? | T0 | 隔离 repair 贡献 |
+| C. + boundary contrast only | ~15% | ? | T0/60 | 隔离 contrast 贡献 |
+| D. Full ReCast (B+C) | 100% | ? | T0/60 | 完整方案 |
+| E. ReCast + ECPO | 100% | ? | T0/60 | 叠加 IDEA-onerec-3 |
+
+**关键实验问题**:
+- 预期 D 相对 A: R@500 +0.5~2.0pp, 且训练曲线更稳 (`reward std` 分布变宽)
+- C 单独是否负收益？(去掉 repair 但只用 boundary 可能退化)
+- Repair 引入 GT 可能产生 **目标泄漏** — 要检查是否只在 RL advantage 计算中使用，NTP joint loss 里不能直接把 repaired rollout 当 positive sample
+
+**Phase 1 (代码改动)**:
+1. 在 `rl/grpo.py` 新增 `compute_boundary_advantages(rewards, structural_scores)` 函数
+2. 在 `rl/trainer.py::_grpo_step` 加 `--rl_strategy {grpo, recast, recast_no_repair, recast_no_contrast}` 开关
+3. 复用 `BehaviorReward.prefix_match` 作为 structural score
+4. 物理过滤 (跳过 old_log_prob / ref_log_prob 计算) — 验证 system-level 加速 (Huawei 报告 16.60×)
+
+### 关键问题
+
+1. **GT 注入是否构成作弊？** Rollout repair 用 GT 构造正例，严格讲没有用 ground-truth 作为 label (外部 reward 仍是 exact match)，但 rollout 分布被人为污染。需要和 IDEA-align3-0 (SP-DPO/RF-DPO) 路线对比：SP-DPO 的 self-play 也会偏向高 reward 方向，本质类似
+2. **与现有 BehaviorReward prefix cascade 的关系**: 我们已经在 reward 层做了 prefix cascade fallback，ReCast 是在 advantage 层再做一次。两者叠加会不会过度补偿？建议 ablation：`BehaviorReward exact only` + ReCast structural ranking vs `BehaviorReward prefix cascade` + ReCast structural ranking
+3. **contrast weight w 的选择**: 论文默认 w=1，但在我们稀疏场景下可能需要更大 (e.g. w=2~5) 以补偿只有 2 个样本带来的梯度方差
+4. **对已经稳定的 group 是否还需要 boundary contrast？** 论文里所有 group 都走 boundary，但直觉上 multi-hit group (有丰富信号) 用 full-group normalization 可能更好。可以加个 `k_hit ≥ threshold` 的分支
+5. **重现性**: 本文实验跑在 Qwen3-1.7B/8B/14B + Ascend NPU，我们是 ~45M NTP + L20X/H100。模型规模差 2 个量级，论文强调收益随规模增加，小模型收益可能有限 — 需要小规模 ablation
+
+### 相关 idea
+
+- IDEA-onemall-2 (GRPO baseline): ReCast 在其之上插入 signal layer
+- IDEA-onerec-3 (ECPO): 正交改进, 可组合
+- IDEA-sgrec-0 (A2PO): 思路相似 (负例加权)，ReCast 更激进 (只留一个负例)
+- IDEA-gpr-0 (HEPO): 层级 reward，ReCast 层级 ranking
+- EXP-026 GRPO/ECPO 踩坑记录 (CLAUDE.md 中已记): 本 idea 是对该场景的系统性修复
+
+---
+
+## IDEA-raddpo-0: RAD-DPO — Robust Adaptive Denoising DPO for SID 生成式检索
+
+**优先级**: P1
+**来源**: RAD-DPO (JD.com, arxiv 2602.23964, Feb 2026)
+**状态**: 待讨论 — 三个子改造可独立集成到现有 DPO pipeline
+
+### 核心思想
+
+RAD-DPO 识别标准 DPO 在 SID 生成式检索上的**三个结构性缺陷**，每个有对应修正。JD.com 核心搜索 A/B: **UCVR +0.34%**。
+
+**缺陷 1 — 共享 prefix 的 gradient 冲突**: SID 层级 (L0→L1→L2), 相似 item 共享前缀。DPO 同时惩罚 preferred 和 rejected 共享 prefix → 梯度冲突, 破坏 hierarchy。
+**修正**: **Token-Level Gradient Detachment** — 对共享 prefix 位置, rejected 路径做 stop-gradient, 只让 preferred 贡献梯度。
+
+**缺陷 2 — Noisy pseudo-negatives**: user click log 的 "未点击=negative" 可能是曝光位置抑制的伪负例。DPO 等权处理 → 被污染。
+**修正**: **Similarity-based Dynamic Reward Weighting** — 按 "rejected vs ground-truth 的 embedding cosine" 动态缩放 loss 权重; 相似度高 → 降权。
+
+**缺陷 3 — Multi-label squeezing**: 电商多正例 (多个 valid items), vanilla DPO 把概率集中到单个 chosen → 挤压其他 co-valid。
+**修正**: **Multi-Label Global Contrastive + Global SFT Loss** — 整个 Y_pos 集合 vs. negative 集合做全局对比, 搭配 global SFT loss 覆盖所有正例。
+
+### 与当前项目的关联
+
+直接针对我们 DPO 踩坑:
+
+| 我们踩坑 | RAD-DPO 对应修正 |
+|---------|---------------|
+| EXP-018 hard DPO PPL→50K+ forgetting | Gradient detachment 保护 prefix |
+| EXP-026 GRPO sparse reward, std≈0 | Similarity weighting 给弱信号缩放 |
+| EXP-020 只关注 top-1 reward | Multi-label contrastive 覆盖多正例 |
+
+可与 IDEA-align3-0 (Progressive DPO)、IDEA-onerec-3 (ECPO) 正交叠加。与 IDEA-recast-0 (ReCast) 部分重叠: ReCast 只留 i+/i- 两极, RAD-DPO 覆盖全部 Y_pos。
+
+### 实验设计草案
+
+**Phase 1** — Gradient Detachment (最易, 1 天): `rl/dpo.py::compute_sid_logprobs` 对共享 prefix position 的 rejected 路径做 detach, 在 EXP-020 baseline 上 relaxed re-train, 对比 PPL/R@K 看是否降低 forgetting。
+
+**Phase 2** — Similarity-based Reward Weighting: 用 Qwen3 embedding cosine 计算 loss weight `1 - max(0, cos - threshold)`, 扫 threshold {0.5, 0.7, 0.9}。
+
+**Phase 3** — Multi-Label Global Contrastive: 从 session-level 数据构造 Y_pos 多正例, 加 global contrastive loss; 加权 `L = L_DPO + α · L_contrastive`。
+
+### 关键问题
+
+1. Gradient detach 要精确匹配共享 prefix, 不能误 detach diverge 后的 token
+2. Similarity threshold 选择 — 太低误伤真负例, 太高无效
+3. Multi-label 数据可得性 — 需要 session-level 多正例重新导出
+4. 与 ReCast 二选一或组合: 稀疏 reward 场景 ReCast 更激进, dense reward RAD-DPO 更优
+
+### 相关 idea
+
+- IDEA-align3-0 (Progressive DPO): curriculum, 正交
+- IDEA-onerec-3 (ECPO): clipping, 正交
+- IDEA-recast-0 (ReCast): multi-label vs boundary 对比
+- IDEA-sgrec-0 (A2PO): 负例 gating 思路类似
+- IDEA-rpo-0 (RPO): global SFT loss 一致

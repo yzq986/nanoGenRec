@@ -1,13 +1,15 @@
-# OPQ 超参数搜索结果
+# OPQ Hyperparameter Search Results (Combined)
 
-**生成时间**: 2026-04-13 14:28
-**模型**: qwen3-0.6b (1024d)
-**量化器**: OPQ (Optimized Product Quantization)
-**实验数量**: 3
+[English](exp004-combined-report.md) | [Chinese](exp004-combined-report.zh.md)
+
+**Generated**: 2026-04-13 14:28
+**Model**: qwen3-0.6b (1024d)
+**Quantizer**: OPQ (Optimized Product Quantization)
+**# Experiments**: 3
 
 ---
 
-## 完整结果
+## Full Results
 
 | # | m (tokens) | M (vocab) | bits | collision | entropy | Gini | recon_loss | time(s) |
 |---|-----------|-----------|------|-----------|---------|------|------------|---------|

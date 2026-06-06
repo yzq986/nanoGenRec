@@ -1,231 +1,233 @@
 # 001: SP-DPO vs SFT vs Contrastive Learning
 
+[English](001-sp-dpo-vs-sft-vs-contrastive.md) | [Chinese](001-sp-dpo-vs-sft-vs-contrastive.zh.md)
+
 **Date**: 2026-04-17
-**Context**: NTP 模型训练稳定后，讨论 RL alignment 的入门方案
+**Context**: After the NTP model training is stable, discuss the introductory solution for RL alignment.
 
 ---
 
-## 背景
+## Background
 
-SP-DPO (Self-Play DPO) 来自 Align³GR（快手，AAAI 2026 Oral，arxiv 2511.11255）。
-在讨论过程中，两个核心问题浮现：SP-DPO 跟 SFT 有什么区别？跟对比学习又有什么区别？
+SP-DPO (Self-Play DPO) comes from Align³GR (Kuaishou, AAAI 2026 Oral, arxiv 2511.11255).
+During the discussion, two core questions emerged: What is the difference between SP-DPO and SFT? What is the difference from comparative learning?
 
 ---
 
-## Q1: SP-DPO 和 SFT 的区别是什么？
+## Q1: What is the difference between SP-DPO and SFT?
 
-### 表面上看确实很像
+### It does look similar on the surface
 
 | | SFT (当前 NTP) | SP-DPO |
 |--|----------------|--------|
 | 正样本 | ground truth | ground truth |
-| 负样本 | 无（隐式） | 模型自己生成的 |
+| 负样本 | 无（隐式） | Model自己生成的 |
 
-SFT 也是拿 ground truth 训练，SP-DPO 的 chosen 也是 ground truth —— 区别在哪？
+SFT is also trained with ground truth, and SP-DPO's chosen is also ground truth - what is the difference?
 
-### 核心区别：loss 函数做的事不一样
+### Core difference: the loss function does different things
 
-**SFT（交叉熵）**：只说"把正确答案的概率推高"
+**SFT (Cross Entropy)**: Just says "Push the probability of the correct answer up"
 
 ```
 L_SFT = -log P(ground_truth | context)
 ```
 
-它**完全不关心**模型给错误候选打了多高的分。假设模型当前：
-- P(正确 item) = 0.3
-- P(很像但错误的 item) = 0.25
+It doesn't care at all how high the model scores the wrong candidate. Assume that the model currently:
+- P(correct item) = 0.3
+- P(similar but wrong item) = 0.25
 
-SFT 只管把 0.3 往上推。但因为这两个 item 的 SID 前缀相同（比如 L1、L2 都一样），
-推高正确 item 的概率时，**错误 item 的概率很可能也跟着涨**，因为它们共享前两层的
-token embedding 梯度。
+SFT just pushes 0.3 up. But because the SID prefixes of these two items are the same (for example, L1 and L2 are the same),
+When the probability of the correct item is pushed up, the probability of the wrong item is likely to also increase because they share the characteristics of the first two layers.
+token embedding gradient.
 
-**DPO**：说的是"拉大正确和错误之间的差距"
+**DPO**: It's about "widening the gap between right and wrong"
 
 ```
 L_DPO = -log σ( β · [log π_θ(y_w)/π_ref(y_w) - log π_θ(y_l)/π_ref(y_l)] )
                       ~~~~~~~~~~~~~~~~~~~~~~~~   ~~~~~~~~~~~~~~~~~~~~~~~~
-                        推高 chosen 的概率            推低 rejected 的概率
+Push up the probability of chosen Push down the probability of rejected
 ```
 
-它**同时做两件事**：推高 chosen，**并且显式压低 rejected**。
+It does two things simultaneously: pushes up chosen, and explicitly pushes down rejected.
 
-### 一个具体例子
+### A specific example
 
-用户历史 → ground truth 下一跳 SID = `[10, 20, 30]`
+User history → ground truth next hop SID = `[10, 20, 30]`
 
-模型 beam search 生成了这些候选：
+The model beam search generated these candidates:
 
-| 候选 | SID | 模型给的概率 |
+| 候选 | SID | Model给的概率 |
 |------|-----|------------|
 | A | [10, 20, 30] | 0.15 (正确) |
 | B | [10, 20, 77] | 0.12 (L1L2 对了，L3 错了) |
 | C | [10, 55, 88] | 0.10 (只 L1 对了) |
 | D | [99, 88, 77] | 0.03 (完全错) |
 
-**SFT 看到的**：只有 A 是 target，算 `-log 0.15`，反向传播。B、C、D 的存在它完全不知道。
+**What SFT sees**: Only A is the target, calculate `-log 0.15`, and perform backpropagation. It is completely unaware of the existence of B, C, and D.
 
-**SP-DPO 看到的**：
+**SP-DPO sees**:
 - chosen = A
 - rejected = {B, C, D}
-- loss 目标：把 A 和 B 之间的概率差距拉开，把 A 和 C 之间的差距拉开...
+- loss goal: widen the probability gap between A and B, widen the gap between A and C...
 
-**关键**：B（`[10, 20, 77]`）跟正确答案只差一个 token，SFT 的梯度根本区分不了它俩
-（前两步的 CE loss 对 B 也是正向的）。但 SP-DPO **显式地说"B 是错的，压低它"**。
+**Key**: There is only one token difference between B (`[10, 20, 77]`) and the correct answer. The gradient of SFT cannot distinguish the two at all.
+(The CE loss in the first two steps is also positive for B). But the SP-DPO explicitly says "B is wrong, suppress it".
 
-### 一句话总结
+### One sentence summary
 
-> **SFT 只告诉模型"什么是对的"，SP-DPO 额外告诉模型"你当前犯的哪些错误是错的"。**
+> **SFT only tells the model "what is right", SP-DPO additionally tells the model "which mistakes you are currently making are wrong". **
 
-SFT 是绝对信号（maximize ground truth），DPO 是对比信号（widen the gap）。
-SP-DPO 的"自博弈"本质就是：**用模型自己的错误作为针对性的负样本**，
-而不是 SFT 那样对所有非 ground truth 一视同仁。
+SFT is the absolute signal (maximize ground truth), and DPO is the contrast signal (widen the gap).
+The essence of SP-DPO's "self-game" is: **use the model's own errors as targeted negative samples**,
+Instead of treating all non-ground truth equally like SFT.
 
-### 但也要保持清醒
+### But we must also stay awake
 
-SP-DPO 跟"真正的 RL"（有外部 reward model 的 GRPO/ECPO）比起来，确实更接近 SFT
-的范畴。论文消融也说明了这一点 —— SP-DPO 单独的增益只有 **+4.7%~7.8%**，真正大的
-提升来自后面的 RF-DPO（引入真实用户反馈）。SP-DPO 更像是一个
-**SFT → 真正 RL 之间的过渡方案**。
+SP-DPO is indeed closer to SFT than "real RL" (GRPO/ECPO with external reward model)
+category. The ablation paper also illustrates this point - the gain of SP-DPO alone is only **+4.7%~7.8%**, which is really large
+Improvements come later with RF-DPO (introducing real user feedback). SP-DPO is more like a
+**Transition scheme between SFT → true RL**.
 
 ---
 
-## Q2: SP-DPO 和对比学习的区别是什么？
+## Q2: What is the difference between SP-DPO and contrastive learning?
 
-对比学习也是"拉近正样本、推远负样本"，和 DPO 做的事情看起来一模一样。
+Contrastive learning is also "pull the positive samples closer and push the negative samples farther away", which looks exactly the same as what DPO does.
 
-### 形式上的相似性
+###Formal similarity
 
-**对比学习（InfoNCE）**：
+**Contrastive Learning (InfoNCE)**:
 ```
 L = -log [ exp(sim(anchor, pos)) / Σ exp(sim(anchor, neg_i)) ]
 ```
-推高 anchor 和 positive 的相似度，推低和 negative 的相似度。
+Push up the similarity between anchor and positive, and push down the similarity between anchor and negative.
 
-**DPO**：
+**DPO**:
 ```
 L = -log σ( β · [log π(chosen|x)/π_ref(chosen|x) - log π(rejected|x)/π_ref(rejected|x)] )
 ```
-推高 chosen 的生成概率，推低 rejected 的生成概率。
+Push up the generation probability of chosen and lower the generation probability of rejected.
 
-结构高度相似 —— 都是对比式的 loss。但区别在三个地方：
+The structures are highly similar - both are contrasting losses. But the difference lies in three places:
 
-### 区别 1：优化的对象不同
+### Difference 1: Optimization objects are different
 
-| | 对比学习 | DPO |
+| | Comparison学习 | DPO |
 |--|---------|-----|
 | 作用在 | **表示空间**（embedding） | **生成概率**（token-by-token） |
-| 输出 | 一个向量，算 cosine similarity | 一个序列的联合概率 P(L1)·P(L2\|L1)·P(L3\|L1,L2) |
-| 粒度 | item 级别："这个 item 整体像不像" | token 级别："在 L1=10, L2=20 的条件下，L3 应该选 30 而不是 77" |
+| Output | 一个向量，算 cosine similarity | 一个序列的联合概率 P(L1)·P(L2\|L1)·P(L3\|L1,L2) |
+| 粒度 | item Level："这个 item 整体像不像" | token Level："在 L1=10, L2=20 的条件下，L3 应该选 30 而不是 77" |
 
-这是最本质的区别。SID 是 3 步自回归生成的，DPO 调整的是**每一步的条件概率**。
+This is the most essential difference. SID is generated by 3-step autoregression, and DPO adjusts the conditional probability of each step.
 
-举例：chosen=`[10,20,30]`，rejected=`[10,20,77]`
+Example: chosen=`[10,20,30]`, rejected=`[10,20,77]`
 
-- **对比学习**：把这两个 SID 视为两个"整体"，在 embedding 空间拉远。但它不知道
-  "前两步是对的，只有第三步错了"。
-- **DPO**：P(L3=30 | L1=10, L2=20) 要升高，P(L3=77 | L1=10, L2=20) 要降低。
-  精确到第三步条件概率的修正。
+- **Contrastive learning**: Treat these two SIDs as two "wholes" and zoom out in the embedding space. but it doesn't know
+  "The first two steps are right, only the third step is wrong."
+- **DPO**: P(L3=30 | L1=10, L2=20) should be increased, P(L3=77 | L1=10, L2=20) should be decreased.
+  Accurate to the correction of the third step conditional probability.
 
-### 区别 2：有 reference model 约束
+### Difference 2: There are reference model constraints
 
-DPO 的 loss 里有 **π_ref**（冻结的 SFT 模型），对比学习没有：
+There is **π_ref** (frozen SFT model) in DPO's loss, but not in contrastive learning:
 
 ```
-DPO 优化的不是 "让 chosen 概率最大化"
-而是   "让 chosen 相对于 π_ref 的提升 > rejected 相对于 π_ref 的提升"
+What DPO optimizes is not "maximizing the probability of chosen"
+Rather "let the promotion of chosen relative to π_ref > the promotion of rejected relative to π_ref"
 ```
 
-这个约束防止模型跑太远 —— 本质上等价于 RL 中的 KL penalty。
+This constraint prevents the model from going too far - essentially equivalent to the KL penalty in RL.
 
-对比学习没有这个锚点，表示空间可以自由漂移，容易发生 **representation collapse**
-或者把 SFT 阶段学到的知识冲掉。
+Contrastive learning does not have this anchor point, so the representation space can drift freely and **representation collapse** is prone to occur.
+Or wash away the knowledge learned in the SFT stage.
 
-### 区别 3：理论来源不同
+### Difference 3: Different theoretical sources
 
-- **对比学习**：来自度量学习 / 自监督学习，目标是学好表示
-- **DPO**：来自 RLHF，是 KL 约束下 reward 最大化的**闭式解**
+- **Contrastive Learning**: From metric learning/self-supervised learning, the goal is to learn representation well
+- **DPO**: From RLHF, it is the **closed form solution** of reward maximization under KL constraints
 
-DPO 等价于：
+DPO is equivalent to:
 ```
-max_π  E[reward(chosen)] - β·KL(π || π_ref)
+max_π E[reward(chosen)] - β·KL(π || π_ref)
 ```
-只不过不需要显式训练 reward model，直接用 preference pair 隐式优化。
-对比学习没有这个 RL 对应关系。
+However, there is no need to explicitly train the reward model, and directly use the preference pair to optimize implicitly.
+Contrastive learning does not have this RL correspondence.
 
-### 本项目的直接证据
+### Direct evidence of this project
 
-EXP-007 做过 **I2I 对比学习微调 tokenizer embedding**，结论是**无效**。
-对比学习在 embedding 空间拉远不同 item，但这对下游自回归生成的帮助有限 ——
-因为 NTP 模型的瓶颈不在"表示不够好"，而在"生成决策不够准"。
+EXP-007 has done **I2I comparative learning fine-tuning tokenizer embedding**, and the conclusion is that it is **invalid**.
+Contrastive learning distances different items in the embedding space, but this has limited help for downstream autoregressive generation -
+Because the bottleneck of the NTP model is not "the representation is not good enough", but "the decision making is not accurate enough".
 
-DPO 直接作用在生成决策层面，所以理论上更 match 这个问题。
+DPO directly acts on the decision-making level, so it theoretically better matches this problem.
 
-### 一句话总结
+### One sentence summary
 
-> **对比学习在表示空间说"这俩不像"，DPO 在生成空间说"在这个上下文下，应该生成这个而不是那个"。**
+> **Contrast learning says "these two are not alike" in the representation space, and DPO says "in this context, this should be generated instead of that" in the generation space. **
 
 ---
 
-## 方法谱系
+## Method Genealogy
 
 ```
-SFT（只有正样本）
-  → 对比学习（加负样本，在 embedding 空间优化）
-    → DPO（加负样本，在生成概率空间优化，带 KL 约束）
-      → GRPO/PPO（真正的 RL，带显式 reward model）
+SFT (only positive samples)
+→ Contrastive learning (adding negative samples, optimizing in embedding space)
+→ DPO (add negative samples, optimize in the generation probability space, with KL constraints)
+→ GRPO/PPO (real RL with explicit reward model)
 ```
 
-SP-DPO 处在中间位置 —— 比对比学习更适合生成式模型，但比 GRPO 更轻量。
+SP-DPO is somewhere in the middle - more suitable for generative models than contrastive learning, but lighter than GRPO.
 
 ---
 
-## SP-DPO 补充：Align³GR 论文细节
+## SP-DPO Supplement: Align³GR paper details
 
-### 基本流程
+### Basic process
 
 ```
-NTP 模型 (SFT 训练好的)
-    │  beam search 生成候选 SID
+NTP model (SFT trained)
+│ beam search generates candidate SIDs
     ▼
-模型自己的生成结果 = rejected (负样本)
-用户真实下一跳 item  = chosen   (正样本)
+The model’s own generated result = rejected (negative sample)
+User's real next hop item = chosen (positive sample)
     │
     ▼
-构造 preference pair → Softmax-DPO loss 优化
+Construct preference pair → Softmax-DPO loss optimization
 ```
 
-### Prefix N-gram 难度定义
+### Prefix N-gram difficulty definition
 
-利用 SID 3 层层级结构定义负样本难度：
+Define the difficulty of negative samples using the SID 3-layer hierarchy:
 
-| 难度 | Prefix 重叠 | 含义 |
+| 难度 | Prefix 重叠 | Meaning |
 |------|------------|------|
 | Easy | 无共享前缀 | 完全不相关，容易区分 |
-| Medium | L1 相同 | 粗粒度类目相同，中等难度 |
-| Hard | L1+L2 相同 | 高度相似，仅细粒度不同 |
+| Medium | L1 相同 | 粗粒度类目相同，Medium等难度 |
+| Hard | L1+L2 相同 | High度相似，仅细粒度Different |
 
-### 渐进式训练（Curriculum Learning）
+### Progressive training (Curriculum Learning)
 
 ```
-Stage 1 (Easy)  → π_θ^1 成为下一阶段 π_ref
-Stage 2 (Medium) → π_θ^2 成为下一阶段 π_ref
-Stage 3 (Hard)  → π_θ^3 成为下一阶段 π_ref (SP-DPO 结束)
+Stage 1 (Easy) → π_θ^1 becomes the next stage π_ref
+Stage 2 (Medium) → π_θ^2 becomes the next stage π_ref
+Stage 3 (Hard) → π_θ^3 becomes the next stage π_ref (SP-DPO ends)
 Stage 4 (RF-DPO Easy:  liked vs disliked)
 Stage 5 (RF-DPO Hard:  liked vs neutral)
 ```
 
-### 关键超参
+### Key hyperparameters
 
-| 参数 | 值 |
+| Parameter | Value |
 |------|-----|
 | rejected 数量 | 20 / sample |
-| SP-DPO 阶段 | 3 (Easy→Medium→Hard) |
-| RF-DPO 阶段 | 2 (Easy→Hard) |
+| SP-DPO Phase | 3 (Easy→Medium→Hard) |
+| RF-DPO Phase | 2 (Easy→Hard) |
 | Loss | Softmax-DPO (支持 1 chosen vs N rejected) |
 
-### 消融结果
+### Ablation results
 
-| 方法 | Recall@10 | vs baseline |
+| Method | Recall@10 | vs baseline |
 |------|-----------|-------------|
 | Softmax-DPO (普通) | 0.1295 | — |
 | SP-DPO (无渐进) | 0.1356 | +4.7% |
