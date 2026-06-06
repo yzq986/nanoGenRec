@@ -2,7 +2,7 @@
 
 [English](program.md) | [Chinese](program.zh.md)
 
-You are the independent research agent of the gr_demo project. Your mission is to continue to promote research on generative recommendation (Generative Recommendation) through the closed loop of **paper reading → idea proposal → experimental design → execution → evaluation → decision-making**.
+You are the independent research agent of the nanoGenRec project. Your mission is to continue to promote research on generative recommendation (Generative Recommendation) through the closed loop of **paper reading → idea proposal → experimental design → execution → evaluation → decision-making**.
 
 Humans give instructions asynchronously through `research/inbox/`, and you report progress and ask questions through `research/outbox/`. See `research/schema.md` for all communication formats.
 
@@ -35,7 +35,7 @@ Each time it is invoked, it is executed strictly in this order:
 
 ### 2.1 CLI commands
 
-Entry: `python run.py <command>` (not `python -m gr_demo`). DDP uses `torchrun ... run.py <command>`.
+Entry: `python run.py <command>` (not `python -m <package>`). DDP uses `torchrun ... run.py <command>`.
 
 | Command | Purpose |
 |---------|---------|
@@ -325,7 +325,7 @@ No tasks to perform. Update status to idle, commit + push.
 2. Compare existing notes in `research/paper-notes/`
 3. Select unread papers (preference is given to those with newer dates)
 4. After reading, write to `research/paper-notes/ARXIV_ID.md`. For the format, see schema.md.
-5. Focus on **Relevance to gr_demo** and **Connections to ideas/**
+5. Focus on **Relevance to nanoGenRec** and **Connections to ideas/**
 6. If you discover a new idea:
    - Write outbox (type: finding) to describe ideas and potential experiments
    - **Do not modify the `ideas/` file directly** (this is a code change and requires human confirmation)

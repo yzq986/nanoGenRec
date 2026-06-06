@@ -136,7 +136,7 @@ ACTION_TYPE 枚举：
 ## Key Results
 （关键数字/表格）
 
-## Relevance to gr_demo
+## Relevance to nanoGenRec
 （具体可应用的点）
 
 ## Connections

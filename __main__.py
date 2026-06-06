@@ -1,4 +1,4 @@
-"""python -m gr_demo 入口。"""
+"""Compatibility module entry point; prefer `python run.py <command>`."""
 
 from cli import main
 

@@ -136,7 +136,7 @@ ACTION_TYPE enumeration:
 ## Key Results
 (Key Figures/Table)
 
-## Relevance to gr_demo
+## Relevance to nanoGenRec
 (Specific applicable points)
 
 ## Connections

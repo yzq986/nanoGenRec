@@ -52,17 +52,17 @@ The two refer to each other without duplication. After each code change or exper
 
 ## Python module resolution
 
-The repo root (`gr-demo/`) is added directly to `sys.path`. All modules are imported without a
-`gr_demo.` prefix — e.g. `from eval.batch import ...`, `from ntp.train import ...`.
+The repository root is added directly to `sys.path`. All modules are imported without a
+a package prefix — e.g. `from eval.batch import ...`, `from ntp.train import ...`.
 
 For standalone scripts under `experiments/scripts/`:
 
 ```python
 repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, repo_root)  # adds gr-demo/ itself
+sys.path.insert(0, repo_root)  # adds the repository root itself
 ```
 
-The CLI entry point is always `python run.py <command>`, NOT `python -m gr_demo`.
+The CLI entry point is always `python run.py <command>`, NOT `python -m <package>`.
 For DDP/torchrun, use `torchrun ... run.py <command>`.
 
 **Shell scripts (.sh) must also set PYTHONPATH**: add at the top of the script (after `set -euo pipefail`):
@@ -73,7 +73,7 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 cd "${REPO_ROOT}"
 ```
 
-Note that it is `${REPO_ROOT}` itself (i.e. `gr-demo/`), **not the parent directory**.
+Note that it is `${REPO_ROOT}` itself, **not the parent directory**.
 
 ## New experimental standard process
 

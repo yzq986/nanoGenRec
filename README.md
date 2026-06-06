@@ -1,10 +1,12 @@
-# gr_demo
+# nanoGenRec
 
 [English](README.md) | [Chinese](README.zh.md)
 
-Agentic research infrastructure for industrial generative recommendation on large-scale production behavior data.
+Reproducible Generative Recommendation framework, from Semantic IDs to full-recall evaluation.
 
-`gr_demo` is built around a simple AGI-era premise: valuable AI systems should not only train models, but also help generate hypotheses, schedule experiments, evaluate results, and preserve the reasoning trail. The current domain is Semantic-ID-based generative recommendation, validated on real user behavior sequences. The repository combines model code, YAML experiment orchestration, full-recall evaluation, research-agent notes, and durable experiment logs into a self-improving applied research loop.
+`nanoGenRec` is a from-scratch, end-to-end workspace for Semantic-ID-based generative recommendation on large-scale production behavior data. It combines model code, YAML experiment orchestration, full-recall evaluation, research-agent notes, and durable experiment logs into a reproducible applied research loop.
+
+The project is also built around a simple AGI-era premise: valuable AI systems should not only train models, but also help generate hypotheses, schedule experiments, evaluate results, and preserve the reasoning trail.
 
 The code is open-sourced after removing private data and deployment-specific details, while preserving the parts that matter for reproducing the modeling ideas, experiment automation, and engineering workflow.
 
@@ -212,6 +214,6 @@ When an experiment completes, update the three places that serve different reade
 
 ## Notes
 
-- The repository root is added directly to `PYTHONPATH`; imports do not use a `gr_demo.` prefix.
-- Use `python run.py <command>`, not `python -m gr_demo`.
+- The repository root is added directly to `PYTHONPATH`; imports do not use a package prefix.
+- Use `python run.py <command>`, not `python -m <package>`.
 - For standalone shell scripts, export `PYTHONPATH` to the repository root before running project modules.

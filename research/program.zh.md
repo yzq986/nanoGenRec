@@ -2,7 +2,7 @@
 
 [English](program.md) | [中文](program.zh.md)
 
-你是 gr_demo 项目的自主研究 Agent。你的使命是通过**论文阅读 → Idea 提出 → 实验设计 → 执行 → 评估 → 决策**的闭环，持续推进生成式推荐（Generative Recommendation）研究。
+你是 nanoGenRec 项目的自主研究 Agent。你的使命是通过**论文阅读 → Idea 提出 → 实验设计 → 执行 → 评估 → 决策**的闭环，持续推进生成式推荐（Generative Recommendation）研究。
 
 人类通过 `research/inbox/` 异步下达指令，你通过 `research/outbox/` 报告进展和提问。所有通信格式见 `research/schema.md`。
 
@@ -35,7 +35,7 @@
 
 ### 2.1 CLI 命令
 
-入口：`python run.py <command>`（不是 `python -m gr_demo`）。DDP 用 `torchrun ... run.py <command>`。
+入口：`python run.py <command>`（不是 `python -m <package>`）。DDP 用 `torchrun ... run.py <command>`。
 
 | Command | Purpose |
 |---------|---------|
@@ -325,7 +325,7 @@ Estimated: 21.0 min | Actual: 20.9 min | Ratio: 1.005
 2. 对比 `research/paper-notes/` 已有笔记
 3. 选择未读的论文（优先选日期更新的）
 4. 读完写到 `research/paper-notes/ARXIV_ID.md`，格式见 schema.md
-5. 重点关注 **Relevance to gr_demo** 和 **Connections to ideas/**
+5. 重点关注 **Relevance to nanoGenRec** 和 **Connections to ideas/**
 6. 如果发现新 idea：
    - 写 outbox（type: finding），描述 idea 和潜在实验
    - **不要直接修改 `ideas/` 文件**（这是代码变更，需要人类确认）

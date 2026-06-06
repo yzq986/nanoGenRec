@@ -1,10 +1,12 @@
-# gr_demo
+# nanoGenRec
 
 [English](README.md) | [中文](README.zh.md)
 
-`gr_demo` 是一个基于大规模真实行为数据产出的工业级生成式推荐研究项目，也是一套面向 AI 自主实验的 agentic research infrastructure。
+`nanoGenRec` 是一个从 0 到 1 可复现的生成式推荐框架，覆盖 Semantic ID 构建、NTP 训练和全量召回评测。
 
-这个项目的出发点很接近 AGI/ASI 时代对科研系统的要求：AI 不只负责训练模型，还应该参与提出假设、设计实验、编排任务、评估结果，并保留可追溯的推理链路。当前落地场景是 Semantic-ID-based generative recommendation，并已经在真实用户行为序列上验证。仓库把模型代码、YAML 实验编排、全量召回评测、research agent 笔记和长期实验日志放在同一个闭环里，形成一套可持续迭代的应用研究系统。
+它基于大规模真实行为数据产出，围绕 Semantic-ID-based generative recommendation，把模型代码、YAML 实验编排、全量召回评测、research agent 笔记和长期实验日志放在同一个 workspace 里。
+
+这个项目的出发点也很接近 AGI/ASI 时代对科研系统的要求：AI 不只负责训练模型，还应该参与提出假设、设计实验、编排任务、评估结果，并保留可追溯的推理链路。
 
 当前开源版本已经剥离私有数据和部署细节，但保留了可复现建模思路、实验自动化和工程工作流。
 
@@ -200,6 +202,6 @@ echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN c
 
 ## 注意事项
 
-- 仓库根目录直接加入 `PYTHONPATH`，模块导入不带 `gr_demo.` 前缀。
-- CLI 入口是 `python run.py <command>`，不是 `python -m gr_demo`。
+- 仓库根目录直接加入 `PYTHONPATH`，模块导入不带包名前缀。
+- CLI 入口是 `python run.py <command>`，不是 `python -m <package>`。
 - 独立 shell 脚本需要先把 `PYTHONPATH` 设置为仓库根目录。
