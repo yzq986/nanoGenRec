@@ -6,6 +6,17 @@ Industrial generative recommendation research project built from large-scale pro
 
 `gr_demo` is an applied research system for Semantic-ID-based generative recommendation. It turns item embeddings into discrete Semantic IDs, trains autoregressive recommenders over real user behavior sequences, evaluates full-recall retrieval quality, and records the experimental path from tokenizer design to NTP scaling laws and post-training alignment. The code is open-sourced after removing private data and deployment-specific details, while preserving the parts that matter for reproducing the modeling ideas and engineering workflow.
 
+## Quantitative Snapshot
+
+| Dimension | Scale / Result | Source |
+|-----------|----------------|--------|
+| Experiment record | 51 logged experiments across tokenizer, NTP, side features, temporal encoding, and RL alignment | [experiments/logs/](experiments/logs/README.md) |
+| Behavior data sweep | up to 7.85M users, 299.0M raw interactions, and ~445M effective SID tokens after sequence truncation | [EXP-016](experiments/logs/exp-016.md) |
+| Scaling law sweep | 7 model sizes from 1.7M to 101.1M active parameters on 262M tokens | [EXP-015](experiments/logs/exp-015.md) |
+| Tokenizer sweep | 14 Semantic ID variants over 0.6B/4B embeddings, 4096/8192 codebooks, and FSQ hidden sizes | [EXP-049](experiments/logs/exp-049.md) |
+| Best NTP full eval | M-tier 4B SID model reaches R@500=70.4% and R@10=14.2% over ~49K eval items | [EXP-043](experiments/logs/ntp/README.md) |
+| Best post-training recovery | on-policy ECPO recovers off-policy collapse from R@500=2.0% to 67.8% | [EXP-029](experiments/logs/exp-029.md) |
+
 ## Highlights
 
 - **Production-grounded experiments**: modeling choices are evaluated against large-scale real behavior logs, not synthetic recommendation tasks.

@@ -6,6 +6,17 @@
 
 项目围绕 Semantic-ID-based generative recommendation 构建了一套完整的应用研究系统：把 item embedding 转换为离散 Semantic ID，在真实用户行为序列上训练自回归推荐模型，用全量召回评测验证效果，并记录从 tokenizer 设计、NTP scaling law 到后训练对齐的实验路径。当前开源版本已经剥离私有数据和部署细节，但保留了可复现建模思路、实验组织方式和工程实现。
 
+## 量化概览
+
+| 维度 | 规模 / 结果 | 来源 |
+|------|-------------|------|
+| 实验记录 | 51 个已记录实验，覆盖 tokenizer、NTP、side features、temporal encoding 和 RL alignment | [experiments/logs/](experiments/logs/README.md) |
+| 行为数据 sweep | 最大窗口覆盖 7.85M 用户、299.0M raw interactions，截断后约 445M effective SID tokens | [EXP-016](experiments/logs/exp-016.md) |
+| Scaling law sweep | 7 个模型规模，从 1.7M 到 101.1M active parameters，在 262M tokens 上拟合 | [EXP-015](experiments/logs/exp-015.md) |
+| Tokenizer sweep | 14 个 Semantic ID variants，覆盖 0.6B/4B embeddings、4096/8192 codebooks 和 FSQ hidden sizes | [EXP-049](experiments/logs/exp-049.md) |
+| NTP 最好全量评测 | M-tier 4B SID 模型在约 49K eval items 上达到 R@500=70.4%、R@10=14.2% | [EXP-043](experiments/logs/ntp/README.md) |
+| 后训练最好恢复 | on-policy ECPO 将 off-policy collapse 从 R@500=2.0% 恢复到 67.8% | [EXP-029](experiments/logs/exp-029.md) |
+
 ## 亮点
 
 - **真实业务数据驱动**：核心建模选择来自大规模真实行为日志上的实验验证，不是 synthetic toy benchmark。
