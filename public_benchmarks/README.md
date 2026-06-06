@@ -63,18 +63,19 @@ CPU is enough for smoke runs; free T4/L4/A100 time can be used for larger runs.
 
 ## Current Smoke Result
 
-A checked-in CPU smoke result is available at
+A checked-in full CPU result is available at
+[results/ml-latest-small-full-cpu.md](results/ml-latest-small-full-cpu.md).
+The smaller smoke run is retained at
 [results/ml-latest-small-smoke.md](results/ml-latest-small-smoke.md).
 
 Summary:
 
-| Dataset | Device | Users | Items | Model | item_recall@50 | target SID found |
-|---------|--------|-------|-------|-------|----------------|------------------|
-| `ml-latest-small` | CPU | 500 | 5,667 | dense 2-layer, dim=64 | 0.010 | 0.030 |
+| Dataset | Device | Users | Items | Model | Eval samples | item_recall@50 | target SID found |
+|---------|--------|-------|-------|-------|--------------|----------------|------------------|
+| `ml-latest-small` | CPU | 603 | 6,298 | dense 2-layer, dim=96 | 500 | 0.032 | 0.052 |
 
 This result validates the public path. It should not be read as a competitive
-benchmark because it uses weak title/genre hash features, a tiny model, and only
-100 eval samples.
+benchmark because it uses weak title/genre hash features and a tiny CPU model.
 
 ## Outputs
 

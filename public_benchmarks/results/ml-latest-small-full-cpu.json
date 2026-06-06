@@ -1,0 +1,22 @@
+{
+  "dataset": "ml-latest-small",
+  "purpose": "CPU public reproducibility run, not a competitive benchmark",
+  "command": "python3 run.py public-movielens --dataset ml-latest-small --output_dir public_benchmarks/runs/ml-latest-small-full-cpu --epochs 5 --max_users 0 --clusters 64,64,64 --embed_dim 96 --n_heads 4 --layers 2 --batch_size 64 --eval_samples 500 --beam_size 100 --max_seq_len 128 --kmeans_iters 10",
+  "device": "cpu",
+  "n_users": 603,
+  "n_items": 6298,
+  "n_train_examples": 603,
+  "n_eval_examples": 603,
+  "n_eval_samples": 500,
+  "n_clusters_per_layer": [64, 64, 64],
+  "embed_dim": 96,
+  "layers": 2,
+  "epochs": 5,
+  "final_train_loss": 4.0093,
+  "final_train_ppl": 55.11,
+  "item_recall@1": 0.0,
+  "item_recall@5": 0.006,
+  "item_recall@10": 0.008,
+  "item_recall@50": 0.032,
+  "target_sid_found_rate": 0.052
+}
