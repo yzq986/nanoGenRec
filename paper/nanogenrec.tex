@@ -33,6 +33,8 @@ The public literature now contains strong system diagrams and deployment evidenc
 
 We introduce \textsc{nanoGenRec}, an open-source framework and empirical record for landing Semantic-ID-based generative recommendation. The project is built from production-grounded experiments, with private data and deployment-specific details removed. Its purpose is not to claim a new recommendation algorithm. Instead, it shows how the GR stack can be assembled, executed, evaluated, debugged, and iterated in a reproducible workspace. The accompanying experiment lineage records both positive results and failure modes, making the framework useful as a reference implementation and as an operational checklist.
 
+The claim boundary is explicit. \textsc{nanoGenRec} does not claim online production gains, a new tokenization algorithm, or a new preference-optimization objective. Its contribution is a landed framework: the code paths, experiment contracts, evaluation protocol, and logs needed to make Semantic-ID GR run as a real retrieval system and to reproduce a set of useful GR behaviors under that framework.
+
 This report makes four contributions:
 
 \begin{enumerate}
@@ -49,6 +51,8 @@ This report makes four contributions:
 Semantic-ID GR represents each item as a short sequence of discrete tokens. Recommendation then becomes conditional generation: given a user's behavior history, a model predicts the token sequence of the next target item. This formulation allows recommendation to reuse autoregressive modeling, beam search, MoE scaling, and post-training alignment ideas from generative AI.
 
 Recent industrial systems have explored this direction from complementary angles. OneRec introduced an end-to-end generative architecture and reported production deployment with scaling and reinforcement learning evidence~\citep{onerec}. OneRec-V2 improved scalability with a lazy decoder-only design and real-world preference alignment~\citep{onerecv2}. OneMall unified several e-commerce scenarios with Semantic Tokenization, Transformer-based generation, and RL alignment~\citep{onemall}. GenRec introduced page-wise NTP, token merging, and GRPO-SR for preference-oriented recommendation~\citep{genrec}. OneLive adapted the paradigm to live-streaming with dynamic tokenization and multi-objective alignment~\citep{onelive}. GR4AD studied production advertising with value-aware learning and dynamic beam serving~\citep{gr4ad}.
+
+These papers establish that GR can work in large industrial systems. \textsc{nanoGenRec} addresses a different layer of the problem: the missing reproducible workspace between those system descriptions and a runnable research implementation. It therefore complements prior work by exposing the operational interfaces, experiment governance, and failure records needed to iterate on GR outside the original production stacks.
 
 \subsection{Reproducibility Gap}
 
@@ -79,6 +83,27 @@ The framework consists of six stages:
   \item \textbf{Full-recall evaluation.} SID-constrained beam search generates candidate item IDs, and Recall@K is computed with $K\in\{10,50,100,500\}$.
   \item \textbf{Experiment governance.} YAML configs, registry hashes, duplicate-run checks, queue-based execution, and phase-level README files preserve experiment lineage.
 \end{enumerate}
+
+Table~\ref{tab:framework-artifact} summarizes the framework as a set of landing checks rather than only software modules.
+
+\begin{table}[t]
+\centering
+\caption{Framework components and the landing checks they make reproducible.}
+\label{tab:framework-artifact}
+\begin{tabular}{lll}
+\toprule
+Component & Landing check & Artifact produced \\
+\midrule
+SID tokenizer & Items map to valid multi-token IDs & SID cache and tokenizer metrics \\
+NTP preprocessing & Behavior logs become training/eval shards & Date-bound shard configs \\
+Transformer+MoE NTP & Histories predict next-item SID tokens & Checkpoints and train metadata \\
+Constrained decoding & Generated tokens map back to real items & Full-recall candidate lists \\
+Evaluation & Metrics use generated item IDs & Recall@K reports \\
+Experiment runner & Runs are reproducible and deduplicated & YAML configs and registry hashes \\
+Experiment logs & Results and failures are auditable & EXP notes and phase READMEs \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Experiment Orchestration}
 
@@ -122,6 +147,8 @@ L-tier & 512 & 12 & 16 & $\sim$101.1M \\
 Full evaluation uses SID-constrained beam search and reports item recall at several cutoffs. Unless otherwise stated, reported R@K values refer to full evaluation rather than inline training evaluation. This distinction matters because inline evaluation uses a limited candidate set and is intended for training health checks.
 
 \section{Framework Validation and Empirical Study}
+
+\textsc{nanoGenRec} validates the framework by asking whether the complete loop can reproduce behaviors that matter for GR practitioners. The following sections are therefore not independent benchmark claims. They are evidence that the same framework can support model scaling analysis, data-window analysis, tokenizer diagnosis, full-recall retrieval, and post-training alignment debugging.
 
 \subsection{NTP Model Scaling}
 
@@ -291,7 +318,7 @@ Three lessons recur across the experiment lineage. First, landing GR requires fu
 
 \section{Limitations}
 
-This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as framework-validated engineering evidence rather than final algorithmic conclusions. Finally, public benchmark reproduction remains future work.
+This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as framework-validated engineering evidence rather than final algorithmic conclusions. The most important next step is public benchmark reproduction: adding a fully redistributable dataset path would let external users verify not only the code structure but also the reported empirical trends.
 
 \section{Conclusion}
 
