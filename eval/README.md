@@ -1,5 +1,7 @@
 # eval/
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Evaluation framework for tokenizer metrics, behavior-aware metrics, batch reports, and full-recall NTP evaluation.
 
 Use this module to evaluate one model, compare multiple runs, or generate reports that can be linked from experiment logs.

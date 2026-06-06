@@ -1,5 +1,7 @@
 # Experiment Logs
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Human-readable experiment records, organized by research phase.
 
 This directory is for conclusions, comparisons, and next-step planning. Code interfaces and implementation details belong in the module READMEs, while raw artifacts live under `experiments/`.

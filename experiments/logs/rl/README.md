@@ -1,5 +1,7 @@
 # RL Alignment Experiments
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Experiment summary for preference learning and RL-style alignment on top of NTP checkpoints.
 
 Implementation details live in [rl/README.md](../../../rl/README.md). This file tracks validated alignment paths and current results.

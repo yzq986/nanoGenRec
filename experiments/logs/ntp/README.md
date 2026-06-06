@@ -1,5 +1,7 @@
 # NTP Experiments
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Experiment summary for autoregressive recommendation over Semantic ID sequences.
 
 Implementation details live in [ntp/README.md](../../../ntp/README.md). This file tracks the current baselines, validated improvements, and experiment lineage.

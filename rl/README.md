@@ -1,5 +1,7 @@
 # rl/
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Preference learning and RL-style alignment for NTP recommenders.
 
 This module starts from an SFT NTP checkpoint and applies preference or reward-based optimization. The validated sequence is SP-DPO -> RF-DPO -> ECPO, with GRPO-style grouped advantages used by the RL stages.

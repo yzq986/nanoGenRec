@@ -1,5 +1,7 @@
 # ntp/
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Next-token prediction recommender over Semantic ID sequences.
 
 The NTP module trains Transformer + MoE models that read user behavior histories encoded as SID tokens and generate the next item SID under a constrained beam search.

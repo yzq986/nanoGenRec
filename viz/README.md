@@ -1,5 +1,7 @@
 # viz/
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Post-training visualization utilities for NTP and alignment experiments.
 
 The tools read `train_meta.json` and `train_log.jsonl` from `experiments/ntp_checkpoints/` and produce lightweight plots for experiment review.

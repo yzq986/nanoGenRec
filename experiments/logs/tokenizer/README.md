@@ -1,5 +1,7 @@
 # Tokenizer Experiments
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Experiment summary for Semantic ID tokenization: embedding quality, residual KMeans, FSQ codebooks, collision, balance, and behavior-aware proxy metrics.
 
 Code-level documentation lives in [tokenizer/README.md](../../../tokenizer/README.md). This file tracks conclusions and recommended settings.

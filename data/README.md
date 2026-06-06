@@ -1,5 +1,7 @@
 # data/
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Data loading, export, embedding synchronization, and distributed encoding utilities.
 
 This module connects raw item/behavior data to the tokenizer and NTP pipelines. It supports both local and remote paths, but downstream experiments should consume stable cache directories under `experiments/`.

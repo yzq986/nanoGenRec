@@ -1,0 +1,216 @@
+---
+name: paper-search
+description: Search arxiv for industrial generative recommendation papers, download PDFs, extract text, and file ideas into ideas/ topic files
+argument-hint: [search query or company name]
+disable-model-invocation: true
+allowed-tools: Read, Edit, Write, Glob, Grep, Bash, WebSearch, WebFetch
+---
+
+# /paper-search Skill
+
+Search arxiv for industrial-scale generative recommendation papers, **download PDFs and convert to text**, evaluate them, and extract actionable ideas using the `/idea` workflow.
+
+## Instructions
+
+### Step 0: Ensure dependencies
+
+Run once at the start of a session:
+
+```bash
+pip install pymupdf 2>/dev/null
+```
+
+This is needed for PDF → text conversion.
+
+### Step 0.5: Backfill missing PDFs
+
+Older `ideas/*.md` entries were filed before PDF download was required. Before searching for new papers, reconcile:
+
+```bash
+python3 -c "
+import re, os, glob, subprocess, sys, time
+try: import fitz
+except ImportError: subprocess.run(['pip','install','-q','pymupdf']); import fitz
+ids = set()
+for f in glob.glob('ideas/*.md'):
+    for m in re.findall(r'\b(\d{4}\.\d{4,5})\b', open(f).read()):
+        ids.add(m)
+on_disk = {os.path.splitext(os.path.basename(f))[0] for f in glob.glob('papers/*.pdf')} | {os.path.splitext(os.path.basename(f))[0] for f in glob.glob('papers/*.txt')}
+missing = sorted(ids - on_disk)
+print(f'Missing: {len(missing)}')
+for i, aid in enumerate(missing, 1):
+    pdf, txt = f'papers/{aid}.pdf', f'papers/{aid}.txt'
+    if not os.path.exists(pdf):
+        r = subprocess.run(['curl','-L','-s','-f','--max-time','60','-o',pdf,f'https://arxiv.org/pdf/{aid}'], capture_output=True)
+        if r.returncode != 0 or os.path.getsize(pdf) < 10000:
+            print(f'[{i}] {aid} DL FAIL'); os.path.exists(pdf) and os.remove(pdf); continue
+    try:
+        d = fitz.open(pdf); open(txt,'w').write('\n'.join(p.get_text() for p in d))
+        print(f'[{i}] {aid} ok ({len(d)}p)')
+    except Exception as e:
+        print(f'[{i}] {aid} PARSE FAIL: {e}')
+    time.sleep(1.5)
+"
+```
+
+Any paper referenced in `ideas/*.md` must exist as `papers/{arxid}.pdf` + `.txt`. Run this whenever in doubt — it's idempotent.
+
+### Step 1: Search arxiv
+
+Use WebSearch to find recent papers on generative recommendation from major industrial labs:
+
+**Target companies**: Kuaishou, Meta, Alibaba, ByteDance, Tencent, JD, Google, Amazon, Microsoft, Baidu
+
+**Search queries** (adapt based on argument):
+- `arxiv generative recommendation {company} 2025 2026`
+- `arxiv semantic ID recommendation industrial deployment`
+- `arxiv generative retrieval large-scale production`
+
+If a specific argument is given (e.g., "ByteDance"), focus the search on that company/topic.
+
+### Step 2: Filter and tier papers
+
+Use WebFetch on the arxiv abstract page to read the paper summary, then **assign a tier**:
+
+**Tier A — Industrial Deployed** (gold standard, highest priority for ideas)
+- **Both** online A/B results (CTR/GMV/revenue lift) **and** deployment scale (QPS / >1M users / >1M items) explicit
+- Author list includes industry lab (Kuaishou, Meta, Alibaba, ByteDance, Tencent, JD, Google, Amazon, Microsoft, Baidu, Meituan, Xiaohongshu, Pinduoduo, Netflix, Spotify, LinkedIn, Huawei, NetEase, etc.)
+
+**Tier B — Industrial Paper** (worth filing, weaker evidence)
+- Has industry lab affiliation in authors **OR** venue acceptance (SIGIR / WWW / KDD / RecSys / CIKM)
+- Missing A/B results **or** concrete deployment scale numbers, but novelty + industry-friendly framing
+
+**Tier C — Academic Novel** (file only if genuinely new technique)
+- Pure academic (university labs), no industry co-authors, offline datasets only
+- Must introduce a **concrete, reproducible technique** not already in `ideas/*.md`
+- Skip if it's an incremental academic benchmark bump, a pure survey, or theory-only with no experiments
+
+**Skip entirely**:
+- Technique is already covered by an existing idea (cross-reference `ideas/*.md` first)
+- Off-topic: agent memory, knowledge graph reasoning, QA, general LLM alignment without rec context
+- No method contribution (pure dataset / survey / position paper)
+- Workshop or preprint with <3 pages or placeholder experiments
+
+**Tier A** papers always file. **Tier B** papers file if the technique dimension (tokenizer / embedding / architecture / training / RL / inference / scaling) doesn't already have a strong industrial reference. **Tier C** papers file sparingly — only when the technique is genuinely novel and actionable; prefer to note and skip if borderline.
+
+### Step 3: Download PDF and convert to text
+
+For each qualifying paper:
+
+1. **Create the papers directory** if it doesn't exist:
+   ```bash
+   mkdir -p papers
+   ```
+
+2. **Download the PDF** from arxiv. Convert the arxiv abstract URL to a PDF URL:
+   - `https://arxiv.org/abs/XXXX.XXXXX` → `https://arxiv.org/pdf/XXXX.XXXXX`
+   - Use curl to download:
+   ```bash
+   curl -L -o papers/{arxiv_id}.pdf "https://arxiv.org/pdf/{arxiv_id}"
+   ```
+
+3. **Convert PDF to plain text** using PyMuPDF for full-text extraction:
+   ```bash
+   python3 -c "
+   import fitz
+   doc = fitz.open('papers/{arxiv_id}.pdf')
+   text = '\n\n'.join(page.get_text() for page in doc)
+   with open('papers/{arxiv_id}.txt', 'w') as f:
+       f.write(text)
+   print(f'Converted {len(doc)} pages, {len(text)} chars')
+   "
+   ```
+
+4. **Verify** the text file was created and has reasonable content:
+   ```bash
+   wc -l papers/{arxiv_id}.txt
+   ```
+
+5. **Read the full text** using the Read tool on `papers/{arxiv_id}.txt` to understand the paper in depth. This gives much richer context than just the abstract.
+
+### Step 4: Update papers index
+
+After downloading, update `papers/README.md` (create if it doesn't exist) with a table of all downloaded papers. Include a `Tier` column:
+
+```markdown
+# Downloaded Papers
+
+| Arxiv ID | Title | Authors | Date | Tier | PDF | Text | Ideas |
+|----------|-------|---------|------|------|-----|------|-------|
+| {id} | {title} | {first author} et al. | {date} | A/B/C | [pdf]({id}.pdf) | [txt]({id}.txt) | IDEA-{hash}-N, ... |
+```
+
+Existing rows without a Tier column can be left as-is — only new rows need the column. When backfilling, use your best judgment based on A/B + deployment evidence in the paper.
+
+### Step 5: Extract ideas
+
+For each qualifying paper, **read from the full text** (`papers/{arxiv_id}.txt`) instead of relying on WebFetch:
+
+1. Read the paper's full text via `Read` tool on `papers/{arxiv_id}.txt`
+2. Identify distinct, actionable ideas relevant to our generative recommendation project
+3. **Determine which improvement dimension** each idea belongs to:
+   - Tokenizer (quantization methods)
+   - Embedding (representation enhancement)
+   - Architecture (model design)
+   - Training (loss functions, training strategies)
+   - RL Alignment (reinforcement learning)
+   - Inference (decoding optimization)
+   - Scaling (scaling laws)
+
+4. **Check for duplicates**: Grep `ideas/*.md` for similar ideas. If a new paper reinforces an existing idea, update the existing entry with new evidence instead of creating a duplicate.
+
+5. **File each idea** following the `/idea` skill format:
+   - Derive a hash prefix from the paper (e.g., arxiv ID or short name)
+   - Assign globally-unique N per hash prefix (grep all `ideas/*.md` files first)
+   - Append to the appropriate topic file
+   - **Tag tier in the idea header**: first line after the `## IDEA-xxx-N` title must include `**Tier**: A | B | C` plus a one-line justification, e.g.:
+     - `**Tier**: A (Meta, Platform A/B +0.22% Topline, 64K UIH)`
+     - `**Tier**: B (SIGIR 2026, Kuaishou authors, offline datasets only)`
+     - `**Tier**: C (academic, novel non-uniform quantization, no A/B)`
+   - Update `ideas/README.md` index and priority tables — in the prefix tracking table, prefix the description with `[A]` / `[B]` / `[C]`
+
+### Step 6: Output summary
+
+After processing all papers, output a summary:
+
+```markdown
+## Paper Search Summary
+
+**Query**: {search description}
+**Date**: {YYYY-MM-DD}
+**Papers found**: N total, M qualifying
+
+### Downloaded Papers
+
+| Arxiv ID | Title | PDF | Text | Pages | Chars |
+|----------|-------|-----|------|-------|-------|
+| {id} | {title} | papers/{id}.pdf | papers/{id}.txt | {pages} | {chars} |
+
+### Processed Papers
+
+| Paper | Company | Venue | Tier | Key Ideas | Filed To |
+|-------|---------|-------|------|-----------|----------|
+| {title} | {company} | {venue} | A/B/C | IDEA-{hash}-{N}, ... | tokenizer.md, training.md |
+| ... | ... | ... | ... | ... | ... |
+
+### Skipped Papers
+
+| Paper | Reason |
+|-------|--------|
+| {title} | Off-topic / Duplicate of IDEA-xxx-N / No method contribution / Already covered |
+| ... | ... |
+
+### New Ideas Added: {count}
+```
+
+## Guidelines
+
+- **Always download PDFs**: Every qualifying paper must be downloaded to `papers/` as both `.pdf` and `.txt`. This enables future deep-dive discussions without re-fetching.
+- **Read full text, not just abstracts**: Use the converted `.txt` file (via Read tool) for idea extraction. Full text provides experimental details, ablation results, and implementation specifics that abstracts miss.
+- **Tier the paper, don't discard it**: Academic papers are welcome when they introduce genuinely novel techniques — just tag them Tier C so we know the evidence strength. Reserve Tier A for industrial-deployed (A/B + scale), Tier B for industry-adjacent (authors or venue).
+- **Actionable ideas only**: Each idea must be concrete enough to design an experiment. "Interesting approach" is not enough.
+- **Cross-reference existing work**: Always check existing ideas before filing. The value is in discovering NEW techniques, not rediscovering known ones.
+- **Respect ID conventions**: Hash prefix = paper provenance, N = globally unique per prefix, filed by improvement dimension.
+- **Update README.md**: After adding ideas, update the file index table (idea counts) and priority tables in `ideas/README.md`.
+- **Rate limit**: Don't fetch more than 10 paper pages per search session to avoid being blocked.
+- **Git-ignore PDFs** (optional): If PDFs bloat the repo, add `papers/*.pdf` to `.gitignore` and only commit the `.txt` files.

@@ -1,5 +1,7 @@
 # metrics/
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Metric implementations for embedding quality, Semantic ID quality, and behavior-aware proxy evaluation.
 
 Metrics are intentionally modular. Each metric implements `BaseMetric.compute()` and returns a `MetricResult` that can be consumed by report generators and comparison tools.

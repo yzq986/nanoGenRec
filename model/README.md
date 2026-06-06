@@ -1,5 +1,7 @@
 # model/
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Embedding wrappers, orchestration helpers, packaging utilities, and compatibility shims.
 
 Tokenizer implementations were moved to [tokenizer/](../tokenizer/). The old tokenizer files in this directory remain only to preserve legacy imports.

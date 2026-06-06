@@ -1,5 +1,7 @@
 # experiments/
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Experiment orchestration, configs, queues, checkpoints, and generated result artifacts.
 
 This directory is the operational home for reproducible runs. Use it to define experiments, check for duplicate baselines, run variants, and store artifacts that are needed to reproduce or inspect a result. Narrative conclusions live in [experiments/logs/](logs/).

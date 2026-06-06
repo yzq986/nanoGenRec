@@ -1,5 +1,7 @@
 # tokenizer/
 
+[English](README.md) | [Chinese](README.zh.md)
+
 Semantic ID tokenizers for converting dense item embeddings into discrete item IDs.
 
 The tokenizer is the representation layer of the project. It takes Qwen3 item embeddings, quantizes them into a compact 3-token Semantic ID, and writes SID caches consumed by the NTP recommender.
