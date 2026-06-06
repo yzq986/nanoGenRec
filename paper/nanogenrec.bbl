@@ -1,0 +1,44 @@
+\begin{thebibliography}{7}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Hoffmann et~al.(2022)Hoffmann, Borgeaud, Mensch, Buchatskaya, Cai, Rutherford, de~Las~Casas, Hendricks, Welbl, Clark, Hennigan, Noland, Millican, van~den Driessche, Damoc, Guy, Osindero, Simonyan, Elsen, Rae, Vinyals, and Sifre]{hoffmann2022chinchilla}
+Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Cai, Eliza Rutherford, Diego de~Las~Casas, Lisa~Anne Hendricks, Johannes Welbl, Aidan Clark, Tom Hennigan, Eric Noland, Katherine Millican, George van~den Driessche, Bogdan Damoc, Aurelia Guy, Simon Osindero, Karen Simonyan, Erich Elsen, Jack~W. Rae, Oriol Vinyals, and Laurent Sifre.
+\newblock Training compute-optimal large language models.
+\newblock In \emph{Advances in Neural Information Processing Systems}, 2022.
+\newblock URL \url{https://arxiv.org/abs/2203.15556}.
+
+\bibitem[Wang et~al.(2026)Wang, Huang, Yang, et~al.]{onelive}
+Shen Wang, Yusheng Huang, Ruochen Yang, et~al.
+\newblock Onelive: Dynamically unified generative framework for live-streaming recommendation, 2026.
+\newblock URL \url{https://arxiv.org/abs/2602.08612}.
+
+\bibitem[Xue et~al.(2026)Xue, Liu, Wang, et~al.]{gr4ad}
+Ben Xue, Dan Liu, Lixiang Wang, et~al.
+\newblock Generative recommendation for large-scale advertising, 2026.
+\newblock URL \url{https://arxiv.org/abs/2602.22732}.
+
+\bibitem[Zhang et~al.(2026)Zhang, Zhang, Cheng, et~al.]{onemall}
+Kun Zhang, Jingming Zhang, Wei Cheng, et~al.
+\newblock Onemall: One architecture, more scenarios -- end-to-end generative recommender family at kuaishou e-commerce, 2026.
+\newblock URL \url{https://arxiv.org/abs/2601.21770}.
+
+\bibitem[Zhou et~al.(2025{\natexlab{a}})]{onerec}
+Guorui Zhou et~al.
+\newblock Onerec technical report, 2025{\natexlab{a}}.
+\newblock URL \url{https://arxiv.org/abs/2506.13695}.
+
+\bibitem[Zhou et~al.(2025{\natexlab{b}})]{onerecv2}
+Guorui Zhou et~al.
+\newblock Onerec-v2 technical report, 2025{\natexlab{b}}.
+\newblock URL \url{https://arxiv.org/abs/2508.20900}.
+
+\bibitem[Zou et~al.(2026)Zou, Qi, Huang, Li, Xu, Gao, Zhao, Yang, Xu, and Li]{genrec}
+Yanyan Zou, Junbo Qi, Lunsong Huang, Yu~Li, Kewei Xu, Jiahao Gao, Binglei Zhao, Xuanhua Yang, Sulong Xu, and Shengjie Li.
+\newblock Genrec: A preference-oriented generative framework for large-scale recommendation, 2026.
+\newblock URL \url{https://arxiv.org/abs/2604.14878}.
+
+\end{thebibliography}
