@@ -2,9 +2,25 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-`gr_demo` 是一个基于大规模真实行为数据产出的工业级生成式推荐研究项目。
+`gr_demo` 是一个基于大规模真实行为数据产出的工业级生成式推荐研究项目，也是一套面向 AI 自主实验的 agentic research infrastructure。
 
-项目围绕 Semantic-ID-based generative recommendation 构建了一套完整的应用研究系统：把 item embedding 转换为离散 Semantic ID，在真实用户行为序列上训练自回归推荐模型，用全量召回评测验证效果，并记录从 tokenizer 设计、NTP scaling law 到后训练对齐的实验路径。当前开源版本已经剥离私有数据和部署细节，但保留了可复现建模思路、实验组织方式和工程实现。
+这个项目的出发点很接近 AGI/ASI 时代对科研系统的要求：AI 不只负责训练模型，还应该参与提出假设、设计实验、编排任务、评估结果，并保留可追溯的推理链路。当前落地场景是 Semantic-ID-based generative recommendation，并已经在真实用户行为序列上验证。仓库把模型代码、YAML 实验编排、全量召回评测、research agent 笔记和长期实验日志放在同一个闭环里，形成一套可持续迭代的应用研究系统。
+
+当前开源版本已经剥离私有数据和部署细节，但保留了可复现建模思路、实验自动化和工程工作流。
+
+## Agentic Research Loop
+
+```mermaid
+graph LR
+    A["读论文和实验日志"] --> B["提出 idea"]
+    B --> C["设计 YAML 实验"]
+    C --> D["队列化运行"]
+    D --> E["全量召回评测"]
+    E --> F["记录决策"]
+    F --> A
+```
+
+这个仓库把推荐研究视为一个可以被 AI agent 编排的自主实验问题。`research/` 提供人类和 agent 协作的 inbox/outbox 协议、paper notes、状态面板和决策记录；`experiments/run_exp.py` 负责展开 YAML config、检查重复 baseline、运行 variants，并在实验完成后提交结果；`experiments/queue.txt` 和 `run_config.sh` 支持长任务异步排队。这不是宣称项目本身已经实现 AGI 或 ASI，而是在构建这类系统需要的自助实验底座。
 
 ## 量化概览
 
@@ -16,9 +32,11 @@
 | Tokenizer sweep | 14 个 Semantic ID variants，覆盖 0.6B/4B embeddings、4096/8192 codebooks 和 FSQ hidden sizes | [EXP-049](experiments/logs/exp-049.md) |
 | NTP 最好全量评测 | M-tier 4B SID 模型在约 49K eval items 上达到 R@500=70.4%、R@10=14.2% | [EXP-043](experiments/logs/ntp/README.md) |
 | 后训练最好恢复 | on-policy ECPO 将 off-policy collapse 从 R@500=2.0% 恢复到 67.8% | [EXP-029](experiments/logs/exp-029.md) |
+| Agentic workflow | inbox/outbox 协议、paper-note memory、YAML config expansion、重复实验检查、队列化运行和 decision records | [research/](research/program.md), [experiments/](experiments/README.md) |
 
 ## 亮点
 
+- **AI 辅助研究闭环**：论文阅读、idea 提出、实验设计、执行、评估和决策记录都围绕 human-agent collaboration 组织。
 - **真实业务数据驱动**：核心建模选择来自大规模真实行为日志上的实验验证，不是 synthetic toy benchmark。
 - **端到端 Semantic ID pipeline**：Qwen3 embedding -> residual KMeans + FSQ -> 3-token item ID。
 - **生成式推荐模型**：Transformer + MoE，在行为序列上做 next-token prediction。

@@ -2,9 +2,25 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-Industrial generative recommendation research project built from large-scale production behavior data.
+Agentic research infrastructure for industrial generative recommendation on large-scale production behavior data.
 
-`gr_demo` is an applied research system for Semantic-ID-based generative recommendation. It turns item embeddings into discrete Semantic IDs, trains autoregressive recommenders over real user behavior sequences, evaluates full-recall retrieval quality, and records the experimental path from tokenizer design to NTP scaling laws and post-training alignment. The code is open-sourced after removing private data and deployment-specific details, while preserving the parts that matter for reproducing the modeling ideas and engineering workflow.
+`gr_demo` is built around a simple AGI-era premise: valuable AI systems should not only train models, but also help generate hypotheses, schedule experiments, evaluate results, and preserve the reasoning trail. The current domain is Semantic-ID-based generative recommendation, validated on real user behavior sequences. The repository combines model code, YAML experiment orchestration, full-recall evaluation, research-agent notes, and durable experiment logs into a self-improving applied research loop.
+
+The code is open-sourced after removing private data and deployment-specific details, while preserving the parts that matter for reproducing the modeling ideas, experiment automation, and engineering workflow.
+
+## Agentic Research Loop
+
+```mermaid
+graph LR
+    A["Read papers and logs"] --> B["Propose ideas"]
+    B --> C["Design YAML experiments"]
+    C --> D["Run queued jobs"]
+    D --> E["Full-recall eval"]
+    E --> F["Record decisions"]
+    F --> A
+```
+
+The project treats recommendation research as an autonomous experimentation problem. `research/` defines an inbox/outbox protocol for human-agent collaboration, paper notes, status tracking, and decision records. `experiments/run_exp.py` expands YAML configs, checks duplicate baselines, runs variants, and can commit completed experiment artifacts. `experiments/queue.txt` and `run_config.sh` support asynchronous long-running jobs. This is not a claim of AGI or ASI; it is a practical substrate for the kind of self-directed research workflow those systems will need.
 
 ## Quantitative Snapshot
 
@@ -16,9 +32,11 @@ Industrial generative recommendation research project built from large-scale pro
 | Tokenizer sweep | 14 Semantic ID variants over 0.6B/4B embeddings, 4096/8192 codebooks, and FSQ hidden sizes | [EXP-049](experiments/logs/exp-049.md) |
 | Best NTP full eval | M-tier 4B SID model reaches R@500=70.4% and R@10=14.2% over ~49K eval items | [EXP-043](experiments/logs/ntp/README.md) |
 | Best post-training recovery | on-policy ECPO recovers off-policy collapse from R@500=2.0% to 67.8% | [EXP-029](experiments/logs/exp-029.md) |
+| Agentic workflow | inbox/outbox protocol, paper-note memory, YAML config expansion, duplicate-run checks, queue-based execution, and decision records | [research/](research/program.md), [experiments/](experiments/README.md) |
 
 ## Highlights
 
+- **AI-assisted research loop**: paper reading, idea proposal, experiment design, execution, evaluation, and decision logging are organized for human-agent collaboration.
 - **Production-grounded experiments**: modeling choices are evaluated against large-scale real behavior logs, not synthetic recommendation tasks.
 - **End-to-end Semantic ID pipeline**: Qwen3 embeddings -> residual KMeans + FSQ -> 3-token item IDs.
 - **Generative recommender**: Transformer + MoE next-token prediction over behavior sequences.
