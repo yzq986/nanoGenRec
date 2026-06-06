@@ -1,6 +1,6 @@
 # Project Instructions
 
-[English](CLAUDE.md) | [中文](CLAUDE.zh.md)
+[English](CLAUDE.md) | [中文](CLAUDE.md.zh.md)
 
 ## 后台任务监控原则
 

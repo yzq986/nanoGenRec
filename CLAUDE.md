@@ -1,6 +1,6 @@
 # Project Instructions
 
-[English](CLAUDE.md) | [Chinese](CLAUDE.zh.md)
+[English](CLAUDE.md) | [Chinese](CLAUDE.md.zh.md)
 
 ## Background task monitoring principles
 
