@@ -2,14 +2,15 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-Generative recommendation research project built around Semantic IDs, sequence modeling, and preference alignment.
+Industrial generative recommendation research project built from large-scale production behavior data.
 
-`gr_demo` turns item embeddings into discrete Semantic IDs, trains autoregressive recommenders over user behavior sequences, evaluates full-recall retrieval quality, and records experiments in a reproducible YAML-driven workflow. The repository is meant to be useful both as a research log and as an implementation reference for Semantic-ID-based generative recommendation.
+`gr_demo` is an applied research system for Semantic-ID-based generative recommendation. It turns item embeddings into discrete Semantic IDs, trains autoregressive recommenders over real user behavior sequences, evaluates full-recall retrieval quality, and records the experimental path from tokenizer design to NTP scaling laws and post-training alignment. The code is open-sourced after removing private data and deployment-specific details, while preserving the parts that matter for reproducing the modeling ideas and engineering workflow.
 
 ## Highlights
 
+- **Production-grounded experiments**: modeling choices are evaluated against large-scale real behavior logs, not synthetic recommendation tasks.
 - **End-to-end Semantic ID pipeline**: Qwen3 embeddings -> residual KMeans + FSQ -> 3-token item IDs.
-- **Generative recommender**: Transformer + MoE next-token prediction over item sequences.
+- **Generative recommender**: Transformer + MoE next-token prediction over behavior sequences.
 - **Alignment stack**: SP-DPO, RF-DPO, GRPO, and ECPO experiments on top of SFT checkpoints.
 - **Full-recall evaluation**: beam search with SID constraints, Recall@K, tokenizer proxy metrics, and comparison reports.
 - **Reproducible experiment workflow**: YAML configs, duplicate-run checks, phase-level logs, and queue-based long-running jobs.

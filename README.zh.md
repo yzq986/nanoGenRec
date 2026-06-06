@@ -2,14 +2,15 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-`gr_demo` 是一个围绕 Semantic ID、序列建模和偏好对齐构建的生成式推荐研究项目。
+`gr_demo` 是一个基于大规模真实行为数据产出的工业级生成式推荐研究项目。
 
-项目把 item embedding 转换为离散 Semantic ID，在用户行为序列上训练自回归推荐模型，并用全量召回评测和 YAML 实验配置管理结果。这个仓库的目标不是做零散脚本集合，而是提供一套可复现实验系统和 Semantic-ID-based generative recommendation 的工程参考。
+项目围绕 Semantic-ID-based generative recommendation 构建了一套完整的应用研究系统：把 item embedding 转换为离散 Semantic ID，在真实用户行为序列上训练自回归推荐模型，用全量召回评测验证效果，并记录从 tokenizer 设计、NTP scaling law 到后训练对齐的实验路径。当前开源版本已经剥离私有数据和部署细节，但保留了可复现建模思路、实验组织方式和工程实现。
 
 ## 亮点
 
+- **真实业务数据驱动**：核心建模选择来自大规模真实行为日志上的实验验证，不是 synthetic toy benchmark。
 - **端到端 Semantic ID pipeline**：Qwen3 embedding -> residual KMeans + FSQ -> 3-token item ID。
-- **生成式推荐模型**：Transformer + MoE，在 SID 序列上做 next-token prediction。
+- **生成式推荐模型**：Transformer + MoE，在行为序列上做 next-token prediction。
 - **偏好对齐链路**：SP-DPO、RF-DPO、GRPO、ECPO。
 - **全量召回评测**：SID 约束 beam search、Recall@K、tokenizer proxy metrics 和对比报告。
 - **可复现实验治理**：YAML config、重复实验检查、阶段日志、队列式长任务管理。
