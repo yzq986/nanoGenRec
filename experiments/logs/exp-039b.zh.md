@@ -1,8 +1,6 @@
 ## EXP-039B: ECPO on exp038b-hard-lam03-3ep-ep1 (Features RL 链路终点)
-
 [English](exp-039b.md) | [中文](exp-039b.zh.md)
 
-[English](exp-039b.md) | [Chinese](exp-039b.zh.md)
 
 **Date**: 2026-04-29
 **Status**: completed
