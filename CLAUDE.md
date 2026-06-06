@@ -138,7 +138,7 @@ The date ranges of `preprocess-sid` and `preprocess-ntp` must be compatible, and
 
 | Remote | URL | Purpose |
 |--------|-----|---------|
-| `origin` | `git@github.com:yzq986/gr_demo.git` | Public GitHub repository |
+| `origin` | `git@github.com:yzq986/nanoGenRec.git` | Public GitHub repository |
 
 - **Push**: `./push.sh` pushes the current branch to configured public remotes.
 - **Pull**: `git pull --rebase origin master`

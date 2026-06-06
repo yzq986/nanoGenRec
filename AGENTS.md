@@ -138,7 +138,7 @@ The date ranges of `preprocess-sid` and `preprocess-ntp` must be compatible, and
 
 | Remote | URL | Purpose |
 |--------|-----|---------|
-| `personal` | `git@github.com:yzq986/gr_demo.git` | Personal GitHub |
+| `personal` | `git@github.com:yzq986/nanoGenRec.git` | Personal GitHub |
 | `company` | `https://<company-gitlab>/username/gr-demo.git` | Company GitLab |
 | `company2` | `https://bigdata-ap-southeast-1.devops.alibabacloudcs.com/codeup/gr-demo.git` | Alibaba Cloud Codeup |
 

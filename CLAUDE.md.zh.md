@@ -138,7 +138,7 @@ echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN c
 
 | Remote | URL | Purpose |
 |--------|-----|---------|
-| `origin` | `git@github.com:yzq986/gr_demo.git` | Public GitHub repository |
+| `origin` | `git@github.com:yzq986/nanoGenRec.git` | Public GitHub repository |
 
 - **Push**: `./push.sh` pushes the current branch to configured public remotes.
 - **Pull**: `git pull --rebase origin master`

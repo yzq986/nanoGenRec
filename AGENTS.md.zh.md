@@ -138,7 +138,7 @@ echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN c
 
 | Remote | URL | Purpose |
 |--------|-----|---------|
-| `personal` | `git@github.com:yzq986/gr_demo.git` | Personal GitHub |
+| `personal` | `git@github.com:yzq986/nanoGenRec.git` | Personal GitHub |
 | `company` | `https://<company-gitlab>/username/gr-demo.git` | Company GitLab |
 | `company2` | `https://bigdata-ap-southeast-1.devops.alibabacloudcs.com/codeup/gr-demo.git` | Alibaba Cloud Codeup |
 
