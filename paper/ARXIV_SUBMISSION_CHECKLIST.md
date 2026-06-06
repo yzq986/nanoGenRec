@@ -4,12 +4,14 @@ This checklist is intentionally conservative. It is meant to avoid careless AI-a
 
 ## Required Human Verification
 
-- [ ] Replace the author placeholder in `nanogenrec.tex`.
+- [ ] Confirm the author metadata in `nanogenrec.tex`.
+- [ ] Run `python3 paper/check_paper_consistency.py` from the repository root.
 - [ ] Verify every numeric value against the source experiment log:
   - [ ] EXP-015 model-scaling table and fitted law.
   - [ ] EXP-016 data-scaling table.
   - [ ] EXP-029 ECPO off-policy/on-policy comparison.
   - [ ] EXP-043 full-eval baselines.
+  - [ ] EXP-044C/EXP-047 full-eval rows referenced through `experiments/logs/ntp/README.md`.
   - [ ] EXP-049 tokenizer sweep table.
 - [ ] Verify every citation in `references.bib` exists and has the correct title, arXiv ID, and author spelling.
 - [ ] Compile the manuscript locally and inspect the PDF manually.
