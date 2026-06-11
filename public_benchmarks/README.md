@@ -119,6 +119,8 @@ The smaller smoke run is retained at
 [results/ml-latest-small-smoke.md](results/ml-latest-small-smoke.md).
 The first Colab T4 GPU result is available at
 [results/ml-1m-colab-t4.md](results/ml-1m-colab-t4.md).
+Simple public baselines are available at
+[results/ml-1m-baselines.md](results/ml-1m-baselines.md).
 
 Summary:
 
@@ -126,6 +128,7 @@ Summary:
 |---------|--------|-------|-------|-------|--------------|----------------|-----------------|------------------|------------------|
 | `ml-latest-small` | CPU | 603 | 6,298 | dense 2-layer, dim=96 | 500 | 0.032 | - | - | 0.052 |
 | `ml-1m` | Colab T4 | 5,950 | 3,532 | dense 3-layer, dim=128 | 1,000 | 0.290 | 0.725 | 0.852 | 0.899 |
+| `ml-1m` | CPU baseline | 5,950 | 3,532 | ItemKNN co-occurrence | 1,000 | 0.337 | 0.780 | 0.885 | - |
 
 These results validate the public path at smoke-test and free-GPU scale. They
 should not be read as competitive public leaderboard claims because they use

@@ -107,8 +107,10 @@ NUMERIC_CHECKS = [
     NumericCheck("EXP-029 off-policy", "experiments/logs/exp-029.md", "exp028-ecpo-weighted-w003-r100", "Off-policy ECPO", ("0.7%", "2.0%", "3791", "99%")),
     NumericCheck("EXP-029 SFT", "experiments/logs/exp-029.md", "exp020-hard-lam03", "SFT baseline", ("14.1%", "66.2%", "16.3")),
     # Public benchmark result.
-    NumericCheck("MovieLens 1M Colab T4", "public_benchmarks/results/ml-1m-colab-t4.md", "ml-1m", "ml-1m", ("5,950", "3,532", "348,363", "10.5%", "40.4%", "72.5%", "85.2%")),
+    NumericCheck("MovieLens 1M Colab T4", "public_benchmarks/results/ml-1m-colab-t4.md", "ml-1m", "nanoGenRec public", ("5,950", "3,532", "348,363", "10.5%", "40.4%", "72.5%", "85.2%")),
     NumericCheck("MovieLens 1M SID found", "public_benchmarks/results/ml-1m-colab-t4.md", "target_sid_found_rate", "target-SID found rate", ("89.9%",)),
+    NumericCheck("MovieLens popularity baseline", "public_benchmarks/results/ml-1m-baselines.md", "Popularity", "Popularity", ("2.2%", "20.6%", "56.1%", "74.7%")),
+    NumericCheck("MovieLens itemKNN baseline", "public_benchmarks/results/ml-1m-baselines.md", "ItemKNN", "ItemKNN", ("13.9%", "46.6%", "78.0%", "88.5%")),
 ]
 
 

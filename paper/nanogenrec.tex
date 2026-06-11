@@ -127,6 +127,22 @@ Governance & Duplicate-run checks, EXP logs, phase READMEs & Notebook, checked-i
 \end{tabular}
 \end{table}
 
+Figure~\ref{fig:shared-interface} shows the same point as a release diagram: the production line and the public MovieLens line differ in data and representation budget, but meet at the same framework interfaces.
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.92\linewidth}
+\small
+\textbf{Production path:} Qwen3 item embeddings $\rightarrow$ RKMeans/FSQ SIDs $\rightarrow$ NTP shards $\rightarrow$ Transformer+MoE $\rightarrow$ constrained full recall $\rightarrow$ EXP logs \\
+\vspace{0.4em}
+\textbf{Public path:} MovieLens metadata/co-occurrence hashes $\rightarrow$ 64$\times$64$\times$64 SIDs $\rightarrow$ sliding-prefix shards $\rightarrow$ dense NTP $\rightarrow$ constrained full recall $\rightarrow$ checked-in public metrics \\
+\vspace{0.4em}
+\textbf{Shared interface:} item IDs $\leftrightarrow$ SID tokens, autoregressive SID sequences, valid-SID decoding, item-level Recall@K, and auditable run artifacts.
+\end{minipage}}
+\caption{Production and public paths share the same framework interfaces while using different data and representation budgets.}
+\label{fig:shared-interface}
+\end{figure}
+
 \subsection{Experiment Orchestration}
 
 New experiments inherit from a shared YAML base config and override only the parameters being tested. Multi-variant experiments are represented as a variant list. A registry hash excludes runtime paths and environment keys, allowing the runner to surface identical or near-identical historical runs before launching a new job. Queue-friendly wrappers support long-running training and evaluation without turning experiment scripts into brittle chains. Each completed run updates a local record of the hypothesis, design, metrics, and interpretation, so the repository accumulates a recoverable experiment lineage rather than only final checkpoints.
@@ -295,23 +311,25 @@ L-tier with validated options & 12.8\% & 64.1\% & 20.7 \\
 
 The private production data cannot be redistributed, so the repository includes a separate public reproduction path on MovieLens. This path is not intended as a public leaderboard benchmark. Its purpose is to show that the released code can execute the complete GR loop on public data and a widely available free-GPU environment.
 
-Table~\ref{tab:public-movielens} reports the current MovieLens 1M Colab-T4 result. The run uses hybrid public item features, residual KMeans SIDs with a 64$\times$64$\times$64 token space, a dense 3-layer NTP model with embedding dimension 128, and SID-constrained beam search with beam size 1000.
+Table~\ref{tab:public-movielens} reports the current MovieLens 1M Colab-T4 result and simple public baselines. The nanoGenRec run uses hybrid public item features, residual KMeans SIDs with a 64$\times$64$\times$64 token space, a dense 3-layer NTP model with embedding dimension 128, and SID-constrained beam search with beam size 1000.
 
 \begin{table}[t]
 \centering
-\caption{Public MovieLens 1M Colab-T4 reproduction result.}
+\caption{Public MovieLens 1M reproduction result and simple baselines.}
 \label{tab:public-movielens}
 \small
 \begin{tabular}{lrrrrrrr}
 \toprule
-Dataset & Users & Items & Train ex. & R@10 & R@100 & R@500 & R@1000 \\
+Method & Users & Items & Train ex. & R@10 & R@100 & R@500 & R@1000 \\
 \midrule
-ml-1m & 5,950 & 3,532 & 348,363 & 10.5\% & 40.4\% & 72.5\% & 85.2\% \\
+Popularity & 5,950 & 3,532 & -- & 2.2\% & 20.6\% & 56.1\% & 74.7\% \\
+ItemKNN & 5,950 & 3,532 & -- & 13.9\% & 46.6\% & 78.0\% & 88.5\% \\
+nanoGenRec public & 5,950 & 3,532 & 348,363 & 10.5\% & 40.4\% & 72.5\% & 85.2\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The same run obtains R@1=1.9\%, R@5=6.2\%, R@50=29.0\%, and target-SID found rate of 89.9\%.
+The nanoGenRec public run also obtains R@1=1.9\%, R@5=6.2\%, R@50=29.0\%, and target-SID found rate of 89.9\%. It beats global popularity at all reported cutoffs, but a simple item co-occurrence KNN remains stronger on this small and dense collaborative-filtering dataset. This reinforces the intended claim boundary: the MovieLens path is a public end-to-end reproducibility check for the framework, not a public leaderboard claim.
 
 \subsection{Post-Training Alignment}
 
@@ -365,7 +383,7 @@ Three lessons recur across the experiment lineage. First, landing GR requires fu
 
 \section{Limitations}
 
-This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The repository includes MovieLens CPU and Colab-T4 public runs to verify the released framework loop, but these are reproducibility checks rather than competitive public leaderboard claims. The public tokenizer path uses lightweight hashed metadata and co-occurrence features rather than the production Qwen/Faiss SID pipeline. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as framework-validated engineering evidence rather than final algorithmic conclusions. The most important next step is broader public benchmarking across redistributable datasets and stronger public baselines, so external users can verify not only the code structure but also cross-dataset empirical trends.
+This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The repository includes MovieLens CPU and Colab-T4 public runs to verify the released framework loop, but these are reproducibility checks rather than competitive public leaderboard claims. On MovieLens 1M, a simple item co-occurrence KNN baseline is stronger than the current public nanoGenRec path, which shows that the public path should not be interpreted as a tuned public recommender. The public tokenizer path uses lightweight hashed metadata and co-occurrence features rather than the production Qwen/Faiss SID pipeline. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as framework-validated engineering evidence rather than final algorithmic conclusions. The most important next step is broader public benchmarking across redistributable datasets and stronger public baselines, so external users can verify not only the code structure but also cross-dataset empirical trends.
 
 \section{Conclusion}
 

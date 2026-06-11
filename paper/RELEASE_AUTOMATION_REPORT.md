@@ -17,6 +17,9 @@ judgment.
 | Privacy scanner | Added `scripts/privacy_scan.py`. |
 | Privacy scan | Passed: no high-severity privacy findings. |
 | Fresh workspace quickstart | Passed from `/tmp/nanogenrec-release-check`. |
+| Public baselines | Added MovieLens 1M popularity, last-item repeat, and ItemKNN baselines. |
+| Shared-interface diagram | Added to the paper to show the public and production paths meeting at the same framework interfaces. |
+| Colab runtime instrumentation | Notebook now writes `runtime.json` with elapsed seconds, GPU name, total memory, used memory, and command. |
 
 ## Verification Commands
 
@@ -39,6 +42,7 @@ python3 run.py public-movielens \
     --device cpu
 python3 paper/check_paper_consistency.py
 pdflatex -interaction=nonstopmode nanogenrec.tex
+python3 public_benchmarks/baselines.py --dataset ml-1m --output public_benchmarks/results/ml-1m-baselines.json
 ```
 
 ## Fresh Workspace Result
