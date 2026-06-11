@@ -13,13 +13,13 @@ R@1000=85.2%.
 
 | Item | Status | Notes |
 |------|--------|-------|
-| License | Missing | Add a root `LICENSE`; MIT or Apache-2.0 are the likely choices. |
-| Citation metadata | Missing | Add `CITATION.cff` with author, title, repository URL, and version/date. |
-| Privacy sweep | Needed | Re-scan for private hostnames, company identifiers, access tokens, and local paths. |
-| Public quickstart check | Mostly ready | README has CPU and Colab paths; run once from a fresh clone if possible. |
+| License | Added, human confirmation needed | Root `LICENSE` uses MIT. Human owner should confirm the license choice. |
+| Citation metadata | Done | Added `CITATION.cff` with author, title, repository URL, license, and release date. |
+| Privacy sweep | Done, high severity = 0 | Added `scripts/privacy_scan.py`; current scan reports no high-severity findings. |
+| Public quickstart check | Done | Synthetic public benchmark and public benchmark test passed in a clean temporary workspace. |
 | Public benchmark artifacts | Ready | MovieLens 1M Colab-T4 result is checked in and linked. |
-| Dependency clarity | Partial | `requirements.txt` exists, but Colab relies mostly on preinstalled PyTorch. |
-| Badges / metadata | Optional | Add license, arXiv, Colab, and Python version badges after final links exist. |
+| Dependency clarity | Done | README now includes `python -m pip install -r requirements.txt`; `PyYAML` and `pytest` are listed. |
+| Badges / metadata | Done for current links | Added MIT, Colab, and Python badges; arXiv badge should wait for an arXiv ID. |
 
 ## Must Do Before arXiv Submission
 

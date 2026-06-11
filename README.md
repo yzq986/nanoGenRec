@@ -1,5 +1,9 @@
 # nanoGenRec
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Colab](https://img.shields.io/badge/Colab-MovieLens%201M%20T4-orange.svg)](public_benchmarks/nanogenrec_colab.ipynb)
+[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](requirements.txt)
+
 [English](README.md) | [Chinese](README.zh.md)
 
 Reproducible Generative Recommendation framework, from Semantic IDs to full-recall evaluation.
@@ -122,6 +126,10 @@ PYTHONPATH=. torchrun --nproc_per_node=8 run.py <command>
 Install dependencies in the project environment, then run from the repository root:
 
 ```bash
+python -m pip install -r requirements.txt
+```
+
+```bash
 # Public CPU smoke path: no private data or GPU required
 python run.py public-movielens \
     --dataset ml-latest-small \
@@ -213,6 +221,11 @@ Inline eval during `train-ntp` is a health check only. Reported numbers should c
 | [experiments/logs/](experiments/logs/README.md) | Phase-level experiment records and SOTA summaries. |
 | [docs/](docs/README.md) | Architecture notes, engineering logs, and durable documentation. |
 | [ideas/](ideas/README.md) | Research backlog organized by improvement dimension. |
+
+## License and Citation
+
+The code is released under the [MIT License](LICENSE). Citation metadata is
+available in [CITATION.cff](CITATION.cff).
 
 ## Documentation
 

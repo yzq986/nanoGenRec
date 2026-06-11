@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use nanoGenRec, please cite the repository and technical report."
+title: "nanoGenRec: A Reproducible Framework for Landing Semantic-ID Generative Recommendation"
+authors:
+  - family-names: "Ye"
+    given-names: "Ziqing"
+    email: "yeziqing986@gmail.com"
+repository-code: "https://github.com/yzq986/nanoGenRec"
+url: "https://github.com/yzq986/nanoGenRec"
+date-released: "2026-06-12"
+license: "MIT"
+keywords:
+  - "generative recommendation"
+  - "semantic ID"
+  - "recommender systems"
+  - "reproducibility"
+  - "MovieLens"

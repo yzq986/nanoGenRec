@@ -138,12 +138,10 @@ echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN c
 
 | Remote | URL | Purpose |
 |--------|-----|---------|
-| `personal` | `git@github.com:yzq986/nanoGenRec.git` | Personal GitHub |
-| `company` | `https://<company-gitlab>/username/gr-demo.git` | Company GitLab |
-| `company2` | `https://bigdata-ap-southeast-1.devops.alibabacloudcs.com/codeup/gr-demo.git` | Alibaba Cloud Codeup |
+| `origin` | `git@github.com:yzq986/nanoGenRec.git` | Public GitHub repository |
 
-- **Push**: `./push.sh` handles all remotes. Never push manually.
-- **Pull**: `git pull company master --rebase && git pull company2 master --rebase`
+- **Push**: `./push.sh` handles the configured public remote. Never push manually.
+- **Pull**: `git pull origin master --rebase`
 
 ## 分布式代码陷阱
 

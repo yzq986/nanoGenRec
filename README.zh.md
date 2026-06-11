@@ -1,5 +1,9 @@
 # nanoGenRec
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Colab](https://img.shields.io/badge/Colab-MovieLens%201M%20T4-orange.svg)](public_benchmarks/nanogenrec_colab.ipynb)
+[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](requirements.txt)
+
 [English](README.md) | [中文](README.zh.md)
 
 `nanoGenRec` 是一个从 0 到 1 可复现的生成式推荐框架，覆盖 Semantic ID 构建、NTP 训练和全量召回评测。
@@ -117,6 +121,12 @@ PYTHONPATH=. torchrun --nproc_per_node=8 run.py <command>
 
 ## 快速开始
 
+先安装依赖：
+
+```bash
+python -m pip install -r requirements.txt
+```
+
 ```bash
 # 训练 tokenizer 并生成 Semantic IDs
 python run.py train --model qwen3-0.6b
@@ -194,6 +204,10 @@ echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN c
 | [experiments/logs/](experiments/logs/README.md) | 分阶段实验记录和 SOTA 汇总。 |
 | [docs/](docs/README.zh.md) | 架构、工程记录和长期文档。 |
 | [ideas/](ideas/README.md) | 按改进方向组织的研究 backlog。 |
+
+## 许可证与引用
+
+代码使用 [MIT License](LICENSE) 发布。引用信息见 [CITATION.cff](CITATION.cff)。
 
 ## 文档分工
 
