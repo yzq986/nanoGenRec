@@ -10,6 +10,8 @@
 
 当前开源版本已经剥离私有数据和部署细节，但保留了可复现建模思路、实验自动化和工程工作流。
 
+对于没有私有数据和 GPU 资源的用户，仓库也提供了公开 MovieLens 复现路径：公开 ratings/metadata -> Semantic IDs -> NTP 训练 -> SID 约束全量召回评测。Colab GPU notebook 见 [public_benchmarks/nanogenrec_colab.ipynb](public_benchmarks/nanogenrec_colab.ipynb)。
+
 ## Agentic Research Loop
 
 ```mermaid
@@ -34,6 +36,7 @@ graph LR
 | Tokenizer sweep | 14 个 Semantic ID variants，覆盖 0.6B/4B embeddings、4096/8192 codebooks 和 FSQ hidden sizes | [EXP-049](experiments/logs/exp-049.md) |
 | NTP 最好全量评测 | M-tier 4B SID 模型在约 49K eval items 上达到 R@500=70.4%、R@10=14.2% | [EXP-043](experiments/logs/ntp/README.md) |
 | 后训练最好恢复 | on-policy ECPO 将 off-policy collapse 从 R@500=2.0% 恢复到 67.8% | [EXP-029](experiments/logs/exp-029.md) |
+| 公开复现路径 | MovieLens 1M Colab T4：5,950 用户、3,532 items，R@500=72.5%、R@1000=85.2% | [public_benchmarks/results/ml-1m-colab-t4.md](public_benchmarks/results/ml-1m-colab-t4.md) |
 | Agentic workflow | inbox/outbox 协议、paper-note memory、YAML config expansion、重复实验检查、队列化运行和 decision records | [research/](research/program.md), [experiments/](experiments/README.md) |
 
 ## 亮点
@@ -45,6 +48,7 @@ graph LR
 - **偏好对齐链路**：SP-DPO、RF-DPO、GRPO、ECPO。
 - **全量召回评测**：SID 约束 beam search、Recall@K、tokenizer proxy metrics 和对比报告。
 - **可复现实验治理**：YAML config、重复实验检查、阶段日志、队列式长任务管理。
+- **公开 Colab 复现路径**：MovieLens 1M 可在免费 T4 上跑完整生成式推荐链路。
 
 参考论文：[OneRec](https://arxiv.org/abs/2506.13695)、[OneRec-V2](https://arxiv.org/abs/2508.20900)、[GR4AD](https://arxiv.org/abs/2602.22732)、[OneMall](https://arxiv.org/abs/2601.21770)。
 

@@ -111,21 +111,26 @@ evaluation latency rather than model memory. Start with `ml-latest-small` and
 `embed_dim=128`, `layers=3`, and `eval_samples=1000`. Save outputs to Drive
 when using Colab because free runtimes can disconnect.
 
-## Current Smoke Result
+## Current Public Results
 
 A checked-in full CPU result is available at
 [results/ml-latest-small-full-cpu.md](results/ml-latest-small-full-cpu.md).
 The smaller smoke run is retained at
 [results/ml-latest-small-smoke.md](results/ml-latest-small-smoke.md).
+The first Colab T4 GPU result is available at
+[results/ml-1m-colab-t4.md](results/ml-1m-colab-t4.md).
 
 Summary:
 
-| Dataset | Device | Users | Items | Model | Eval samples | item_recall@50 | target SID found |
-|---------|--------|-------|-------|-------|--------------|----------------|------------------|
-| `ml-latest-small` | CPU | 603 | 6,298 | dense 2-layer, dim=96 | 500 | 0.032 | 0.052 |
+| Dataset | Device | Users | Items | Model | Eval samples | item_recall@50 | item_recall@500 | item_recall@1000 | target SID found |
+|---------|--------|-------|-------|-------|--------------|----------------|-----------------|------------------|------------------|
+| `ml-latest-small` | CPU | 603 | 6,298 | dense 2-layer, dim=96 | 500 | 0.032 | - | - | 0.052 |
+| `ml-1m` | Colab T4 | 5,950 | 3,532 | dense 3-layer, dim=128 | 1,000 | 0.290 | 0.725 | 0.852 | 0.899 |
 
-This result validates the public path. It should not be read as a competitive
-benchmark because it uses weak title/genre hash features and a tiny CPU model.
+These results validate the public path at smoke-test and free-GPU scale. They
+should not be read as competitive public leaderboard claims because they use
+lightweight hashed public features rather than the production Qwen/Faiss
+tokenizer path.
 
 ## Outputs
 

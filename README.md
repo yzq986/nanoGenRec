@@ -37,7 +37,7 @@ The project treats recommendation research as an autonomous experimentation prob
 | Tokenizer sweep | 14 Semantic ID variants over 0.6B/4B embeddings, 4096/8192 codebooks, and FSQ hidden sizes | [EXP-049](experiments/logs/exp-049.md) |
 | Best NTP full eval | M-tier 4B SID model reaches R@500=70.4% and R@10=14.2% over ~49K eval items | [EXP-043](experiments/logs/ntp/README.md) |
 | Best post-training recovery | on-policy ECPO recovers off-policy collapse from R@500=2.0% to 67.8% | [EXP-029](experiments/logs/exp-029.md) |
-| Public reproducibility path | CPU MovieLens run: 603 users, 6,298 items, tiny NTP, item_recall@50=3.2% | [public_benchmarks/results/ml-latest-small-full-cpu.md](public_benchmarks/results/ml-latest-small-full-cpu.md) |
+| Public reproducibility path | MovieLens 1M Colab T4 run: 5,950 users, 3,532 items, R@500=72.5%, R@1000=85.2% | [public_benchmarks/results/ml-1m-colab-t4.md](public_benchmarks/results/ml-1m-colab-t4.md) |
 | Colab GPU path | Free T4 notebook for the public MovieLens loop | [public_benchmarks/nanogenrec_colab.ipynb](public_benchmarks/nanogenrec_colab.ipynb) |
 | Agentic workflow | inbox/outbox protocol, paper-note memory, YAML config expansion, duplicate-run checks, queue-based execution, and decision records | [research/](research/program.md), [experiments/](experiments/README.md) |
 
