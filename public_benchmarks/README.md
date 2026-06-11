@@ -61,6 +61,56 @@ For a stronger public benchmark, increase `--max_users`, `--clusters`,
 `--embed_dim`, `--layers`, `--epochs`, `--beam_size`, and `--eval_samples`.
 CPU is enough for smoke runs; free T4/L4/A100 time can be used for larger runs.
 
+## Colab T4 Path
+
+For a free GPU run, open
+[nanogenrec_colab.ipynb](nanogenrec_colab.ipynb) in Google Colab and select
+`Runtime` -> `Change runtime type` -> `T4 GPU`.
+
+The recommended first T4 run is:
+
+```bash
+python run.py public-movielens \
+    --dataset ml-latest-small \
+    --output_dir public_benchmarks/runs/ml-latest-small-colab-t4 \
+    --min_rating 5.0 \
+    --min_user_items 5 \
+    --max_users 0 \
+    --max_items_per_user 100 \
+    --feature_source hybrid \
+    --collab_window 5 \
+    --clusters 16,16,16 \
+    --feature_dim 96 \
+    --kmeans_iters 5 \
+    --kmeans_sample_size 2048 \
+    --train_mode sliding \
+    --min_context_items 2 \
+    --embed_dim 96 \
+    --n_heads 4 \
+    --layers 2 \
+    --batch_size 128 \
+    --epochs 8 \
+    --eval_samples 1000 \
+    --beam_size 1000 \
+    --max_seq_len 128 \
+    --device cuda
+```
+
+Estimated free T4 scale:
+
+| Dataset | Rating filter | Approx. users | Approx. items | Recommended use |
+|---------|---------------|---------------|---------------|-----------------|
+| `ml-latest-small` | `--min_rating 5.0` | hundreds | a few thousand | First credible public GPU result. |
+| `ml-latest-small` | `--min_rating 4.0` | hundreds | 6k+ | Denser sanity check after the first run. |
+| `ml-1m` | `--min_rating 4.0` | thousands | 3k+ | Next public-scale run if the session is stable. |
+| `ml-20m` | any | tens of thousands | 20k+ | Not recommended on free Colab without reducing users/eval. |
+
+On a free T4, the practical bottleneck is usually session stability and beam
+evaluation latency rather than model memory. Start with `ml-latest-small` and
+`beam_size=1000`; then try `ml-1m` with `epochs=5`, `clusters=64,64,64`,
+`embed_dim=128`, `layers=3`, and `eval_samples=1000`. Save outputs to Drive
+when using Colab because free runtimes can disconnect.
+
 ## Current Smoke Result
 
 A checked-in full CPU result is available at

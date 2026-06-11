@@ -7,6 +7,7 @@ Reproducible Generative Recommendation framework, from Semantic IDs to full-reca
 `nanoGenRec` is a from-scratch, end-to-end workspace for Semantic-ID-based generative recommendation on large-scale production behavior data. It combines model code, YAML experiment orchestration, full-recall evaluation, research-agent notes, and durable experiment logs into a reproducible applied research loop.
 
 For users without private data or GPUs, the repository includes a CPU-friendly public MovieLens path that runs the same core loop at smoke-test scale: public ratings -> CPU Semantic IDs -> tiny NTP training -> SID-constrained full-recall evaluation.
+A Colab GPU notebook is also available at [public_benchmarks/nanogenrec_colab.ipynb](public_benchmarks/nanogenrec_colab.ipynb) for running the public MovieLens path on a free T4 session.
 
 The project is also built around a simple AGI-era premise: valuable AI systems should not only train models, but also help generate hypotheses, schedule experiments, evaluate results, and preserve the reasoning trail.
 
@@ -37,6 +38,7 @@ The project treats recommendation research as an autonomous experimentation prob
 | Best NTP full eval | M-tier 4B SID model reaches R@500=70.4% and R@10=14.2% over ~49K eval items | [EXP-043](experiments/logs/ntp/README.md) |
 | Best post-training recovery | on-policy ECPO recovers off-policy collapse from R@500=2.0% to 67.8% | [EXP-029](experiments/logs/exp-029.md) |
 | Public reproducibility path | CPU MovieLens run: 603 users, 6,298 items, tiny NTP, item_recall@50=3.2% | [public_benchmarks/results/ml-latest-small-full-cpu.md](public_benchmarks/results/ml-latest-small-full-cpu.md) |
+| Colab GPU path | Free T4 notebook for the public MovieLens loop | [public_benchmarks/nanogenrec_colab.ipynb](public_benchmarks/nanogenrec_colab.ipynb) |
 | Agentic workflow | inbox/outbox protocol, paper-note memory, YAML config expansion, duplicate-run checks, queue-based execution, and decision records | [research/](research/program.md), [experiments/](experiments/README.md) |
 
 ## Highlights
@@ -131,6 +133,9 @@ python run.py public-movielens \
     --layers 1 \
     --eval_samples 20 \
     --beam_size 10
+
+# Public Colab GPU path: open public_benchmarks/nanogenrec_colab.ipynb
+# and select Runtime -> Change runtime type -> T4 GPU.
 
 # Train a tokenizer and produce Semantic IDs
 python run.py train --model qwen3-0.6b

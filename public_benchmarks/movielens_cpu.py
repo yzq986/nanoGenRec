@@ -6,7 +6,7 @@ reproducibility loop without requiring private behavior logs, Qwen embeddings,
 Faiss, or GPU resources:
 
   download/load public MovieLens data
-  -> build CPU semantic IDs from title/genre features
+  -> build CPU semantic IDs from title/genre/collaborative features
   -> train a tiny dense NTPModel
   -> run SID-constrained beam-search recall
 
@@ -25,7 +25,7 @@ import random
 import re
 import urllib.request
 import zipfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -176,7 +176,7 @@ def filter_sequences(
     return seqs
 
 
-def build_item_features(movies: dict[int, tuple[str, str]], dim: int) -> tuple[list[int], np.ndarray]:
+def build_text_item_features(movies: dict[int, tuple[str, str]], dim: int) -> tuple[list[int], np.ndarray]:
     movie_ids = sorted(movies)
     feats = np.zeros((len(movie_ids), dim), dtype=np.float32)
     for i, mid in enumerate(movie_ids):
@@ -195,16 +195,71 @@ def build_item_features(movies: dict[int, tuple[str, str]], dim: int) -> tuple[l
     return movie_ids, feats / np.maximum(norms, 1e-6)
 
 
-def kmeans(x: np.ndarray, k: int, iters: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+def build_collab_item_features(
+    movie_ids: list[int],
+    seqs: dict[int, list[int]],
+    dim: int,
+    window: int,
+) -> np.ndarray:
+    """Hashed item co-occurrence features from public behavior sequences."""
+    item_to_idx = {mid: i for i, mid in enumerate(movie_ids)}
+    feats = np.zeros((len(movie_ids), dim), dtype=np.float32)
+    for items in seqs.values():
+        items = [mid for mid in items if mid in item_to_idx]
+        for pos, mid in enumerate(items):
+            row = item_to_idx[mid]
+            lo = max(0, pos - window)
+            hi = min(len(items), pos + window + 1)
+            for j in range(lo, hi):
+                if j == pos:
+                    continue
+                ctx = items[j]
+                h = stable_hash(str(ctx))
+                feats[row, h % dim] += 1.0 / max(abs(j - pos), 1)
+    norms = np.linalg.norm(feats, axis=1, keepdims=True)
+    return feats / np.maximum(norms, 1e-6)
+
+
+def build_item_features(
+    movies: dict[int, tuple[str, str]],
+    seqs: dict[int, list[int]],
+    dim: int,
+    feature_source: str,
+    collab_window: int,
+) -> tuple[list[int], np.ndarray]:
+    movie_ids, text_features = build_text_item_features(movies, dim)
+    if feature_source == "text":
+        return movie_ids, text_features
+
+    collab_features = build_collab_item_features(movie_ids, seqs, dim, collab_window)
+    if feature_source == "collab":
+        return movie_ids, collab_features
+    if feature_source == "hybrid":
+        features = np.concatenate([text_features, collab_features], axis=1)
+        norms = np.linalg.norm(features, axis=1, keepdims=True)
+        return movie_ids, features / np.maximum(norms, 1e-6)
+    raise ValueError(f"unknown feature_source: {feature_source}")
+
+
+def kmeans(
+    x: np.ndarray,
+    k: int,
+    iters: int,
+    seed: int,
+    sample_size: int = 0,
+) -> tuple[np.ndarray, np.ndarray]:
     n = x.shape[0]
     k = max(1, min(k, n))
     rng = np.random.default_rng(seed)
     init = rng.choice(n, size=k, replace=False)
     centroids = x[init].copy()
-    assignments = np.zeros(n, dtype=np.int64)
+    train_x = x
+    if sample_size and sample_size < n:
+        train_x = x[rng.choice(n, size=max(k, sample_size), replace=False)]
+    assignments = np.zeros(train_x.shape[0], dtype=np.int64)
 
     for _ in range(iters):
-        dists = ((x[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
+        dists = ((train_x[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
         new_assignments = dists.argmin(axis=1)
         if np.array_equal(assignments, new_assignments):
             break
@@ -212,25 +267,32 @@ def kmeans(x: np.ndarray, k: int, iters: int, seed: int) -> tuple[np.ndarray, np
         for ci in range(k):
             mask = assignments == ci
             if mask.any():
-                centroids[ci] = x[mask].mean(axis=0)
+                centroids[ci] = train_x[mask].mean(axis=0)
             else:
-                centroids[ci] = x[rng.integers(0, n)]
-    return assignments, centroids
+                centroids[ci] = train_x[rng.integers(0, train_x.shape[0])]
+    full_dists = ((x[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
+    return full_dists.argmin(axis=1), centroids
 
 
 def build_semantic_ids(
     movies: dict[int, tuple[str, str]],
+    seqs: dict[int, list[int]],
     n_clusters: tuple[int, int, int],
     feature_dim: int,
+    feature_source: str,
+    collab_window: int,
     kmeans_iters: int,
+    kmeans_sample_size: int,
     seed: int,
 ) -> tuple[dict[int, tuple[int, int, int]], list[int]]:
-    movie_ids, features = build_item_features(movies, feature_dim)
+    movie_ids, features = build_item_features(
+        movies, seqs, feature_dim, feature_source, collab_window)
     residual = features.copy()
     layers = []
     actual_clusters = []
     for li, k in enumerate(n_clusters):
-        assign, centroids = kmeans(residual, k, kmeans_iters, seed + li)
+        print(f"kmeans layer {li}: k={k} dim={residual.shape[1]}", flush=True)
+        assign, centroids = kmeans(residual, k, kmeans_iters, seed + li, kmeans_sample_size)
         layers.append(assign)
         actual_clusters.append(int(centroids.shape[0]))
         residual = residual - centroids[assign]
@@ -241,21 +303,50 @@ def build_semantic_ids(
     return sid, actual_clusters
 
 
-def split_train_eval(seqs: dict[int, list[int]], sid: dict[int, tuple[int, ...]], max_items: int):
+def split_train_eval(
+    seqs: dict[int, list[int]],
+    sid: dict[int, tuple[int, ...]],
+    max_items: int,
+    train_mode: str,
+    min_context_items: int,
+):
     train_examples = []
     eval_examples = []
     for uid, items in seqs.items():
         items = [mid for mid in items if mid in sid]
-        if len(items) < 3:
+        if len(items) <= min_context_items:
             continue
         if max_items:
             items = items[-max_items:]
-        train_items = items[:-1]
-        target = items[-1]
-        tokens = [tok for mid in train_items for tok in sid[mid]]
-        if len(tokens) >= 2:
-            train_examples.append(tokens)
-            eval_examples.append({"uid": uid, "context": tokens, "target_mid": target, "target_sid": sid[target]})
+
+        eval_context = items[:-1]
+        eval_target = items[-1]
+        eval_tokens = [tok for mid in eval_context for tok in sid[mid]]
+        if len(eval_tokens) >= 2:
+            eval_examples.append({
+                "uid": uid,
+                "context": eval_tokens,
+                "target_mid": eval_target,
+                "target_sid": sid[eval_target],
+            })
+
+        if train_mode == "last":
+            train_items = items[:-1]
+            tokens = [tok for mid in train_items for tok in sid[mid]]
+            if len(tokens) >= 2:
+                train_examples.append(tokens)
+        elif train_mode == "sliding":
+            # Leave the final item for evaluation. Every earlier prefix becomes
+            # one LM sequence that ends at the next-item SID target.
+            for end in range(min_context_items + 1, len(items)):
+                prefix_plus_target = items[:end]
+                if prefix_plus_target[-1] == eval_target:
+                    continue
+                tokens = [tok for mid in prefix_plus_target for tok in sid[mid]]
+                if len(tokens) >= 2:
+                    train_examples.append(tokens)
+        else:
+            raise ValueError(f"unknown train_mode: {train_mode}")
     return train_examples, eval_examples
 
 
@@ -310,7 +401,11 @@ def train_tiny_ntp(
             opt.step()
             losses.append(float(loss.detach().cpu()))
         mean_loss = sum(losses) / max(len(losses), 1)
-        print(f"epoch {epoch + 1}/{args.epochs}: loss={mean_loss:.4f} ppl={math.exp(min(mean_loss, 20)):.2f}")
+        print(
+            f"epoch {epoch + 1}/{args.epochs}: "
+            f"loss={mean_loss:.4f} ppl={math.exp(min(mean_loss, 20)):.2f}",
+            flush=True,
+        )
     return model
 
 
@@ -327,7 +422,7 @@ def evaluate(
     random.Random(args.seed).shuffle(sample)
     sample = sample[:args.eval_samples]
 
-    recall_ks = [1, 5, 10, 50]
+    recall_ks = sorted({1, 5, 10, 50, 100, 500, args.beam_size})
     hits = {k: 0 for k in recall_ks}
     sid_found = 0
     with torch.no_grad():
@@ -343,7 +438,7 @@ def evaluate(
                 sid_str = "_".join(str(int(t)) for t in beams[0, bi])
                 if sid_str == target_sid:
                     found = True
-                for mid in sid_to_items.get(sid_str, set()):
+                for mid in sid_to_items.get(sid_str, []):
                     if mid not in seen:
                         candidates.append(mid)
                         seen.add(mid)
@@ -360,6 +455,21 @@ def evaluate(
     return out
 
 
+def build_sid_to_items(
+    sid: dict[int, tuple[int, ...]],
+    seqs: dict[int, list[int]],
+) -> dict[str, list[int]]:
+    """Map each SID to items sorted by public-train popularity tie-breaker."""
+    freq = Counter(mid for items in seqs.values() for mid in items)
+    grouped: dict[str, list[int]] = defaultdict(list)
+    for mid, toks in sid.items():
+        grouped["_".join(str(t) for t in toks)].append(mid)
+    return {
+        sid_str: sorted(items, key=lambda mid: (-freq.get(mid, 0), mid))
+        for sid_str, items in grouped.items()
+    }
+
+
 def write_artifacts(output_dir: Path, sid: dict[int, tuple[int, ...]], n_clusters: list[int], metrics: dict, args) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     semantic_ids = {mid: "_".join(str(t) for t in toks) for mid, toks in sid.items()}
@@ -370,6 +480,8 @@ def write_artifacts(output_dir: Path, sid: dict[int, tuple[int, ...]], n_cluster
         json.dump({
             "dataset": args.dataset,
             "n_clusters_per_layer": n_clusters,
+            "feature_source": args.feature_source,
+            "train_mode": args.train_mode,
             "embed_dim": args.embed_dim,
             "layers": args.layers,
             "epochs": args.epochs,
@@ -388,8 +500,11 @@ def parse_args():
     parser.add_argument("--max_users", type=int, default=2000)
     parser.add_argument("--max_items_per_user", type=int, default=50)
     parser.add_argument("--feature_dim", type=int, default=64)
+    parser.add_argument("--feature_source", choices=["text", "collab", "hybrid"], default="hybrid")
+    parser.add_argument("--collab_window", type=int, default=5)
     parser.add_argument("--clusters", default="64,64,64")
     parser.add_argument("--kmeans_iters", type=int, default=10)
+    parser.add_argument("--kmeans_sample_size", type=int, default=4096)
     parser.add_argument("--embed_dim", type=int, default=64)
     parser.add_argument("--n_heads", type=int, default=4)
     parser.add_argument("--layers", type=int, default=2)
@@ -401,6 +516,8 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=0.01)
     parser.add_argument("--beam_size", type=int, default=50)
     parser.add_argument("--eval_samples", type=int, default=200)
+    parser.add_argument("--train_mode", choices=["last", "sliding"], default="sliding")
+    parser.add_argument("--min_context_items", type=int, default=2)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--verbose_eval", action="store_true")
@@ -425,16 +542,19 @@ def main():
     if len(clusters) != 3:
         raise ValueError("--clusters must contain exactly three comma-separated integers")
 
-    print(f"dataset={args.dataset} users={len(seqs):,} items={len(movies):,}")
-    sid, actual_clusters = build_semantic_ids(movies, clusters, args.feature_dim, args.kmeans_iters, args.seed)
-    train_examples, eval_examples = split_train_eval(seqs, sid, args.max_items_per_user)
-    print(f"train_users={len(train_examples):,} eval_users={len(eval_examples):,} clusters={actual_clusters}")
+    print(f"dataset={args.dataset} users={len(seqs):,} items={len(movies):,}", flush=True)
+    sid, actual_clusters = build_semantic_ids(
+        movies, seqs, clusters, args.feature_dim, args.feature_source,
+        args.collab_window, args.kmeans_iters, args.kmeans_sample_size, args.seed)
+    train_examples, eval_examples = split_train_eval(
+        seqs, sid, args.max_items_per_user, args.train_mode, args.min_context_items)
+    print(f"train_examples={len(train_examples):,} eval_users={len(eval_examples):,} "
+          f"clusters={actual_clusters} feature_source={args.feature_source} "
+          f"train_mode={args.train_mode}", flush=True)
     if not train_examples or not eval_examples:
         raise RuntimeError("No train/eval examples after filtering; relax min_user_items or max_users.")
 
-    sid_to_items: dict[str, set] = defaultdict(set)
-    for mid, toks in sid.items():
-        sid_to_items["_".join(str(t) for t in toks)].add(mid)
+    sid_to_items = build_sid_to_items(sid, seqs)
 
     if args.device == "cuda":
         device = torch.device("cuda")
@@ -442,16 +562,18 @@ def main():
         device = torch.device("cpu")
     else:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"device={device}")
+    print(f"device={device}", flush=True)
 
     model = train_tiny_ntp(train_examples, actual_clusters, args, device)
-    metrics = evaluate(model, eval_examples, dict(sid_to_items), args, device)
+    metrics = evaluate(model, eval_examples, sid_to_items, args, device)
     metrics.update({
         "dataset": args.dataset,
         "n_users": len(seqs),
         "n_items": len(movies),
         "n_train_examples": len(train_examples),
         "n_eval_examples": len(eval_examples),
+        "feature_source": args.feature_source,
+        "train_mode": args.train_mode,
     })
     print(json.dumps(metrics, indent=2))
     write_artifacts(Path(args.output_dir), sid, actual_clusters, metrics, args)

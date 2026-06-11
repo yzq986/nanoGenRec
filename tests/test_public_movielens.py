@@ -14,16 +14,22 @@ def test_synthetic_public_movielens_path_builds_examples():
 
     sid, clusters = build_semantic_ids(
         movies,
+        seqs,
         n_clusters=(8, 8, 8),
         feature_dim=32,
+        feature_source="hybrid",
+        collab_window=3,
         kmeans_iters=2,
+        kmeans_sample_size=0,
         seed=7,
     )
-    train_examples, eval_examples = split_train_eval(seqs, sid, max_items=20)
+    train_examples, eval_examples = split_train_eval(
+        seqs, sid, max_items=20, train_mode="sliding", min_context_items=2)
 
     assert clusters == [8, 8, 8]
     assert sid
     assert train_examples
     assert eval_examples
+    assert len(train_examples) > len(eval_examples)
     assert all(len(example) >= 6 for example in train_examples)
     assert all(len(example["target_sid"]) == 3 for example in eval_examples)
