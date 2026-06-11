@@ -1,9 +1,14 @@
 # MovieLens 1M Colab T4 Result
 
-This result records a public Google Colab T4 run of the nanoGenRec MovieLens
-path. It uses only redistributable MovieLens 1M ratings and metadata, builds
-hashed hybrid semantic-ID features, trains the tiny NTP model, and evaluates
-SID-constrained item recall.
+This result records an early public Google Colab T4 run of the nanoGenRec
+MovieLens path. It uses only redistributable MovieLens 1M ratings and metadata,
+builds hashed hybrid semantic-ID features, trains the tiny NTP model, and
+evaluates SID-constrained item recall.
+
+This run predates the strict public Qwen+RL path. For the current strict "How
+It Works" reproduction, use `public_benchmarks/nanogenrec_colab.ipynb`, which
+runs Qwen3 item embeddings and a GRPO-style reward-alignment stage before
+evaluation.
 
 ## Command
 
@@ -84,11 +89,10 @@ stronger on this dense MovieLens setting.
 
 ## Interpretation
 
-This is the first public GPU-scale reproducibility result in the repository.
+This is the first public GPU-scale hybrid-feature reproducibility result in the repository.
 It demonstrates that the open MovieLens path can move beyond smoke testing:
-on a free Colab-class GPU, the framework runs a complete public generative
-recommendation loop and reaches `item_recall@500=0.725` over 1,000 held-out
-examples.
+on a free Colab-class GPU, the framework runs a public SID/NTP/full-eval loop
+and reaches `item_recall@500=0.725` over 1,000 held-out examples.
 
 This result should still be read as an end-to-end reproducibility result, not
 as a public leaderboard claim. The semantic IDs are built from lightweight

@@ -24,12 +24,13 @@ def test_synthetic_public_movielens_path_builds_examples():
         kmeans_sample_size=0,
         seed=7,
     )
-    train_examples, eval_examples = split_train_eval(
+    train_examples, alignment_examples, eval_examples = split_train_eval(
         seqs, sid, max_items=20, train_mode="sliding", min_context_items=2)
 
     assert clusters == [8, 8, 8]
     assert sid
     assert train_examples
+    assert alignment_examples
     assert eval_examples
     assert len(train_examples) > len(eval_examples)
     assert all(len(example) >= 6 for example in train_examples)

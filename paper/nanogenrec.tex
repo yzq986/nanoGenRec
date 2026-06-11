@@ -22,7 +22,7 @@
 \maketitle
 
 \begin{abstract}
-Generative recommendation has recently reframed large-scale retrieval as autoregressive generation over Semantic IDs, with industrial systems reporting gains from model scaling, reinforcement learning, and end-to-end deployment. However, making this paradigm work outside a production paper remains difficult because the useful unit is a full system rather than a single model: item tokenization, behavior sequence construction, next-token training, constrained decoding, full-recall evaluation, experiment governance, and failure diagnosis must all agree. We present \textsc{nanoGenRec}, an open-source framework that lands Semantic-ID generative recommendation as an executable research workflow. The framework implements Semantic ID tokenization, Transformer+MoE next-token recommendation, SID-constrained beam-search evaluation, YAML-based experiment configuration, duplicate-run detection, queue-based long jobs, and durable experiment logs. On anonymized production behavior data, this framework supports 51 recorded experiments and reproduces several useful GR outcomes: a model-scaling curve $L(N)=2.522+2055.1/N^{0.456}$ from 1.7M to 101.1M active parameters; a production behavior-window study showing non-monotonic data scaling under temporal drift; tokenizer sweeps connecting embedding scale, collision, semantic-neighbor retention, and downstream recall; an M-tier 4B-SID full-eval result of R@500=70.4\% and R@10=14.2\%; and a post-training alignment case where off-policy ECPO collapses to R@500=2.0\% while on-policy candidates recover to 67.8\%. The released artifact also includes a public MovieLens 1M Colab-T4 run that executes the same open loop and reaches R@500=72.5\% and R@1000=85.2\% over 1,000 held-out examples. We position \textsc{nanoGenRec} as a reproducibility framework and landing record for researchers and engineers turning Generative Recommendation from a paper-level recipe into a working system.
+Generative recommendation has recently reframed large-scale retrieval as autoregressive generation over Semantic IDs, with industrial systems reporting gains from model scaling, reinforcement learning, and end-to-end deployment. However, making this paradigm work outside a production paper remains difficult because the useful unit is a full system rather than a single model: item tokenization, behavior sequence construction, next-token training, post-training alignment, constrained decoding, full-recall evaluation, experiment governance, and failure diagnosis must all agree. We present \textsc{nanoGenRec}, an open-source framework that lands Semantic-ID generative recommendation as an executable research workflow. The framework implements Semantic ID tokenization, Transformer+MoE next-token recommendation, reward-alignment losses, SID-constrained beam-search evaluation, YAML-based experiment configuration, duplicate-run detection, queue-based long jobs, and durable experiment logs. On anonymized production behavior data, this framework supports 51 recorded experiments and reproduces several useful GR outcomes: a model-scaling curve $L(N)=2.522+2055.1/N^{0.456}$ from 1.7M to 101.1M active parameters; a production behavior-window study showing non-monotonic data scaling under temporal drift; tokenizer sweeps connecting embedding scale, collision, semantic-neighbor retention, and downstream recall; an M-tier 4B-SID full-eval result of R@500=70.4\% and R@10=14.2\%; and a post-training alignment case where off-policy ECPO collapses to R@500=2.0\% while on-policy candidates recover to 67.8\%. The released artifact also includes a public MovieLens Colab-T4 notebook for the strict Qwen3-embedding $\rightarrow$ SID $\rightarrow$ NTP $\rightarrow$ reward-alignment $\rightarrow$ full-evaluation loop, plus an earlier checked-in MovieLens 1M hybrid-feature run reaching R@500=72.5\% and R@1000=85.2\% over 1,000 held-out examples. We position \textsc{nanoGenRec} as a reproducibility framework and landing record for researchers and engineers turning Generative Recommendation from a paper-level recipe into a working system.
 \end{abstract}
 
 \section{Introduction}
@@ -116,13 +116,14 @@ Table~\ref{tab:stage-parameters} makes the parameter level of each stage explici
 \toprule
 Stage & Production empirical setting & Public MovieLens 1M setting \\
 \midrule
-Item representation & Qwen3 0.6B / 4B embeddings & Title/genre + co-occurrence hashes, dim=128 each \\
-SID tokenization & 3-token RKMeans/FSQ, 4096/8192 codebooks & Residual KMeans, 64$\times$64$\times$64 \\
-Sequence construction & 7--90 day windows, up to 445M SID tokens & 5,950 users, max 100 items/user, sliding prefixes \\
-NTP model & S/M/L tiers: 17.5M / 71.6M / 101.1M active params & Dense NTP, 3 layers, embed\_dim=128 \\
-Training & YAML variants, queued multi-GPU production runs & 5 epochs, batch=256, single Colab T4 \\
+Item representation & Qwen3 0.6B / 4B embeddings & Qwen3-Embedding-0.6B over public MovieLens metadata \\
+SID tokenization & 3-token RKMeans/FSQ, 4096/8192 codebooks & CPU residual KMeans, 16--64 clusters per layer \\
+Sequence construction & 7--90 day windows, up to 445M SID tokens & Public ratings, max 100 items/user, sliding prefixes \\
+NTP model & S/M/L tiers: 17.5M / 71.6M / 101.1M active params & Dense NTP, 2--3 layers, embed\_dim=96--128 \\
+Training & YAML variants, queued multi-GPU production runs & 5--8 epochs, single Colab T4 \\
+Alignment & SP-DPO / RF-DPO / GRPO / ECPO & Lightweight GRPO-style exact-SID reward stage \\
 Evaluation & Full SID-constrained recall, R@10/R@500 & Beam=1000, 1,000 eval samples, R@1--R@1000 \\
-Governance & Duplicate-run checks, EXP logs, phase READMEs & Notebook, checked-in metrics, public result page \\
+Governance & Duplicate-run checks, EXP logs, phase READMEs & Notebook, metrics, public result page \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -133,9 +134,9 @@ Figure~\ref{fig:shared-interface} shows the same point as a release diagram: the
 \centering
 \fbox{\begin{minipage}{0.92\linewidth}
 \small
-\textbf{Production path:} Qwen3 item embeddings $\rightarrow$ RKMeans/FSQ SIDs $\rightarrow$ NTP shards $\rightarrow$ Transformer+MoE $\rightarrow$ constrained full recall $\rightarrow$ EXP logs \\
+\textbf{Production path:} Qwen3 item embeddings $\rightarrow$ RKMeans/FSQ SIDs $\rightarrow$ NTP shards $\rightarrow$ Transformer+MoE $\rightarrow$ preference/RL alignment $\rightarrow$ constrained full recall $\rightarrow$ EXP logs \\
 \vspace{0.4em}
-\textbf{Public path:} MovieLens metadata/co-occurrence hashes $\rightarrow$ 64$\times$64$\times$64 SIDs $\rightarrow$ sliding-prefix shards $\rightarrow$ dense NTP $\rightarrow$ constrained full recall $\rightarrow$ checked-in public metrics \\
+\textbf{Public path:} MovieLens metadata $\rightarrow$ Qwen3 item embeddings $\rightarrow$ CPU KMeans SIDs $\rightarrow$ sliding-prefix shards $\rightarrow$ dense NTP $\rightarrow$ GRPO-style alignment $\rightarrow$ constrained full recall $\rightarrow$ public metrics \\
 \vspace{0.4em}
 \textbf{Shared interface:} item IDs $\leftrightarrow$ SID tokens, autoregressive SID sequences, valid-SID decoding, item-level Recall@K, and auditable run artifacts.
 \end{minipage}}
@@ -161,7 +162,7 @@ We treat GR as landed only when four criteria are met. First, generated token se
 
 The empirical study uses anonymized production behavior data. The largest behavior sweep covers up to 7.85M users and 299.0M raw interactions. After sequence truncation, this corresponds to roughly 445M effective SID tokens. Private data and deployment-specific details are not released; the open-source artifact preserves the code, configs, evaluation protocol, and experiment logs.
 
-For public reproducibility, the repository also includes a MovieLens path. The MovieLens 1M Colab run uses 5,950 users, 3,532 items, 348,363 sliding-prefix training examples, and 5,950 evaluation users after filtering. This path deliberately avoids private embeddings and Faiss: it constructs lightweight hybrid item features from public title/genre metadata and behavior co-occurrence hashes, then runs the same SID-tokenization, NTP-training, constrained-decoding, and item-recall interfaces.
+For public reproducibility, the repository also includes a MovieLens path. The strict Colab-T4 notebook uses public ratings and metadata, Qwen3-Embedding-0.6B item representations, CPU residual KMeans SIDs, sliding-prefix NTP training, a lightweight GRPO-style exact-SID reward stage, constrained decoding, and item-recall evaluation. The earlier checked-in MovieLens 1M result uses 5,950 users, 3,532 items, 348,363 sliding-prefix training examples, and 5,950 evaluation users after filtering, but relies on lightweight hybrid title/genre and co-occurrence features and predates the public reward-alignment stage.
 
 \subsection{Model Tiers}
 
@@ -309,9 +310,9 @@ L-tier with validated options & 12.8\% & 64.1\% & 20.7 \\
 
 \subsection{Public MovieLens Reproduction}
 
-The private production data cannot be redistributed, so the repository includes a separate public reproduction path on MovieLens. This path is not intended as a public leaderboard benchmark. Its purpose is to show that the released code can execute the complete GR loop on public data and a widely available free-GPU environment.
+The private production data cannot be redistributed, so the repository includes a separate public reproduction path on MovieLens. This path is not intended as a public leaderboard benchmark. Its purpose is to show that the released code can execute the GR framework loop on public data and a widely available free-GPU environment, including Qwen3 item embedding, SID construction, NTP training, reward alignment, and full-recall evaluation in the current notebook.
 
-Table~\ref{tab:public-movielens} reports the current MovieLens 1M Colab-T4 result and simple public baselines. The nanoGenRec run uses hybrid public item features, residual KMeans SIDs with a 64$\times$64$\times$64 token space, a dense 3-layer NTP model with embedding dimension 128, and SID-constrained beam search with beam size 1000.
+Table~\ref{tab:public-movielens} reports the checked-in MovieLens 1M Colab-T4 hybrid-feature result and simple public baselines. This result predates the strict public Qwen+RL notebook path. The nanoGenRec run uses hybrid public item features, residual KMeans SIDs with a 64$\times$64$\times$64 token space, a dense 3-layer NTP model with embedding dimension 128, and SID-constrained beam search with beam size 1000.
 
 \begin{table}[t]
 \centering
@@ -368,14 +369,14 @@ The production data cannot be released. However, the artifact makes the followin
 \begin{itemize}
   \item model and tokenizer implementations;
   \item preprocessing and evaluation interfaces;
-  \item a CPU-friendly MovieLens smoke path and a Colab-T4 MovieLens 1M public run;
+  \item a CPU-friendly MovieLens smoke path, a strict Colab-T4 Qwen+RL notebook, and a checked-in MovieLens 1M hybrid-feature public run;
   \item experiment configs and resolved parameter sets;
   \item full-recall evaluation protocol;
   \item experiment logs with hypotheses, designs, results, and post-hoc analysis;
   \item known invalid runs and bug records.
 \end{itemize}
 
-This distinction matters. A GR framework can be useful even when a production dataset is not public, provided that the code path, configuration semantics, evaluation protocol, and empirical record are exposed. The released artifact includes both a checked-in MovieLens CPU smoke result and a MovieLens 1M Colab-T4 result, demonstrating the public loop at two compute levels. The main reproducibility target of \textsc{nanoGenRec} is therefore the working loop: how to construct SIDs, train the model, decode valid items, evaluate full recall, organize experiments, and diagnose failures.
+This distinction matters. A GR framework can be useful even when a production dataset is not public, provided that the code path, configuration semantics, evaluation protocol, and empirical record are exposed. The released artifact includes a strict Colab-T4 Qwen+RL notebook plus checked-in MovieLens CPU and hybrid-feature T4 results, demonstrating the public loop at multiple compute levels. The main reproducibility target of \textsc{nanoGenRec} is therefore the working loop: how to construct SIDs, train the model, align it with reward signals, decode valid items, evaluate full recall, organize experiments, and diagnose failures.
 
 \subsection{Lessons}
 
@@ -383,7 +384,7 @@ Three lessons recur across the experiment lineage. First, landing GR requires fu
 
 \section{Limitations}
 
-This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The repository includes MovieLens CPU and Colab-T4 public runs to verify the released framework loop, but these are reproducibility checks rather than competitive public leaderboard claims. On MovieLens 1M, a simple item co-occurrence KNN baseline is stronger than the current public nanoGenRec path, which shows that the public path should not be interpreted as a tuned public recommender. The public tokenizer path uses lightweight hashed metadata and co-occurrence features rather than the production Qwen/Faiss SID pipeline. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as framework-validated engineering evidence rather than final algorithmic conclusions. The most important next step is broader public benchmarking across redistributable datasets and stronger public baselines, so external users can verify not only the code structure but also cross-dataset empirical trends.
+This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The repository includes MovieLens CPU and Colab-T4 public paths to verify the released framework loop, but these are reproducibility checks rather than competitive public leaderboard claims. On the checked-in MovieLens 1M hybrid-feature run, a simple item co-occurrence KNN baseline is stronger than nanoGenRec, which shows that the public path should not be interpreted as a tuned public recommender. The strict public Qwen+RL path is provided as an executable notebook and should be registered as a new result after a full T4 run. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as framework-validated engineering evidence rather than final algorithmic conclusions. The most important next step is broader public benchmarking across redistributable datasets and stronger public baselines, so external users can verify not only the code structure but also cross-dataset empirical trends.
 
 \section{Conclusion}
 

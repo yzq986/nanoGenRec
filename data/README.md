@@ -6,7 +6,7 @@ Data loading, export, embedding synchronization, and distributed encoding utilit
 
 This module connects raw item/behavior data to the tokenizer and NTP pipelines. It supports both local and remote paths, but downstream experiments should consume stable cache directories under `experiments/`.
 
-Public benchmark adapters that do not require private data live in [public_benchmarks/](../public_benchmarks/README.md). The MovieLens CPU path is intentionally separate from this production data module because it uses lightweight title/genre SIDs instead of Qwen embedding caches.
+Public benchmark adapters that do not require private data live in [public_benchmarks/](../public_benchmarks/README.md). The strict MovieLens path uses Qwen3 item embeddings on public metadata, while lightweight hash-feature settings remain available as local smoke tests.
 
 ## Files
 

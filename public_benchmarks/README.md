@@ -1,24 +1,28 @@
 # Public Benchmarks
 
 This directory contains redistributable benchmark paths that do not depend on
-private behavior data, Qwen embeddings, Faiss, or GPU resources.
+private behavior data or Faiss.
 
-The first path is a CPU-friendly MovieLens smoke benchmark. Its purpose is to
-verify that nanoGenRec can run the complete public loop:
+The main public path is a Colab T4 MovieLens reproduction. Its purpose is to
+verify that nanoGenRec can run the strict "How It Works" loop on public data:
 
 ```text
 MovieLens ratings and metadata
-  -> CPU title/genre Semantic IDs
+  -> Qwen3 item embeddings
+  -> CPU KMeans Semantic IDs
   -> tiny NTP training
+  -> lightweight GRPO-style reward alignment
   -> SID-constrained beam-search evaluation
   -> metrics.json + semantic_ids.npy
 ```
 
-It is a reproducibility path, not a public SOTA claim.
+Fast CPU/hash-feature settings are kept as developer smoke tests. They are
+useful for CI and local debugging, but they are not the strict public framework
+run. This directory is a reproducibility path, not a public SOTA claim.
 
 ## Quick Smoke
 
-Fast synthetic test:
+Fast synthetic developer test:
 
 ```bash
 python run.py public-movielens \
@@ -29,11 +33,14 @@ python run.py public-movielens \
     --clusters 16,16,16 \
     --embed_dim 32 \
     --layers 1 \
+    --rl_steps 1 \
+    --rl_batch_size 2 \
+    --rl_group_size 4 \
     --eval_samples 20 \
     --beam_size 10
 ```
 
-Real public MovieLens smoke:
+Real public MovieLens developer smoke:
 
 ```bash
 python run.py public-movielens \
@@ -44,6 +51,9 @@ python run.py public-movielens \
     --clusters 16,16,16 \
     --embed_dim 32 \
     --layers 1 \
+    --rl_steps 1 \
+    --rl_batch_size 2 \
+    --rl_group_size 4 \
     --eval_samples 20 \
     --beam_size 10
 ```
@@ -67,20 +77,20 @@ For a free GPU run, open
 [nanogenrec_colab.ipynb](nanogenrec_colab.ipynb) in Google Colab and select
 `Runtime` -> `Change runtime type` -> `T4 GPU`.
 
-The recommended first T4 run is:
+The recommended strict T4 run is:
 
 ```bash
 python run.py public-movielens \
     --dataset ml-latest-small \
-    --output_dir public_benchmarks/runs/ml-latest-small-colab-t4 \
+    --output_dir public_benchmarks/runs/ml-latest-small-qwen-rl-t4 \
     --min_rating 5.0 \
     --min_user_items 5 \
     --max_users 0 \
     --max_items_per_user 100 \
-    --feature_source hybrid \
-    --collab_window 5 \
+    --feature_source qwen \
+    --qwen_device cuda \
+    --qwen_batch_size 16 \
     --clusters 16,16,16 \
-    --feature_dim 96 \
     --kmeans_iters 5 \
     --kmeans_sample_size 2048 \
     --train_mode sliding \
@@ -90,6 +100,9 @@ python run.py public-movielens \
     --layers 2 \
     --batch_size 128 \
     --epochs 8 \
+    --rl_steps 50 \
+    --rl_batch_size 8 \
+    --rl_group_size 8 \
     --eval_samples 1000 \
     --beam_size 1000 \
     --max_seq_len 128 \
@@ -105,19 +118,21 @@ Estimated free T4 scale:
 | `ml-1m` | `--min_rating 4.0` | thousands | 3k+ | Next public-scale run if the session is stable. |
 | `ml-20m` | any | tens of thousands | 20k+ | Not recommended on free Colab without reducing users/eval. |
 
-On a free T4, the practical bottleneck is usually session stability and beam
-evaluation latency rather than model memory. Start with `ml-latest-small` and
-`beam_size=1000`; then try `ml-1m` with `epochs=5`, `clusters=64,64,64`,
-`embed_dim=128`, `layers=3`, and `eval_samples=1000`. Save outputs to Drive
-when using Colab because free runtimes can disconnect.
+On a free T4, the practical bottleneck is usually Qwen embedding download,
+beam-evaluation latency, and session stability. Start with `ml-latest-small`
+and `beam_size=1000`; then try `ml-1m` with `epochs=5`,
+`clusters=64,64,64`, `embed_dim=128`, `layers=3`, `rl_steps=100`, and
+`eval_samples=1000`. Save outputs to Drive when using Colab because free
+runtimes can disconnect.
 
 ## Current Public Results
 
-A checked-in full CPU result is available at
+A checked-in full CPU/hash-feature result is available at
 [results/ml-latest-small-full-cpu.md](results/ml-latest-small-full-cpu.md).
 The smaller smoke run is retained at
 [results/ml-latest-small-smoke.md](results/ml-latest-small-smoke.md).
-The first Colab T4 GPU result is available at
+The first Colab T4 GPU result, produced before the strict Qwen+RL path was
+added, is available at
 [results/ml-1m-colab-t4.md](results/ml-1m-colab-t4.md).
 Simple public baselines are available at
 [results/ml-1m-baselines.md](results/ml-1m-baselines.md).
@@ -130,10 +145,10 @@ Summary:
 | `ml-1m` | Colab T4 | 5,950 | 3,532 | dense 3-layer, dim=128 | 1,000 | 0.290 | 0.725 | 0.852 | 0.899 |
 | `ml-1m` | CPU baseline | 5,950 | 3,532 | ItemKNN co-occurrence | 1,000 | 0.337 | 0.780 | 0.885 | - |
 
-These results validate the public path at smoke-test and free-GPU scale. They
-should not be read as competitive public leaderboard claims because they use
-lightweight hashed public features rather than the production Qwen/Faiss
-tokenizer path.
+These checked-in results validate the earlier smoke-test and free-GPU scale
+paths. They should not be read as competitive public leaderboard claims because
+they use lightweight hashed public features. New strict public runs should use
+the notebook command with `--feature_source qwen` and `--rl_steps > 0`.
 
 ## Outputs
 
@@ -147,8 +162,9 @@ The output directory contains:
 
 ## Notes
 
-- The tokenizer uses hashed title/genre features and numpy KMeans, so it is
-  intentionally weaker than the production Qwen/Faiss SID path.
+- The strict public path uses Qwen3 text embeddings and numpy KMeans. The
+  developer smoke path uses hashed title/genre features and is intentionally
+  weaker.
 - The metric is full-loop recall from SID-constrained generation over real item
   IDs. Tiny smoke settings may produce low or zero recall; that is acceptable
   for CI-style path validation.

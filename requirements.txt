@@ -1,4 +1,5 @@
-transformers>=4.45.0
+transformers>=4.51.0
+tokenizers>=0.21.0
 huggingface_hub>=0.24.0
 Flask>=3.0.0
 Werkzeug>=3.0.0

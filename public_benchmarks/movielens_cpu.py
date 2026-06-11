@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""CPU-friendly public MovieLens benchmark path for nanoGenRec.
+"""Public MovieLens benchmark path for nanoGenRec.
 
 This script is intentionally small and self-contained. It verifies the public
-reproducibility loop without requiring private behavior logs, Qwen embeddings,
-Faiss, or GPU resources:
+reproducibility loop without requiring private behavior logs, Faiss, or GPU
+resources. For strict parity with the repository "How It Works" path, use
+``--feature_source qwen`` to build MovieLens item embeddings with Qwen3.
 
   download/load public MovieLens data
-  -> build CPU semantic IDs from title/genre/collaborative features
+  -> build item embeddings from Qwen3 or lightweight public features
+  -> build CPU semantic IDs
   -> train a tiny dense NTPModel
+  -> run a lightweight GRPO-style reward-alignment stage
   -> run SID-constrained beam-search recall
 
 The default dataset is ``synthetic`` for fast tests. Use ``ml-latest-small`` for
@@ -17,6 +20,7 @@ a real public smoke run, and ``ml-1m``/``ml-20m`` when compute is available.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import hashlib
 import json
@@ -38,6 +42,8 @@ import sys
 sys.path.insert(0, str(REPO_ROOT))
 
 from ntp.model import NTPModel, SIDTrie, constrained_beam_search
+from rl.dpo import compute_sid_logprobs_batch
+from rl.grpo import grpo_loss
 
 
 DATASETS = {
@@ -220,13 +226,87 @@ def build_collab_item_features(
     return feats / np.maximum(norms, 1e-6)
 
 
+def build_qwen_item_features(
+    movies: dict[int, tuple[str, str]],
+    model_name: str,
+    batch_size: int,
+    cache_dir: Path,
+    max_length: int,
+    device_arg: str,
+) -> tuple[list[int], np.ndarray]:
+    """Encode public MovieLens item text with Qwen3 embeddings."""
+    from model.embedders import Qwen3TextEmbedder
+
+    movie_ids = sorted(movies)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = cache_dir / "movielens_qwen_embeddings.npy"
+    cached = {}
+    if cache_path.exists():
+        cached = np.load(cache_path, allow_pickle=True).item()
+        print(f"loaded qwen embedding cache: {len(cached):,} items", flush=True)
+
+    texts = []
+    missing_ids = []
+    for mid in movie_ids:
+        if mid in cached:
+            continue
+        title, genres = movies[mid]
+        genre_text = ", ".join(g for g in genres.split("|") if g and g != "(no genres listed)")
+        texts.append(f"Movie title: {title}\nGenres: {genre_text}")
+        missing_ids.append(mid)
+
+    if missing_ids:
+        if device_arg == "auto":
+            qwen_device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            qwen_device = device_arg
+        dtype = torch.float16 if qwen_device == "cuda" else torch.float32
+        embedder = Qwen3TextEmbedder(
+            model_name,
+            device=qwen_device,
+            max_length=max_length,
+            torch_dtype=dtype,
+        )
+        print(f"qwen encoding items={len(missing_ids):,} device={qwen_device}", flush=True)
+        for start in range(0, len(missing_ids), batch_size):
+            batch_ids = missing_ids[start:start + batch_size]
+            batch_texts = texts[start:start + batch_size]
+            emb = embedder.encode(batch_texts).detach().cpu().float().numpy()
+            for mid, vec in zip(batch_ids, emb):
+                cached[mid] = vec.astype(np.float32)
+            np.save(cache_path, cached)
+            print(
+                f"qwen encoded {min(start + batch_size, len(missing_ids)):,}/"
+                f"{len(missing_ids):,}",
+                flush=True,
+            )
+
+    features = np.array([cached[mid] for mid in movie_ids], dtype=np.float32)
+    norms = np.linalg.norm(features, axis=1, keepdims=True)
+    return movie_ids, features / np.maximum(norms, 1e-6)
+
+
 def build_item_features(
     movies: dict[int, tuple[str, str]],
     seqs: dict[int, list[int]],
     dim: int,
     feature_source: str,
     collab_window: int,
+    args=None,
 ) -> tuple[list[int], np.ndarray]:
+    if feature_source == "qwen":
+        if args is None:
+            raise ValueError("qwen feature source requires CLI args")
+        cache_dir = Path(args.qwen_cache_dir) if args.qwen_cache_dir else Path(args.output_dir)
+        return build_qwen_item_features(
+            movies,
+            args.qwen_model,
+            args.qwen_batch_size,
+            cache_dir,
+            args.qwen_max_length,
+            args.qwen_device,
+        )
+
     movie_ids, text_features = build_text_item_features(movies, dim)
     if feature_source == "text":
         return movie_ids, text_features
@@ -284,9 +364,10 @@ def build_semantic_ids(
     kmeans_iters: int,
     kmeans_sample_size: int,
     seed: int,
+    args=None,
 ) -> tuple[dict[int, tuple[int, int, int]], list[int]]:
     movie_ids, features = build_item_features(
-        movies, seqs, feature_dim, feature_source, collab_window)
+        movies, seqs, feature_dim, feature_source, collab_window, args)
     residual = features.copy()
     layers = []
     actual_clusters = []
@@ -311,6 +392,7 @@ def split_train_eval(
     min_context_items: int,
 ):
     train_examples = []
+    alignment_examples = []
     eval_examples = []
     for uid, items in seqs.items():
         items = [mid for mid in items if mid in sid]
@@ -335,6 +417,17 @@ def split_train_eval(
             tokens = [tok for mid in train_items for tok in sid[mid]]
             if len(tokens) >= 2:
                 train_examples.append(tokens)
+            if len(train_items) > min_context_items:
+                align_context = train_items[:-1]
+                align_target = train_items[-1]
+                align_tokens = [tok for mid in align_context for tok in sid[mid]]
+                if len(align_tokens) >= 2:
+                    alignment_examples.append({
+                        "uid": uid,
+                        "context": align_tokens,
+                        "target_mid": align_target,
+                        "target_sid": sid[align_target],
+                    })
         elif train_mode == "sliding":
             # Leave the final item for evaluation. Every earlier prefix becomes
             # one LM sequence that ends at the next-item SID target.
@@ -345,9 +438,19 @@ def split_train_eval(
                 tokens = [tok for mid in prefix_plus_target for tok in sid[mid]]
                 if len(tokens) >= 2:
                     train_examples.append(tokens)
+                align_context = items[:end - 1]
+                align_target = items[end - 1]
+                align_tokens = [tok for mid in align_context for tok in sid[mid]]
+                if len(align_tokens) >= 2:
+                    alignment_examples.append({
+                        "uid": uid,
+                        "context": align_tokens,
+                        "target_mid": align_target,
+                        "target_sid": sid[align_target],
+                    })
         else:
             raise ValueError(f"unknown train_mode: {train_mode}")
-    return train_examples, eval_examples
+    return train_examples, alignment_examples, eval_examples
 
 
 def batch_iter(examples: list[list[int]], batch_size: int, seed: int) -> Iterable[list[list[int]]]:
@@ -407,6 +510,163 @@ def train_tiny_ntp(
             flush=True,
         )
     return model
+
+
+def batch_alignment_examples(
+    examples: list[dict],
+    batch_size: int,
+    seed: int,
+) -> Iterable[list[dict]]:
+    rng = random.Random(seed)
+    order = list(range(len(examples)))
+    rng.shuffle(order)
+    for start in range(0, len(order), batch_size):
+        yield [examples[i] for i in order[start:start + batch_size]]
+
+
+def _make_alignment_batch(
+    batch: list[dict],
+    sid_values: list[tuple[int, int, int]],
+    args,
+    device: torch.device,
+    rng: random.Random,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Pack target and negative SID candidates for one public GRPO update."""
+    group_size = max(2, args.rl_group_size)
+    ctx_window = max(1, args.max_seq_len - 3)
+    contexts = [ex["context"][-ctx_window:] for ex in batch]
+    max_ctx = max(len(x) for x in contexts)
+
+    flat_contexts = []
+    flat_lengths = []
+    flat_sids = []
+    rewards = []
+    offsets = [0]
+
+    for ex, ctx in zip(batch, contexts):
+        target = tuple(int(t) for t in ex["target_sid"])
+        candidates = [target]
+        while len(candidates) < group_size:
+            neg = rng.choice(sid_values)
+            if neg != target:
+                candidates.append(neg)
+
+        for cand in candidates:
+            padded = ctx + [0] * (max_ctx - len(ctx))
+            flat_contexts.append(padded)
+            flat_lengths.append(len(ctx))
+            flat_sids.append(cand)
+            rewards.append(1.0 if cand == target else 0.0)
+        offsets.append(offsets[-1] + len(candidates))
+
+    return (
+        torch.tensor(flat_contexts, dtype=torch.long, device=device),
+        torch.tensor(flat_lengths, dtype=torch.long, device=device),
+        torch.tensor(flat_sids, dtype=torch.long, device=device),
+        torch.tensor(rewards, dtype=torch.float32, device=device),
+        torch.tensor(offsets, dtype=torch.long, device=device),
+    )
+
+
+def align_with_public_grpo(
+    model: NTPModel,
+    alignment_examples: list[dict],
+    sid: dict[int, tuple[int, ...]],
+    args,
+    device: torch.device,
+) -> dict[str, float]:
+    """Lightweight public reward-alignment stage.
+
+    The production stack supports SP-DPO, RF-DPO, GRPO, and ECPO on generated
+    candidates. The public MovieLens path uses the same SID log-probability and
+    GRPO loss primitives, but keeps the reward source redistributable: the held
+    out next SID in each training prefix receives reward 1, sampled valid SIDs
+    receive reward 0.
+    """
+    if args.rl_steps <= 0:
+        return {
+            "rl_enabled": False,
+            "rl_steps_completed": 0,
+        }
+    if not alignment_examples:
+        return {
+            "rl_enabled": True,
+            "rl_steps_completed": 0,
+            "rl_skipped_reason": "no_alignment_examples",
+        }
+
+    sid_values = sorted({tuple(int(t) for t in toks) for toks in sid.values()})
+    if len(sid_values) < 2:
+        return {
+            "rl_enabled": True,
+            "rl_steps_completed": 0,
+            "rl_skipped_reason": "not_enough_sid_candidates",
+        }
+
+    ref_model = copy.deepcopy(model).to(device)
+    ref_model.eval()
+    for p in ref_model.parameters():
+        p.requires_grad_(False)
+
+    opt = torch.optim.AdamW(model.parameters(), lr=args.rl_lr, weight_decay=args.weight_decay)
+    rng = random.Random(args.seed + 10_000)
+    model.train()
+
+    losses = []
+    reward_means = []
+    clip_fracs = []
+    steps = 0
+    while steps < args.rl_steps:
+        for batch in batch_alignment_examples(
+            alignment_examples, args.rl_batch_size, args.seed + 20_000 + steps
+        ):
+            ctx, lengths, cand_sids, rewards, offsets = _make_alignment_batch(
+                batch, sid_values, args, device, rng)
+            policy_lp = compute_sid_logprobs_batch(
+                model, ctx, lengths, cand_sids, n_layers=3, max_chunk=args.rl_max_chunk)
+            with torch.no_grad():
+                ref_lp = compute_sid_logprobs_batch(
+                    ref_model, ctx, lengths, cand_sids, n_layers=3, max_chunk=args.rl_max_chunk)
+            loss, diag = grpo_loss(
+                policy_lp,
+                ref_lp,
+                rewards,
+                offsets,
+                eps=args.rl_eps,
+                rank_norm=args.rl_rank_norm,
+                return_diagnostics=True,
+            )
+
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.rl_grad_clip)
+            opt.step()
+
+            steps += 1
+            losses.append(float(loss.detach().cpu()))
+            reward_means.append(float(rewards.mean().detach().cpu()))
+            clip_fracs.append(float(diag.get("clip_fraction", 0.0)))
+            if steps == 1 or steps % args.rl_log_every == 0 or steps == args.rl_steps:
+                print(
+                    f"rl step {steps}/{args.rl_steps}: "
+                    f"loss={losses[-1]:.4f} reward_mean={reward_means[-1]:.3f} "
+                    f"clip_fraction={clip_fracs[-1]:.3f}",
+                    flush=True,
+                )
+            if steps >= args.rl_steps:
+                break
+
+    return {
+        "rl_enabled": True,
+        "rl_algo": "public_grpo_exact_sid_reward",
+        "rl_steps_completed": steps,
+        "rl_group_size": args.rl_group_size,
+        "rl_batch_size": args.rl_batch_size,
+        "rl_loss_last": losses[-1] if losses else 0.0,
+        "rl_loss_mean": sum(losses) / max(len(losses), 1),
+        "rl_reward_mean": sum(reward_means) / max(len(reward_means), 1),
+        "rl_clip_fraction_mean": sum(clip_fracs) / max(len(clip_fracs), 1),
+    }
 
 
 def evaluate(
@@ -485,8 +745,11 @@ def write_artifacts(output_dir: Path, sid: dict[int, tuple[int, ...]], n_cluster
             "embed_dim": args.embed_dim,
             "layers": args.layers,
             "epochs": args.epochs,
+            "rl_steps": args.rl_steps,
+            "rl_group_size": args.rl_group_size,
+            "rl_batch_size": args.rl_batch_size,
             "device": args.device,
-            "purpose": "CPU public reproducibility smoke path",
+            "purpose": "public reproducibility path with optional GRPO-style alignment",
         }, f, indent=2)
 
 
@@ -500,8 +763,13 @@ def parse_args():
     parser.add_argument("--max_users", type=int, default=2000)
     parser.add_argument("--max_items_per_user", type=int, default=50)
     parser.add_argument("--feature_dim", type=int, default=64)
-    parser.add_argument("--feature_source", choices=["text", "collab", "hybrid"], default="hybrid")
+    parser.add_argument("--feature_source", choices=["text", "collab", "hybrid", "qwen"], default="hybrid")
     parser.add_argument("--collab_window", type=int, default=5)
+    parser.add_argument("--qwen_model", default="Qwen/Qwen3-Embedding-0.6B")
+    parser.add_argument("--qwen_batch_size", type=int, default=16)
+    parser.add_argument("--qwen_cache_dir", default="")
+    parser.add_argument("--qwen_max_length", type=int, default=256)
+    parser.add_argument("--qwen_device", choices=["auto", "cpu", "cuda"], default="auto")
     parser.add_argument("--clusters", default="64,64,64")
     parser.add_argument("--kmeans_iters", type=int, default=10)
     parser.add_argument("--kmeans_sample_size", type=int, default=4096)
@@ -514,6 +782,16 @@ def parse_args():
     parser.add_argument("--max_seq_len", type=int, default=128)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--rl_steps", type=int, default=0)
+    parser.add_argument("--rl_lr", type=float, default=1e-5)
+    parser.add_argument("--rl_batch_size", type=int, default=8)
+    parser.add_argument("--rl_group_size", type=int, default=4)
+    parser.add_argument("--rl_eps", type=float, default=0.2)
+    parser.add_argument("--rl_grad_clip", type=float, default=1.0)
+    parser.add_argument("--rl_max_chunk", type=int, default=64)
+    parser.add_argument("--rl_log_every", type=int, default=10)
+    parser.add_argument("--rl_rank_norm", action="store_true", default=True)
+    parser.add_argument("--no_rl_rank_norm", action="store_false", dest="rl_rank_norm")
     parser.add_argument("--beam_size", type=int, default=50)
     parser.add_argument("--eval_samples", type=int, default=200)
     parser.add_argument("--train_mode", choices=["last", "sliding"], default="sliding")
@@ -545,10 +823,11 @@ def main():
     print(f"dataset={args.dataset} users={len(seqs):,} items={len(movies):,}", flush=True)
     sid, actual_clusters = build_semantic_ids(
         movies, seqs, clusters, args.feature_dim, args.feature_source,
-        args.collab_window, args.kmeans_iters, args.kmeans_sample_size, args.seed)
-    train_examples, eval_examples = split_train_eval(
+        args.collab_window, args.kmeans_iters, args.kmeans_sample_size, args.seed, args)
+    train_examples, alignment_examples, eval_examples = split_train_eval(
         seqs, sid, args.max_items_per_user, args.train_mode, args.min_context_items)
     print(f"train_examples={len(train_examples):,} eval_users={len(eval_examples):,} "
+          f"alignment_examples={len(alignment_examples):,} "
           f"clusters={actual_clusters} feature_source={args.feature_source} "
           f"train_mode={args.train_mode}", flush=True)
     if not train_examples or not eval_examples:
@@ -565,16 +844,19 @@ def main():
     print(f"device={device}", flush=True)
 
     model = train_tiny_ntp(train_examples, actual_clusters, args, device)
+    rl_metrics = align_with_public_grpo(model, alignment_examples, sid, args, device)
     metrics = evaluate(model, eval_examples, sid_to_items, args, device)
     metrics.update({
         "dataset": args.dataset,
         "n_users": len(seqs),
         "n_items": len(movies),
         "n_train_examples": len(train_examples),
+        "n_alignment_examples": len(alignment_examples),
         "n_eval_examples": len(eval_examples),
         "feature_source": args.feature_source,
         "train_mode": args.train_mode,
     })
+    metrics.update(rl_metrics)
     print(json.dumps(metrics, indent=2))
     write_artifacts(Path(args.output_dir), sid, actual_clusters, metrics, args)
 

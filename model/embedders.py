@@ -350,7 +350,11 @@ class Qwen3TextEmbedder:
         self.max_length = max_length
 
         print(f"Loading {model_name_or_path}...")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name_or_path,
+            trust_remote_code=True,
+            padding_side="left",
+        )
 
         # 从 kwargs 提取 torch_dtype，默认 float16
         torch_dtype = kwargs.pop('torch_dtype', torch.float16)
