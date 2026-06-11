@@ -13,6 +13,7 @@ This checklist is intentionally conservative. It is meant to avoid careless AI-a
   - [ ] EXP-043 full-eval baselines.
   - [ ] EXP-044C/EXP-047 full-eval rows referenced through `experiments/logs/ntp/README.md`.
   - [ ] EXP-049 tokenizer sweep table.
+  - [ ] MovieLens 1M Colab-T4 public result.
 - [ ] Verify every citation in `references.bib` exists and has the correct title, arXiv ID, and author spelling.
 - [ ] Compile the manuscript locally and inspect the PDF manually.
 - [ ] Confirm that the paper does not claim a new algorithmic contribution.

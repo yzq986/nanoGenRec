@@ -64,6 +64,8 @@ python run.py public-movielens \
 
 ## Evaluation
 
+Summary row for paper consistency checks: `ml-1m` uses 5,950 users, 3,532 items, 348,363 train examples, and obtains R@10=10.5%, R@100=40.4%, R@500=72.5%, R@1000=85.2%.
+
 | Metric | Value |
 |--------|-------|
 | item_recall@1 | 0.019 |
@@ -73,7 +75,7 @@ python run.py public-movielens \
 | item_recall@100 | 0.404 |
 | item_recall@500 | 0.725 |
 | item_recall@1000 | 0.852 |
-| target_sid_found_rate | 0.899 |
+| target_sid_found_rate | 89.9% (0.899) |
 
 ## Interpretation
 
