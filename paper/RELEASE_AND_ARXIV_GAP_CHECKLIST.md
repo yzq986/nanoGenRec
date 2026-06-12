@@ -5,9 +5,9 @@ Last updated: 2026-06-12
 ## Current Status
 
 The repository is close to a public open-source release and arXiv technical
-report. The strongest new release anchor is the public MovieLens 1M Colab-T4
-result: 5,950 users, 3,532 items, 348,363 train examples, R@500=72.5%, and
-R@1000=85.2%.
+report. The strongest release anchor is the agentic research framework and
+production-grounded experiment lineage. The public MovieLens 1M Colab-T4 path
+is retained as an execution proof for the released code path.
 
 ## Must Do Before Open-Source Promotion
 
@@ -25,7 +25,7 @@ R@1000=85.2%.
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Author metadata | Needs human confirmation | Current author block: Ziqing Ye, `yeziqing986@gmail.com`. |
+| Author metadata | Confirmed | Author block: Ziqing Ye, `yeziqing986@gmail.com`. |
 | Numeric consistency check | Passed | `python3 paper/check_paper_consistency.py` passes. |
 | PDF compile | Passed with minor warnings | Full `pdflatex -> bibtex -> pdflatex -> pdflatex` completes; one small overfull remains. |
 | Source bundle | Refreshed | `paper/nanogenrec-arxiv-source.tar.gz` was regenerated after the latest edits. |
@@ -38,7 +38,7 @@ R@1000=85.2%.
 
 | Priority | Improvement | Why it matters |
 |----------|-------------|----------------|
-| Done | Add simple public baselines on MovieLens 1M | Popularity, last-item repeat, and ItemKNN are now checked in; neural baselines remain future work. |
+| Done | Add compact public execution proof on MovieLens 1M | The public path checks that the released loop runs without private data; it is not used as the main benchmark claim. |
 | Done | Add a diagram showing public and production paths sharing interfaces | Added a paper figure showing the shared framework interface. |
 | Medium | Add one more public dataset, such as Amazon Reviews subset | Reduces concern that the public result is MovieLens-specific. |
 | Partial | Document runtime and GPU memory from Colab output | Notebook now writes `runtime.json`; existing Colab run did not record elapsed time, so rerun is needed to fill actual numbers. |

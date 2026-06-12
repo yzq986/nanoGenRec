@@ -4,7 +4,7 @@ This checklist is intentionally conservative. It is meant to avoid careless AI-a
 
 ## Required Human Verification
 
-- [ ] Confirm the author metadata in `nanogenrec.tex`.
+- [x] Confirm the author metadata in `nanogenrec.tex`: Ziqing Ye, `yeziqing986@gmail.com`.
 - [ ] Run `python3 paper/check_paper_consistency.py` from the repository root.
 - [ ] Verify every numeric value against the source experiment log:
   - [ ] EXP-015 model-scaling table and fitted law.
