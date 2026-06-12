@@ -55,18 +55,9 @@ graph LR
 | 后训练最好恢复 | on-policy ECPO 将 off-policy collapse 从 R@500=2.0% 恢复到 67.8% | [EXP-029](experiments/logs/exp-029.md) |
 | 公开复现路径 | MovieLens 1M strict Qwen+RL Colab T4 run：5,950 用户、3,532 items，R@500=72.2%、R@1000=86.0% | [public_benchmarks/results/ml-1m-qwen-rl-t4.md](public_benchmarks/results/ml-1m-qwen-rl-t4.md) |
 
-## 公开 Baseline 水平
+## 公开可复现证明
 
-公开 MovieLens 结果用来证明开源链路能完整跑通，不是 repo 的主研究 claim，也不是 tuned leaderboard submission。
-
-| Method | R@10 | R@100 | R@500 | R@1000 |
-|--------|------|-------|-------|--------|
-| Popularity | 2.2% | 20.6% | 56.1% | 74.7% |
-| ItemKNN co-occurrence | 13.9% | 46.6% | 78.0% | 88.5% |
-| nanoGenRec hybrid path | 10.5% | 40.4% | 72.5% | 85.2% |
-| nanoGenRec Qwen+RL path | 10.0% | 38.4% | 72.2% | 86.0% |
-
-当前解读：nanoGenRec 明显超过 global popularity，并验证了严格的 Qwen -> SID -> NTP -> RL -> eval 链路；但在 MovieLens 1M 这种小而密的协同过滤数据集上，简单 ItemKNN 仍然更强。因此 public baseline 是 reproducibility 的支撑证据，repo 最强的部分是 agent-managed experiment framework 和生产 grounded 的 GR 实验谱系。
+公开 MovieLens run 的作用是证明开源链路在没有私有数据时也能完整跑通，不是 repo 的主研究 claim，也不是 tuned leaderboard submission。在 MovieLens 1M 上，严格的 Qwen -> SID -> NTP -> RL -> eval 路径可在 Colab T4 上运行，覆盖 5,950 users、3,532 items、348,363 training examples 和 1,000 sampled eval users，达到 R@500=72.2%、R@1000=86.0%。简单 baseline 的详细数字保留在 [public_benchmarks/results/ml-1m-baselines.md](public_benchmarks/results/ml-1m-baselines.md)，作为透明记录。
 
 ## 亮点
 

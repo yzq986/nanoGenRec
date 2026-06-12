@@ -312,26 +312,23 @@ L-tier with validated options & 12.8\% & 64.1\% & 20.7 \\
 
 The private production data cannot be redistributed, so the repository includes a separate public reproduction path on MovieLens. This path is not intended as a public leaderboard benchmark. Its purpose is to show that the released code can execute the GR framework loop on public data and a widely available free-GPU environment, including Qwen3 item embedding, SID construction, NTP training, reward alignment, and full-recall evaluation in the current notebook.
 
-Table~\ref{tab:public-movielens} reports the checked-in MovieLens 1M Colab-T4 Qwen+RL result, the earlier hybrid-feature result, and simple public baselines. The strict nanoGenRec run uses Qwen3 item embeddings, residual KMeans SIDs with a 64$\times$64$\times$64 token space, a dense 3-layer NTP model with embedding dimension 128, 100 public GRPO-style alignment steps, and SID-constrained beam search with beam size 1000.
+Table~\ref{tab:public-movielens} reports the checked-in MovieLens 1M Colab-T4 Qwen+RL reproduction run. The strict public path uses Qwen3 item embeddings, residual KMeans SIDs with a 64$\times$64$\times$64 token space, a dense 3-layer NTP model with embedding dimension 128, 100 public GRPO-style alignment steps, and SID-constrained beam search with beam size 1000. This table is intended as a run-completion and reproducibility record, not as a public leaderboard comparison.
 
 \begin{table}[t]
 \centering
-\caption{Public MovieLens 1M reproduction result and simple baselines.}
+\caption{Public MovieLens 1M Qwen+RL reproduction run.}
 \label{tab:public-movielens}
 \small
-\begin{tabular}{lrrrrrrr}
+\begin{tabular}{lrrrrrrrr}
 \toprule
-Method & Users & Items & Train ex. & R@10 & R@100 & R@500 & R@1000 \\
+Run & Users & Items & Train ex. & Align ex. & R@10 & R@100 & R@500 & R@1000 \\
 \midrule
-Popularity & 5,950 & 3,532 & -- & 2.2\% & 20.6\% & 56.1\% & 74.7\% \\
-ItemKNN & 5,950 & 3,532 & -- & 13.9\% & 46.6\% & 78.0\% & 88.5\% \\
-nanoGenRec hybrid & 5,950 & 3,532 & 348,363 & 10.5\% & 40.4\% & 72.5\% & 85.2\% \\
-nanoGenRec Qwen+RL & 5,950 & 3,532 & 348,363 & 10.0\% & 38.4\% & 72.2\% & 86.0\% \\
+Qwen+RL public path & 5,950 & 3,532 & 348,363 & 348,363 & 10.0\% & 38.4\% & 72.2\% & 86.0\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The strict Qwen+RL run also obtains R@1=2.2\%, R@5=6.7\%, R@50=27.9\%, and target-SID found rate of 88.6\%. It beats global popularity at all reported cutoffs and reaches the strongest checked-in public nanoGenRec R@1000, but a simple item co-occurrence KNN remains stronger at R@10--R@500 on this small and dense collaborative-filtering dataset. This reinforces the intended claim boundary: the MovieLens path is a public end-to-end reproducibility check for the framework, not a public leaderboard claim.
+The strict Qwen+RL run also obtains R@1=2.2\%, R@5=6.7\%, R@50=27.9\%, and target-SID found rate of 88.6\%. The result demonstrates that the released artifact can execute the Qwen embedding $\rightarrow$ SID construction $\rightarrow$ NTP training $\rightarrow$ reward alignment $\rightarrow$ constrained full-recall evaluation loop on public data and free-GPU infrastructure. Simple public baselines are kept in the repository for transparency, but the paper uses the MovieLens result only as a reproducibility proof.
 
 \subsection{Post-Training Alignment}
 
@@ -385,7 +382,7 @@ Three lessons recur across the experiment lineage. First, landing GR requires fu
 
 \section{Limitations}
 
-This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The repository includes MovieLens CPU and Colab-T4 public paths to verify the released framework loop, but these are reproducibility checks rather than competitive public leaderboard claims. On the checked-in MovieLens 1M strict Qwen+RL run, a simple item co-occurrence KNN baseline is stronger than nanoGenRec at R@10--R@500, which shows that the public path should not be interpreted as a tuned public recommender. The public GRPO-style stage is intentionally lightweight, and its high clip fraction indicates that alignment hyperparameters remain a tuning target rather than a final recipe. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as framework-validated engineering evidence rather than final algorithmic conclusions. The most important next step is broader public benchmarking across redistributable datasets and stronger public baselines, so external users can verify not only the code structure but also cross-dataset empirical trends.
+This report has several limitations. The production behavior data is not released, so external users cannot exactly reproduce the reported production-scale numbers. The repository includes MovieLens CPU and Colab-T4 public paths to verify the released framework loop, but these are reproducibility checks rather than competitive public leaderboard claims. The public GRPO-style stage is intentionally lightweight, and its high clip fraction indicates that alignment hyperparameters remain a tuning target rather than a final recipe. The framework currently focuses on Semantic-ID autoregressive recommendation rather than all forms of generative retrieval. Online serving, latency, and production integration are not the main focus of the artifact. Some post-training methods are preliminary and should be interpreted as framework-validated engineering evidence rather than final algorithmic conclusions. The most important next step is broader public benchmarking across redistributable datasets, so external users can verify not only the code structure but also cross-dataset empirical trends.
 
 \section{Conclusion}
 

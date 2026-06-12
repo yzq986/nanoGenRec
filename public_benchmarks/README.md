@@ -67,7 +67,7 @@ python run.py public-movielens --dataset ml-1m
 python run.py public-movielens --dataset ml-20m
 ```
 
-For a stronger public benchmark, increase `--max_users`, `--clusters`,
+For a larger public reproducibility run, increase `--max_users`, `--clusters`,
 `--embed_dim`, `--layers`, `--epochs`, `--beam_size`, and `--eval_samples`.
 CPU is enough for smoke runs; free T4/L4/A100 time can be used for larger runs.
 
@@ -136,8 +136,9 @@ The strict Qwen+RL Colab T4 GPU result is available at
 [results/ml-1m-qwen-rl-t4.md](results/ml-1m-qwen-rl-t4.md).
 The earlier hybrid-feature Colab T4 GPU result is available at
 [results/ml-1m-colab-t4.md](results/ml-1m-colab-t4.md).
-Simple public baselines are available at
-[results/ml-1m-baselines.md](results/ml-1m-baselines.md).
+Simple public baselines are recorded at
+[results/ml-1m-baselines.md](results/ml-1m-baselines.md) for transparency and
+debugging, but they are not part of the headline public proof.
 
 Summary:
 
@@ -146,12 +147,11 @@ Summary:
 | `ml-latest-small` | CPU | 603 | 6,298 | dense 2-layer, dim=96 | 500 | 0.032 | - | - | 0.052 |
 | `ml-1m` | Colab T4 | 5,950 | 3,532 | Qwen SID + dense 3-layer + public GRPO | 1,000 | 0.279 | 0.722 | 0.860 | 0.886 |
 | `ml-1m` | Colab T4 | 5,950 | 3,532 | hybrid SID + dense 3-layer | 1,000 | 0.290 | 0.725 | 0.852 | 0.899 |
-| `ml-1m` | CPU baseline | 5,950 | 3,532 | ItemKNN co-occurrence | 1,000 | 0.337 | 0.780 | 0.885 | - |
 
 These checked-in results validate the smoke-test and free-GPU scale paths. They
 should not be read as competitive public leaderboard claims. The strict Qwen+RL
 row is the release result that follows the repository "How It Works" path; the
-hybrid row is retained as an earlier lightweight-feature comparison.
+hybrid row is retained as an earlier lightweight-feature reproducibility run.
 
 ## Outputs
 

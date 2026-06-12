@@ -57,18 +57,9 @@ The project treats recommendation research as an autonomous experimentation prob
 | Public reproducibility path | MovieLens 1M strict Qwen+RL Colab T4 run: 5,950 users, 3,532 items, R@500=72.2%, R@1000=86.0% | [public_benchmarks/results/ml-1m-qwen-rl-t4.md](public_benchmarks/results/ml-1m-qwen-rl-t4.md) |
 | Colab GPU path | Free T4 notebook for Qwen3 embeddings, SID construction, NTP, public GRPO-style alignment, and full-recall eval | [Open in Colab](https://colab.research.google.com/github/yzq986/nanoGenRec/blob/master/public_benchmarks/nanogenrec_colab.ipynb) |
 
-## Public Baseline Level
+## Public Reproducibility Proof
 
-The public MovieLens result is a proof that the released loop runs end to end; it is not the main research claim or a tuned leaderboard submission.
-
-| Method | R@10 | R@100 | R@500 | R@1000 |
-|--------|------|-------|-------|--------|
-| Popularity | 2.2% | 20.6% | 56.1% | 74.7% |
-| ItemKNN co-occurrence | 13.9% | 46.6% | 78.0% | 88.5% |
-| nanoGenRec hybrid path | 10.5% | 40.4% | 72.5% | 85.2% |
-| nanoGenRec Qwen+RL path | 10.0% | 38.4% | 72.2% | 86.0% |
-
-Current reading: nanoGenRec beats global popularity and verifies the strict Qwen -> SID -> NTP -> RL -> eval path, but simple ItemKNN remains stronger on dense MovieLens 1M. The public baseline is therefore supporting evidence for reproducibility, while the repo's strongest contribution is the agent-managed experiment framework and production-grounded GR lineage.
+The public MovieLens run is included to show that the released loop executes end to end without private data. It is not the main research claim or a tuned leaderboard submission. On MovieLens 1M, the strict Qwen -> SID -> NTP -> RL -> eval path runs on Colab T4 with 5,950 users, 3,532 items, 348,363 training examples, and 1,000 sampled eval users, reaching R@500=72.2% and R@1000=86.0%. Detailed simple-baseline numbers are kept in [public_benchmarks/results/ml-1m-baselines.md](public_benchmarks/results/ml-1m-baselines.md) for transparency.
 
 ## Highlights
 

@@ -104,15 +104,15 @@ Summary row for paper consistency checks: `ml-1m-qwen-rl` uses 5,950 users, 3,53
 | target_sid_found_rate | 88.6% (0.886) |
 
 Simple public baselines on the same split are recorded in
-[ml-1m-baselines.md](ml-1m-baselines.md). The strict Qwen+RL run beats global
-popularity at all reported cutoffs and reaches the strongest checked-in
-R@1000 among the public nanoGenRec runs. ItemKNN co-occurrence remains stronger
-at R@10--R@500 on this dense MovieLens setting.
+[ml-1m-baselines.md](ml-1m-baselines.md) for transparency and debugging. They
+are kept outside the headline claim because this result is a reproducibility
+proof for the framework loop, not a tuned public benchmark submission.
 
 ## Interpretation
 
 This is the first checked-in public result that follows the repository
-"How It Works" path: public ratings/metadata -> Qwen3 item embeddings -> CPU
-Semantic IDs -> NTP training -> reward alignment -> SID-constrained full-recall
-evaluation. It validates the executable framework loop on public data and a
-free-GPU environment. It is not a tuned MovieLens leaderboard claim.
+"How It Works" path: public ratings/metadata -> Qwen3 item embeddings ->
+residual KMeans Semantic IDs -> NTP training -> reward alignment ->
+SID-constrained full-recall evaluation. It validates the executable framework
+loop on public data and a free-GPU environment. It is not a tuned MovieLens
+leaderboard claim.

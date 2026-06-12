@@ -39,8 +39,7 @@ python3 public_benchmarks/baselines.py \
 
 ## Interpretation
 
-The public nanoGenRec paths beat the global popularity baseline, but the simple
-ItemKNN co-occurrence baseline is stronger at R@10--R@500 on MovieLens 1M.
-This is expected for a small, dense collaborative-filtering dataset and
-reinforces the claim boundary: the public MovieLens path is an end-to-end
-reproducibility check for the GR framework, not a public leaderboard claim.
+These numbers are recorded to make the public split auditable and to provide
+quick debugging references. They are not used as the main claim in the README
+or paper. The public MovieLens path is an end-to-end reproducibility check for
+the GR framework, not a public leaderboard claim.

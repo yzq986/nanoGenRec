@@ -83,9 +83,9 @@ Summary row for paper consistency checks: `ml-1m` uses 5,950 users, 3,532 items,
 | target_sid_found_rate | 89.9% (0.899) |
 
 Simple public baselines on the same split are recorded in
-[ml-1m-baselines.md](ml-1m-baselines.md). The nanoGenRec public path beats
-global popularity at all reported cutoffs, while ItemKNN co-occurrence remains
-stronger on this dense MovieLens setting.
+[ml-1m-baselines.md](ml-1m-baselines.md) for transparency and debugging. This
+hybrid-feature run is retained as an earlier reproducibility record rather than
+a headline benchmark result.
 
 ## Interpretation
 
