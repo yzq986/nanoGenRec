@@ -39,9 +39,9 @@ This report makes five contributions:
 
 \begin{enumerate}
   \item \textbf{An agentic research framework.} We release an inbox/outbox protocol, paper-note memory, status tracking, decision records, runtime estimation, YAML experiment configuration, duplicate-run checks, and queue-based long jobs for recommendation research.
-  \item \textbf{A landed GR stack.} We describe an end-to-end Semantic-ID GR implementation covering tokenization, NTP training, reward alignment, SID-constrained beam search, and full-recall evaluation.
-  \item \textbf{Reproduced GR behaviors.} Within the same framework, we reproduce model scaling, tokenizer-capacity effects, full-recall baselines, and post-training alignment dynamics that match the concerns raised by recent industrial GR systems.
-  \item \textbf{Production-grounded evidence and public proof.} We report a seven-point NTP scaling sweep, a behavior-window study, tokenizer and embedding sweeps, full-eval baselines, an off-policy/on-policy ECPO comparison, and a redistributable MovieLens 1M Colab-T4 run with explicit stage-level parameters.
+  \item \textbf{A nontrivial GR validation target.} We instantiate the framework on an end-to-end Semantic-ID GR workflow covering tokenization, NTP training, reward alignment, SID-constrained beam search, and full-recall evaluation.
+  \item \textbf{Agent-managed empirical lineage.} Within the same framework, we preserve model scaling, tokenizer-capacity effects, full-recall baselines, and post-training alignment dynamics as traceable experiment records rather than isolated result tables.
+  \item \textbf{Production-grounded scale and public proof.} We report a seven-point NTP scaling sweep, a behavior-window study, tokenizer and embedding sweeps, full-eval baselines, an off-policy/on-policy ECPO comparison, and a redistributable MovieLens 1M Colab-T4 run with explicit stage-level parameters.
   \item \textbf{Failure-aware reproducibility.} We preserve experiment logs for successes, negative results, invalid runs, and post-training collapses, including the conditions under which a GR experiment becomes invalid.
 \end{enumerate}
 
@@ -70,11 +70,17 @@ GR papers typically report architecture and production results, while the operat
 
 \section{The nanoGenRec Framework}
 
-\textsc{nanoGenRec} is organized around one practical goal: a researcher should be able to take item embeddings and behavior logs, build Semantic IDs, train a generative recommender, decode valid item candidates, run full-recall evaluation, and trace every reported number back to a config and an experiment log. This turns GR from a collection of paper components into a reproducible loop. The loop is also designed to expose failures: invalid feature plumbing, duplicate baselines, stale behavior windows, collapsed tokenizers, and unstable post-training runs are recorded rather than hidden.
+\textsc{nanoGenRec} is organized around one practical goal: a researcher or research agent should be able to move from a paper idea to a runnable experiment, evaluate it with the right contract, and recover the reasoning behind the result weeks later. The framework is therefore centered on research state rather than only model code: hypotheses, paper notes, configs, run queues, validation checks, metrics, failures, and decisions are all first-class artifacts.
 
-\subsection{Pipeline}
+\subsection{Agentic Research Loop}
 
-The framework consists of six stages:
+The repository includes an inbox/outbox protocol, paper notes, decision records, and status files. This is a lightweight workflow for human-agent collaboration over a research line. The agent reads papers, proposes ideas, estimates runtime, writes configs, checks prior experiments, and records decisions. The contribution here is operational: the research process is made inspectable and recoverable rather than embedded in transient chat logs or shell history.
+
+The loop is deliberately failure-aware. Duplicate experiments are surfaced before launch, long jobs are queued instead of chained, inline metrics are separated from reportable full evaluation, and invalid runs are documented rather than overwritten. This is the main abstraction of the project. Semantic-ID GR is the first demanding workload used to test whether that abstraction can survive a real multi-stage research problem.
+
+\subsection{GR Stress-Test Pipeline}
+
+The GR validation target consists of six stages:
 
 \begin{enumerate}
   \item \textbf{Item representation.} Items are embedded with pretrained representation models. The current experiments use Qwen3 embeddings at several scales.
@@ -85,7 +91,7 @@ The framework consists of six stages:
   \item \textbf{Experiment governance.} YAML configs, registry hashes, duplicate-run checks, queue-based execution, and phase-level README files preserve experiment lineage.
 \end{enumerate}
 
-Table~\ref{tab:framework-artifact} summarizes the framework as a set of landing checks rather than only software modules.
+Table~\ref{tab:framework-artifact} summarizes the combined agentic framework and GR validation target as a set of landing checks rather than only software modules.
 
 \begin{table}[t]
 \centering
@@ -147,10 +153,6 @@ Figure~\ref{fig:shared-interface} shows the same point as a release diagram: the
 \subsection{Experiment Orchestration}
 
 New experiments inherit from a shared YAML base config and override only the parameters being tested. Multi-variant experiments are represented as a variant list. A registry hash excludes runtime paths and environment keys, allowing the runner to surface identical or near-identical historical runs before launching a new job. Queue-friendly wrappers support long-running training and evaluation without turning experiment scripts into brittle chains. Each completed run updates a local record of the hypothesis, design, metrics, and interpretation, so the repository accumulates a recoverable experiment lineage rather than only final checkpoints.
-
-\subsection{Research-Agent Workflow}
-
-The repository includes an inbox/outbox protocol, paper notes, decision records, and status files. This is a lightweight workflow for human-agent collaboration over a research line. The agent reads papers, proposes ideas, estimates runtime, writes configs, checks prior experiments, and records decisions. The contribution here is operational: the research process is made inspectable and recoverable rather than embedded in transient chat logs or shell history.
 
 \subsection{Landing Criteria}
 

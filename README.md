@@ -14,7 +14,7 @@ Agentic research framework for reproducible Generative Recommendation.
 
 Generative Recommendation is the testbed and first landed application: the repo includes a Semantic-ID GR stack from Qwen3 item embeddings to tokenizer training, NTP recommendation, reward alignment, and full-recall evaluation on both production-grounded logs and public MovieLens data.
 
-For users without private data, the repository includes a public MovieLens path that can run the strict framework loop on a free Colab T4 session: public ratings/metadata -> Qwen3 item embeddings -> CPU Semantic IDs -> tiny NTP training -> GRPO-style reward alignment -> SID-constrained full-recall evaluation.
+For users without private data, the repository includes a public MovieLens path that can run the strict framework loop on a free Colab T4 session: public ratings/metadata -> Qwen3 item embeddings -> residual KMeans Semantic IDs -> tiny NTP training -> GRPO-style reward alignment -> SID-constrained full-recall evaluation.
 Fast CPU/hash-feature settings are kept as developer smoke tests. The recommended public run is the T4 notebook at [public_benchmarks/nanogenrec_colab.ipynb](public_benchmarks/nanogenrec_colab.ipynb).
 
 The code is open-sourced after removing private data and deployment-specific details, while preserving the parts that matter for reproducing the modeling ideas, experiment automation, and engineering workflow.
@@ -70,7 +70,7 @@ The public MovieLens run is included to show that the released loop executes end
 - **Generative recommender**: Transformer + MoE next-token prediction over behavior sequences.
 - **Alignment stack**: SP-DPO, RF-DPO, GRPO, and ECPO experiments on top of SFT checkpoints.
 - **Full-recall evaluation**: beam search with SID constraints, Recall@K, tokenizer proxy metrics, and comparison reports.
-- **Public T4 reproduction path**: MovieLens runs without private data, using Qwen3 item embeddings, CPU KMeans SIDs, tiny NTP, GRPO-style alignment, and full-recall eval.
+- **Public T4 reproduction path**: MovieLens runs without private data, using Qwen3 item embeddings, residual KMeans SIDs, tiny NTP, GRPO-style alignment, and full-recall eval.
 - **Developer smoke path**: hash-feature MovieLens runs without Qwen embeddings, Faiss, or GPUs for quick CI checks.
 
 References: [OneRec](https://arxiv.org/abs/2506.13695), [OneRec-V2](https://arxiv.org/abs/2508.20900), [GR4AD](https://arxiv.org/abs/2602.22732), [OneMall](https://arxiv.org/abs/2601.21770).

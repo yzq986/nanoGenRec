@@ -16,7 +16,7 @@ Generative Recommendation 是这个框架的验证场景和首个完整落地应
 
 当前开源版本已经剥离私有数据和部署细节，但保留了可复现建模思路、实验自动化和工程工作流。
 
-对于没有私有数据的用户，仓库也提供了公开 MovieLens 复现路径，可在免费 Colab T4 上跑严格框架链路：公开 ratings/metadata -> Qwen3 item embeddings -> CPU Semantic IDs -> NTP 训练 -> GRPO-style reward alignment -> SID 约束全量召回评测。快速 CPU/hash-feature 设置保留为开发 smoke test；推荐公开复现入口见 [public_benchmarks/nanogenrec_colab.ipynb](public_benchmarks/nanogenrec_colab.ipynb)。
+对于没有私有数据的用户，仓库也提供了公开 MovieLens 复现路径，可在免费 Colab T4 上跑严格框架链路：公开 ratings/metadata -> Qwen3 item embeddings -> residual KMeans Semantic IDs -> NTP 训练 -> GRPO-style reward alignment -> SID 约束全量召回评测。快速 CPU/hash-feature 设置保留为开发 smoke test；推荐公开复现入口见 [public_benchmarks/nanogenrec_colab.ipynb](public_benchmarks/nanogenrec_colab.ipynb)。
 
 ## 核心贡献
 
@@ -68,7 +68,7 @@ graph LR
 - **生成式推荐模型**：Transformer + MoE，在行为序列上做 next-token prediction。
 - **偏好对齐链路**：SP-DPO、RF-DPO、GRPO、ECPO。
 - **全量召回评测**：SID 约束 beam search、Recall@K、tokenizer proxy metrics 和对比报告。
-- **公开 T4 复现路径**：MovieLens 可在免费 T4 上跑 Qwen3 embeddings、CPU KMeans SIDs、NTP、GRPO-style alignment 和全量召回评测。
+- **公开 T4 复现路径**：MovieLens 可在免费 T4 上跑 Qwen3 embeddings、residual KMeans SIDs、NTP、GRPO-style alignment 和全量召回评测。
 - **开发 smoke path**：hash-feature MovieLens 设置不依赖 Qwen embeddings、Faiss 或 GPU，用于快速 CI 检查。
 
 参考论文：[OneRec](https://arxiv.org/abs/2506.13695)、[OneRec-V2](https://arxiv.org/abs/2508.20900)、[GR4AD](https://arxiv.org/abs/2602.22732)、[OneMall](https://arxiv.org/abs/2601.21770)。
