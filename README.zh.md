@@ -6,6 +6,8 @@
 
 [English](README.md) | [中文](README.zh.md)
 
+[论文 PDF](paper/nanogenrec.pdf) | [arXiv source bundle](paper/nanogenrec-arxiv-source.tar.gz) | [打开 Colab 复现](https://colab.research.google.com/github/yzq986/nanoGenRec/blob/master/public_benchmarks/nanogenrec_colab.ipynb)
+
 `nanoGenRec` 是一个面向生成式推荐的 agentic research framework。
 
 它的核心不是单个模型或单个 benchmark 数字，而是把推荐研究变成一个可复现闭环：AI agent 可以读论文、写 idea、设计 YAML 实验、检查重复 baseline、估算运行时间、排队训练、跑全量评测，并把实验结论和决策沉淀到仓库里。

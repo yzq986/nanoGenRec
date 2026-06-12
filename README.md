@@ -6,6 +6,8 @@
 
 [English](README.md) | [Chinese](README.zh.md)
 
+[Paper PDF](paper/nanogenrec.pdf) | [arXiv source bundle](paper/nanogenrec-arxiv-source.tar.gz) | [Open Colab reproduction](https://colab.research.google.com/github/yzq986/nanoGenRec/blob/master/public_benchmarks/nanogenrec_colab.ipynb)
+
 Agentic research framework for reproducible Generative Recommendation.
 
 `nanoGenRec` is a from-scratch workspace for running recommendation research as a reproducible loop. It combines an agent-facing research protocol, YAML experiment orchestration, duplicate-run checks, queued execution, full-recall evaluation, paper notes, decision records, and durable experiment logs.
