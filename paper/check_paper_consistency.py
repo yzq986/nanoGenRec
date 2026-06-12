@@ -116,9 +116,6 @@ NUMERIC_CHECKS = [
     NumericCheck("EXP-029 on-policy", "experiments/logs/exp-029.md", "exp029-ecpo-onpolicy-w003-r100", "On-policy ECPO", ("13.0%", "67.8%", "14.1", "92%")),
     NumericCheck("EXP-029 off-policy", "experiments/logs/exp-029.md", "exp028-ecpo-weighted-w003-r100", "Off-policy ECPO", ("0.7%", "2.0%", "3791", "99%")),
     NumericCheck("EXP-029 SFT", "experiments/logs/exp-029.md", "exp020-hard-lam03", "SFT baseline", ("14.1%", "66.2%", "16.3")),
-    # Public benchmark result.
-    NumericCheck("MovieLens 1M Qwen RL Colab T4", "public_benchmarks/results/ml-1m-qwen-rl-t4.md", "ml-1m-qwen-rl", "Qwen+RL public path", ("5,950", "3,532", "348,363", "10.0%", "38.4%", "72.2%", "86.0%")),
-    NumericCheck("MovieLens 1M Qwen SID found", "public_benchmarks/results/ml-1m-qwen-rl-t4.md", "target_sid_found_rate", "target-SID found rate", ("88.6%",)),
 ]
 
 
@@ -228,6 +225,30 @@ def check_json_scale_values(tex: str, failures: list[str]) -> None:
         check_contains(tex, check.tex_token, list(check.tex_values), f"{check.name} manuscript", failures)
 
 
+def check_public_execution_proof(tex: str, failures: list[str]) -> None:
+    result_path = ROOT / "public_benchmarks/results/ml-1m-qwen-rl-t4.md"
+    result = result_path.read_text()
+    for token in ["item_recall@10", "item_recall@500", "target_sid_found_rate"]:
+        if token not in result:
+            fail(f"public MovieLens result missing {token!r}", failures)
+    check_contains(
+        tex,
+        "checked-in Colab-T4 run uses",
+        ["5,950", "3,532", "348,363", "64", "100"],
+        "public MovieLens execution proof manuscript",
+        failures,
+    )
+    for token in [
+        "Qwen embedding",
+        "SID construction",
+        "NTP training",
+        "reward alignment",
+        "constrained full-recall evaluation",
+    ]:
+        if token not in normalize(tex):
+            fail(f"public execution proof no longer mentions {token!r}", failures)
+
+
 def main() -> int:
     failures: list[str] = []
     tex = TEX.read_text()
@@ -238,6 +259,7 @@ def main() -> int:
     check_experiment_count(tex, failures)
     check_numeric_tables(tex, failures)
     check_json_scale_values(tex, failures)
+    check_public_execution_proof(tex, failures)
 
     if failures:
         print("Paper consistency check failed:")

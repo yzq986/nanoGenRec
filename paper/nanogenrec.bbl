@@ -1,4 +1,4 @@
-\begin{thebibliography}{7}
+\begin{thebibliography}{11}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
@@ -11,15 +11,39 @@ Jordan Hoffmann, Sebastian Borgeaud, Arthur Mensch, Elena Buchatskaya, Trevor Ca
 \newblock In \emph{Advances in Neural Information Processing Systems}, 2022.
 \newblock URL \url{https://arxiv.org/abs/2203.15556}.
 
+\bibitem[Schmidgall et~al.(2025)Schmidgall, Su, Wang, Sun, Wu, Yu, Liu, Liu, and Barsoum]{agentlaboratory}
+Samuel Schmidgall, Yusheng Su, Ze~Wang, Ximeng Sun, Jialian Wu, Xiaodong Yu, Jiang Liu, Zicheng Liu, and Emad Barsoum.
+\newblock Agent laboratory: Using llm agents as research assistants.
+\newblock In \emph{Findings of the Association for Computational Linguistics: EMNLP}, 2025.
+\newblock URL \url{https://arxiv.org/abs/2501.04227}.
+
+\bibitem[Wang et~al.(2024)Wang, Xie, Jiang, Mandlekar, Xiao, Zhu, Fan, and Anandkumar]{voyager}
+Guanzhi Wang, Yuqi Xie, Yunfan Jiang, Ajay Mandlekar, Chaowei Xiao, Yuke Zhu, Linxi Fan, and Anima Anandkumar.
+\newblock Voyager: An open-ended embodied agent with large language models.
+\newblock \emph{Transactions on Machine Learning Research}, 2024.
+\newblock URL \url{https://arxiv.org/abs/2305.16291}.
+
 \bibitem[Wang et~al.(2026)Wang, Huang, Yang, et~al.]{onelive}
 Shen Wang, Yusheng Huang, Ruochen Yang, et~al.
 \newblock Onelive: Dynamically unified generative framework for live-streaming recommendation, 2026.
 \newblock URL \url{https://arxiv.org/abs/2602.08612}.
 
+\bibitem[Wu et~al.(2024)Wu, Bansal, Zhang, Wu, Li, Zhu, Jiang, Zhang, Zhang, Liu, Awadallah, White, Burger, and Wang]{autogen}
+Qingyun Wu, Gagan Bansal, Jieyu Zhang, Yiran Wu, Beibin Li, Erkang Zhu, Li~Jiang, Xiaoyun Zhang, Shaokun Zhang, Jiale Liu, Ahmed~Hassan Awadallah, Ryen~W. White, Doug Burger, and Chi Wang.
+\newblock Autogen: Enabling next-gen llm applications via multi-agent conversation.
+\newblock In \emph{International Conference on Learning Representations}, 2024.
+\newblock URL \url{https://arxiv.org/abs/2308.08155}.
+
 \bibitem[Xue et~al.(2026)Xue, Liu, Wang, et~al.]{gr4ad}
 Ben Xue, Dan Liu, Lixiang Wang, et~al.
 \newblock Generative recommendation for large-scale advertising, 2026.
 \newblock URL \url{https://arxiv.org/abs/2602.22732}.
+
+\bibitem[Yang et~al.(2024)Yang, Jimenez, Wettig, Lieret, Yao, Narasimhan, and Press]{sweagent}
+John Yang, Carlos~E. Jimenez, Alexander Wettig, Kilian Lieret, Shunyu Yao, Karthik Narasimhan, and Ofir Press.
+\newblock Swe-agent: Agent-computer interfaces enable automated software engineering.
+\newblock In \emph{Advances in Neural Information Processing Systems}, 2024.
+\newblock URL \url{https://arxiv.org/abs/2405.15793}.
 
 \bibitem[Zhang et~al.(2026)Zhang, Zhang, Cheng, et~al.]{onemall}
 Kun Zhang, Jingming Zhang, Wei Cheng, et~al.
