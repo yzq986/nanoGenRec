@@ -22,7 +22,7 @@
 \maketitle
 
 \begin{abstract}
-AI agents can now read papers, write code, and launch experiments, but research progress still depends on a harder layer: maintaining a reproducible operating system around hypotheses, configs, long-running jobs, evaluation contracts, failed runs, and human decisions. We present \textsc{nanoGenRec}, an open-source agentic research framework that makes this layer explicit. The framework provides an inbox/outbox protocol for human-agent collaboration, paper-note memory, YAML experiment configuration, duplicate-run detection, runtime estimation, queue-based execution, full-recall evaluation checks, decision records, and durable experiment logs. Semantic-ID generative recommendation is used as the stress test because it is a realistic multi-stage research problem rather than a toy workflow: item representation, tokenization, behavior-sequence construction, next-token training, reward alignment, constrained decoding, and full-recall evaluation must all agree before any result is meaningful. The project is distilled from an anonymized production-scale experiment lineage: 51 recorded experiments, behavior sweeps up to 7.85M users and 299.0M raw interactions, roughly 445M effective SID tokens after truncation, million-item SID caches, and private runs executed with up to four NVIDIA H200 GPUs. Within this agent-managed workspace, the GR stack serves as a validation target and produces traceable evidence of model scaling, non-monotonic behavior-window effects under temporal drift, tokenizer-capacity tradeoffs, SID-constrained retrieval, and post-training alignment failures caused by rollout distribution mismatch. The released artifact removes private data and deployment details while preserving the research machinery: configs, logs, validation checks, public notebooks, and reproducible code paths. A checked-in MovieLens 1M Colab-T4 path verifies that the public code can execute the same Qwen embedding $\rightarrow$ SID construction $\rightarrow$ NTP training $\rightarrow$ reward-alignment $\rightarrow$ full-evaluation loop without private data. We position \textsc{nanoGenRec} primarily as an agentic research workspace and landing record: a way for researchers and agents to turn complex recommender-system ideas into auditable, recoverable, executable research programs.
+AI agents can now read papers, write code, and launch experiments, but research progress still depends on a harder layer: maintaining a reproducible operating system around hypotheses, configs, long-running jobs, evaluation contracts, failed runs, and human decisions. We present \textsc{nanoGenRec}, an open-source agentic research framework that makes this layer explicit. The framework provides an inbox/outbox protocol for human-agent collaboration, paper-note memory, YAML experiment configuration, duplicate-run detection, runtime estimation, queue-based execution, full-recall evaluation checks, decision records, and durable experiment logs. Semantic-ID generative recommendation is used as the stress test because it is a realistic multi-stage research problem rather than a toy workflow: item representation, tokenization, behavior-sequence construction, next-token training, reward alignment, constrained decoding, and full-recall evaluation must all agree before any result is meaningful. The project is distilled from an anonymized production-scale experiment lineage: 51 recorded experiments, behavior sweeps up to 7.85M users and 299.0M raw interactions, roughly 445M effective SID tokens after truncation, million-item SID caches, and experiments run in a real 4$\times$NVIDIA H200 GPU environment. Within this agent-managed workspace, the GR stack serves as a validation target and produces traceable evidence of model scaling, non-monotonic behavior-window effects under temporal drift, tokenizer-capacity tradeoffs, SID-constrained retrieval, and post-training alignment failures caused by rollout distribution mismatch. The released artifact removes private data and deployment details while preserving the research machinery: configs, logs, validation checks, public notebooks, and reproducible code paths. A checked-in MovieLens 1M Colab-T4 path verifies that the public code can execute the same Qwen embedding $\rightarrow$ SID construction $\rightarrow$ NTP training $\rightarrow$ reward-alignment $\rightarrow$ full-evaluation loop without private data. We position \textsc{nanoGenRec} primarily as an agentic research workspace and landing record: a way for researchers and agents to turn complex recommender-system ideas into auditable, recoverable, executable research programs.
 \end{abstract}
 
 \section{Introduction}
@@ -77,6 +77,54 @@ GR papers typically report architecture and production results, while the operat
 The repository includes an inbox/outbox protocol, paper notes, decision records, and status files. This is a lightweight workflow for human-agent collaboration over a research line. The agent reads papers, proposes ideas, estimates runtime, writes configs, checks prior experiments, and records decisions. The contribution here is operational: the research process is made inspectable and recoverable rather than embedded in transient chat logs or shell history.
 
 The loop is deliberately failure-aware. Duplicate experiments are surfaced before launch, long jobs are queued instead of chained, inline metrics are separated from reportable full evaluation, and invalid runs are documented rather than overwritten. This is the main abstraction of the project. Semantic-ID GR is the first demanding workload used to test whether that abstraction can survive a real multi-stage research problem.
+
+Figure~\ref{fig:agentic-loop} shows the agentic control loop. Each transition is backed by a file artifact in the repository rather than by transient chat context. The agent can therefore resume from durable state, while the human collaborator can audit what was proposed, what was run, what failed, and why a direction changed.
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.94\linewidth}
+\small
+\begin{center}
+\begin{tabular}{c}
+\textbf{Paper notes + experiment logs} \\
+$\Downarrow$ \\
+\textbf{Hypothesis / human instruction inbox} \\
+$\Downarrow$ \\
+\textbf{YAML config + duplicate-run registry check} \\
+$\Downarrow$ \\
+\textbf{Queued training / evaluation job} \\
+$\Downarrow$ \\
+\textbf{Full-recall metrics + failure diagnostics} \\
+$\Downarrow$ \\
+\textbf{Decision record + status update} \\
+$\Longrightarrow$ \quad next research iteration
+\end{tabular}
+\end{center}
+\end{minipage}}
+\caption{Agentic research loop implemented by \textsc{nanoGenRec}. The loop turns paper reading, experiment design, execution, evaluation, and decision logging into auditable repository state.}
+\label{fig:agentic-loop}
+\end{figure}
+
+Table~\ref{tab:agentic-artifacts} lists the agent-facing contracts. These artifacts are intentionally mundane: their role is to make research progress recoverable. For example, a YAML config records the exact variant, a registry hash prevents duplicate reruns, the queue state separates long jobs from interactive sessions, and phase README files keep the current best result visible without rereading every log.
+
+\begin{table}[t]
+\centering
+\caption{Agentic framework artifacts and the research failure modes they address.}
+\label{tab:agentic-artifacts}
+\begin{tabular}{p{0.22\linewidth}p{0.35\linewidth}p{0.33\linewidth}}
+\toprule
+Artifact & Research contract & Failure mode addressed \\
+\midrule
+Inbox/outbox & Human instructions and agent findings are explicit & Lost context across sessions \\
+Paper notes & Prior work is summarized into reusable local memory & Re-reading or misremembering papers \\
+YAML configs & Experiments override only intended parameters & Hidden or drifting hyperparameters \\
+Registry hashes & Similar historical runs are surfaced before launch & Duplicate expensive experiments \\
+Queue state & Long jobs are monitored asynchronously & Brittle script chains and forgotten runs \\
+Full-eval reports & Reported numbers use the same evaluation contract & Inline metric overclaiming \\
+Decision records & Negative results and pivots are written down & Cherry-picking and stale conclusions \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{GR Stress-Test Pipeline}
 
@@ -168,7 +216,7 @@ For public reproducibility, the repository also includes a MovieLens path. The s
 
 \subsection{Compute}
 
-The production-scale empirical experiments were run with up to four NVIDIA H200 GPUs. This hardware note is included only to make the compute scale of the experiment lineage interpretable; the released code does not depend on that environment. The public MovieLens proof run was executed on a single free Colab T4 GPU.
+The production-scale empirical experiments were run in a real 4$\times$NVIDIA H200 GPU environment. This hardware note is included to make the engineering scale of the experiment lineage interpretable; the released code does not depend on that environment. The public MovieLens proof run was executed on a single free Colab T4 GPU.
 
 \subsection{Model Tiers}
 
