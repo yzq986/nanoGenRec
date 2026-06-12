@@ -249,7 +249,7 @@ echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN c
 ```bibtex
 @misc{ye2026nanogenrec,
   title        = {nanoGenRec: An Agentic Research Framework for Landing Semantic-ID Generative Recommendation},
-  author       = {Ye, Ziqing},
+  author       = {Ziqing Ye},
   year         = {2026},
   url          = {https://github.com/yzq986/nanoGenRec},
   note         = {Open-source repository and technical report}
