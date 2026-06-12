@@ -1,7 +1,7 @@
 # nanoGenRec
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Colab](https://img.shields.io/badge/Colab-MovieLens%201M%20T4-orange.svg)](public_benchmarks/nanogenrec_colab.ipynb)
+[![Colab](https://img.shields.io/badge/Colab-MovieLens%201M%20T4-orange.svg)](https://colab.research.google.com/github/yzq986/nanoGenRec/blob/master/public_benchmarks/nanogenrec_colab.ipynb)
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](requirements.txt)
 
 [English](README.md) | [中文](README.zh.md)
@@ -40,7 +40,7 @@ graph LR
 | Tokenizer sweep | 14 个 Semantic ID variants，覆盖 0.6B/4B embeddings、4096/8192 codebooks 和 FSQ hidden sizes | [EXP-049](experiments/logs/exp-049.md) |
 | NTP 最好全量评测 | M-tier 4B SID 模型在约 49K eval items 上达到 R@500=70.4%、R@10=14.2% | [EXP-043](experiments/logs/ntp/README.md) |
 | 后训练最好恢复 | on-policy ECPO 将 off-policy collapse 从 R@500=2.0% 恢复到 67.8% | [EXP-029](experiments/logs/exp-029.md) |
-| 公开复现路径 | MovieLens 1M Colab T4 hybrid-feature run：5,950 用户、3,532 items，R@500=72.5%、R@1000=85.2%；strict Qwen+RL T4 run 已在 notebook 中给出 | [public_benchmarks/results/ml-1m-colab-t4.md](public_benchmarks/results/ml-1m-colab-t4.md), [public_benchmarks/nanogenrec_colab.ipynb](public_benchmarks/nanogenrec_colab.ipynb) |
+| 公开复现路径 | MovieLens 1M strict Qwen+RL Colab T4 run：5,950 用户、3,532 items，R@500=72.2%、R@1000=86.0% | [public_benchmarks/results/ml-1m-qwen-rl-t4.md](public_benchmarks/results/ml-1m-qwen-rl-t4.md) |
 | Agentic workflow | inbox/outbox 协议、paper-note memory、YAML config expansion、重复实验检查、队列化运行和 decision records | [research/](research/program.md), [experiments/](experiments/README.md) |
 
 ## 亮点

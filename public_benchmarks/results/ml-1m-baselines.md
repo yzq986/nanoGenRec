@@ -1,7 +1,7 @@
 # MovieLens 1M Public Baselines
 
 These baselines use the same filtered MovieLens 1M split as the Colab-T4
-nanoGenRec public run: `min_rating=4.0`, `min_user_items=10`,
+nanoGenRec public runs: `min_rating=4.0`, `min_user_items=10`,
 `max_items_per_user=100`, final item as target, `seed=42`, and 1,000 sampled
 evaluation users.
 
@@ -34,12 +34,13 @@ python3 public_benchmarks/baselines.py \
 | Popularity | 0.5% | 1.4% | 2.2% | 10.6% | 20.6% | 56.1% | 74.7% |
 | Last item repeat | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
 | ItemKNN co-occurrence | 2.5% | 8.4% | 13.9% | 33.7% | 46.6% | 78.0% | 88.5% |
-| nanoGenRec public path | 1.9% | 6.2% | 10.5% | 29.0% | 40.4% | 72.5% | 85.2% |
+| nanoGenRec hybrid path | 1.9% | 6.2% | 10.5% | 29.0% | 40.4% | 72.5% | 85.2% |
+| nanoGenRec Qwen+RL path | 2.2% | 6.7% | 10.0% | 27.9% | 38.4% | 72.2% | 86.0% |
 
 ## Interpretation
 
-The public nanoGenRec path beats the global popularity baseline, but the simple
-ItemKNN co-occurrence baseline is stronger on MovieLens 1M. This is expected for
-a small, dense collaborative-filtering dataset and reinforces the claim boundary:
-the public MovieLens path is an end-to-end reproducibility check for the GR
-framework, not a public leaderboard claim.
+The public nanoGenRec paths beat the global popularity baseline, but the simple
+ItemKNN co-occurrence baseline is stronger at R@10--R@500 on MovieLens 1M.
+This is expected for a small, dense collaborative-filtering dataset and
+reinforces the claim boundary: the public MovieLens path is an end-to-end
+reproducibility check for the GR framework, not a public leaderboard claim.

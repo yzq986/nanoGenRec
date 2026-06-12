@@ -1,7 +1,7 @@
 # nanoGenRec
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Colab](https://img.shields.io/badge/Colab-MovieLens%201M%20T4-orange.svg)](public_benchmarks/nanogenrec_colab.ipynb)
+[![Colab](https://img.shields.io/badge/Colab-MovieLens%201M%20T4-orange.svg)](https://colab.research.google.com/github/yzq986/nanoGenRec/blob/master/public_benchmarks/nanogenrec_colab.ipynb)
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](requirements.txt)
 
 [English](README.md) | [Chinese](README.zh.md)
@@ -41,8 +41,8 @@ The project treats recommendation research as an autonomous experimentation prob
 | Tokenizer sweep | 14 Semantic ID variants over 0.6B/4B embeddings, 4096/8192 codebooks, and FSQ hidden sizes | [EXP-049](experiments/logs/exp-049.md) |
 | Best NTP full eval | M-tier 4B SID model reaches R@500=70.4% and R@10=14.2% over ~49K eval items | [EXP-043](experiments/logs/ntp/README.md) |
 | Best post-training recovery | on-policy ECPO recovers off-policy collapse from R@500=2.0% to 67.8% | [EXP-029](experiments/logs/exp-029.md) |
-| Public reproducibility path | MovieLens 1M Colab T4 hybrid-feature run: 5,950 users, 3,532 items, R@500=72.5%, R@1000=85.2%; strict Qwen+RL T4 run is provided in the notebook | [public_benchmarks/results/ml-1m-colab-t4.md](public_benchmarks/results/ml-1m-colab-t4.md), [public_benchmarks/nanogenrec_colab.ipynb](public_benchmarks/nanogenrec_colab.ipynb) |
-| Colab GPU path | Free T4 notebook for Qwen3 embeddings, SID construction, NTP, public GRPO-style alignment, and full-recall eval | [public_benchmarks/nanogenrec_colab.ipynb](public_benchmarks/nanogenrec_colab.ipynb) |
+| Public reproducibility path | MovieLens 1M strict Qwen+RL Colab T4 run: 5,950 users, 3,532 items, R@500=72.2%, R@1000=86.0% | [public_benchmarks/results/ml-1m-qwen-rl-t4.md](public_benchmarks/results/ml-1m-qwen-rl-t4.md) |
+| Colab GPU path | Free T4 notebook for Qwen3 embeddings, SID construction, NTP, public GRPO-style alignment, and full-recall eval | [Open in Colab](https://colab.research.google.com/github/yzq986/nanoGenRec/blob/master/public_benchmarks/nanogenrec_colab.ipynb) |
 | Agentic workflow | inbox/outbox protocol, paper-note memory, YAML config expansion, duplicate-run checks, queue-based execution, and decision records | [research/](research/program.md), [experiments/](experiments/README.md) |
 
 ## Highlights

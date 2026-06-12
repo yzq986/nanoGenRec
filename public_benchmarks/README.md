@@ -74,7 +74,8 @@ CPU is enough for smoke runs; free T4/L4/A100 time can be used for larger runs.
 ## Colab T4 Path
 
 For a free GPU run, open
-[nanogenrec_colab.ipynb](nanogenrec_colab.ipynb) in Google Colab and select
+[nanogenrec_colab.ipynb](https://colab.research.google.com/github/yzq986/nanoGenRec/blob/master/public_benchmarks/nanogenrec_colab.ipynb)
+in Google Colab and select
 `Runtime` -> `Change runtime type` -> `T4 GPU`.
 
 The recommended strict T4 run is:
@@ -131,8 +132,9 @@ A checked-in full CPU/hash-feature result is available at
 [results/ml-latest-small-full-cpu.md](results/ml-latest-small-full-cpu.md).
 The smaller smoke run is retained at
 [results/ml-latest-small-smoke.md](results/ml-latest-small-smoke.md).
-The first Colab T4 GPU result, produced before the strict Qwen+RL path was
-added, is available at
+The strict Qwen+RL Colab T4 GPU result is available at
+[results/ml-1m-qwen-rl-t4.md](results/ml-1m-qwen-rl-t4.md).
+The earlier hybrid-feature Colab T4 GPU result is available at
 [results/ml-1m-colab-t4.md](results/ml-1m-colab-t4.md).
 Simple public baselines are available at
 [results/ml-1m-baselines.md](results/ml-1m-baselines.md).
@@ -142,13 +144,14 @@ Summary:
 | Dataset | Device | Users | Items | Model | Eval samples | item_recall@50 | item_recall@500 | item_recall@1000 | target SID found |
 |---------|--------|-------|-------|-------|--------------|----------------|-----------------|------------------|------------------|
 | `ml-latest-small` | CPU | 603 | 6,298 | dense 2-layer, dim=96 | 500 | 0.032 | - | - | 0.052 |
-| `ml-1m` | Colab T4 | 5,950 | 3,532 | dense 3-layer, dim=128 | 1,000 | 0.290 | 0.725 | 0.852 | 0.899 |
+| `ml-1m` | Colab T4 | 5,950 | 3,532 | Qwen SID + dense 3-layer + public GRPO | 1,000 | 0.279 | 0.722 | 0.860 | 0.886 |
+| `ml-1m` | Colab T4 | 5,950 | 3,532 | hybrid SID + dense 3-layer | 1,000 | 0.290 | 0.725 | 0.852 | 0.899 |
 | `ml-1m` | CPU baseline | 5,950 | 3,532 | ItemKNN co-occurrence | 1,000 | 0.337 | 0.780 | 0.885 | - |
 
-These checked-in results validate the earlier smoke-test and free-GPU scale
-paths. They should not be read as competitive public leaderboard claims because
-they use lightweight hashed public features. New strict public runs should use
-the notebook command with `--feature_source qwen` and `--rl_steps > 0`.
+These checked-in results validate the smoke-test and free-GPU scale paths. They
+should not be read as competitive public leaderboard claims. The strict Qwen+RL
+row is the release result that follows the repository "How It Works" path; the
+hybrid row is retained as an earlier lightweight-feature comparison.
 
 ## Outputs
 

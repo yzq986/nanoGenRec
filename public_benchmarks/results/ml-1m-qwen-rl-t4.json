@@ -1,0 +1,62 @@
+{
+  "command": "python run.py public-movielens --dataset ml-1m --output_dir public_benchmarks/runs/ml-1m-qwen-rl-t4 --min_rating 4.0 --min_user_items 10 --max_users 0 --max_items_per_user 100 --feature_source qwen --qwen_device cuda --qwen_batch_size 16 --clusters 64,64,64 --kmeans_iters 5 --kmeans_sample_size 8192 --train_mode sliding --min_context_items 2 --embed_dim 128 --n_heads 4 --layers 3 --batch_size 256 --epochs 5 --rl_steps 100 --rl_batch_size 8 --rl_group_size 8 --eval_samples 1000 --beam_size 1000 --max_seq_len 128 --device cuda",
+  "dataset": "ml-1m",
+  "n_users": 5950,
+  "n_items": 3532,
+  "n_train_examples": 348363,
+  "n_alignment_examples": 348363,
+  "n_eval_examples": 5950,
+  "feature_source": "qwen",
+  "train_mode": "sliding",
+  "clusters": [
+    64,
+    64,
+    64
+  ],
+  "qwen_embedding_dim": 1024,
+  "model": {
+    "type": "dense NTP",
+    "layers": 3,
+    "embed_dim": 128,
+    "n_heads": 4,
+    "epochs": 5
+  },
+  "training": {
+    "loss": [
+      2.7257,
+      2.2124,
+      2.1227,
+      2.0725,
+      2.0365
+    ],
+    "ppl": [
+      15.27,
+      9.14,
+      8.35,
+      7.95,
+      7.66
+    ]
+  },
+  "rl": {
+    "enabled": true,
+    "algo": "public_grpo_exact_sid_reward",
+    "steps_completed": 100,
+    "group_size": 8,
+    "batch_size": 8,
+    "loss_last": 0.19867107272148132,
+    "loss_mean": 0.4198723252117634,
+    "reward_mean": 0.125,
+    "clip_fraction_mean": 0.8996875
+  },
+  "metrics": {
+    "item_recall@1": 0.022,
+    "item_recall@5": 0.067,
+    "item_recall@10": 0.1,
+    "item_recall@50": 0.279,
+    "item_recall@100": 0.384,
+    "item_recall@500": 0.722,
+    "item_recall@1000": 0.86,
+    "target_sid_found_rate": 0.886,
+    "n_eval_samples": 1000
+  }
+}

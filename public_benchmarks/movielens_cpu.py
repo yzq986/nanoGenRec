@@ -754,7 +754,7 @@ def write_artifacts(output_dir: Path, sid: dict[int, tuple[int, ...]], n_cluster
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="CPU MovieLens nanoGenRec public smoke benchmark")
+    parser = argparse.ArgumentParser(description="MovieLens nanoGenRec public benchmark")
     parser.add_argument("--dataset", choices=["synthetic", *DATASETS.keys()], default="ml-latest-small")
     parser.add_argument("--data_dir", default="public_benchmarks/data")
     parser.add_argument("--output_dir", default="public_benchmarks/runs/movielens_cpu")
