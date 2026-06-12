@@ -222,9 +222,9 @@ echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN c
 | [docs/](docs/README.zh.md) | 架构、工程记录和长期文档。 |
 | [ideas/](ideas/README.md) | 按改进方向组织的研究 backlog。 |
 
-## 许可证与引用
+## 许可证
 
-代码使用 [MIT License](LICENSE) 发布。引用信息见 [CITATION.cff](CITATION.cff)。
+代码使用 [MIT License](LICENSE) 发布。
 
 ## 文档分工
 
@@ -240,3 +240,18 @@ echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN c
 - 仓库根目录直接加入 `PYTHONPATH`，模块导入不带包名前缀。
 - CLI 入口是 `python run.py <command>`，不是 `python -m <package>`。
 - 独立 shell 脚本需要先把 `PYTHONPATH` 设置为仓库根目录。
+
+## 引用
+
+如果 nanoGenRec 对你的工作有帮助，请引用本仓库和技术报告。引用元数据也见
+[CITATION.cff](CITATION.cff)。
+
+```bibtex
+@misc{ye2026nanogenrec,
+  title        = {nanoGenRec: An Agentic Research Framework for Landing Semantic-ID Generative Recommendation},
+  author       = {Ye, Ziqing},
+  year         = {2026},
+  url          = {https://github.com/yzq986/nanoGenRec},
+  note         = {Open-source repository and technical report}
+}
+```

@@ -243,10 +243,9 @@ Inline eval during `train-ntp` is a health check only. Reported numbers should c
 | [docs/](docs/README.md) | Architecture notes, engineering logs, and durable documentation. |
 | [ideas/](ideas/README.md) | Research backlog organized by improvement dimension. |
 
-## License and Citation
+## License
 
-The code is released under the [MIT License](LICENSE). Citation metadata is
-available in [CITATION.cff](CITATION.cff).
+The code is released under the [MIT License](LICENSE).
 
 ## Documentation
 
@@ -272,3 +271,18 @@ When an experiment completes, update the three places that serve different reade
 - The repository root is added directly to `PYTHONPATH`; imports do not use a package prefix.
 - Use `python run.py <command>`, not `python -m <package>`.
 - For standalone shell scripts, export `PYTHONPATH` to the repository root before running project modules.
+
+## Citation
+
+If you use nanoGenRec, please cite the repository and technical report. Citation
+metadata is also available in [CITATION.cff](CITATION.cff).
+
+```bibtex
+@misc{ye2026nanogenrec,
+  title        = {nanoGenRec: An Agentic Research Framework for Landing Semantic-ID Generative Recommendation},
+  author       = {Ye, Ziqing},
+  year         = {2026},
+  url          = {https://github.com/yzq986/nanoGenRec},
+  note         = {Open-source repository and technical report}
+}
+```

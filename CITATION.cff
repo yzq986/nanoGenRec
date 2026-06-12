@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use nanoGenRec, please cite the repository and technical report."
-title: "nanoGenRec: A Reproducible Framework for Landing Semantic-ID Generative Recommendation"
+title: "nanoGenRec: An Agentic Research Framework for Landing Semantic-ID Generative Recommendation"
 authors:
   - family-names: "Ye"
     given-names: "Ziqing"
