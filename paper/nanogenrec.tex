@@ -117,7 +117,7 @@ Table~\ref{tab:stage-parameters} makes the parameter level of each stage explici
 Stage & Production empirical setting & Public MovieLens 1M setting \\
 \midrule
 Item representation & Qwen3 0.6B / 4B embeddings & Qwen3-Embedding-0.6B over public MovieLens metadata \\
-SID tokenization & 3-token RKMeans/FSQ, 4096/8192 codebooks & CPU residual KMeans, 16--64 clusters per layer \\
+SID tokenization & 3-token RKMeans/FSQ, 4096/8192 codebooks & residual KMeans, 16--64 clusters per layer \\
 Sequence construction & 7--90 day windows, up to 445M SID tokens & Public ratings, max 100 items/user, sliding prefixes \\
 NTP model & S/M/L tiers: 17.5M / 71.6M / 101.1M active params & Dense NTP, 2--3 layers, embed\_dim=96--128 \\
 Training & YAML variants, queued multi-GPU production runs & 5--8 epochs, single Colab T4 \\
@@ -136,7 +136,7 @@ Figure~\ref{fig:shared-interface} shows the same point as a release diagram: the
 \small
 \textbf{Production path:} Qwen3 item embeddings $\rightarrow$ RKMeans/FSQ SIDs $\rightarrow$ NTP shards $\rightarrow$ Transformer+MoE $\rightarrow$ preference/RL alignment $\rightarrow$ constrained full recall $\rightarrow$ EXP logs \\
 \vspace{0.4em}
-\textbf{Public path:} MovieLens metadata $\rightarrow$ Qwen3 item embeddings $\rightarrow$ CPU KMeans SIDs $\rightarrow$ sliding-prefix shards $\rightarrow$ dense NTP $\rightarrow$ GRPO-style alignment $\rightarrow$ constrained full recall $\rightarrow$ public metrics \\
+\textbf{Public path:} MovieLens metadata $\rightarrow$ Qwen3 item embeddings $\rightarrow$ residual KMeans SIDs $\rightarrow$ sliding-prefix shards $\rightarrow$ dense NTP $\rightarrow$ GRPO-style alignment $\rightarrow$ constrained full recall $\rightarrow$ public metrics \\
 \vspace{0.4em}
 \textbf{Shared interface:} item IDs $\leftrightarrow$ SID tokens, autoregressive SID sequences, valid-SID decoding, item-level Recall@K, and auditable run artifacts.
 \end{minipage}}
@@ -160,9 +160,13 @@ We treat GR as landed only when four criteria are met. First, generated token se
 
 \subsection{Data}
 
-The empirical study uses anonymized production behavior data. The largest behavior sweep covers up to 7.85M users and 299.0M raw interactions. After sequence truncation, this corresponds to roughly 445M effective SID tokens. Private data and deployment-specific details are not released; the open-source artifact preserves the code, configs, evaluation protocol, and experiment logs.
+The empirical study uses anonymized production behavior data. The largest behavior sweep covers up to 7.85M users and 299.0M raw interactions. After sequence truncation, this corresponds to roughly 445M effective SID tokens. Private data and deployment-specific details are not released; the open-source artifact preserves the code, configs, evaluation protocol, and experiment logs. The main private logs still expose quantitative run scale: for example, the EXP-015 scaling run records 3,042,069 training sequences, 49,575 evaluation targets, 148,533 evaluation positions, 49,383 evaluation items, and 1,000 full-recall samples.
 
-For public reproducibility, the repository also includes a MovieLens path. The strict Colab-T4 run uses public ratings and metadata, Qwen3-Embedding-0.6B item representations, CPU residual KMeans SIDs, 348,363 sliding-prefix NTP training examples, 348,363 alignment examples, a lightweight GRPO-style exact-SID reward stage, constrained decoding, and item-recall evaluation over 1,000 held-out users. An earlier checked-in MovieLens 1M result uses the same users and evaluation split but relies on lightweight hybrid title/genre and co-occurrence features and predates the public reward-alignment stage.
+For public reproducibility, the repository also includes a MovieLens path. The strict Colab-T4 run uses public ratings and metadata, Qwen3-Embedding-0.6B item representations, residual KMeans SIDs, 348,363 sliding-prefix NTP training examples, 348,363 alignment examples, a lightweight GRPO-style exact-SID reward stage, constrained decoding, and item-recall evaluation over 1,000 held-out users. An earlier checked-in MovieLens 1M result uses the same users and evaluation split but relies on lightweight hybrid title/genre and co-occurrence features and predates the public reward-alignment stage.
+
+\subsection{Compute}
+
+The production-scale empirical experiments were run with up to four NVIDIA H200 GPUs. This hardware note is included only to make the compute scale of the experiment lineage interpretable; the released code does not depend on that environment. The public MovieLens proof run was executed on a single free Colab T4 GPU.
 
 \subsection{Model Tiers}
 
@@ -193,7 +197,7 @@ Full evaluation uses SID-constrained beam search and reports item recall at seve
 
 \subsection{NTP Model Scaling}
 
-The first validation target is the NTP core. If the framework has correctly connected SID tokenization, sequence construction, training, and evaluation, model scaling should produce a coherent curve rather than isolated wins. We trained seven model sizes from 1.7M to 101.1M active parameters on a fixed 262M-token dataset. Table~\ref{tab:model-scaling} reports the results.
+The first validation target is the NTP core. If the framework has correctly connected SID tokenization, sequence construction, training, and evaluation, model scaling should produce a coherent curve rather than isolated wins. We trained seven model sizes from 1.7M to 101.1M active parameters on a fixed 262M-token dataset built from 31 days of behavior. The corresponding train metadata records 3,042,069 training sequences and 49,575 evaluation targets. Table~\ref{tab:model-scaling} reports the results.
 
 \begin{table}[t]
 \centering
@@ -266,7 +270,7 @@ The main observation is non-monotonicity. Extending the window increases the num
 
 \subsection{Tokenizer and Embedding Sweep}
 
-The third validation target is item representation. Tokenizer quality affects the irreducible loss floor and the search space exposed to beam decoding. We evaluated 14 tokenizer variants over 0.6B and 4B embeddings, uniform 4096/8192 codebooks, MGMR-style hierarchical codebooks, and FSQ hidden sizes. Table~\ref{tab:tokenizer} shows representative results.
+The third validation target is item representation. Tokenizer quality affects the irreducible loss floor and the search space exposed to beam decoding. We evaluated 14 tokenizer variants over 0.6B and 4B embeddings, uniform 4096/8192 codebooks, MGMR-style hierarchical codebooks, and FSQ hidden sizes. The production SID caches used by the embedding-size comparison cover about 1.10M items (1,096,364--1,110,697 items across 0.6B/4B/8B caches), making the tokenizer metrics item-space rather than toy-codebook measurements. Table~\ref{tab:tokenizer} shows representative results.
 
 \begin{table}[t]
 \centering
@@ -289,7 +293,7 @@ The decisive variable in this sweep is the 8192 codebook setting, which improves
 
 \subsection{Full-Recall Baselines}
 
-The fourth validation target is the full GR retrieval loop. Table~\ref{tab:full-eval} reports current full-eval baselines produced by SID-constrained generation. The strongest observed NTP result is the M-tier model with 4B SID, reaching R@500=70.4\% and R@10=14.2\%.
+The fourth validation target is the full GR retrieval loop. Table~\ref{tab:full-eval} reports current full-eval baselines produced by SID-constrained generation. The strongest observed NTP result is the M-tier model with 4B SID, reaching R@500=70.4\% and R@10=14.2\%. Its train metadata records 1,719,646 training sequences, 134.0M training tokens, 49,159 evaluation items, and 1,000 full-recall samples.
 
 \begin{table}[t]
 \centering
@@ -332,7 +336,7 @@ The strict Qwen+RL run also obtains R@1=2.2\%, R@5=6.7\%, R@50=27.9\%, and targe
 
 \subsection{Post-Training Alignment}
 
-The final validation target is post-training. We evaluated preference and RL-style alignment methods, including SP-DPO, RF-DPO, GRPO, and ECPO. The most instructive result is the off-policy/on-policy ECPO comparison in Table~\ref{tab:alignment}.
+The final validation target is post-training. We evaluated preference and RL-style alignment methods, including SP-DPO, RF-DPO, GRPO, and ECPO. The most instructive result is the off-policy/on-policy ECPO comparison in Table~\ref{tab:alignment}. Both ECPO runs use the same 14-day feature shard with 1,709,380 training sequences and 49,456 evaluation targets; the full evaluation samples 1,000 targets from 26,450 evaluation items.
 
 \begin{table}[t]
 \centering

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import sys
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,6 +71,15 @@ class NumericCheck:
     values: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class JsonScaleCheck:
+    name: str
+    source_path: str
+    expected: dict[tuple[str, ...], int]
+    tex_token: str
+    tex_values: tuple[str, ...]
+
+
 NUMERIC_CHECKS = [
     # EXP-015 model scaling table.
     NumericCheck("EXP-015 scale-01", "experiments/logs/exp-015.md", "scale-01", "scale-01", ("1.7M", "235.1", "5.460", "1.9%", "23.6%")),
@@ -110,6 +120,56 @@ NUMERIC_CHECKS = [
     NumericCheck("MovieLens 1M Qwen RL Colab T4", "public_benchmarks/results/ml-1m-qwen-rl-t4.md", "ml-1m-qwen-rl", "Qwen+RL public path", ("5,950", "3,532", "348,363", "10.0%", "38.4%", "72.2%", "86.0%")),
     NumericCheck("MovieLens 1M Qwen SID found", "public_benchmarks/results/ml-1m-qwen-rl-t4.md", "target_sid_found_rate", "target-SID found rate", ("88.6%",)),
 ]
+
+
+JSON_SCALE_CHECKS = [
+    JsonScaleCheck(
+        name="EXP-015 scale run size",
+        source_path="experiments/ntp_checkpoints/exp015-scale-07-100M/train_meta.json",
+        expected={
+            ("n_train",): 3042069,
+            ("n_eval",): 49575,
+            ("eval", "n_eval_positions"): 148533,
+            ("eval", "n_eval_items"): 49383,
+            ("eval", "n_recall_samples"): 1000,
+        },
+        tex_token="EXP-015 scaling run records",
+        tex_values=("3,042,069", "49,575", "148,533", "49,383", "1,000"),
+    ),
+    JsonScaleCheck(
+        name="EXP-043 M-tier 4B run size",
+        source_path="experiments/ntp_checkpoints/exp043-m-4b/train_meta.json",
+        expected={
+            ("n_train",): 1719646,
+            ("train", "total_tokens"): 134014296,
+            ("eval", "n_eval_items"): 49159,
+            ("eval", "n_recall_samples"): 1000,
+        },
+        tex_token="M-tier model with 4B SID",
+        tex_values=("1,719,646", "134.0M", "49,159", "1,000"),
+    ),
+    JsonScaleCheck(
+        name="EXP-029 ECPO run size",
+        source_path="experiments/ntp_checkpoints/exp029-ecpo-onpolicy-w003-r100/train_meta.json",
+        expected={
+            ("n_train",): 1709380,
+            ("n_eval",): 49456,
+            ("eval", "n_eval_items"): 26450,
+            ("eval", "n_recall_samples"): 1000,
+        },
+        tex_token="Both ECPO runs use",
+        tex_values=("1,709,380", "49,456", "26,450", "1,000"),
+    ),
+]
+
+
+def json_get(data: object, path: tuple[str, ...]) -> object:
+    cur = data
+    for key in path:
+        if not isinstance(cur, dict) or key not in cur:
+            raise KeyError(".".join(path))
+        cur = cur[key]
+    return cur
 
 
 def check_author(tex: str, failures: list[str]) -> None:
@@ -158,6 +218,16 @@ def check_numeric_tables(tex: str, failures: list[str]) -> None:
         check_contains(tex, check.tex_token, list(check.values), f"{check.name} manuscript", failures)
 
 
+def check_json_scale_values(tex: str, failures: list[str]) -> None:
+    for check in JSON_SCALE_CHECKS:
+        data = json.loads((ROOT / check.source_path).read_text())
+        for path, expected in check.expected.items():
+            actual = json_get(data, path)
+            if actual != expected:
+                fail(f"{check.name}: {'.'.join(path)} expected {expected}, got {actual}", failures)
+        check_contains(tex, check.tex_token, list(check.tex_values), f"{check.name} manuscript", failures)
+
+
 def main() -> int:
     failures: list[str] = []
     tex = TEX.read_text()
@@ -167,6 +237,7 @@ def main() -> int:
     check_figures(tex, failures)
     check_experiment_count(tex, failures)
     check_numeric_tables(tex, failures)
+    check_json_scale_values(tex, failures)
 
     if failures:
         print("Paper consistency check failed:")
