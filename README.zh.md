@@ -6,127 +6,140 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-`nanoGenRec` 是一个从 0 到 1 可复现的生成式推荐框架，覆盖 Semantic ID 构建、NTP 训练和全量召回评测。
+**一个面向生成式推荐的 agentic research framework。**
 
-它基于大规模真实行为数据产出，围绕 Semantic-ID-based generative recommendation，把模型代码、YAML 实验编排、全量召回评测、research agent 笔记和长期实验日志放在同一个 workspace 里。
+nanoGenRec 是一个真实工作的研究 workspace：AI agent 可以读论文、写 paper notes、提出 idea、设计 YAML 实验、检查重复 baseline、估算运行时间、排队训练、跑全量评测，并把实验结论和决策沉淀到仓库里。Generative Recommendation 是这个框架的验证场景：repo 里确实实现了从 item embeddings 到 Semantic IDs、NTP、reward alignment、full-recall eval 的完整 GR 栈，但最重要的产出是围绕它的可复现研究闭环。
 
-这个项目的出发点也很接近 AGI/ASI 时代对科研系统的要求：AI 不只负责训练模型，还应该参与提出假设、设计实验、编排任务、评估结果，并保留可追溯的推理链路。
-
-当前开源版本已经剥离私有数据和部署细节，但保留了可复现建模思路、实验自动化和工程工作流。
-
-对于没有私有数据的用户，仓库也提供了公开 MovieLens 复现路径，可在免费 Colab T4 上跑严格框架链路：公开 ratings/metadata -> Qwen3 item embeddings -> CPU Semantic IDs -> NTP 训练 -> GRPO-style reward alignment -> SID 约束全量召回评测。快速 CPU/hash-feature 设置保留为开发 smoke test；推荐公开复现入口见 [public_benchmarks/nanogenrec_colab.ipynb](public_benchmarks/nanogenrec_colab.ipynb)。
-
-## Agentic Research Loop
-
-```mermaid
-graph LR
-    A["读论文和实验日志"] --> B["提出 idea"]
-    B --> C["设计 YAML 实验"]
-    C --> D["队列化运行"]
-    D --> E["全量召回评测"]
-    E --> F["记录决策"]
-    F --> A
-```
-
-这个仓库把推荐研究视为一个可以被 AI agent 编排的自主实验问题。`research/` 提供人类和 agent 协作的 inbox/outbox 协议、paper notes、状态面板和决策记录；`experiments/run_exp.py` 负责展开 YAML config、检查重复 baseline、运行 variants，并在实验完成后提交结果；`experiments/queue.txt` 和 `run_config.sh` 支持长任务异步排队。这不是宣称项目本身已经实现 AGI 或 ASI，而是在构建这类系统需要的自助实验底座。
-
-## 量化概览
-
-| 维度 | 规模 / 结果 | 来源 |
-|------|-------------|------|
-| 实验记录 | 51 个已记录实验，覆盖 tokenizer、NTP、side features、temporal encoding 和 RL alignment | [experiments/logs/](experiments/logs/README.md) |
-| 行为数据 sweep | 最大窗口覆盖 7.85M 用户、299.0M raw interactions，截断后约 445M effective SID tokens | [EXP-016](experiments/logs/exp-016.md) |
-| Scaling law sweep | 7 个模型规模，从 1.7M 到 101.1M active parameters，在 262M tokens 上拟合 | [EXP-015](experiments/logs/exp-015.md) |
-| Tokenizer sweep | 14 个 Semantic ID variants，覆盖 0.6B/4B embeddings、4096/8192 codebooks 和 FSQ hidden sizes | [EXP-049](experiments/logs/exp-049.md) |
-| NTP 最好全量评测 | M-tier 4B SID 模型在约 49K eval items 上达到 R@500=70.4%、R@10=14.2% | [EXP-043](experiments/logs/ntp/README.md) |
-| 后训练最好恢复 | on-policy ECPO 将 off-policy collapse 从 R@500=2.0% 恢复到 67.8% | [EXP-029](experiments/logs/exp-029.md) |
-| 公开复现路径 | MovieLens 1M strict Qwen+RL Colab T4 run：5,950 用户、3,532 items，R@500=72.2%、R@1000=86.0% | [public_benchmarks/results/ml-1m-qwen-rl-t4.md](public_benchmarks/results/ml-1m-qwen-rl-t4.md) |
-| Agentic workflow | inbox/outbox 协议、paper-note memory、YAML config expansion、重复实验检查、队列化运行和 decision records | [research/](research/program.md), [experiments/](experiments/README.md) |
-
-## 亮点
-
-- **AI 辅助研究闭环**：论文阅读、idea 提出、实验设计、执行、评估和决策记录都围绕 human-agent collaboration 组织。
-- **真实业务数据驱动**：核心建模选择来自大规模真实行为日志上的实验验证，不是 synthetic toy benchmark。
-- **端到端 Semantic ID pipeline**：Qwen3 embedding -> residual KMeans + FSQ -> 3-token item ID。
-- **生成式推荐模型**：Transformer + MoE，在行为序列上做 next-token prediction。
-- **偏好对齐链路**：SP-DPO、RF-DPO、GRPO、ECPO。
-- **全量召回评测**：SID 约束 beam search、Recall@K、tokenizer proxy metrics 和对比报告。
-- **可复现实验治理**：YAML config、重复实验检查、阶段日志、队列式长任务管理。
-- **公开 T4 复现路径**：MovieLens 可在免费 T4 上跑 Qwen3 embeddings、CPU KMeans SIDs、NTP、GRPO-style alignment 和全量召回评测。
-- **开发 smoke path**：hash-feature MovieLens 设置不依赖 Qwen embeddings、Faiss 或 GPU，用于快速 CI 检查。
-
-参考论文：[OneRec](https://arxiv.org/abs/2506.13695)、[OneRec-V2](https://arxiv.org/abs/2508.20900)、[GR4AD](https://arxiv.org/abs/2602.22732)、[OneMall](https://arxiv.org/abs/2601.21770)。
-
-## 技术产出
-
-这个仓库的核心产出不是单个 checkpoint，而是一组围绕 Semantic-ID-based generative recommendation 的训练规律和后训练配方。
-
-### NTP Scaling Law
-
-![NTP scaling law](experiments/results/ntp/exp015-scaling-law.png)
-
-EXP-015 覆盖了 1.7M 到 101M active parameters 的 7 个模型规模，并拟合出：
+最短描述：
 
 ```text
-L(N) = 2.522 + 2055.1 / N^0.456
+papers + ideas + configs + queues + eval + logs
+        -> agent-managed recommendation research
+        -> reproducible decisions, not just isolated scores
 ```
 
-这个 exponent 接近 OneRec-V2 报告的 0.489，全量评测 R@500 从 23.6% 提升到 66.2%。当前比较有效的模型规模区间在 50M-70M active parameters 左右，再往上收益开始明显受数据限制。
+## 这个 Repo 的特别之处
 
-### Data Scaling Law
+大多数推荐 repo 发布的是一个模型、一段训练脚本或一个 benchmark 数字。nanoGenRec 更像是把研究操作系统一起发布出来：
 
-![NTP data scaling](experiments/results/ntp/exp016-data-scaling.png)
+- **Research-agent protocol**：inbox/outbox、状态跟踪、decision records、paper notes，支持异步 human-agent collaboration。
+- **Experiment compiler**：YAML configs 展开成可复现实验，并自动检查重复 baseline。
+- **Queue and monitoring discipline**：长任务进入队列，状态可追踪，结果回写并提交到仓库。
+- **Evidence ledger**：51 个实验日志记录 hypothesis、config、结果、失败案例和 post-hoc analysis。
+- **Full evaluation contract**：正式数字来自 SID-constrained full-recall eval，而不是训练时 inline health check。
+- **Runnable public proof**：MovieLens + Colab T4 证明开源路径不依赖私有数据也能跑通。
 
-EXP-016 说明行为窗口变长并不天然单调变好。recency、用户覆盖和单用户序列深度会互相影响，所以数据 scaling 需要显式控制变量，而不是简单地认为“天数越多越好”。
+GR 实现本身也重要，因为它压测了一个多阶段耦合系统：Qwen3 item embeddings、Semantic IDs、NTP training、preference/RL alignment 和 full-recall evaluation。
 
-### Post-Training Alignment
-
-![Post-training alignment curves](experiments/results/readme/post_training_alignment.png)
-
-后训练是这个项目从 SFT 往上走的关键。EXP-028 里的 off-policy ECPO 出现 candidate drift，R@500 掉到 2.0%；EXP-029 改成 on-policy candidates 后恢复到 R@500=67.8%。在带特征的 S-tier pipeline 上，DPO 之后继续做 ECPO，把 R@500 从 62.1% 提升到 65.7%。
-
-## 结果索引
-
-| 方向 | 当前最好结果 | 代表实验 | 详情 |
-|------|-------------|----------|------|
-| Semantic ID tokenizer | 4096x3 binary `[2]x12`，snHR=0.095，CR=0.89% | EXP-012 | [tokenizer logs](experiments/logs/tokenizer/README.md) |
-| Embedding scale | 4B SID snHR=0.131；0.6B SID snHR=0.092 | EXP-049 | [tokenizer logs](experiments/logs/tokenizer/README.md) |
-| NTP recommender | M-tier bare R@500=70.2%；L-tier SFT R@500=64.1% | EXP-043 / EXP-047 | [NTP logs](experiments/logs/ntp/README.md) |
-| RL alignment | S-tier 链路上 ECPO R@500=65.7% | EXP-039B | [RL logs](experiments/logs/rl/README.md) |
-
-EXP-049 确认 `num_clusters=8192` 是更强 tokenizer 设置。当前推荐 SID cache 是 `exp049-0.6b-nc8192-h128` 和 `exp049-4b-nc8192-h128`。
-
-## 项目流程
+## Agent Framework
 
 ```mermaid
 graph LR
-    A["行为和 item 数据"] --> B["Qwen3 embeddings"]
+    A["Read papers"] --> B["Write notes"]
+    B --> C["Propose ideas"]
+    C --> D["Analyze data assumptions"]
+    D --> E["Design YAML configs"]
+    E --> F["Check duplicate baselines"]
+    F --> G["Estimate runtime"]
+    G --> H["Queue / run experiments"]
+    H --> I["Full-recall eval"]
+    I --> J["Write logs and decisions"]
+    J --> A
+```
+
+agent framework 的细节见 [research/program.md](research/program.md)，里面定义了 operating loop、priority ladder、time budget、inbox/outbox schema、runtime estimation 和更新协议。
+
+| Component | Purpose |
+|-----------|---------|
+| [research/program.md](research/program.md) | autonomous research agent 操作手册。 |
+| [research/inbox/](research/inbox/) | 人类异步下发的指令。 |
+| [research/outbox/](research/outbox/) | agent 产出的 proposal、finding、blocker、report。 |
+| [research/paper-notes/](research/paper-notes/) | GR 论文结构化笔记。 |
+| [research/decisions/](research/decisions/) | 长期决策记录。 |
+| [research/status.md](research/status.md) | 当前任务、进度和下一步。 |
+| [experiments/run_exp.py](experiments/run_exp.py) | 带重复实验检查的 YAML runner。 |
+| [experiments/queue.txt](experiments/queue.txt) | 长任务 append-only 队列。 |
+| [experiments/logs/](experiments/logs/README.md) | 可审计实验日志。 |
+
+## 作为验证场的 GR Stack
+
+```mermaid
+graph LR
+    A["Behavior and item data"] --> B["Qwen3 embeddings"]
     B --> C["Semantic ID tokenizer"]
     C --> D["NTP recommender"]
-    D --> E["Preference alignment"]
-    E --> F["Full-recall evaluation"]
+    D --> E["Preference / reward alignment"]
+    E --> F["SID-constrained full-recall evaluation"]
     F --> G["Experiment logs"]
 ```
 
-所有项目命令从仓库根目录运行：
+| Stage | 生产路径 | 公开 MovieLens 路径 |
+|-------|----------|---------------------|
+| Item representation | Qwen3 0.6B / 4B embeddings | Qwen3-Embedding-0.6B over movie metadata |
+| SID tokenization | RKMeans / FSQ, 4096/8192 codebooks | CPU residual KMeans, 64x64x64 |
+| Sequence construction | 按日期窗口构建行为 shards | MovieLens sliding next-item prefixes |
+| NTP model | Transformer + MoE S/M/L tiers | Dense 3-layer NTP, embed_dim=128 |
+| Alignment | SP-DPO / RF-DPO / GRPO / ECPO | public GRPO exact-SID reward |
+| Evaluation | full SID-constrained recall | beam=1000, 1,000 eval users |
 
-```bash
-python run.py <command>
-```
+## 证明这条链路能工作
 
-分布式任务使用：
+这些数字不是 public leaderboard claim。它们证明的是：框架能驱动真实实验、暴露失败、保留研究证据。
 
-```bash
-PYTHONPATH=. torchrun --nproc_per_node=8 run.py <command>
-```
+| Evidence | Result | Source |
+|----------|--------|--------|
+| 公开可运行证明 | MovieLens 1M Qwen+RL Colab T4：R@500=72.2%、R@1000=86.0% | [ml-1m-qwen-rl-t4](public_benchmarks/results/ml-1m-qwen-rl-t4.md) |
+| 生产链路 full eval | M-tier 4B SID：约 49K eval items 上 R@500=70.4%、R@10=14.2% | [NTP logs](experiments/logs/ntp/README.md) |
+| Model scaling | 7 个模型规模，1.7M 到 101.1M active params，拟合 exponent 0.456 | [EXP-015](experiments/logs/exp-015.md) |
+| Data-window diagnosis | 最大 7.85M users、299.0M raw interactions；更长窗口不单调 | [EXP-016](experiments/logs/exp-016.md) |
+| Tokenizer sweep | 14 个 SID variants，覆盖 Qwen3 0.6B/4B embeddings 和 4096/8192 codebooks | [EXP-049](experiments/logs/exp-049.md) |
+| Alignment failure/recovery | off-policy ECPO collapse R@500=2.0%；on-policy candidates 恢复到 67.8% | [EXP-029](experiments/logs/exp-029.md) |
 
-## 快速开始
+## 当前 Public Baseline 水平
 
-先安装依赖：
+MovieLens 1M，`min_rating=4.0`、`min_user_items=10`、`max_items_per_user=100`、最后一个 item 作为 target，采样 1,000 个 eval users。
+
+| Method | R@1 | R@5 | R@10 | R@50 | R@100 | R@500 | R@1000 |
+|--------|-----|-----|------|------|-------|-------|--------|
+| Popularity | 0.5% | 1.4% | 2.2% | 10.6% | 20.6% | 56.1% | 74.7% |
+| Last item repeat | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% | 0.0% |
+| ItemKNN co-occurrence | 2.5% | 8.4% | 13.9% | 33.7% | 46.6% | 78.0% | 88.5% |
+| nanoGenRec hybrid path | 1.9% | 6.2% | 10.5% | 29.0% | 40.4% | 72.5% | 85.2% |
+| nanoGenRec Qwen+RL path | 2.2% | 6.7% | 10.0% | 27.9% | 38.4% | 72.2% | 86.0% |
+
+Baseline 解读：公开 GR 路径在所有 cutoff 上超过 global popularity，R@1000 是当前 checked-in public runs 里最强；但 MovieLens 1M 是小而密的协同过滤数据集，简单 ItemKNN 在 R@10--R@500 仍然更强。这没关系，因为这里的 public run 主要是框架可复现证明，repo 的研究价值在 agent-managed experiment system 和生产 grounded 的 GR 日志。
+
+## Quick Start
+
+安装依赖：
 
 ```bash
 python -m pip install -r requirements.txt
 ```
+
+在免费 GPU 上跑 public proof：
+
+[打开 Colab notebook](https://colab.research.google.com/github/yzq986/nanoGenRec/blob/master/public_benchmarks/nanogenrec_colab.ipynb)，然后选择 `Runtime -> Change runtime type -> T4 GPU`。
+
+本地快速 smoke test：
+
+```bash
+python run.py public-movielens \
+    --dataset ml-latest-small \
+    --output_dir public_benchmarks/runs/ml-latest-small-smoke \
+    --epochs 1 \
+    --max_users 200 \
+    --clusters 16,16,16 \
+    --embed_dim 32 \
+    --layers 1 \
+    --rl_steps 1 \
+    --rl_batch_size 2 \
+    --rl_group_size 4 \
+    --eval_samples 20 \
+    --beam_size 10
+```
+
+生产风格 GR 命令都从仓库根目录运行：
 
 ```bash
 # 训练 tokenizer 并生成 Semantic IDs
@@ -142,7 +155,7 @@ python run.py preprocess-ntp \
     --date_start 2026-03-18 \
     --date_end 2026-03-31
 
-# 通过 YAML config 运行实验
+# 通过 YAML 训练
 python experiments/run_exp.py experiments/configs/exp-047.yaml --no-smoke --commit
 
 # 全量评测
@@ -151,7 +164,51 @@ PYTHONPATH=. torchrun --nproc_per_node=8 run.py eval-ntp \
     --n_recall 1000
 ```
 
-标准训练/评测环境是 `/home/dev/.conda/envs/gr`。
+## 实验工作流
+
+新实验统一使用 `experiments/run_exp.py` 和 YAML configs：
+
+```bash
+# 查看默认参数
+sed -n '1,220p' experiments/configs/_base.yaml
+
+# 检查是否已有相似实验
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --check
+
+# 跑所有 variants
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --no-smoke --commit
+
+# 恢复或只跑一个 variant
+python experiments/run_exp.py experiments/configs/exp-NNN.yaml --only expNNN-a --no-smoke
+```
+
+长任务通过队列追加：
+
+```bash
+echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!" >> experiments/queue.txt
+```
+
+`train-ntp` 的 inline eval 只用于健康检查。正式报告数字应来自 `run.py eval-ntp --n_recall 1000` 的全量评测。
+
+## 目录结构
+
+| 路径 | 作用 |
+|------|------|
+| [research/](research/program.md) | Agent operating manual、inbox/outbox 协议、status、decisions、paper notes。 |
+| [experiments/](experiments/README.md) | YAML configs、编排、队列、checkpoints、artifacts。 |
+| [experiments/logs/](experiments/logs/README.md) | 分阶段实验 ledger 和 SOTA 汇总。 |
+| [public_benchmarks/](public_benchmarks/README.md) | 可分发 MovieLens runs、Colab notebook、public baselines。 |
+| [tokenizer/](tokenizer/README.md) | Semantic ID tokenizer 和 SID 预处理。 |
+| [ntp/](ntp/README.md) | 生成式推荐模型、预处理、训练、评测。 |
+| [rl/](rl/README.md) | 偏好学习和 RL alignment。 |
+| [eval/](eval/README.md) | 评测 wrappers、行为指标、全量召回报告。 |
+| [data/](data/README.md) | 数据导出、加载、embedding 同步、分布式编码。 |
+| [paper/](paper/README.md) | arXiv-style technical report draft 和 source bundle。 |
+| [docs/](docs/README.zh.md) | 架构、工程记录和稳定文档。 |
+
+## 环境
+
+生产实验标准环境是 `/home/dev/.conda/envs/gr`。
 
 | Package | Version |
 |---------|---------|
@@ -163,64 +220,16 @@ PYTHONPATH=. torchrun --nproc_per_node=8 run.py eval-ntp \
 | pandas | 3.0.2 |
 | pyarrow | 24.0.0 |
 
-## 实验工作流
+## 论文、许可证、引用
 
-新实验统一走 `experiments/run_exp.py` + YAML config。这样可以显式继承默认参数，避免重复跑 baseline，并让结果可比较。
+- 技术报告草稿：[paper/nanogenrec.pdf](paper/nanogenrec.pdf)
+- arXiv source bundle：[paper/nanogenrec-arxiv-source.tar.gz](paper/nanogenrec-arxiv-source.tar.gz)
+- License：[MIT](LICENSE)
+- Citation metadata：[CITATION.cff](CITATION.cff)
 
-```bash
-# 写 config 前先看默认值
-sed -n '1,220p' experiments/configs/_base.yaml
+## 贡献者注意事项
 
-# 检查是否已有相似实验
-python experiments/run_exp.py experiments/configs/exp-NNN.yaml --check
-
-# 跑所有 variants
-python experiments/run_exp.py experiments/configs/exp-NNN.yaml --no-smoke --commit
-
-# 只跑或恢复一个 variant
-python experiments/run_exp.py experiments/configs/exp-NNN.yaml --only expNNN-a --no-smoke
-```
-
-长任务通过队列追加：
-
-```bash
-echo "run_config.sh experiments/configs/exp-NNN.yaml  /tmp/expNNN.log  exp-NNN complete!" >> experiments/queue.txt
-```
-
-`train-ntp` 的 inline eval 只用于健康检查。正式报告数字必须来自 `run.py eval-ntp --n_recall 1000` 的全量评测。
-
-## 目录结构
-
-| 路径 | 作用 |
-|------|------|
-| [data/](data/README.md) | 数据导出、加载、embedding 同步和分布式编码。 |
-| [tokenizer/](tokenizer/README.md) | Semantic ID tokenizer 和 SID 预处理。 |
-| [ntp/](ntp/README.md) | 生成式推荐模型、预处理、训练和评测。 |
-| [rl/](rl/README.md) | 偏好学习和 RL 对齐。 |
-| [eval/](eval/README.md) | 评测 wrapper、行为指标、全量召回报告和对比。 |
-| [metrics/](metrics/README.md) | tokenizer / embedding 的 intrinsic 和 behavior-aware metrics。 |
-| [model/](model/README.md) | embedding wrapper、模型打包和兼容 shim。 |
-| [viz/](viz/README.md) | 训练后可视化工具。 |
-| [experiments/](experiments/README.md) | configs、编排、队列、checkpoints 和结果产物。 |
-| [experiments/logs/](experiments/logs/README.md) | 分阶段实验记录和 SOTA 汇总。 |
-| [docs/](docs/README.zh.md) | 架构、工程记录和长期文档。 |
-| [ideas/](ideas/README.md) | 按改进方向组织的研究 backlog。 |
-
-## 许可证与引用
-
-代码使用 [MIT License](LICENSE) 发布。引用信息见 [CITATION.cff](CITATION.cff)。
-
-## 文档分工
-
-| 文件 | 读者 | 内容 |
-|------|------|------|
-| `README.md` / `README.zh.md` | 新访客 | 项目定位、快速开始、核心结果和文档入口。 |
-| `<phase>/README.md` | 改代码的人 | 模块职责、接口、数据契约、实现细节和注意事项。 |
-| `experiments/logs/<phase>/README.md` | 设计实验的人 | 当前最好结果、实验列表、下一步方向和指标口径。 |
-| `docs/` | 长期维护者 | 架构决策、工程记录和稳定文档。 |
-
-## 注意事项
-
-- 仓库根目录直接加入 `PYTHONPATH`，模块导入不带包名前缀。
-- CLI 入口是 `python run.py <command>`，不是 `python -m <package>`。
-- 独立 shell 脚本需要先把 `PYTHONPATH` 设置为仓库根目录。
+- 从仓库根目录使用 `python run.py <command>`。
+- 仓库根目录会直接加入 `PYTHONPATH`，import 不使用 package prefix。
+- 不要把 `train-ntp` inline eval 和 full baseline 直接比较。
+- 模块 README 写实现细节；`experiments/logs/<phase>/README.md` 写实验规划和阶段结果。
